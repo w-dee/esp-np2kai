@@ -20,8 +20,28 @@ if [[ ! -f "${IDF_ACTIVATION_SCRIPT}" ]]; then
     fail "ESP-IDF activation script not found: ${IDF_ACTIVATION_SCRIPT}"
 fi
 
-# shellcheck disable=SC1090
-source "${IDF_ACTIVATION_SCRIPT}"
+activate_idf() {
+    local original_argv0="${BASH_ARGV0}"
+    local activation_status
+
+    # ESP-IDF v5.5.4's activation script expects a sourced Bash session and
+    # is not safe under the caller's strict -e/-u options. Keep this workaround
+    # local to activation and restore the strict options immediately after it.
+    eim() { :; }
+    # Make the v5.5.4 source-detection logic see a sourced Bash session.
+    BASH_ARGV0=bash
+    set +eu
+    # shellcheck disable=SC1090
+    source "${IDF_ACTIVATION_SCRIPT}"
+    activation_status="$?"
+    set -eu
+    BASH_ARGV0="${original_argv0}"
+    # Prevent optional `eim select` behavior from changing external settings.
+    unset -f eim
+    return "${activation_status}"
+}
+
+activate_idf
 
 if [[ -z "${IDF_PATH:-}" ]]; then
     fail 'IDF_PATH is not set after ESP-IDF activation'
@@ -52,6 +72,13 @@ fi
 
 if [[ ! -x "${ESP_EMU}" ]]; then
     fail "esp-emu executable not found or not executable: ${ESP_EMU}"
+fi
+
+emu_version_output="$("${ESP_EMU}" --version 2>&1)"
+emu_version_line="$(printf '%s\n' "${emu_version_output}" | sed -n '/^esp-emu /{p;q;}')"
+printf '%s\n' "${emu_version_line}"
+if [[ "${emu_version_line}" != 'esp-emu 0.39.0' ]]; then
+    fail "esp-emu v0.39.0 is required; detected: ${emu_version_line:-version unavailable}"
 fi
 
 if [[ -f "${FIRMWARE_DIR}/sdkconfig" ]]; then
@@ -100,4 +127,3 @@ if ! grep -Fq -- "${SUCCESS_MARKER}" "${EMULATOR_LOG}"; then
 fi
 
 printf '%s\n' 'PASS: ESP-NP2KAI HELLO WORLD OK'
-

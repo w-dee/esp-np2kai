@@ -10,16 +10,18 @@ portability to the M5Stack TAB5.
 - documentation
 - esp-emu installation
 
-The first executable milestone is now implemented as a minimal headless
-ESP-IDF Hello World firmware targeting ESP32-P4. It has not yet been built or
-verified under `esp-emu`; the planned check is
+The first executable milestone is implemented and verified as a minimal
+headless ESP-IDF Hello World firmware targeting ESP32-P4. Under ESP-IDF
+v5.5.4 and esp-emu v0.39.0, the automated check builds the firmware, creates
+the merged image, boots it, reaches `app_main()`, detects the UART marker
+`ESP-NP2KAI HELLO WORLD OK`, and reports PASS with exit status 0. The check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh).
 
 The firmware uses GNU C++20 with C++ exceptions and RTTI disabled. For
-`esp-emu` v0.39.0, the current configuration includes the ESP32-P4 ROM
-revision 0 compatibility settings `CONFIG_ESP32P4_REV_MIN_0=y` and
-`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`. These settings are not yet a final
-physical-board configuration decision.
+`esp-emu` v0.39.0, the emulator reports ESP32-P4 revision v3.1 and the
+configuration therefore requires `CONFIG_ESP32P4_REV_MIN_301=y`. This is an
+emulator verification result, not a final physical-board configuration
+decision. P4-NANO and TAB5 revision compatibility remains unverified.
 
 ## Phase 1: Board function validation
 

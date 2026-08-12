@@ -23,20 +23,19 @@ explicitly selected by the developer or CI environment. This initial setup
 does not install system packages, ESP-IDF, `esp-emu`, or other external
 software.
 
-The minimal headless Hello World application now exists under `firmware/`, but
-it has not yet been built or executed. No component dependencies have been
-added.
+The minimal headless Hello World application exists under `firmware/` and has
+been built and executed successfully under ESP-IDF v5.5.4 and esp-emu v0.39.0.
+No component dependencies have been added.
 
 The firmware targets `esp32p4` through `firmware/sdkconfig.defaults`. New
 firmware C++ is explicitly compiled as GNU C++20 in the `main` component.
 C++ exceptions and RTTI are disabled through ESP-IDF configuration, and no
 `iostream` is used.
 
-For compatibility with `esp-emu` v0.39.0, the current defaults also select
-the ESP32-P4 ROM revision 0 compatibility settings
-`CONFIG_ESP32P4_REV_MIN_0=y` and
-`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`. These settings are currently for
-emulator compatibility and must be reviewed again during physical-board
+The `esp-emu` v0.39.0 test environment reports ESP32-P4 revision v3.1. The
+current defaults therefore select `CONFIG_ESP32P4_REV_MIN_301=y`. This setting
+is verified for the emulator environment; physical P4-NANO and TAB5 revision
+compatibility remains unverified and must be reviewed during physical-board
 bring-up.
 
 ## Development targets
@@ -49,15 +48,21 @@ The intended progression is:
 3. Physical ESP32-P4-NANO-KIT-D for board peripherals and performance.
 4. Physical M5Stack TAB5 for portability and its board-specific peripherals.
 
-The future automated Hello World check is
+The automated Hello World check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
 activate the separately installed ESP-IDF v5.5.4 environment, build and merge
-the firmware, then run the explicit `~/.local/bin/esp-emu` executable. It must
-not routinely call `idf.py set-target`; a target change is an explicit setup
+the firmware, then run the explicit `~/.local/bin/esp-emu` executable. It
+checks both ESP-IDF v5.5.4 and esp-emu v0.39.0 before building. It must not
+routinely call `idf.py set-target`; a target change is an explicit setup
 operation because that command regenerates configuration and clears the build
 directory.
 
-The script and firmware are implemented, not yet executed or verified.
+The ESP-IDF v5.5.4 activation script is not safe under the test script's
+strict Bash options and may run an external `eim select` operation. The test
+script temporarily relaxes `-e` and `-u`, presents the expected sourced Bash
+context, and suppresses that optional `eim` behavior only while activating
+ESP-IDF. This workaround is specific to the ESP-IDF v5.5.4 activation script
+and should be reviewed if the ESP-IDF version changes.
 
 The future firmware should remain capable of headless operation so CPU,
 memory, timer, UART, and other emulator-core tests can run without display or

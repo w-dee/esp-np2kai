@@ -7,9 +7,15 @@ architecture intended to support the M5Stack TAB5 and other ESP32-P4 boards.
 ## Status
 
 Very early bring-up. A minimal headless ESP-IDF Hello World firmware has been
-implemented for ESP32-P4, but it has not yet been built or executed under
-`esp-emu`. No NP2 or NP2kai source code has been imported, and no physical
-hardware or emulator functionality is claimed to work.
+implemented and verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The
+automated test builds the firmware, creates the merged image, boots it under
+the emulator, and detects the UART marker. No NP2 or NP2kai source code has
+been imported, and no physical hardware or emulator functionality beyond this
+Hello World path is claimed to work.
+
+The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
+configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
+TAB5 revision compatibility remains unverified.
 
 ## Development model
 
@@ -31,9 +37,9 @@ The project does not use a PlatformIO-installed ESP-IDF environment.
 New firmware C++ is explicitly compiled as GNU C++20. C++ exceptions and RTTI
 are disabled, and the firmware does not use `iostream`.
 
-The current emulator bring-up can later be exercised with
+The verified emulator bring-up can be exercised with
 [`tools/emu/test-hello-world.sh`](tools/emu/test-hello-world.sh). The script is
-implemented for future verification but has not been executed yet.
+bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this milestone.
 
 ## Validation stages
 
