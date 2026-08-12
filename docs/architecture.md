@@ -41,6 +41,32 @@ primarily in board-specific implementations. S31 Korvo-1 represents a
 different SoC family, so a board-only abstraction would not be sufficient for
 future support.
 
+## Future source organization
+
+The following is a non-binding future organization sketch, not a current
+implementation requirement:
+
+```text
+firmware/
+└── components/
+    ├── np2core/
+    ├── np2host/
+    └── platform/
+        └── espressif/
+            ├── common/
+            ├── soc/
+            │   ├── esp32p4/
+            │   └── esp32s31/       # future
+            └── boards/
+                ├── p4_nano/
+                ├── tab5/
+                └── s31_korvo_1/    # future
+```
+
+These empty directories must not be created at this stage. Introduce the
+organization incrementally as the implementation grows and concrete
+dependency boundaries require it.
+
 ## Conceptual layers
 
 - **NP2/NP2kai emulator core**: guest CPU, memory, timers, I/O devices, disk
