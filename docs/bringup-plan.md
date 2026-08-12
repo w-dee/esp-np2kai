@@ -10,6 +10,17 @@ portability to the M5Stack TAB5.
 - documentation
 - esp-emu installation
 
+The first executable milestone is now implemented as a minimal headless
+ESP-IDF Hello World firmware targeting ESP32-P4. It has not yet been built or
+verified under `esp-emu`; the planned check is
+[`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh).
+
+The firmware uses GNU C++20 with C++ exceptions and RTTI disabled. For
+`esp-emu` v0.39.0, the current configuration includes the ESP32-P4 ROM
+revision 0 compatibility settings `CONFIG_ESP32P4_REV_MIN_0=y` and
+`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`. These settings are not yet a final
+physical-board configuration decision.
+
 ## Phase 1: Board function validation
 
 - UART/control infrastructure
@@ -61,4 +72,3 @@ dimensions and physical display policy remain separate.
 - YM2608 rhythm
 - ADPCM
 - PCM86
-
