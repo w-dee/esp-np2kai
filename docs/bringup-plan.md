@@ -23,6 +23,12 @@ configuration therefore requires `CONFIG_ESP32P4_REV_MIN_301=y`. This is an
 emulator verification result, not a final physical-board configuration
 decision. P4-NANO and TAB5 revision compatibility remains unverified.
 
+The current bring-up phases validate ESP32-P4 first and do not schedule
+ESP32-S31 or S31 Korvo-1 work. Their interfaces and implementation boundaries
+should nevertheless leave room for a future Espressif SoC implementation
+without requiring P4-specific assumptions to be removed from the emulator
+core.
+
 ## Phase 1: Board function validation
 
 - UART/control infrastructure

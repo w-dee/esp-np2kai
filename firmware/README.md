@@ -21,6 +21,11 @@ defaults select `CONFIG_ESP32P4_REV_MIN_301=y`. This requirement is verified
 for the emulator environment only; physical P4-NANO and TAB5 revision
 compatibility remains unverified.
 
+This firmware is the first ESP32-P4-specific SoC implementation. The current
+firmware tree and configuration do not build for ESP32-S31; future S31 work
+would require a separate SoC implementation below the portable emulator and
+host interfaces.
+
 The build-and-emulation check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
 build the firmware, create a merged image, boot it under esp-emu, detect

@@ -7,10 +7,10 @@ The initial project baseline is:
 | Item | Version or target |
 | --- | --- |
 | Host OS | Ubuntu 24.04 |
-| ESP-IDF | v5.5.4 |
-| esp-emu | v0.39.0 |
-| ESP target | `esp32p4` |
-| New ESP32-P4-side C++ | C++20 |
+| Current ESP-IDF baseline | v5.5.4 |
+| Current esp-emu baseline | v0.39.0 |
+| Current ESP target | `esp32p4` |
+| New platform-side C++ | C++20 |
 
 The versions are recorded in [`tools/versions.env`](../tools/versions.env).
 That file is informational and must not modify the user's shell automatically.
@@ -38,6 +38,10 @@ is verified for the emulator environment; physical P4-NANO and TAB5 revision
 compatibility remains unverified and must be reviewed during physical-board
 bring-up.
 
+This is the current ESP32-P4 baseline, not a universal future baseline for
+every Espressif SoC target. No ESP32-S31 toolchain, target, or emulator
+requirement has been established.
+
 ## Development targets
 
 The intended progression is:
@@ -47,6 +51,10 @@ The intended progression is:
    headless regression.
 3. Physical ESP32-P4-NANO-KIT-D for board peripherals and performance.
 4. Physical M5Stack TAB5 for portability and its board-specific peripherals.
+
+ESP32-S31 / S31 Korvo-1 is a possible future portability target only. It is not
+part of the current bring-up sequence and is not implemented, tested, or
+validated.
 
 The automated Hello World check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
