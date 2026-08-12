@@ -1,0 +1,39 @@
+# Build products
+build/
+
+# ESP-IDF generated configuration
+sdkconfig
+sdkconfig.old
+sdkconfig.*.old
+
+# ESP-IDF managed component working tree
+managed_components/
+
+# Editor and OS-local files
+.idea/
+.vscode/settings.json
+.vscode/*.code-workspace
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Temporary files and local logs
+*.tmp
+*.temp
+*.log
+
+# Keep dependency lock files (for example, dependencies.lock) trackable.
+# Do not add broad documentation or VS Code extension-recommendation ignores.
+
+# eim configuration which may contain secrets
+eim_config.toml
