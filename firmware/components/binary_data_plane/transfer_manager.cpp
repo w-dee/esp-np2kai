@@ -120,6 +120,22 @@ void send_nack(TransferManager *manager, NackReason reason)
     }
 }
 
+bool is_valid_nack_reason(std::uint16_t reason)
+{
+    switch (static_cast<NackReason>(reason)) {
+    case NackReason::BadCrc:
+    case NackReason::BadSequence:
+    case NackReason::BadOffset:
+    case NackReason::InvalidLength:
+    case NackReason::UnknownTransfer:
+    case NackReason::TransferClosed:
+    case NackReason::BadHeader:
+    case NackReason::WrongDirection:
+        return true;
+    }
+    return false;
+}
+
 std::uint16_t pattern_value(std::uint64_t offset)
 {
     const std::size_t block_offset = static_cast<std::size_t>(offset % 1024);
@@ -193,6 +209,16 @@ void send_current_tx(TransferManager *manager, std::uint32_t now_ms)
     manager->tx_last_sent_ms = now_ms;
 }
 
+void retry_current_tx(TransferManager *manager, std::uint32_t now_ms)
+{
+    if (manager->tx_retries >= kMaxRetransmissions) {
+        finish_active(manager, TransferState::Aborted);
+        return;
+    }
+    ++manager->tx_retries;
+    send_current_tx(manager, now_ms);
+}
+
 void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame, std::uint32_t now_ms)
 {
     if (frame.transfer_id != manager->transfer_id) {
@@ -254,7 +280,25 @@ void handle_tx_ack(TransferManager *manager,
                    std::uint32_t now_ms)
 {
     if (frame.transfer_id != manager->transfer_id || !frame.crc_valid ||
-        frame.payload_length != 0 || frame.status != 0 || !manager->tx_waiting_ack) {
+        frame.payload_length != 0 || !manager->tx_waiting_ack) {
+        return;
+    }
+
+    if (frame.type == FrameType::Nack) {
+        if (!is_valid_nack_reason(frame.status)) {
+            finish_active(manager, TransferState::Aborted);
+            return;
+        }
+        if (frame.sequence != manager->tx_sequence ||
+            frame.offset != manager->tx_offset) {
+            finish_active(manager, TransferState::Aborted);
+            return;
+        }
+        retry_current_tx(manager, now_ms);
+        return;
+    }
+
+    if (frame.type != FrameType::Ack || frame.status != 0) {
         return;
     }
 
@@ -445,7 +489,7 @@ void handle_decoded_frame(TransferManager *manager,
         }
         handle_rx_data(manager, frame, now_ms);
     } else {
-        if (frame.type != FrameType::Ack) {
+        if (frame.type != FrameType::Ack && frame.type != FrameType::Nack) {
             send_nack(manager, NackReason::WrongDirection);
             return;
         }
@@ -484,12 +528,7 @@ void poll(TransferManager *manager, std::uint32_t now_ms)
         return;
     }
     if (elapsed(now_ms, manager->tx_last_sent_ms, kAckTimeoutMs)) {
-        if (manager->tx_retries >= kMaxRetransmissions) {
-            finish_active(manager, TransferState::Aborted);
-            return;
-        }
-        ++manager->tx_retries;
-        send_current_tx(manager, now_ms);
+        retry_current_tx(manager, now_ms);
     }
 }
 

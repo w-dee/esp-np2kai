@@ -469,6 +469,29 @@ def run_device_to_host(emulator: Emulator, transfer_id: int) -> None:
             or not frame["crc_valid"]
         ):
             raise AssertionError(f"unexpected DATA frame at sequence {sequence}: {frame}")
+        if sequence == 1:
+            emulator.send(
+                build_frame(
+                    NACK,
+                    transfer_id,
+                    sequence,
+                    offset,
+                    status=BAD_CRC,
+                )
+            )
+            retransmitted = emulator.wait_frame()
+            if (
+                retransmitted["type"] != DATA
+                or retransmitted["transfer_id"] != frame["transfer_id"]
+                or retransmitted["sequence"] != frame["sequence"]
+                or retransmitted["offset"] != frame["offset"]
+                or retransmitted["payload"] != frame["payload"]
+                or retransmitted["wire_crc"] != frame["wire_crc"]
+                or not retransmitted["crc_valid"]
+            ):
+                raise AssertionError(
+                    f"NACK retransmission changed DATA frame: {retransmitted}"
+                )
         emulator.send(
             build_frame(
                 ACK,
@@ -519,6 +542,27 @@ def main() -> int:
             or tx_status.get("crc32") != expected_crc()
         ):
             raise AssertionError(f"unexpected ESP-to-Host status: {tx_status}")
+
+        malformed_probe = build_frame(ACK, 0x12345678, 0, 0)
+        encoded_probe = bytearray(malformed_probe[2:-1])
+        corruption_index = len(encoded_probe) // 2
+        if encoded_probe[corruption_index] == 0:
+            raise AssertionError("COBS probe unexpectedly contains a zero byte")
+        malformed_probe = (
+            b"\x00\x00"
+            + bytes(encoded_probe[:corruption_index])
+            + b"\x00"
+            + bytes(encoded_probe[corruption_index + 1 :])
+            + b"\x00"
+        )
+        emulator.send(malformed_probe)
+        emulator.send_json(902, "system.ping")
+        resynchronized_ping = require_response(emulator.wait_response(902), 902)
+        if resynchronized_ping != {"pong": True}:
+            raise AssertionError(
+                f"unexpected JSON response after delimiter corruption: "
+                f"{resynchronized_ping}"
+            )
 
         emulator.send_json(900, "system.ping")
         ping = require_response(emulator.wait_response(900), 900)
