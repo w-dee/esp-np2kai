@@ -29,10 +29,12 @@ should nevertheless leave room for a future Espressif SoC implementation
 without requiring P4-specific assumptions to be removed from the emulator
 core.
 
-The UART Control Plane Base skeleton is implemented but not yet verified. It
-is the first Phase 1 control-infrastructure step and currently contains only
-the neutral protocol, bounded parser, UART transport, and three read-only
-commands: `protocol.hello`, `system.ping`, and `system.info`.
+The UART Control Plane Base is the first Phase 1 control-infrastructure
+milestone and is verified under `esp-emu` v0.39.0 for the ESP32-P4 emulator
+environment. It contains only the neutral protocol, bounded parser, configured
+console-UART transport, and three read-only commands: `protocol.hello`,
+`system.ping`, and `system.info`. Physical-board UART validation and the
+remaining Phase 1 work are not complete.
 
 ## Phase 1: Board function validation
 

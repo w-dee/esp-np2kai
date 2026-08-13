@@ -66,12 +66,15 @@ routinely call `idf.py set-target`; a target change is an explicit setup
 operation because that command regenerates configuration and clears the build
 directory.
 
-The UART Control Plane Base skeleton is implemented but not yet verified. Its
-planned integration check is
+The UART Control Plane Base is verified under `esp-emu` v0.39.0 for the
+ESP32-P4 emulator environment. Its integration check is
 [`tools/emu/test-uart-control-plane.sh`](../tools/emu/test-uart-control-plane.sh).
-That check preserves the existing Hello World regression and then uses
-esp-emu v0.39.0's UART injection trigger to test the separate
-`ESP-NP2KAI UART CONTROL READY` marker and the framed command responses.
+The check preserves the existing Hello World regression, reuses the resulting
+merged firmware image, starts a second esp-emu instance, waits for the
+`ESP-NP2KAI UART CONTROL READY` marker, injects protocol requests, and
+validates the framed responses, request IDs, malformed-input recovery, and
+successful emulator exit. This verifies the emulator path only; no equivalent
+physical-board test command is defined yet.
 
 The ESP-IDF v5.5.4 activation script is not safe under the test script's
 strict Bash options and may run an external `eim select` operation. The test

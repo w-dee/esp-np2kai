@@ -8,12 +8,12 @@ portability target, not a current implementation target.
 
 ## Status
 
-Very early bring-up. A minimal headless ESP-IDF Hello World firmware has been
-implemented and verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The
-automated test builds the firmware, creates the merged image, boots it under
-the emulator, and detects the UART marker. No NP2 or NP2kai source code has
-been imported, and no physical hardware or emulator functionality beyond this
-Hello World path is claimed to work.
+Very early bring-up. A minimal headless ESP-IDF Hello World firmware and the
+UART Control Plane Base have been implemented and verified under `esp-emu`
+v0.39.0 with ESP-IDF v5.5.4. The automated checks build the firmware, create
+the merged image, boot it under the emulator, and validate the Hello World and
+UART Control Plane paths. No NP2 or NP2kai source code has been imported, and
+no physical hardware has been validated.
 
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
@@ -22,10 +22,11 @@ TAB5 revision compatibility remains unverified.
 The currently verified executable milestone is ESP32-P4-only. S31 Korvo-1 is
 not implemented, tested, or validated.
 
-The UART Control Plane Base skeleton is implemented but not yet verified. It
-adds a framed, line-oriented JSON protocol with `protocol.hello`,
-`system.ping`, and `system.info`; its esp-emu round-trip test is planned but
-has not yet passed.
+The UART Control Plane Base is verified under `esp-emu` v0.39.0 for the
+ESP32-P4 emulator environment. It provides bounded `@ESP-NP2 ` JSON-lines
+framing, the separate `ESP-NP2KAI UART CONTROL READY` marker, and the initial
+read-only commands `protocol.hello`, `system.ping`, and `system.info`.
+Physical P4-NANO and TAB5 UART paths remain unverified.
 
 ## Development model
 

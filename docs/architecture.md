@@ -198,10 +198,11 @@ transport abstraction
 
 The future guest/emulator commands listed above are documented here only and
 are not implemented in the initial repository setup. The UART Control Plane
-Base skeleton now provides
-the first neutral transport/protocol/dispatcher path, but it is implemented
-and not yet verified. Its protocol is independent of the configured console
-UART and of any ESP32-P4-specific API.
+Base provides the first neutral transport/protocol/dispatcher path and is
+verified under `esp-emu` v0.39.0 for the ESP32-P4 emulator environment. Its
+protocol is independent of the configured console UART and of any
+ESP32-P4-specific API. This emulator verification does not validate physical
+P4-NANO or TAB5 UART paths.
 
 The skeleton uses a bounded `@ESP-NP2 ` JSON-lines frame, a central command
 dispatcher, and a separate configured-console-UART transport. The existing
