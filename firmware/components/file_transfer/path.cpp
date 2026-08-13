@@ -42,7 +42,7 @@ bool valid_component(std::string_view value)
     }
     if (value == "." || value == "..") return false;
     for (unsigned char c : value) {
-        if (c == '\\' || c == 0x7f || c < 0x20) return false;
+        if (c == '/' || c == '\\' || c == 0x7f || c < 0x20) return false;
     }
     return true;
 }

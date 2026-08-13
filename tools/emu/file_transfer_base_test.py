@@ -179,6 +179,9 @@ def run(emu: wire.Emulator) -> None:
         raise AssertionError(f"byte-budget pagination failed: pages={long_pages}, names={long_names}")
     require_error(send_request(emu, 27, "file.list", {"path": "/seed/existing.bin"}),
                   "NOT_A_DIRECTORY")
+    require_error(send_request(emu, 28, "file.list", {
+        "path": "/seed", "cursor": "page-03.bin/extra", "limit": 3,
+    }), "INVALID_PATH")
 
     original = payload(FILE_BYTES)
     upload_id = upload(emu, 30, "/upload/roundtrip.bin", original, replay_final=True)
