@@ -7,6 +7,8 @@
 #include "binary_data_plane/binary_data_plane.hpp"
 #include "control_plane/control_plane.hpp"
 #include "control_stream/control_stream.hpp"
+#include "file_transfer/file_transfer.hpp"
+#include "storage_ram/storage_ram.hpp"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
 #include "esp_timer.h"
@@ -17,12 +19,17 @@ namespace {
 
 constexpr int kRxBufferSize = 2048;
 constexpr std::size_t kReadChunkSize = 64;
-constexpr std::size_t kControlTaskStackSize = 6144;
+// File-transfer dispatch and binary frame handling share this task. Keep enough
+// headroom for the bounded cJSON response objects plus the 1 KiB frame path.
+constexpr std::size_t kControlTaskStackSize = 12288;
 constexpr UBaseType_t kControlTaskPriority = tskIDLE_PRIORITY + 2;
 constexpr uart_port_t kConsoleUart = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
 
 control_plane::ControlPlane s_control_plane;
 binary_data_plane::TransferManager s_binary_manager;
+storage_ram::StorageRam s_storage_ram;
+file_transfer::Service s_file_transfer;
+control_plane::ServiceContext s_service_context;
 control_stream::ControlStream s_control_stream;
 control_plane::Metadata s_metadata{};
 bool s_started = false;
@@ -49,11 +56,14 @@ void control_task(void *)
 {
     const binary_data_plane::OutputSink binary_sink{nullptr, write_machine};
     binary_data_plane::init(&s_binary_manager, binary_sink);
+    s_storage_ram.init();
+    s_file_transfer.init(s_storage_ram.api(), &s_binary_manager);
+    s_service_context = control_plane::ServiceContext{&s_binary_manager, &s_file_transfer};
     const control_plane::OutputSink control_sink{nullptr, write_control};
     control_plane::init(&s_control_plane,
                         control_sink,
                         s_metadata,
-                        &s_binary_manager);
+                        &s_service_context);
     control_stream::init(&s_control_stream,
                          &s_control_plane,
                          &s_binary_manager);

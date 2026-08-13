@@ -231,7 +231,7 @@ JSON responses and binary frames -> common raw machine writer
 
 `control_stream` owns the bounded TEXT/START_ZERO/BINARY_COLLECT/
 BINARY_DISCARD multiplexer. `binary_data_plane` owns portable framing, CRC,
-transfer identity, sequence/offset state, endpoint validation, and stop-and-
+transfer identity, sequence/offset state, generic endpoint lifecycles, and stop-and-
 wait behavior. `uart_control_transport` composes these components with the
 configured ESP-IDF console UART. The portable components do not contain board
 pin policy or ESP32-P4-specific protocol types.
@@ -278,9 +278,9 @@ binary.transfer.abort
 ```
 
 The advertised additive capability is `binary.data-plane.v1`. These commands
-and endpoints are deterministic transport tests, not SD, file, disk-image,
-ROM, guest-memory, guest-I/O, framebuffer, audio, or arbitrary application
-transfer APIs. v1 permits one active transfer total and uses stop-and-wait.
+remain deterministic transport tests; application services attach through the
+generic bounded endpoint contract. v1 permits one active transfer total and
+uses stop-and-wait.
 Transfer IDs identify binary sessions and are independent of JSON request IDs.
 
 ACK advances the receiver's acknowledged sequence and offset. A matching NACK
@@ -290,6 +290,11 @@ Timeout and NACK retries use one shared retransmission budget. A mismatched
 NACK sequence or offset aborts the active session as protocol desynchronization;
 it does not create a NACK loop, rewind, or arbitrary resume. Duplicate
 Host-to-ESP32 DATA is applied once and receives an idempotent ACK.
+The most recent successfully completed Host-to-Device transfer also retains a
+bounded identity record for its exact final DATA frame. An identical replay
+receives the same final progress ACK without reopening, consuming, finishing,
+or committing the endpoint again; the record is replaced when a new transfer
+successfully begins.
 
 The integration test directly verifies deterministic 64 KiB transfers in both
 directions, exact bytes, per-frame and whole-transfer CRC, Host-to-ESP32
@@ -299,6 +304,38 @@ delimiter recovery followed by a successful JSON `system.ping`. Timeout retry,
 shared retry-budget exhaustion, and mismatched-NACK abort are implemented v1
 semantics established by the source, but are not claimed as separately
 injected runtime cases by this test.
+
+## File Transfer Base
+
+The `file-transfer.v1` capability is verified under esp-emu v0.39.0 using this
+composition:
+
+```text
+control_plane -> file_transfer -> storage <- storage_ram
+                      |
+                      v
+             binary_data_plane -> UART
+```
+
+`file_transfer` owns canonical logical paths, metadata commands, ranges,
+write replacement policy, and file/transport summaries. `storage` is a neutral
+streaming interface with stat/list/read/write-session operations.
+`storage_ram` is a deterministic test backend with a 256 KiB arena, 32 entries,
+a 192 KiB per-file limit, one read session, and one staged write session.
+Staged writes become visible only after commit; abort preserves an existing
+target. No filesystem handle or ESP-IDF storage type crosses the interface.
+
+The JSON commands are `file.stat`, `file.list`, `file.read.begin`,
+`file.write.begin`, and `file.transfer.status`. Paths are absolute UTF-8 logical
+paths rooted at `/`; traversal, repeated separators, controls, backslashes,
+oversized paths/components, and malformed UTF-8 are rejected. Listing uses an
+unsigned UTF-8 byte-order name cursor, a count limit of 1..16, and a 768-byte
+response budget. Nonempty reads/writes use Binary Data Plane bytes; zero-length
+operations complete synchronously without a transfer ID.
+
+Only the RAM backend and esp-emu UART-TCP path are verified. A future FATFS or
+microSD backend should implement the same `storage` contract; real media and
+physical board transport are not part of this milestone.
 
 Machine-readable JSON and binary frames use the raw UART driver path so
 stdout/VFS newline conversion cannot change arbitrary binary bytes. Normal

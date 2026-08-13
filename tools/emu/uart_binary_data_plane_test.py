@@ -279,7 +279,7 @@ class Emulator:
             "--uart-tcp",
             f"127.0.0.1:{self.port}",
             "--timeout",
-            "60s",
+            getattr(self.args, "emulator_timeout", "60s"),
             "--log-color",
             "never",
         ]
@@ -289,7 +289,9 @@ class Emulator:
             stderr=subprocess.STDOUT,
             env={**os.environ, "NO_COLOR": "1"},
         )
-        self.deadline = time.monotonic() + PROCESS_TIMEOUT
+        self.deadline = time.monotonic() + getattr(
+            self.args, "process_timeout", PROCESS_TIMEOUT
+        )
 
         deadline = time.monotonic() + CONNECT_TIMEOUT
         while time.monotonic() < deadline:
@@ -444,6 +446,7 @@ def run_host_to_device(emulator: Emulator, transfer_id: int) -> None:
         raise AssertionError(f"unexpected BAD_CRC NACK: {nack}")
 
     send_and_ack(second, 2, 2 * MAX_PAYLOAD)
+    final_wire = b""
     for sequence in range(2, TRANSFER_BYTES // MAX_PAYLOAD):
         offset = sequence * MAX_PAYLOAD
         wire = build_frame(
@@ -454,6 +457,13 @@ def run_host_to_device(emulator: Emulator, transfer_id: int) -> None:
             payload=pattern_chunk(offset, MAX_PAYLOAD),
         )
         send_and_ack(wire, sequence + 1, offset + MAX_PAYLOAD)
+        final_wire = wire
+
+    # The completed receiver must replay the final progress ACK without
+    # reopening or reapplying its endpoint after a link-lost final ACK.
+    emulator.send(final_wire)
+    require_ack(emulator.wait_frame(), transfer_id,
+                TRANSFER_BYTES // MAX_PAYLOAD, TRANSFER_BYTES)
 
 
 def run_device_to_host(emulator: Emulator, transfer_id: int) -> None:

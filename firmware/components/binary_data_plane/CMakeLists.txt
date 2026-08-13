@@ -3,6 +3,7 @@ idf_component_register(
         "binary_codec.cpp"
         "cobs.cpp"
         "crc32.cpp"
+        "test_endpoint.cpp"
         "transfer_manager.cpp"
     INCLUDE_DIRS "include"
 )

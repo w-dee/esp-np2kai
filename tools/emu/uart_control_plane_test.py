@@ -19,6 +19,7 @@ EXPECTED_CAPABILITIES = [
     "system.ping",
     "system.info",
     "binary.data-plane.v1",
+    "file-transfer.v1",
 ]
 
 

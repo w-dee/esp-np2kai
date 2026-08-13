@@ -9,7 +9,8 @@ portability target, not a current implementation target.
 ## Status
 
 Very early bring-up. A minimal headless ESP-IDF Hello World firmware, the UART
-Control Plane Base, and Binary Data Plane v1 have been implemented and
+Control Plane Base, Binary Data Plane v1, and RAM-backed File Transfer Base
+have been implemented and
 verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The automated checks
 build the firmware, create the merged image, boot it under the emulator, and
 validate these milestones independently. No NP2 or NP2kai source code has been
@@ -35,6 +36,13 @@ corrupted-frame recovery, and text/binary resynchronization. This verifies the
 emulator byte path only; physical P4-NANO, CH343P, and TAB5 UART paths remain
 unverified.
 
+The File Transfer Base is verified over the same UART-TCP path. It adds a
+neutral streaming storage interface, a bounded 256 KiB RAM backend, logical
+UTF-8 paths, paginated metadata, ranged reads, and staged complete-file writes.
+Its 131,109-byte round-trip regression covers final-ACK replay, abort-safe
+replacement, zero-length files, and path/error bounds. This is not microSD,
+FATFS, or physical-media validation.
+
 ## Development model
 
 The emulator core will remain portable and separate from Espressif-common,
@@ -57,7 +65,7 @@ The project does not use a PlatformIO-installed ESP-IDF environment.
 New firmware C++ is explicitly compiled as GNU C++20. C++ exceptions and RTTI
 are disabled, and the firmware does not use `iostream`.
 
-The three verified emulator checks retain separate scopes:
+The four verified emulator checks retain separate scopes:
 
 - [`tools/emu/test-hello-world.sh`](tools/emu/test-hello-world.sh) verifies
   basic ESP-IDF build, merge, boot, and the Hello World marker.
@@ -66,8 +74,10 @@ The three verified emulator checks retain separate scopes:
 - [`tools/emu/test-uart-binary-data-plane.sh`](tools/emu/test-uart-binary-data-plane.sh)
   runs the Control Plane regression and verifies bidirectional binary transport
   over esp-emu UART-TCP.
+- [`tools/emu/test-file-transfer-base.sh`](tools/emu/test-file-transfer-base.sh)
+  preserves the earlier regressions and verifies the RAM-backed file service.
 
-All three checks are bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this
+All four checks are bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this
 milestone.
 
 ## Validation stages

@@ -91,6 +91,22 @@ timeout retransmission, a shared timeout/NACK retry budget, retry exhaustion
 abort, and mismatched-NACK abort as v1 semantics; these are not all separately
 injected runtime cases.
 
+The verified File Transfer Base integration check is
+[`tools/emu/test-file-transfer-base.sh`](../tools/emu/test-file-transfer-base.sh).
+It runs the complete preceding regression chain, then uses the merged image for
+a RAM-backed file phase over UART-TCP. That phase verifies pagination under an
+explicit response budget, a 131,109-byte upload and exact readback, terminal
+RX ACK replay, whole-transfer CRC, ranges, abort-safe staged replacement,
+zero-length behavior, UTF-8 names, and bounded path/storage errors.
+
+Its additional artifacts are:
+
+- `firmware/build/esp-emu-file-transfer-base.log`
+- `firmware/build/esp-emu-file-transfer-base.uart.bin`
+
+This remains an emulator and RAM-backend result. It does not validate FATFS,
+microSD hardware, durability, physical UART transport, throughput, or timing.
+
 The primary success evidence is protocol validation on the UART-TCP socket.
 After the final JSON response, the helper performs controlled esp-emu cleanup;
 the binary phase does not use `--exit-on` for arbitrary binary UART data. It

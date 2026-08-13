@@ -45,16 +45,20 @@ and text/binary resynchronization. Timeout retry, shared retry-budget,
 retry-exhaustion, and mismatched-NACK abort are implemented v1 semantics; they
 are not separately claimed as injected runtime cases here.
 
-This milestone is transport infrastructure for later application features; it
-does not implement SD/file transfer. Physical UART verification, microSD
-access, UART-based SD transfer, input integration, and later emulator commands
+The File Transfer Base is also completed and verified under esp-emu v0.39.0.
+It generalizes Binary Data Plane endpoints, adds final Host-to-Device ACK
+replay, and provides logical file operations through a neutral storage API and
+a bounded RAM backend. The integration check covers a 131,109-byte round trip,
+pagination, ranges, staged replacement/abort, zero-length files, UTF-8 names,
+and validation failures. Physical UART verification, microSD/FATFS access,
+UART transfer to real media, input integration, and later emulator commands
 remain incomplete Phase 1 work.
 
 ## Phase 1: Board function validation
 
 - UART/control infrastructure
 - microSD read/write
-- UART-based SD file transfer
+- UART-based SD file transfer (RAM-backed service base verified; real SD pending)
 - MIPI color bars
 - landscape display
 - touch coordinates

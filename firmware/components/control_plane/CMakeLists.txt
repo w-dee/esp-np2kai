@@ -5,7 +5,7 @@ idf_component_register(
         "control_protocol.cpp"
         "command_dispatcher.cpp"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES json binary_data_plane
+    PRIV_REQUIRES json binary_data_plane file_transfer
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)

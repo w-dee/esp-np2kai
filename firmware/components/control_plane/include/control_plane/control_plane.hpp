@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace binary_data_plane { struct TransferManager; }
+namespace file_transfer { struct Service; }
+
 namespace control_plane {
 
 inline constexpr std::size_t kMaxFrameBytes = 512;
@@ -20,6 +23,11 @@ struct Metadata {
     const char *firmware_version;
     const char *idf_version;
     const char *target;
+};
+
+struct ServiceContext {
+    binary_data_plane::TransferManager *binary = nullptr;
+    file_transfer::Service *file = nullptr;
 };
 
 struct ControlPlane {

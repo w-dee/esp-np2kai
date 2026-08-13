@@ -1,14 +1,14 @@
 # Firmware
 
 This directory contains the current minimal ESP32-P4 firmware application. It
-is a headless Hello World and UART Control Plane Base target with no
-board-specific code or peripherals. The current control/data-plane project
-components are `control_plane`, `binary_data_plane`, `control_stream`, and
-`uart_control_transport`. The normal `main` component and ESP-IDF-provided
+is a headless Hello World, UART Control Plane, Binary Data Plane, and
+RAM-backed File Transfer Base target with no board-specific code or
+peripherals. The project components also include `storage`, `storage_ram`, and
+`file_transfer`. The normal `main` component and ESP-IDF-provided
 dependencies are also part of the firmware project. No external third-party
 protocol dependency has been added. The Hello World, JSON UART Control Plane,
-and Binary Data Plane paths are verified under esp-emu v0.39.0 with ESP-IDF
-v5.5.4.
+Binary Data Plane, and File Transfer Base paths are verified under esp-emu
+v0.39.0 with ESP-IDF v5.5.4.
 
 The Binary Data Plane v1 integration test verifies deterministic 64 KiB
 transfers in both directions, per-frame and whole-transfer CRC, duplicate DATA
@@ -62,6 +62,15 @@ The verified Binary Data Plane integration check is
 [`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh).
 It runs the Control Plane regression first, then verifies the bounded COBS/CRC
 transport and deterministic 64 KiB test endpoints over esp-emu UART-TCP.
+
+The verified File Transfer Base check is
+[`tools/emu/test-file-transfer-base.sh`](../tools/emu/test-file-transfer-base.sh).
+It adds `file.stat`, `file.list`, `file.read.begin`, `file.write.begin`, and
+`file.transfer.status`, backed by a bounded in-memory hierarchy. The test
+performs a 131,109-byte upload/readback and verifies pagination, ranged reads,
+final-ACK replay, staged replacement/abort, zero-length files, and path bounds.
+The backend is test RAM only; microSD, FATFS, and physical UART remain future
+work.
 
 The eventual firmware should keep board-specific code outside the emulator
 core and retain a headless mode for emulator-core and integration tests.

@@ -15,6 +15,8 @@ inline constexpr std::size_t kMaxDecodedFrameBytes = kHeaderBytes + kMaxPayloadB
 inline constexpr std::size_t kMaxEncodedBodyBytes = 1061;
 inline constexpr std::size_t kMaxWireFrameBytes = 1064;
 inline constexpr std::uint64_t kTestTransferBytes = 65536;
+inline constexpr std::uint64_t kMaxTransferBytes =
+    static_cast<std::uint64_t>(0xffffffffu) * kMaxPayloadBytes;
 inline constexpr std::uint32_t kAckTimeoutMs = 1000;
 inline constexpr std::uint32_t kMaxRetransmissions = 3;
 inline constexpr std::uint32_t kReceiverTimeoutMs = 10000;
@@ -46,6 +48,19 @@ enum class ManagerError : std::uint8_t {
     InvalidParams,
 };
 
+enum class EndpointResult : std::uint8_t { Ok, Failed };
+
+enum class TerminalReason : std::uint8_t {
+    Completed,
+    ExplicitAbort,
+    ReceiverTimeout,
+    RetryExhausted,
+    ProtocolError,
+    OutputError,
+    EndpointIoError,
+    EndpointFinishError,
+};
+
 enum class NackReason : std::uint16_t {
     BadCrc = 1,
     BadSequence = 2,
@@ -62,6 +77,16 @@ struct OutputSink {
     bool (*write)(void *context, const std::uint8_t *data, std::size_t length);
 };
 
+struct TransferEndpoint {
+    void *context = nullptr;
+    EndpointResult (*begin)(void *, Direction, std::uint64_t) = nullptr;
+    EndpointResult (*consume)(void *, std::uint64_t, const std::uint8_t *, std::size_t) = nullptr;
+    EndpointResult (*produce)(void *, std::uint64_t, std::uint8_t *, std::size_t, std::size_t *) = nullptr;
+    EndpointResult (*finish)(void *) = nullptr;
+    void (*abort)(void *, TerminalReason) = nullptr;
+    void (*terminal)(void *, TerminalReason) = nullptr;
+};
+
 struct TransferInfo {
     std::uint32_t transfer_id = 0;
     Direction direction = Direction::HostToDevice;
@@ -76,6 +101,7 @@ struct TransferInfo {
 
 struct TransferManager {
     OutputSink output{};
+    TransferEndpoint endpoint{};
     std::uint32_t next_transfer_id = 1;
     bool active = false;
     Direction direction = Direction::HostToDevice;
@@ -109,6 +135,20 @@ struct TransferManager {
     std::uint32_t last_activity_ms = 0;
     bool terminal_valid = false;
     TransferInfo terminal{};
+    bool endpoint_started = false;
+    bool endpoint_finalized = false;
+    bool terminal_notified = false;
+
+    struct FinalAckReplay {
+        bool valid = false;
+        std::uint32_t transfer_id = 0;
+        std::uint32_t sequence = 0;
+        std::uint64_t offset = 0;
+        std::uint16_t payload_length = 0;
+        std::uint32_t wire_crc = 0;
+        std::uint32_t acknowledged_sequence = 0;
+        std::uint64_t acknowledged_offset = 0;
+    } final_ack_replay{};
 
     std::uint8_t decoded_frame[kMaxDecodedFrameBytes]{};
     std::uint8_t encoded_body[kMaxEncodedBodyBytes]{};
@@ -119,10 +159,18 @@ void init(TransferManager *manager, OutputSink output);
 
 ManagerError begin_rx(TransferManager *manager,
                       std::uint64_t size_bytes,
+                      TransferEndpoint endpoint,
                       TransferInfo *info);
 ManagerError begin_tx(TransferManager *manager,
                       std::uint64_t size_bytes,
+                      TransferEndpoint endpoint,
                       TransferInfo *info);
+ManagerError begin_test_rx(TransferManager *manager,
+                           std::uint64_t size_bytes,
+                           TransferInfo *info);
+ManagerError begin_test_tx(TransferManager *manager,
+                           std::uint64_t size_bytes,
+                           TransferInfo *info);
 ManagerError get_status(const TransferManager *manager,
                         std::uint32_t transfer_id,
                         TransferInfo *info);
