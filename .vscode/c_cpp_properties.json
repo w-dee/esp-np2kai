@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "ESP-IDF",
+            "compileCommands": "${workspaceFolder}/firmware/build/compile_commands.json",
+            "includePath": [
+                "${workspaceFolder}/firmware/build/config",
+                "${workspaceFolder}/firmware/components/control_plane",
+                "${workspaceFolder}/firmware/components/control_plane/include",
+                "${workspaceFolder}/firmware/components/uart_control_transport/include",
+                "${env:IDF_PATH}/components/**",
+                "${config:idf.espIdfPath}/components/**"
+            ],
+            "defines": [
+                "ESP_PLATFORM"
+            ],
+            "cppStandard": "gnu++20"
+        }
+    ],
+    "version": 4
+}
