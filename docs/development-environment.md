@@ -76,12 +76,31 @@ validates the framed responses, request IDs, malformed-input recovery, and
 successful emulator exit. This verifies the emulator path only; no equivalent
 physical-board test command is defined yet.
 
-The Binary Data Plane v1 implementation and its integration check are present
-but not yet verified. Run
-[`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh)
-only as the separate binary milestone under review; it exercises the bounded
-COBS/CRC path over esp-emu UART-TCP with deterministic 64 KiB transfers. This
-status must not be confused with the already verified JSON Control Plane.
+The verified Binary Data Plane v1 integration check is
+[`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh).
+It first runs `tools/emu/test-uart-control-plane.sh`, which preserves the Hello
+World regression, then reuses the merged image for a binary phase over
+esp-emu v0.39.0 UART-TCP. The UART-TCP bridge provides a byte-transparent
+bidirectional stream suitable for arbitrary NUL-containing data.
+
+The binary phase verifies deterministic 64 KiB transfers in both directions,
+per-frame and whole-transfer CRC, duplicate DATA idempotency, corrupted-frame
+and `BAD_CRC` recovery, host-generated NACK retransmission, and text/binary
+resynchronization after a false NUL delimiter. The source also implements
+timeout retransmission, a shared timeout/NACK retry budget, retry exhaustion
+abort, and mismatched-NACK abort as v1 semantics; these are not all separately
+injected runtime cases.
+
+The primary success evidence is protocol validation on the UART-TCP socket.
+After the final JSON response, the helper performs controlled esp-emu cleanup;
+the binary phase does not use `--exit-on` for arbitrary binary UART data. It
+preserves these artifacts:
+
+- `firmware/build/esp-emu-uart-binary-data-plane.log`
+- `firmware/build/esp-emu-uart-binary-data-plane.uart.bin`
+
+This verifies the emulator test bridge only. Physical P4-NANO-KIT-D, CH343P,
+and TAB5 UART transport, throughput, and timing remain unverified.
 
 The ESP-IDF v5.5.4 activation script is not safe under the test script's
 strict Bash options and may run an external `eim select` operation. The test

@@ -36,11 +36,19 @@ console-UART transport, and three read-only commands: `protocol.hello`,
 `system.ping`, and `system.info`. Physical-board UART validation and the
 remaining Phase 1 work are not complete.
 
-The Binary Data Plane v1 base is implemented but not yet verified. It adds a
-separate bounded COBS/CRC byte path, one stop-and-wait transfer manager, and a
-deterministic bidirectional 64 KiB emulator test. Its verification remains a
-separate milestone from the verified JSON Control Plane and from physical-board
-validation.
+The Binary Data Plane v1 base is completed and verified under ESP-IDF v5.5.4
+and esp-emu v0.39.0 for the ESP32-P4 emulator environment. It provides a
+bounded COBS/CRC byte path, one stop-and-wait transfer manager, and a
+deterministic bidirectional 64 KiB test. The integration test directly covers
+duplicate DATA handling, corrupted CRC recovery, NACK-driven retransmission,
+and text/binary resynchronization. Timeout retry, shared retry-budget,
+retry-exhaustion, and mismatched-NACK abort are implemented v1 semantics; they
+are not separately claimed as injected runtime cases here.
+
+This milestone is transport infrastructure for later application features; it
+does not implement SD/file transfer. Physical UART verification, microSD
+access, UART-based SD transfer, input integration, and later emulator commands
+remain incomplete Phase 1 work.
 
 ## Phase 1: Board function validation
 

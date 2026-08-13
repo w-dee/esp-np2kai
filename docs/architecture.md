@@ -209,9 +209,122 @@ dispatcher, and a separate configured-console-UART transport. The existing
 `ESP-NP2KAI HELLO WORLD OK` marker remains the Hello World milestone marker;
 `ESP-NP2KAI UART CONTROL READY` is the separate control-task readiness marker.
 
-The Binary Data Plane v1 implementation is present but not yet verified. It
-uses the neutral `control_stream` multiplexer, bounded COBS framing, explicit
-little-endian fields, CRC-32/ISO-HDLC, and a stop-and-wait transfer manager.
-JSON commands create, inspect, and abort the single test transfer; binary
-frames carry only the transfer payload and acknowledgements. The planned
-emulator check uses UART-TCP and deterministic bidirectional 64 KiB endpoints.
+## UART Binary Data Plane v1
+
+The Binary Data Plane v1 is verified under ESP-IDF v5.5.4 and esp-emu v0.39.0
+for the ESP32-P4 emulator environment. This verification covers the byte path
+over esp-emu UART-TCP; it does not verify physical P4-NANO-KIT-D, CH343P, or
+TAB5 UART transport, throughput, or timing.
+
+The responsibilities remain separate:
+
+```text
+UART RX -> control_stream
+              +-- text   -> control_plane
+              +-- binary -> binary_data_plane
+
+control_plane -- JSON lifecycle/test commands --> binary_data_plane
+
+JSON responses and binary frames -> common raw machine writer
+                                  -> uart_control_transport
+```
+
+`control_stream` owns the bounded TEXT/START_ZERO/BINARY_COLLECT/
+BINARY_DISCARD multiplexer. `binary_data_plane` owns portable framing, CRC,
+transfer identity, sequence/offset state, endpoint validation, and stop-and-
+wait behavior. `uart_control_transport` composes these components with the
+configured ESP-IDF console UART. The portable components do not contain board
+pin policy or ESP32-P4-specific protocol types.
+
+The binary envelope is exactly:
+
+```text
+00 00 COBS(decoded-frame) 00
+```
+
+The decoded Binary Data Plane v1 frame layout is:
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 2 | magic = `0x4e 0x42` (`NB`) |
+| 2 | 1 | Binary Data Plane version = 1 |
+| 3 | 1 | frame type |
+| 4 | 2 | flags |
+| 6 | 2 | header length = 28 |
+| 8 | 4 | transfer ID |
+| 12 | 4 | sequence |
+| 16 | 8 | absolute offset |
+| 24 | 2 | payload length |
+| 26 | 2 | status / NACK reason |
+| 28 | N | payload |
+| 28+N | 4 | CRC-32/ISO-HDLC |
+
+All multibyte fields are explicitly little-endian; native struct layout is not
+serialized. The fixed header is 28 bytes, the maximum DATA payload is 1024
+bytes, the maximum decoded frame is 1056 bytes, the maximum COBS body is 1061
+bytes, and the maximum complete wire frame is 1064 bytes. CRC covers the
+decoded header and payload and excludes the CRC field and COBS delimiters.
+Future incompatible field widths, offsets, or bounds require a new Binary Data
+Plane version rather than a silent v1 change.
+
+The v1 frame types are `DATA = 0x01`, `ACK = 0x02`, and `NACK = 0x03`. JSON
+remains responsible for lifecycle/control commands, which currently are:
+
+```text
+binary.test.rx.begin
+binary.test.tx.begin
+binary.transfer.status
+binary.transfer.abort
+```
+
+The advertised additive capability is `binary.data-plane.v1`. These commands
+and endpoints are deterministic transport tests, not SD, file, disk-image,
+ROM, guest-memory, guest-I/O, framebuffer, audio, or arbitrary application
+transfer APIs. v1 permits one active transfer total and uses stop-and-wait.
+Transfer IDs identify binary sessions and are independent of JSON request IDs.
+
+ACK advances the receiver's acknowledged sequence and offset. A matching NACK
+for the outstanding DATA frame causes immediate retransmission of that same
+frame without advancing transfer progress or reapplying its payload CRC.
+Timeout and NACK retries use one shared retransmission budget. A mismatched
+NACK sequence or offset aborts the active session as protocol desynchronization;
+it does not create a NACK loop, rewind, or arbitrary resume. Duplicate
+Host-to-ESP32 DATA is applied once and receives an idempotent ACK.
+
+The integration test directly verifies deterministic 64 KiB transfers in both
+directions, exact bytes, per-frame and whole-transfer CRC, Host-to-ESP32
+duplicate DATA, corrupted CRC and `BAD_CRC` recovery, host-generated
+Device-to-Host NACK retransmission of an identical DATA frame, and false-NUL
+delimiter recovery followed by a successful JSON `system.ping`. Timeout retry,
+shared retry-budget exhaustion, and mismatched-NACK abort are implemented v1
+semantics established by the source, but are not claimed as separately
+injected runtime cases by this test.
+
+Machine-readable JSON and binary frames use the raw UART driver path so
+stdout/VFS newline conversion cannot change arbitrary binary bytes. Normal
+human-readable logging remains on stdout/VFS. The common machine writer holds
+the stdout FILE lock while flushing pending stdout data and issuing the raw
+UART write, preventing interleaving with normal stdout writers that participate
+in the same FILE locking discipline:
+
+```text
+machine JSON/binary frame
+        |
+        v
+flockfile(stdout)
+        |
+        v
+fflush(stdout)
+        |
+        v
+raw uart_write_bytes()
+        |
+        v
+funlockfile(stdout)
+```
+
+This is not an absolute serialization guarantee against direct UART writes
+outside the common machine writer, ROM output, panic/constrained-environment
+output, or other paths that bypass normal stdout FILE locking. Future
+project-owned machine-readable output should use the common machine writer
+rather than introducing an independent raw UART path.

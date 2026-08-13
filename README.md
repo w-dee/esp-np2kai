@@ -8,12 +8,12 @@ portability target, not a current implementation target.
 
 ## Status
 
-Very early bring-up. A minimal headless ESP-IDF Hello World firmware and the
-UART Control Plane Base have been implemented and verified under `esp-emu`
-v0.39.0 with ESP-IDF v5.5.4. The automated checks build the firmware, create
-the merged image, boot it under the emulator, and validate the Hello World and
-UART Control Plane paths. No NP2 or NP2kai source code has been imported, and
-no physical hardware has been validated.
+Very early bring-up. A minimal headless ESP-IDF Hello World firmware, the UART
+Control Plane Base, and Binary Data Plane v1 have been implemented and
+verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The automated checks
+build the firmware, create the merged image, boot it under the emulator, and
+validate these milestones independently. No NP2 or NP2kai source code has been
+imported, and no physical hardware has been validated.
 
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
@@ -28,10 +28,12 @@ framing, the separate `ESP-NP2KAI UART CONTROL READY` marker, and the initial
 read-only commands `protocol.hello`, `system.ping`, and `system.info`.
 Physical P4-NANO and TAB5 UART paths remain unverified.
 
-The Binary Data Plane v1 and its bidirectional UART-TCP integration test are
-implemented but not yet verified. The binary path is intentionally separate
-from the verified JSON Control Plane and uses bounded COBS/CRC framing with a
-deterministic 64 KiB test endpoint.
+The Binary Data Plane v1 is verified under the ESP32-P4 `esp-emu` UART-TCP
+environment. Its integration test transfers deterministic 64 KiB payloads in
+both directions and checks CRC, duplicate handling, NACK retransmission,
+corrupted-frame recovery, and text/binary resynchronization. This verifies the
+emulator byte path only; physical P4-NANO, CH343P, and TAB5 UART paths remain
+unverified.
 
 ## Development model
 
@@ -55,9 +57,18 @@ The project does not use a PlatformIO-installed ESP-IDF environment.
 New firmware C++ is explicitly compiled as GNU C++20. C++ exceptions and RTTI
 are disabled, and the firmware does not use `iostream`.
 
-The verified emulator bring-up can be exercised with
-[`tools/emu/test-hello-world.sh`](tools/emu/test-hello-world.sh). The script is
-bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this milestone.
+The three verified emulator checks retain separate scopes:
+
+- [`tools/emu/test-hello-world.sh`](tools/emu/test-hello-world.sh) verifies
+  basic ESP-IDF build, merge, boot, and the Hello World marker.
+- [`tools/emu/test-uart-control-plane.sh`](tools/emu/test-uart-control-plane.sh)
+  runs the Hello World regression and verifies the bounded JSON control path.
+- [`tools/emu/test-uart-binary-data-plane.sh`](tools/emu/test-uart-binary-data-plane.sh)
+  runs the Control Plane regression and verifies bidirectional binary transport
+  over esp-emu UART-TCP.
+
+All three checks are bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this
+milestone.
 
 ## Validation stages
 

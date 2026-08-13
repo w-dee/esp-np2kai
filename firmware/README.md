@@ -2,15 +2,19 @@
 
 This directory contains the current minimal ESP32-P4 firmware application. It
 is a headless Hello World and UART Control Plane Base target with no
-board-specific code or peripherals. The firmware contains the
-`control_plane` and `uart_control_transport` components and uses only
-ESP-IDF-provided JSON, UART, VFS, and FreeRTOS functionality; no external
-third-party component dependency has been added. The Hello World and UART
-Control Plane paths are verified under esp-emu v0.39.0 with ESP-IDF v5.5.4.
+board-specific code or peripherals. The current control/data-plane project
+components are `control_plane`, `binary_data_plane`, `control_stream`, and
+`uart_control_transport`. The normal `main` component and ESP-IDF-provided
+dependencies are also part of the firmware project. No external third-party
+protocol dependency has been added. The Hello World, JSON UART Control Plane,
+and Binary Data Plane paths are verified under esp-emu v0.39.0 with ESP-IDF
+v5.5.4.
 
-The Binary Data Plane v1 and its bidirectional UART-TCP integration test are
-implemented but not yet verified under esp-emu. Its transfer test remains
-separate from the verified JSON Control Plane path.
+The Binary Data Plane v1 integration test verifies deterministic 64 KiB
+transfers in both directions, per-frame and whole-transfer CRC, duplicate DATA
+idempotency, host-generated NACK retransmission, corrupted-frame recovery, and
+text/binary stream resynchronization over esp-emu UART-TCP. These are emulator
+results; physical P4-NANO-KIT-D, CH343P, and TAB5 UART paths remain unverified.
 
 The entry point prints the stable UART marker:
 
@@ -54,10 +58,10 @@ merged image, waits for the control readiness marker, injects malformed JSON
 and the three initial read-only requests, and validates the responses and
 parser recovery.
 
-The Binary Data Plane integration check is
+The verified Binary Data Plane integration check is
 [`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh).
-It is implemented for the COBS/CRC transfer protocol and deterministic 64 KiB
-test endpoints, but its emulator execution has not yet been verified.
+It runs the Control Plane regression first, then verifies the bounded COBS/CRC
+transport and deterministic 64 KiB test endpoints over esp-emu UART-TCP.
 
 The eventual firmware should keep board-specific code outside the emulator
 core and retain a headless mode for emulator-core and integration tests.
