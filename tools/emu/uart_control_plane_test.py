@@ -50,12 +50,12 @@ def main() -> int:
     if not args.firmware.is_file():
         raise AssertionError(f"firmware image not found: {args.firmware}")
 
-    malformed = '@ESP-NP2 {"v":1,"id":100,"cmd":'
+    malformed = '{"v":1,"id":100,"cmd":'
     injected_lines = [
         malformed,
         request(101, "protocol.hello"),
-        request(102, "system.ping"),
         request(103, "system.info"),
+        request(102, "system.ping"),
     ]
     # esp-emu's --inject option accepts escaped newline sequences. Keep the
     # payload as one argument so no shell parsing is involved.
@@ -72,7 +72,7 @@ def main() -> int:
         "--inject",
         injected_payload,
         "--exit-on",
-        '@ESP-NP2 {"type":"response","v":1,"id":103,"ok":true,"result":{"project":"',
+        '@ESP-NP2 {"type":"response","v":1,"id":102,"ok":true,"result":{"pong":true}}',
         "--timeout",
         "15s",
         "--log-color",

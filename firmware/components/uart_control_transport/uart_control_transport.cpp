@@ -22,14 +22,14 @@ control_plane::ControlPlane s_control_plane;
 control_plane::Metadata s_metadata{};
 bool s_started = false;
 
-bool write_uart(void *, const char *data, std::size_t length)
+bool write_console(void *, const char *data, std::size_t length)
 {
-    return uart_write_bytes(kConsoleUart, data, length) == static_cast<int>(length);
+    return std::fwrite(data, 1, length, stdout) == length && std::fflush(stdout) == 0;
 }
 
 void control_task(void *)
 {
-    const control_plane::OutputSink sink{nullptr, write_uart};
+    const control_plane::OutputSink sink{nullptr, write_console};
     control_plane::init(&s_control_plane, sink, s_metadata);
 
     std::printf("ESP-NP2KAI UART CONTROL READY\n");
