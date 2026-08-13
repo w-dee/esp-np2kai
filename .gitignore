@@ -37,3 +37,6 @@ venv/
 
 # eim configuration which may contain secrets
 eim_config.toml
+
+# temporary document files
+docs/work/
