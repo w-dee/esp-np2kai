@@ -97,7 +97,8 @@ It runs the complete preceding regression chain, then uses the merged image for
 a RAM-backed file phase over UART-TCP. That phase verifies pagination under an
 explicit response budget, a 131,109-byte upload and exact readback, terminal
 RX ACK replay, whole-transfer CRC, ranges, abort-safe staged replacement,
-zero-length behavior, UTF-8 names, and bounded path/storage errors.
+zero-length behavior, UTF-8 names, single-component listing-cursor rejection,
+and bounded path/storage errors.
 
 Its additional artifacts are:
 

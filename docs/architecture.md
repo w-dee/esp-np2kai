@@ -329,9 +329,11 @@ The JSON commands are `file.stat`, `file.list`, `file.read.begin`,
 `file.write.begin`, and `file.transfer.status`. Paths are absolute UTF-8 logical
 paths rooted at `/`; traversal, repeated separators, controls, backslashes,
 oversized paths/components, and malformed UTF-8 are rejected. Listing uses an
-unsigned UTF-8 byte-order name cursor, a count limit of 1..16, and a 768-byte
-response budget. Nonempty reads/writes use Binary Data Plane bytes; zero-length
-operations complete synchronously without a transfer ID.
+unsigned UTF-8 byte-order name cursor that must be one valid component; `/`,
+`\`, controls, DEL, `.`, and `..` are not valid inside that cursor. Listing
+also has a count limit of 1..16 and a 768-byte response budget. Nonempty
+reads/writes use Binary Data Plane bytes; zero-length operations complete
+synchronously without a transfer ID.
 
 Only the RAM backend and esp-emu UART-TCP path are verified. A future FATFS or
 microSD backend should implement the same `storage` contract; real media and
