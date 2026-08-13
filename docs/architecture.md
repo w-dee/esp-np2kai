@@ -196,5 +196,15 @@ transport abstraction
    +-- future network transport
 ```
 
-These features are documented here only and are not implemented in the
-initial repository setup.
+The future guest/emulator commands listed above are documented here only and
+are not implemented in the initial repository setup. The UART Control Plane
+Base provides the first neutral transport/protocol/dispatcher path and is
+verified under `esp-emu` v0.39.0 for the ESP32-P4 emulator environment. Its
+protocol is independent of the configured console UART and of any
+ESP32-P4-specific API. This emulator verification does not validate physical
+P4-NANO or TAB5 UART paths.
+
+The skeleton uses a bounded `@ESP-NP2 ` JSON-lines frame, a central command
+dispatcher, and a separate configured-console-UART transport. The existing
+`ESP-NP2KAI HELLO WORLD OK` marker remains the Hello World milestone marker;
+`ESP-NP2KAI UART CONTROL READY` is the separate control-task readiness marker.
