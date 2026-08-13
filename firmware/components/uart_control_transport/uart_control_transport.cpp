@@ -1,0 +1,98 @@
+#include "uart_control_transport/uart_control_transport.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+
+#include "control_plane/control_plane.hpp"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+namespace {
+
+constexpr int kRxBufferSize = 2048;
+constexpr std::size_t kReadChunkSize = 64;
+constexpr std::size_t kControlTaskStackSize = 6144;
+constexpr UBaseType_t kControlTaskPriority = tskIDLE_PRIORITY + 2;
+constexpr uart_port_t kConsoleUart = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
+
+control_plane::ControlPlane s_control_plane;
+control_plane::Metadata s_metadata{};
+bool s_started = false;
+
+bool write_uart(void *, const char *data, std::size_t length)
+{
+    return uart_write_bytes(kConsoleUart, data, length) == static_cast<int>(length);
+}
+
+void control_task(void *)
+{
+    const control_plane::OutputSink sink{nullptr, write_uart};
+    control_plane::init(&s_control_plane, sink, s_metadata);
+
+    std::printf("ESP-NP2KAI UART CONTROL READY\n");
+    std::fflush(stdout);
+
+    std::uint8_t read_buffer[kReadChunkSize];
+    while (true) {
+        const int bytes_read = uart_read_bytes(kConsoleUart,
+                                               read_buffer,
+                                               sizeof(read_buffer),
+                                               pdMS_TO_TICKS(100));
+        if (bytes_read > 0) {
+            control_plane::feed(&s_control_plane,
+                                read_buffer,
+                                static_cast<std::size_t>(bytes_read));
+        }
+    }
+}
+
+} // namespace
+
+extern "C" esp_err_t uart_control_transport_start(const uart_control_metadata_t *metadata)
+{
+    if (metadata == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_started) {
+        return ESP_OK;
+    }
+
+    s_metadata = control_plane::Metadata{
+        metadata->project,
+        metadata->firmware_version,
+        metadata->idf_version,
+        metadata->target,
+    };
+
+    if (!uart_is_driver_installed(kConsoleUart)) {
+        const esp_err_t install_result = uart_driver_install(kConsoleUart,
+                                                              kRxBufferSize,
+                                                              0,
+                                                              0,
+                                                              nullptr,
+                                                              0);
+        if (install_result != ESP_OK) {
+            return install_result;
+        }
+    }
+
+    // Respect ESP-IDF's configured UART number, pins, and baud rate. This only
+    // switches the existing console VFS to the installed driver.
+    uart_vfs_dev_use_driver(kConsoleUart);
+
+    const BaseType_t task_result = xTaskCreate(control_task,
+                                               "uart_control",
+                                               kControlTaskStackSize,
+                                               nullptr,
+                                               kControlTaskPriority,
+                                               nullptr);
+    if (task_result != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_started = true;
+    return ESP_OK;
+}

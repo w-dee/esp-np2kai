@@ -25,7 +25,8 @@ software.
 
 The minimal headless Hello World application exists under `firmware/` and has
 been built and executed successfully under ESP-IDF v5.5.4 and esp-emu v0.39.0.
-No component dependencies have been added.
+The UART Control Plane Base uses only ESP-IDF-provided `json` and UART
+components; no external component dependency has been added.
 
 The firmware targets `esp32p4` through `firmware/sdkconfig.defaults`. New
 firmware C++ is explicitly compiled as GNU C++20 in the `main` component.
@@ -64,6 +65,13 @@ checks both ESP-IDF v5.5.4 and esp-emu v0.39.0 before building. It must not
 routinely call `idf.py set-target`; a target change is an explicit setup
 operation because that command regenerates configuration and clears the build
 directory.
+
+The UART Control Plane Base skeleton is implemented but not yet verified. Its
+planned integration check is
+[`tools/emu/test-uart-control-plane.sh`](../tools/emu/test-uart-control-plane.sh).
+That check preserves the existing Hello World regression and then uses
+esp-emu v0.39.0's UART injection trigger to test the separate
+`ESP-NP2KAI UART CONTROL READY` marker and the framed command responses.
 
 The ESP-IDF v5.5.4 activation script is not safe under the test script's
 strict Bash options and may run an external `eim select` operation. The test

@@ -26,6 +26,12 @@ firmware tree and configuration do not build for ESP32-S31; future S31 work
 would require a separate SoC implementation below the portable emulator and
 host interfaces.
 
+The UART Control Plane Base skeleton is implemented but not yet verified. It
+uses the configured ESP-IDF console UART without changing its number, pins, or
+baud rate, and provides the separate readiness marker
+`ESP-NP2KAI UART CONTROL READY`. The initial read-only commands are
+`protocol.hello`, `system.ping`, and `system.info`.
+
 The build-and-emulation check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
 build the firmware, create a merged image, boot it under esp-emu, detect

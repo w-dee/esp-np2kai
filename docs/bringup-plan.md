@@ -29,6 +29,11 @@ should nevertheless leave room for a future Espressif SoC implementation
 without requiring P4-specific assumptions to be removed from the emulator
 core.
 
+The UART Control Plane Base skeleton is implemented but not yet verified. It
+is the first Phase 1 control-infrastructure step and currently contains only
+the neutral protocol, bounded parser, UART transport, and three read-only
+commands: `protocol.hello`, `system.ping`, and `system.info`.
+
 ## Phase 1: Board function validation
 
 - UART/control infrastructure

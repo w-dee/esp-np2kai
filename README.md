@@ -22,6 +22,11 @@ TAB5 revision compatibility remains unverified.
 The currently verified executable milestone is ESP32-P4-only. S31 Korvo-1 is
 not implemented, tested, or validated.
 
+The UART Control Plane Base skeleton is implemented but not yet verified. It
+adds a framed, line-oriented JSON protocol with `protocol.hello`,
+`system.ping`, and `system.info`; its esp-emu round-trip test is planned but
+has not yet passed.
+
 ## Development model
 
 The emulator core will remain portable and separate from Espressif-common,
