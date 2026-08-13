@@ -270,10 +270,6 @@ class Emulator:
         finally:
             reservation.close()
 
-        final_ping = FRAME_PREFIX + json.dumps(
-            {"type": "response", "v": 1, "id": 900, "ok": True, "result": {"pong": True}},
-            separators=(",", ":"),
-        ) + "\n"
         command = [
             self.args.esp_emu,
             "--chip",
@@ -282,8 +278,6 @@ class Emulator:
             str(self.args.firmware),
             "--uart-tcp",
             f"127.0.0.1:{self.port}",
-            "--exit-on",
-            final_ping,
             "--timeout",
             "60s",
             "--log-color",
