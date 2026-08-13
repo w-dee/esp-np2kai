@@ -28,6 +28,11 @@ framing, the separate `ESP-NP2KAI UART CONTROL READY` marker, and the initial
 read-only commands `protocol.hello`, `system.ping`, and `system.info`.
 Physical P4-NANO and TAB5 UART paths remain unverified.
 
+The Binary Data Plane v1 and its bidirectional UART-TCP integration test are
+implemented but not yet verified. The binary path is intentionally separate
+from the verified JSON Control Plane and uses bounded COBS/CRC framing with a
+deterministic 64 KiB test endpoint.
+
 ## Development model
 
 The emulator core will remain portable and separate from Espressif-common,

@@ -36,6 +36,12 @@ console-UART transport, and three read-only commands: `protocol.hello`,
 `system.ping`, and `system.info`. Physical-board UART validation and the
 remaining Phase 1 work are not complete.
 
+The Binary Data Plane v1 base is implemented but not yet verified. It adds a
+separate bounded COBS/CRC byte path, one stop-and-wait transfer manager, and a
+deterministic bidirectional 64 KiB emulator test. Its verification remains a
+separate milestone from the verified JSON Control Plane and from physical-board
+validation.
+
 ## Phase 1: Board function validation
 
 - UART/control infrastructure

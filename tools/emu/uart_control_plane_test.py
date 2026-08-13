@@ -14,7 +14,12 @@ import sys
 SUCCESS_MARKER = "ESP-NP2KAI HELLO WORLD OK"
 READY_MARKER = "ESP-NP2KAI UART CONTROL READY"
 FRAME_PREFIX = "@ESP-NP2 "
-EXPECTED_CAPABILITIES = ["protocol.hello", "system.ping", "system.info"]
+EXPECTED_CAPABILITIES = [
+    "protocol.hello",
+    "system.ping",
+    "system.info",
+    "binary.data-plane.v1",
+]
 
 
 def parse_args() -> argparse.Namespace:

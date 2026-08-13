@@ -8,6 +8,10 @@ ESP-IDF-provided JSON, UART, VFS, and FreeRTOS functionality; no external
 third-party component dependency has been added. The Hello World and UART
 Control Plane paths are verified under esp-emu v0.39.0 with ESP-IDF v5.5.4.
 
+The Binary Data Plane v1 and its bidirectional UART-TCP integration test are
+implemented but not yet verified under esp-emu. Its transfer test remains
+separate from the verified JSON Control Plane path.
+
 The entry point prints the stable UART marker:
 
 ```text
@@ -49,6 +53,11 @@ It runs the Hello World regression, starts a second esp-emu instance using the
 merged image, waits for the control readiness marker, injects malformed JSON
 and the three initial read-only requests, and validates the responses and
 parser recovery.
+
+The Binary Data Plane integration check is
+[`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh).
+It is implemented for the COBS/CRC transfer protocol and deterministic 64 KiB
+test endpoints, but its emulator execution has not yet been verified.
 
 The eventual firmware should keep board-specific code outside the emulator
 core and retain a headless mode for emulator-core and integration tests.

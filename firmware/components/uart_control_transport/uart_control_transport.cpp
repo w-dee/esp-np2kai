@@ -4,9 +4,12 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "binary_data_plane/binary_data_plane.hpp"
 #include "control_plane/control_plane.hpp"
+#include "control_stream/control_stream.hpp"
 #include "driver/uart.h"
 #include "driver/uart_vfs.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -19,18 +22,41 @@ constexpr UBaseType_t kControlTaskPriority = tskIDLE_PRIORITY + 2;
 constexpr uart_port_t kConsoleUart = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
 
 control_plane::ControlPlane s_control_plane;
+binary_data_plane::TransferManager s_binary_manager;
+control_stream::ControlStream s_control_stream;
 control_plane::Metadata s_metadata{};
 bool s_started = false;
 
-bool write_console(void *, const char *data, std::size_t length)
+bool write_machine(void *, const std::uint8_t *data, std::size_t length)
 {
-    return std::fwrite(data, 1, length, stdout) == length && std::fflush(stdout) == 0;
+    bool success = false;
+    flockfile(stdout);
+    if (std::fflush(stdout) == 0) {
+        success = uart_write_bytes(kConsoleUart, data, length) == static_cast<int>(length);
+    }
+    funlockfile(stdout);
+    return success;
+}
+
+bool write_control(void *context, const char *data, std::size_t length)
+{
+    return write_machine(context,
+                         reinterpret_cast<const std::uint8_t *>(data),
+                         length);
 }
 
 void control_task(void *)
 {
-    const control_plane::OutputSink sink{nullptr, write_console};
-    control_plane::init(&s_control_plane, sink, s_metadata);
+    const binary_data_plane::OutputSink binary_sink{nullptr, write_machine};
+    binary_data_plane::init(&s_binary_manager, binary_sink);
+    const control_plane::OutputSink control_sink{nullptr, write_control};
+    control_plane::init(&s_control_plane,
+                        control_sink,
+                        s_metadata,
+                        &s_binary_manager);
+    control_stream::init(&s_control_stream,
+                         &s_control_plane,
+                         &s_binary_manager);
 
     std::printf("ESP-NP2KAI UART CONTROL READY\n");
     std::fflush(stdout);
@@ -42,9 +68,16 @@ void control_task(void *)
                                                sizeof(read_buffer),
                                                pdMS_TO_TICKS(100));
         if (bytes_read > 0) {
-            control_plane::feed(&s_control_plane,
-                                read_buffer,
-                                static_cast<std::size_t>(bytes_read));
+            const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
+            control_stream::feed(&s_control_stream,
+                                 read_buffer,
+                                 static_cast<std::size_t>(bytes_read),
+                                 now_ms);
+            binary_data_plane::poll(&s_binary_manager, now_ms);
+        } else {
+            binary_data_plane::poll(
+                &s_binary_manager,
+                static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
         }
     }
 }

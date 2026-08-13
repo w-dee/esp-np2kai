@@ -14,6 +14,7 @@ struct Request {
     std::string_view command;
     const cJSON *params;
     const Metadata *metadata;
+    void *context;
 };
 
 struct Result {

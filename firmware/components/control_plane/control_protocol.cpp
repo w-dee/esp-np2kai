@@ -176,6 +176,7 @@ void handle_frame(ControlPlane *control, framing::Frame frame)
         std::string_view(command->valuestring),
         params,
         &control->metadata,
+        control->context,
     };
     const dispatcher::Result result = dispatcher::dispatch(request);
     if (result.ok) {

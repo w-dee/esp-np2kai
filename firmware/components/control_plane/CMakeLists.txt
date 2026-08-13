@@ -5,7 +5,7 @@ idf_component_register(
         "control_protocol.cpp"
         "command_dispatcher.cpp"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES json
+    PRIV_REQUIRES json binary_data_plane
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)

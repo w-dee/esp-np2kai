@@ -208,3 +208,10 @@ The skeleton uses a bounded `@ESP-NP2 ` JSON-lines frame, a central command
 dispatcher, and a separate configured-console-UART transport. The existing
 `ESP-NP2KAI HELLO WORLD OK` marker remains the Hello World milestone marker;
 `ESP-NP2KAI UART CONTROL READY` is the separate control-task readiness marker.
+
+The Binary Data Plane v1 implementation is present but not yet verified. It
+uses the neutral `control_stream` multiplexer, bounded COBS framing, explicit
+little-endian fields, CRC-32/ISO-HDLC, and a stop-and-wait transfer manager.
+JSON commands create, inspect, and abort the single test transfer; binary
+frames carry only the transfer payload and acknowledgements. The planned
+emulator check uses UART-TCP and deterministic bidirectional 64 KiB endpoints.

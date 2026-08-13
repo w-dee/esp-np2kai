@@ -25,13 +25,19 @@ struct Metadata {
 struct ControlPlane {
     OutputSink output{};
     Metadata metadata{};
+    void *context = nullptr;
     char frame[kFrameStorageBytes]{};
     std::size_t frame_length = 0;
     bool discarding = false;
     bool prefix_candidate = true;
 };
 
-void init(ControlPlane *control, OutputSink output, Metadata metadata);
+void init(ControlPlane *control,
+          OutputSink output,
+          Metadata metadata,
+          void *context = nullptr);
+
+void reset_input(ControlPlane *control);
 
 void feed(ControlPlane *control, const std::uint8_t *data, std::size_t length);
 

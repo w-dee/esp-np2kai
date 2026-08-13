@@ -76,6 +76,13 @@ validates the framed responses, request IDs, malformed-input recovery, and
 successful emulator exit. This verifies the emulator path only; no equivalent
 physical-board test command is defined yet.
 
+The Binary Data Plane v1 implementation and its integration check are present
+but not yet verified. Run
+[`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh)
+only as the separate binary milestone under review; it exercises the bounded
+COBS/CRC path over esp-emu UART-TCP with deterministic 64 KiB transfers. This
+status must not be confused with the already verified JSON Control Plane.
+
 The ESP-IDF v5.5.4 activation script is not safe under the test script's
 strict Bash options and may run an external `eim select` operation. The test
 script temporarily relaxes `-e` and `-u`, presents the expected sourced Bash

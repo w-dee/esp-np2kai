@@ -5,13 +5,25 @@
 
 namespace control_plane {
 
-void init(ControlPlane *control, OutputSink output, Metadata metadata)
+void init(ControlPlane *control,
+          OutputSink output,
+          Metadata metadata,
+          void *context)
 {
     if (control == nullptr) {
         return;
     }
     control->output = output;
     control->metadata = metadata;
+    control->context = context;
+    reset_input(control);
+}
+
+void reset_input(ControlPlane *control)
+{
+    if (control == nullptr) {
+        return;
+    }
     control->frame_length = 0;
     control->discarding = false;
     control->prefix_candidate = true;
