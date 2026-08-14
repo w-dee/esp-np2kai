@@ -96,10 +96,13 @@ optional FM/MAME sound generators, optional Cirrus/TGUI graphics backends, and
 ROM or disk-image assets are outside this boundary. The exact machine-readable
 exclusion list is maintained in the manifest rather than duplicated here.
 
-The baseline retains `src/fdd/sxsicd.h` because the declaration/include closure
-requires it, while `src/fdd/sxsicd.c` is excluded because CD-ROM/IDE
-implementation is outside the Step 3 baseline. This does not establish CD-ROM
-or IDE runtime support.
+Optional implementation domains are excluded where they are not required by
+the Step 3 baseline. Exact file membership is authoritative in the manifest;
+Step 4 compiler/linker evidence may show that the candidate source set needs to
+change. Any such change requires an explicit allowlist update, provenance and
+license-evidence review, deterministic regeneration, verification, and human
+review. This source-set policy does not establish optional device runtime
+support.
 
 Host contracts and adapters remain outside the vendor tree. Compile, link,
 startup, CPU execution, display, audio, storage, and input integration are

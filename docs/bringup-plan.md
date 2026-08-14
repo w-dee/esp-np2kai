@@ -58,10 +58,11 @@ remain future work after the headless core milestones.
 ## Steps 1-3: Completed foundations and core import
 
 The Binary Data Plane documentation and implementation, the File Transfer Base
-with virtual/RAM-backed storage, and the pinned NP2/NP2kai candidate core import
+with virtual/RAM-backed storage, and the pinned NP2kai candidate core import
 are complete. The NP2kai import is a source-inspection-based candidate source
 set with snapshot integrity verification; it is not yet compile/link/run
-validated.
+validated. The project may follow NP2/NP2kai lineage, but the Step 3 vendored
+source is NP2kai only.
 
 ## Step 4: Ubuntu-native headless minimum core
 
