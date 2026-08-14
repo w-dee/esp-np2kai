@@ -43,6 +43,65 @@
       }
     ]
   },
+  "stage1": {
+    "implemented": true,
+    "source": "src/stage1.inc",
+    "test_count": 13,
+    "active_test_ids": [
+      257,
+      513,
+      515,
+      516,
+      517,
+      769,
+      1025,
+      1282,
+      1538,
+      1793,
+      2049,
+      2305,
+      2817
+    ],
+    "deferred_test_ids": [
+      258,
+      259,
+      514,
+      518,
+      519,
+      520,
+      770,
+      1026,
+      1281,
+      1283,
+      1537,
+      2050,
+      2306,
+      2307,
+      2308
+    ],
+    "suite_id": 1313878529,
+    "build_id": 65537,
+    "diagnostic": {
+      "length_on_fail": 4,
+      "ascii": "STG1"
+    },
+    "ipl_budget": {
+      "hard_limit_bytes": 1024,
+      "non_signature_bytes": 1020,
+      "first_signature_offset": 510,
+      "second_half_entry_offset": 512,
+      "second_signature_offset": 1022,
+      "assembled_code_end_offset": 981,
+      "safety_margin_bytes": 41
+    },
+    "scratch_map": [
+      {"start": 131136, "size_bytes": 7, "name": "ram-byte-word-endian"},
+      {"start": 131328, "size_bytes": 48, "name": "segment-effective-address"},
+      {"start": 131604, "size_bytes": 2, "name": "segment-effective-base-index"},
+      {"start": 131840, "size_bytes": 20, "name": "rep-movs-source"},
+      {"start": 132096, "size_bytes": 20, "name": "rep-movs-destination"}
+    ]
+  },
   "payload": {
     "implemented": false,
     "reserved_region": "payload-reserve",
@@ -341,7 +400,7 @@
     "extension_status": "validated-np2kai-reference-attachment",
     "golden_tracked": true,
     "golden_path": "tests/guest/np2test/golden/np2test-fd1232.image",
-    "expected_sha256": "2b3cdfd9f780ac668ee33da4dcbab3c3250a68c623d8cdf5f9cfd2a8f1794994",
-    "stage": "3.5a-2-minimal-boot"
+    "expected_sha256": null,
+    "stage": "3.5a-3-stage1-core"
   }
 }

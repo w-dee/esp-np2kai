@@ -43,6 +43,8 @@ permits it:
 - `tests/guest/np2test/memory-map.md`
 - `tests/guest/np2test/src/ipl.asm`
 - `tests/guest/np2test/src/result.inc`
+- `tests/guest/np2test/src/stage1.inc`
+- `tests/guest/np2test/src/test_ids.inc`
 - `tests/guest/np2test/golden/np2test-fd1232.image`
 - `tests/guest/np2test/golden/SHA256SUMS`
 - `tools/guest/build_np2test.py`

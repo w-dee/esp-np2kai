@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Standard-library tests for the NP2TEST Stage 0 tools."""
+"""Standard-library tests for the NP2TEST Stage 1 tools."""
 
 from __future__ import annotations
 
@@ -39,9 +39,11 @@ class NP2TestFoundationTests(unittest.TestCase):
         path = self.work / "layout.json"
         path.write_text(json.dumps(layout), encoding="utf-8")
         source_dir = path.parent / "src"
-        source_dir.mkdir()
+        source_dir.mkdir(exist_ok=True)
         shutil.copy2(LAYOUT_PATH.parent / "src/ipl.asm", source_dir / "ipl.asm")
         shutil.copy2(LAYOUT_PATH.parent / "src/result.inc", source_dir / "result.inc")
+        shutil.copy2(LAYOUT_PATH.parent / "src/stage1.inc", source_dir / "stage1.inc")
+        shutil.copy2(LAYOUT_PATH.parent / "src/test_ids.inc", source_dir / "test_ids.inc")
         return path
 
     def test_build_is_deterministic_and_verifies(self) -> None:
@@ -63,16 +65,62 @@ class NP2TestFoundationTests(unittest.TestCase):
         self.assertEqual(manifest["toolchain"]["assembler"]["version"], "2.16.01")
         self.assertEqual(manifest["toolchain"]["python"]["version_major"], 3)
         self.assertEqual(manifest["toolchain"]["python"]["version_minor"], 12)
-        self.assertEqual(manifest["stage"], "3.5a-2-minimal-boot")
+        self.assertEqual(manifest["stage"], "3.5a-3-stage1-core")
         self.assertEqual(manifest["ipl_sha256"], hashlib.sha256(data[:1024]).hexdigest())
+        self.assertEqual(manifest["stage1"]["test_count"], 13)
+        self.assertEqual(manifest["stage1"]["assembled_code_end_offset"], 981)
 
-    def test_stage0_artifact_tracks_neutral_golden(self) -> None:
+    def test_stage1_artifact_tracks_neutral_golden(self) -> None:
         layout = build_np2test.load_layout(LAYOUT_PATH)
         self.assertTrue(layout["ipl"]["implemented"])
         self.assertEqual(layout["ipl"]["source"], "src/ipl.asm")
         self.assertTrue(layout["artifact"]["golden_tracked"])
         self.assertEqual(layout["artifact"]["golden_path"], "tests/guest/np2test/golden/np2test-fd1232.image")
-        self.assertEqual(layout["artifact"]["stage"], "3.5a-2-minimal-boot")
+        self.assertEqual(layout["artifact"]["stage"], "3.5a-3-stage1-core")
+
+    def test_stage1_metadata_and_stable_ids(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        stage1 = layout["stage1"]
+        self.assertTrue(stage1["implemented"])
+        self.assertEqual(stage1["test_count"], 13)
+        self.assertEqual(tuple(stage1["active_test_ids"]), build_np2test.EXPECTED_STAGE1_ACTIVE_IDS)
+        self.assertEqual(tuple(stage1["deferred_test_ids"]), build_np2test.EXPECTED_STAGE1_DEFERRED_IDS)
+        self.assertNotIn(0xFFFF, stage1["active_test_ids"])
+        self.assertTrue(set(stage1["active_test_ids"]).isdisjoint(stage1["deferred_test_ids"]))
+        self.assertEqual(stage1["suite_id"], 0x4E503201)
+        self.assertEqual(stage1["build_id"], 0x00010001)
+        self.assertEqual(stage1["diagnostic"]["ascii"], "STG1")
+        self.assertEqual(tuple((item["start"], item["size_bytes"], item["name"]) for item in stage1["scratch_map"]),
+                         build_np2test.EXPECTED_STAGE1_SCRATCH_MAP)
+        self.assertEqual(stage1["ipl_budget"]["assembled_code_end_offset"], 981)
+
+    def test_stage1_metadata_rejects_duplicate_or_sentinel_id(self) -> None:
+        duplicate = self.copy_layout(lambda value: value["stage1"]["active_test_ids"].__setitem__(1, value["stage1"]["active_test_ids"][0]))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(duplicate)
+        sentinel = self.copy_layout(lambda value: value["stage1"]["deferred_test_ids"].__setitem__(0, 0xFFFF))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(sentinel)
+
+    def test_stage1_metadata_rejects_source_id_mismatch(self) -> None:
+        layout = self.copy_layout(lambda value: value["stage1"]["active_test_ids"].__setitem__(0, 0x0102))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.build(layout, self.work / "mismatch.image")
+
+    def test_stage1_metadata_rejects_unreviewed_id(self) -> None:
+        layout = self.copy_layout(lambda value: value["stage1"]["deferred_test_ids"].__setitem__(0, 0x0c01))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(layout)
+
+    def test_stage1_source_rejects_result_constant_drift(self) -> None:
+        layout = self.copy_layout()
+        result_source = layout.parent / "src/result.inc"
+        result_source.write_text(result_source.read_text(encoding="utf-8").replace(
+            "%define STAGE1_TOTAL_COUNT          13",
+            "%define STAGE1_TOTAL_COUNT          12",
+        ), encoding="utf-8")
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.build(layout, self.work / "constant-drift.image")
 
     def test_wrong_geometry_is_rejected(self) -> None:
         layout = self.copy_layout(lambda value: value["image"]["geometry"].update(heads=1))
@@ -176,15 +224,15 @@ class NP2TestFoundationTests(unittest.TestCase):
         with self.assertRaises(verify_np2test.VerificationError):
             verify_np2test.verify(layout, output)
 
-    def test_corrupted_ipl_is_rejected_by_golden_sha(self) -> None:
+    def test_corrupted_ipl_is_rejected_by_candidate_sha(self) -> None:
         layout = self.copy_layout()
         output = self.work / "corrupt-ipl.image"
-        build_np2test.build(layout, output)
+        digest = build_np2test.build(layout, output)
         image = bytearray(output.read_bytes())
         image[0x20] ^= 1
         output.write_bytes(image)
         with self.assertRaises(verify_np2test.VerificationError):
-            verify_np2test.verify(layout, output)
+            verify_np2test.verify(layout, output, expected_sha256=digest)
 
     def test_wrong_image_size_is_rejected(self) -> None:
         layout = self.copy_layout()

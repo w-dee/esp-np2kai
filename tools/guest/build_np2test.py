@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Build and structurally validate the deterministic NP2TEST Stage 0 image."""
+"""Build and structurally validate the deterministic NP2TEST Stage 1 image."""
 
 from __future__ import annotations
 
@@ -27,6 +27,31 @@ EXPECTED_NASM = "2.16.01"
 EXPECTED_PYTHON = (3, 12)
 EXPECTED_SIZE = 1_261_568
 EXPECTED_RESULT_SIZE = 128
+EXPECTED_STAGE1_COUNT = 13
+EXPECTED_STAGE1_ACTIVE_IDS = (
+    0x0101, 0x0201, 0x0203, 0x0204, 0x0205, 0x0301, 0x0401,
+    0x0502, 0x0602, 0x0701, 0x0801, 0x0901, 0x0B01,
+)
+EXPECTED_STAGE1_DEFERRED_IDS = (
+    0x0102, 0x0103, 0x0202, 0x0206, 0x0207, 0x0208, 0x0302,
+    0x0402, 0x0501, 0x0503, 0x0601, 0x0802, 0x0902, 0x0903, 0x0904,
+)
+EXPECTED_STAGE1_SCRATCH_MAP = (
+    (0x20040, 7, "ram-byte-word-endian"),
+    (0x20100, 48, "segment-effective-address"),
+    (0x20214, 2, "segment-effective-base-index"),
+    (0x20300, 20, "rep-movs-source"),
+    (0x20400, 20, "rep-movs-destination"),
+)
+EXPECTED_STAGE1_SUITE_ID = 0x4E503201
+EXPECTED_STAGE1_BUILD_ID = 0x00010001
+EXPECTED_STAGE1_CODE_END = 981
+EXPECTED_STAGE1_SOURCE = "src/stage1.inc"
+EXPECTED_STAGE1_DIAGNOSTIC = "STG1"
+EXPECTED_STAGE1_HARD_LIMIT = 1024
+EXPECTED_STAGE1_ACTIVE_ID_MAX = 0xFFFF
+EXPECTED_STAGE1_SAFETY_MARGIN = EXPECTED_STAGE1_HARD_LIMIT - EXPECTED_STAGE1_CODE_END - 2
+EXPECTED_STAGE1_STAGE = "3.5a-3-stage1-core"
 SIGNATURE = bytes.fromhex("55aa")
 SELECTED_EXTENSION_STATUS = "validated-np2kai-reference-attachment"
 EXPECTED_EXTENSION = ".hdm"
@@ -74,6 +99,8 @@ EXPECTED_LIVE_POLLING = {
     "stop_before_timeout_diagnostics": True,
     "final_states_immutable": ["PASS", "FAIL"],
 }
+TEST_DEFINE_RE = re.compile(r"^\s*%define\s+(TEST_[A-Z0-9_]+)\s+(0x[0-9a-fA-F]+)\s*(?:;.*)?$")
+DEFINE_RE = re.compile(r"^\s*%define\s+([A-Z][A-Z0-9_]*)\s+(0x[0-9a-fA-F]+|[0-9]+)\s*(?:;.*)?$", re.MULTILINE)
 
 
 class LayoutError(ValueError):
@@ -277,6 +304,144 @@ def _validate_result(root: dict[str, Any], owned_regions: dict[str, dict[str, in
         raise LayoutError("result future-extension rules are invalid")
 
 
+def _validate_stage1(root: dict[str, Any]) -> dict[str, Any]:
+    stage1 = _mapping(root.get("stage1"), "stage1")
+    if stage1.get("implemented") is not True or stage1.get("source") != EXPECTED_STAGE1_SOURCE:
+        raise LayoutError("stage1 must be implemented from src/stage1.inc")
+    if _integer(stage1.get("test_count"), "stage1.test_count") != EXPECTED_STAGE1_COUNT:
+        raise LayoutError(f"stage1.test_count must be {EXPECTED_STAGE1_COUNT}")
+
+    active = stage1.get("active_test_ids")
+    deferred = stage1.get("deferred_test_ids")
+    if not isinstance(active, list) or len(active) != EXPECTED_STAGE1_COUNT:
+        raise LayoutError("stage1.active_test_ids must contain exactly 13 IDs")
+    if not isinstance(deferred, list):
+        raise LayoutError("stage1.deferred_test_ids must be a list")
+
+    def validate_ids(values: list[Any], name: str) -> list[int]:
+        normalized: list[int] = []
+        for index, value in enumerate(values):
+            number = _integer(value, f"stage1.{name}[{index}]")
+            if number < 0 or number > EXPECTED_STAGE1_ACTIVE_ID_MAX or number == 0xFFFF:
+                raise LayoutError(f"stage1.{name}[{index}] must be a u16 test ID other than 0xffff")
+            normalized.append(number)
+        if len(set(normalized)) != len(normalized):
+            raise LayoutError(f"stage1.{name} must contain unique IDs")
+        return normalized
+
+    active_ids = validate_ids(active, "active_test_ids")
+    deferred_ids = validate_ids(deferred, "deferred_test_ids")
+    if tuple(active_ids) != EXPECTED_STAGE1_ACTIVE_IDS:
+        raise LayoutError("stage1.active_test_ids do not match the reviewed Stage 1 active set")
+    if tuple(deferred_ids) != EXPECTED_STAGE1_DEFERRED_IDS:
+        raise LayoutError("stage1.deferred_test_ids do not match the reviewed deferred set")
+    if set(active_ids) & set(deferred_ids):
+        raise LayoutError("stage1 active and deferred ID lists must be disjoint")
+
+    if _integer(stage1.get("suite_id"), "stage1.suite_id") != EXPECTED_STAGE1_SUITE_ID:
+        raise LayoutError("stage1.suite_id does not match the reviewed numeric identifier")
+    if _integer(stage1.get("build_id"), "stage1.build_id") != EXPECTED_STAGE1_BUILD_ID:
+        raise LayoutError("stage1.build_id does not match the reviewed fixture revision")
+
+    diagnostic = _mapping(stage1.get("diagnostic"), "stage1.diagnostic")
+    if _integer(diagnostic.get("length_on_fail"), "stage1.diagnostic.length_on_fail") != 4 or diagnostic.get("ascii") != EXPECTED_STAGE1_DIAGNOSTIC:
+        raise LayoutError("stage1 diagnostic must be the four-byte ASCII STG1 marker")
+
+    budget = _mapping(stage1.get("ipl_budget"), "stage1.ipl_budget")
+    expected_budget = {
+        "hard_limit_bytes": EXPECTED_STAGE1_HARD_LIMIT,
+        "non_signature_bytes": 1020,
+        "first_signature_offset": 510,
+        "second_half_entry_offset": 512,
+        "second_signature_offset": 1022,
+        "assembled_code_end_offset": EXPECTED_STAGE1_CODE_END,
+        "safety_margin_bytes": EXPECTED_STAGE1_SAFETY_MARGIN,
+    }
+    if budget != expected_budget:
+        raise LayoutError("stage1.ipl_budget does not match the reviewed measured layout")
+
+    scratch = stage1.get("scratch_map")
+    if not isinstance(scratch, list):
+        raise LayoutError("stage1.scratch_map must be a list")
+    scratch_ranges: list[tuple[int, int, str]] = []
+    for index, item in enumerate(scratch):
+        item_object = _mapping(item, f"stage1.scratch_map[{index}]")
+        name = item_object.get("name")
+        if not isinstance(name, str) or not name:
+            raise LayoutError(f"stage1.scratch_map[{index}].name must be a non-empty string")
+        start, size = _validate_range(item_object.get("start"), item_object.get("size_bytes"),
+                                      f"stage1.scratch_map[{index}]", 0x28000)
+        if start < 0x20000 or start + size > 0x28000:
+            raise LayoutError(f"stage1.scratch_map[{index}] must remain inside payload reserve")
+        scratch_ranges.append((start, size, name))
+    _validate_non_overlapping(scratch_ranges, "stage1.scratch_map")
+    if tuple(scratch_ranges) != EXPECTED_STAGE1_SCRATCH_MAP:
+        raise LayoutError("stage1.scratch_map does not match the reviewed owned-RAM map")
+    return stage1
+
+
+def _validate_stage1_source(ipl_source_path: Path, result_source_path: Path, ids_source_path: Path,
+                            stage1_source_path: Path, stage1: dict[str, Any]) -> None:
+    try:
+        source = ipl_source_path.read_text(encoding="utf-8")
+        result_source = result_source_path.read_text(encoding="utf-8")
+        ids_source = ids_source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LayoutError(f"cannot read Stage 1 source files: {exc}") from exc
+    if not stage1_source_path.is_file():
+        raise LayoutError(f"Stage 1 implementation source does not exist: {stage1_source_path}")
+    if re.search(r"^\s*bits\s+16\s*$", source, re.MULTILINE) is None or re.search(r"^\s*cpu\s+8086\s*$", source, re.MULTILINE) is None:
+        raise LayoutError("Stage 1 source must declare bits 16 and cpu 8086")
+    if re.search(r"^\s*cpu\s+(?:186|286|386|486|586|686|v30)\b", source, re.IGNORECASE | re.MULTILINE):
+        raise LayoutError("Stage 1 source must not select a newer CPU or V30 instruction set")
+    if re.search(r'^\s*%include\s+"stage1\.inc"\s*$', source, re.MULTILINE) is None:
+        raise LayoutError("IPL source must include the Stage 1 implementation")
+    if re.search(r'^\s*%include\s+"test_ids\.inc"\s*$', source, re.MULTILINE) is None:
+        raise LayoutError("IPL source must include the Stage 1 test ID source")
+
+    defines = {match.group(1): int(match.group(2), 0) for match in DEFINE_RE.finditer(result_source)}
+    expected_defines = {
+        "RESULT_SEG": 0x2900,
+        "RESULT_SIZE": EXPECTED_RESULT_SIZE,
+        "RESULT_CHECKSUM_END": 120,
+        "RESULT_CHECKSUM_OFFSET": 120,
+        "RESULT_STATE_OFFSET": 124,
+        "RESULT_SUITE_ID": EXPECTED_STAGE1_SUITE_ID,
+        "RESULT_BUILD_ID": EXPECTED_STAGE1_BUILD_ID,
+        "STAGE1_TOTAL_COUNT": EXPECTED_STAGE1_COUNT,
+        "STACK_SEG": 0x2800,
+        "STACK_TOP": 0x1000,
+    }
+    for name, expected in expected_defines.items():
+        if defines.get(name) != expected:
+            raise LayoutError(f"Stage 1 result constant {name} must be {expected:#x}")
+
+    parsed: list[int] = []
+    for line in ids_source.splitlines():
+        match = TEST_DEFINE_RE.match(line)
+        if match is None or match.group(1) == "TEST_NONE":
+            continue
+        parsed.append(int(match.group(2), 16))
+    if len(parsed) != len(set(parsed)):
+        raise LayoutError("Stage 1 source contains duplicate test ID declarations")
+    if parsed != stage1["active_test_ids"]:
+        raise LayoutError("Stage 1 source test IDs must exactly match layout active_test_ids in declaration order")
+
+
+def _validate_stage1_image(ipl: bytes, stage1: dict[str, Any]) -> None:
+    non_signature = [
+        offset for offset, byte in enumerate(ipl)
+        if byte and offset not in (510, 511, 1022, 1023)
+    ]
+    if not non_signature:
+        raise LayoutError("Stage 1 IPL contains no executable/data bytes")
+    code_end = max(non_signature) + 1
+    if code_end != stage1["ipl_budget"]["assembled_code_end_offset"]:
+        raise LayoutError(f"assembled Stage 1 code end is {code_end}, expected {EXPECTED_STAGE1_CODE_END}")
+    if code_end > 1022:
+        raise LayoutError("Stage 1 executable/data placement crosses the second signature")
+
+
 def validate_layout(layout: Any) -> dict[str, Any]:
     root = _mapping(layout, "layout")
     if root.get("schema_version") != 1 or root.get("name") != "np2test":
@@ -306,9 +471,9 @@ def validate_layout(layout: Any) -> dict[str, Any]:
 
     ipl = _mapping(root.get("ipl"), "ipl")
     if ipl.get("implemented") is not True or ipl.get("reserved_region") != "ipl":
-        raise LayoutError("Stage 0 IPL must be implemented and use the declared IPL region")
+        raise LayoutError("Stage 1 IPL must be implemented and use the declared IPL region")
     if ipl.get("source") != "src/ipl.asm" or _integer(ipl.get("binary_size"), "ipl.binary_size") != 1024:
-        raise LayoutError("Stage 0 IPL source and binary size must be fixed to src/ipl.asm and 1024 bytes")
+        raise LayoutError("Stage 1 IPL source and binary size must be fixed to src/ipl.asm and 1024 bytes")
     if _integer(ipl.get("sector_offset"), "ipl.sector_offset") != 0 or _integer(ipl.get("sector_bytes"), "ipl.sector_bytes") != 1024:
         raise LayoutError("ipl must start at sector offset zero with 1024-byte sectors")
     if _integer(ipl.get("load_physical"), "ipl.load_physical") != 0x1FC00:
@@ -331,6 +496,7 @@ def validate_layout(layout: Any) -> dict[str, Any]:
         raise LayoutError("payload must remain unimplemented with no placements")
     owned_regions = _validate_memory(root)
     _validate_result(root, owned_regions)
+    _validate_stage1(root)
 
     toolchain = _mapping(root.get("toolchain"), "toolchain")
     assembler = _mapping(toolchain.get("assembler"), "toolchain.assembler")
@@ -351,9 +517,9 @@ def validate_layout(layout: Any) -> dict[str, Any]:
     if artifact.get("extension_status") != SELECTED_EXTENSION_STATUS:
         raise LayoutError("artifact extension status must record the validated NP2kai attachment")
     if artifact.get("golden_tracked") is not True or artifact.get("golden_path") != "tests/guest/np2test/golden/np2test-fd1232.image":
-        raise LayoutError("Stage 0 artifact must track the neutral golden image")
-    if artifact.get("stage") != "3.5a-2-minimal-boot":
-        raise LayoutError("artifact stage must be 3.5a-2-minimal-boot")
+        raise LayoutError("Stage 1 artifact must track the neutral golden image")
+    if artifact.get("stage") != EXPECTED_STAGE1_STAGE:
+        raise LayoutError(f"artifact stage must be {EXPECTED_STAGE1_STAGE}")
     expected_sha256 = artifact.get("expected_sha256")
     if expected_sha256 is not None and (not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise LayoutError("artifact.expected_sha256 must be lowercase SHA-256 or null while being generated")
@@ -402,7 +568,7 @@ def check_python(expected: tuple[int, int] = EXPECTED_PYTHON) -> dict[str, Any]:
 
 
 def assemble_ipl(source_path: Path, output_path: Path) -> bytes:
-    """Assemble the fixed 1,024-byte Stage 0 IPL with NASM."""
+    """Assemble the fixed 1,024-byte Stage 1 IPL with NASM."""
 
     executable = shutil.which("nasm")
     if executable is None:
@@ -435,9 +601,14 @@ def build(layout_path: Path, output_path: Path, sha256_path: Path | None = None,
     source_path = layout_path.parent / layout["ipl"]["source"]
     if not source_path.is_file():
         raise LayoutError(f"IPL source does not exist: {source_path}")
+    stage1 = _validate_stage1(layout)
+    _validate_stage1_source(source_path, layout_path.parent / "src/result.inc",
+                            layout_path.parent / "src/test_ids.inc",
+                            layout_path.parent / layout["stage1"]["source"], stage1)
     with tempfile.TemporaryDirectory(prefix="np2test-ipl-") as tempdir:
         ipl_path = Path(tempdir) / "ipl.bin"
         ipl = assemble_ipl(source_path, ipl_path)
+    _validate_stage1_image(ipl, stage1)
 
     image = bytearray(layout["image"]["size_bytes"])
     image[: len(ipl)] = ipl
@@ -467,8 +638,16 @@ def build(layout_path: Path, output_path: Path, sha256_path: Path | None = None,
             "assembler": {"command": "nasm", "version": nasm_version},
             "python": python_version,
         },
-        "stage": "3.5a-2-minimal-boot",
+        "stage": EXPECTED_STAGE1_STAGE,
         "ipl_sha256": hashlib.sha256(ipl).hexdigest(),
+        "stage1": {
+            "test_count": stage1["test_count"],
+            "active_test_ids": stage1["active_test_ids"],
+            "deferred_test_ids": stage1["deferred_test_ids"],
+            "suite_id": stage1["suite_id"],
+            "build_id": stage1["build_id"],
+            "assembled_code_end_offset": stage1["ipl_budget"]["assembled_code_end_offset"],
+        },
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")

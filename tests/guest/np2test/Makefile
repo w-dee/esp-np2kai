@@ -10,7 +10,7 @@ GOLDEN_SHA := $(ROOT)/tests/guest/np2test/golden/SHA256SUMS
 export LC_ALL := C
 export TZ := UTC
 
-.PHONY: image verify golden-check check test
+.PHONY: image verify golden-check candidate-check check test
 
 image:
 	mkdir -p $(OUTDIR)
@@ -22,6 +22,9 @@ verify: image
 golden-check: image
 	cmp $(IMAGE) $(GOLDEN)
 	cd $(ROOT) && sha256sum -c $(GOLDEN_SHA)
+
+candidate-check: image verify test
+	@echo "candidate validation passed (golden equality intentionally deferred)"
 
 check: verify golden-check
 

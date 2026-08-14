@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Validate an NP2TEST Stage 0 image and its optional digest file."""
+"""Validate an NP2TEST Stage 1 image and its optional digest file."""
 
 from __future__ import annotations
 
