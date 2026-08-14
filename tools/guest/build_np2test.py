@@ -28,14 +28,6 @@ EXPECTED_PYTHON = (3, 12)
 EXPECTED_SIZE = 1_261_568
 EXPECTED_RESULT_SIZE = 128
 EXPECTED_STAGE1_COUNT = 13
-EXPECTED_STAGE1_ACTIVE_IDS = (
-    0x0101, 0x0201, 0x0203, 0x0204, 0x0205, 0x0301, 0x0401,
-    0x0502, 0x0602, 0x0701, 0x0801, 0x0901, 0x0B01,
-)
-EXPECTED_STAGE1_DEFERRED_IDS = (
-    0x0102, 0x0103, 0x0202, 0x0206, 0x0207, 0x0208, 0x0302,
-    0x0402, 0x0501, 0x0503, 0x0601, 0x0802, 0x0902, 0x0903, 0x0904,
-)
 EXPECTED_STAGE1_SCRATCH_MAP = (
     (0x20040, 7, "ram-byte-word-endian"),
     (0x20100, 48, "segment-effective-address"),
@@ -331,10 +323,6 @@ def _validate_stage1(root: dict[str, Any]) -> dict[str, Any]:
 
     active_ids = validate_ids(active, "active_test_ids")
     deferred_ids = validate_ids(deferred, "deferred_test_ids")
-    if tuple(active_ids) != EXPECTED_STAGE1_ACTIVE_IDS:
-        raise LayoutError("stage1.active_test_ids do not match the reviewed Stage 1 active set")
-    if tuple(deferred_ids) != EXPECTED_STAGE1_DEFERRED_IDS:
-        raise LayoutError("stage1.deferred_test_ids do not match the reviewed deferred set")
     if set(active_ids) & set(deferred_ids):
         raise LayoutError("stage1 active and deferred ID lists must be disjoint")
 

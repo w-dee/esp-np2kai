@@ -86,3 +86,44 @@ candidate checks. `.hdm` is selected because it is the explicit NP2kai raw
 were not modified. The `.fdd` alias was not used for the selection because the
 bounded candidate run did not produce terminal-state evidence; this records no
 incompatibility claim. This validation does not exercise the ESP32 firmware.
+
+## Pinned SDL NP2kai runtime evidence (Stage 1)
+
+Stage 1 was run against the same pinned SDL NP2kai lineage reference used by
+Stage 0:
+
+| Item | Recorded value |
+| --- | --- |
+| Upstream commit | `e2dc9046aa5c786fcfbfb87e883457e421026e31` |
+| Candidate image | raw `.hdm`, FD1232 geometry |
+| Candidate SHA-256 | `3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3` |
+| Result block | `mem[0x29000..0x2907f]` |
+
+The candidate image was attached from a temporary path. SDL video and audio
+used dummy drivers, with temporary `HOME` and `XDG_CONFIG_HOME`. No proprietary
+ROM, operating system, or user disk image was supplied; the reference's
+internal/simulated BIOS fallback was used. This is lineage-reference evidence
+only, not ESP32-P4 validation.
+
+GDB observed the result-v1 state transitions:
+
+```text
+0xff -> 0x00  (reference BIOS/reset initialization and IPL clear)
+0x00 -> 0x01  (RUNNING)
+0x01 -> 0x02  (PASS)
+```
+
+The terminal result-v1 block reported:
+
+| Field | Observed value |
+| --- | --- |
+| total / completed / passed / failed | `13 / 13 / 13 / 0` |
+| first failed ID | `0xffff` |
+| diagnostic length | `0` |
+| state | `PASS (2)` |
+| stored CRC-32/ISO-HDLC | `0x58f5b827` |
+| computed CRC-32/ISO-HDLC over `[0x00,0x78)` | `0x58f5b827` |
+
+Reserved result-v1 bytes were zero. A second terminal dump was not performed
+in this Stage 1 run, so terminal immutability is not claimed here. The valid
+CRC and PASS result cover the 13 active tests in the candidate image.

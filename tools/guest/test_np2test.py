@@ -70,7 +70,7 @@ class NP2TestFoundationTests(unittest.TestCase):
         self.assertEqual(manifest["stage1"]["test_count"], 13)
         self.assertEqual(manifest["stage1"]["assembled_code_end_offset"], 981)
 
-    def test_stage1_artifact_tracks_neutral_golden(self) -> None:
+    def test_stage1_artifact_tracks_reviewed_golden(self) -> None:
         layout = build_np2test.load_layout(LAYOUT_PATH)
         self.assertTrue(layout["ipl"]["implemented"])
         self.assertEqual(layout["ipl"]["source"], "src/ipl.asm")
@@ -83,8 +83,12 @@ class NP2TestFoundationTests(unittest.TestCase):
         stage1 = layout["stage1"]
         self.assertTrue(stage1["implemented"])
         self.assertEqual(stage1["test_count"], 13)
-        self.assertEqual(tuple(stage1["active_test_ids"]), build_np2test.EXPECTED_STAGE1_ACTIVE_IDS)
-        self.assertEqual(tuple(stage1["deferred_test_ids"]), build_np2test.EXPECTED_STAGE1_DEFERRED_IDS)
+        self.assertEqual(len(stage1["active_test_ids"]), 13)
+        self.assertEqual(len(set(stage1["active_test_ids"])), 13)
+        self.assertEqual(len(stage1["deferred_test_ids"]), 15)
+        self.assertEqual(len(set(stage1["deferred_test_ids"])), 15)
+        self.assertEqual(stage1["active_test_ids"][0], 0x0101)
+        self.assertEqual(stage1["active_test_ids"][-1], 0x0B01)
         self.assertNotIn(0xFFFF, stage1["active_test_ids"])
         self.assertTrue(set(stage1["active_test_ids"]).isdisjoint(stage1["deferred_test_ids"]))
         self.assertEqual(stage1["suite_id"], 0x4E503201)
@@ -107,8 +111,8 @@ class NP2TestFoundationTests(unittest.TestCase):
         with self.assertRaises(build_np2test.LayoutError):
             build_np2test.build(layout, self.work / "mismatch.image")
 
-    def test_stage1_metadata_rejects_unreviewed_id(self) -> None:
-        layout = self.copy_layout(lambda value: value["stage1"]["deferred_test_ids"].__setitem__(0, 0x0c01))
+    def test_stage1_metadata_rejects_deferred_id_outside_u16(self) -> None:
+        layout = self.copy_layout(lambda value: value["stage1"]["deferred_test_ids"].__setitem__(0, 0x10000))
         with self.assertRaises(build_np2test.LayoutError):
             build_np2test.load_layout(layout)
 

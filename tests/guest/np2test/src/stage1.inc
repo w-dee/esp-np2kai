@@ -1,8 +1,6 @@
 ; SPDX-License-Identifier: BSD-2-Clause
 ; NP2TEST Step 3.5a-3: deterministic 8086 CPU and conventional-RAM tests.
 
-%include "test_ids.inc"
-
 ; The IPL includes this file at its entry point. Skip over shared helpers and
 ; enter the first active test explicitly.
     jmp stage1_test_add_word

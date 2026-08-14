@@ -400,7 +400,7 @@
     "extension_status": "validated-np2kai-reference-attachment",
     "golden_tracked": true,
     "golden_path": "tests/guest/np2test/golden/np2test-fd1232.image",
-    "expected_sha256": null,
+    "expected_sha256": "3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3",
     "stage": "3.5a-3-stage1-core"
   }
 }

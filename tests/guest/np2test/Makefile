@@ -24,7 +24,7 @@ golden-check: image
 	cd $(ROOT) && sha256sum -c $(GOLDEN_SHA)
 
 candidate-check: image verify test
-	@echo "candidate validation passed (golden equality intentionally deferred)"
+	@echo "candidate validation passed"
 
 check: verify golden-check
 
