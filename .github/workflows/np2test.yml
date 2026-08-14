@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: BSD-2-Clause
+
+name: NP2TEST fixture CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  np2test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Provision NASM
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nasm=2.16.01-1build1
+
+      - name: Verify toolchain
+        run: |
+          python3 --version
+          python3 - <<'PY'
+          import platform
+          import sys
+
+          if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 12):
+              raise SystemExit(f"expected CPython 3.12, got {platform.python_implementation()} {sys.version}")
+          PY
+          nasm -v
+          test "$(nasm -v)" = "NASM version 2.16.01"
+
+      - name: Run NP2TEST CI
+        env:
+          LC_ALL: C
+          TZ: UTC
+        run: make -C tests/guest/np2test ci-check

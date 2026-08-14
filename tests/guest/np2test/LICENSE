@@ -1,0 +1,61 @@
+BSD 2-Clause License
+
+Copyright (c) 2026 esp-np2kai contributors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+This license applies to the separately identified NP2TEST component under this
+directory, including its original source, layout, builder metadata, and
+generated golden image when one is added. It does not select a license for the
+rest of the esp-np2kai repository.
+
+## Auditable scope map
+
+The following existing project-owned files are also part of this separately
+licensed NP2TEST component and carry the SPDX identifier where their syntax
+permits it:
+
+- `tests/guest/README.md`
+- `tests/guest/protocol/result-v1.md`
+- `.github/workflows/np2test.yml`
+- `tests/guest/np2test/Makefile`
+- `tests/guest/np2test/layout.json`
+- `tests/guest/np2test/reference-validation.md`
+- `tests/guest/np2test/memory-map.md`
+- `tests/guest/np2test/src/ipl.asm`
+- `tests/guest/np2test/src/result.inc`
+- `tests/guest/np2test/src/stage1.inc`
+- `tests/guest/np2test/src/test_ids.inc`
+- `tests/guest/np2test/golden/np2test-fd1232.image`
+- `tests/guest/np2test/golden/SHA256SUMS`
+- `tools/guest/build_np2test.py`
+- `tools/guest/verify_np2test.py`
+- `tools/guest/test_np2test.py`
+- `tools/guest/check_np2test_reproducibility.py`
+- `tools/guest/check_np2test_worktree.py`
+
+This is an explicit path list, not a license grant for all of `tests/guest/`
+or `tools/guest/`. In particular, future `tests/guest/freedos98/` and
+`tests/guest/elks/` trees, fetched upstream source, overlays, and third-party
+material are outside this BSD-2-Clause scope and retain their own provenance
+and licenses.
