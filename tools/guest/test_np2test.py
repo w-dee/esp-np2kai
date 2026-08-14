@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Standard-library tests for the NP2TEST foundation tools."""
+"""Standard-library tests for the NP2TEST Stage 0 tools."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 import unittest
@@ -37,6 +38,10 @@ class NP2TestFoundationTests(unittest.TestCase):
             mutate(layout)
         path = self.work / "layout.json"
         path.write_text(json.dumps(layout), encoding="utf-8")
+        source_dir = path.parent / "src"
+        source_dir.mkdir()
+        shutil.copy2(LAYOUT_PATH.parent / "src/ipl.asm", source_dir / "ipl.asm")
+        shutil.copy2(LAYOUT_PATH.parent / "src/result.inc", source_dir / "result.inc")
         return path
 
     def test_build_is_deterministic_and_verifies(self) -> None:
@@ -52,11 +57,22 @@ class NP2TestFoundationTests(unittest.TestCase):
         data = output_a.read_bytes()
         self.assertEqual(data[510:512], b"\x55\xaa")
         self.assertEqual(data[1022:1024], b"\x55\xaa")
-        self.assertEqual(sum(byte != 0 for byte in data), 4)
+        self.assertGreater(sum(byte != 0 for byte in data[:1024]), 4)
+        self.assertEqual(data[1024:], b"\0" * (len(data) - 1024))
         manifest = json.loads(output_a.with_name("a.image.manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["toolchain"]["assembler"]["version"], "2.16.01")
         self.assertEqual(manifest["toolchain"]["python"]["version_major"], 3)
         self.assertEqual(manifest["toolchain"]["python"]["version_minor"], 12)
+        self.assertEqual(manifest["stage"], "3.5a-2-minimal-boot")
+        self.assertEqual(manifest["ipl_sha256"], hashlib.sha256(data[:1024]).hexdigest())
+
+    def test_stage0_artifact_tracks_neutral_golden(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        self.assertTrue(layout["ipl"]["implemented"])
+        self.assertEqual(layout["ipl"]["source"], "src/ipl.asm")
+        self.assertTrue(layout["artifact"]["golden_tracked"])
+        self.assertEqual(layout["artifact"]["golden_path"], "tests/guest/np2test/golden/np2test-fd1232.image")
+        self.assertEqual(layout["artifact"]["stage"], "3.5a-2-minimal-boot")
 
     def test_wrong_geometry_is_rejected(self) -> None:
         layout = self.copy_layout(lambda value: value["image"]["geometry"].update(heads=1))
@@ -155,7 +171,17 @@ class NP2TestFoundationTests(unittest.TestCase):
         output = self.work / "corrupt.image"
         build_np2test.build(layout, output)
         image = bytearray(output.read_bytes())
-        image[0x100] = 1
+        image[0x400] = 1
+        output.write_bytes(image)
+        with self.assertRaises(verify_np2test.VerificationError):
+            verify_np2test.verify(layout, output)
+
+    def test_corrupted_ipl_is_rejected_by_golden_sha(self) -> None:
+        layout = self.copy_layout()
+        output = self.work / "corrupt-ipl.image"
+        build_np2test.build(layout, output)
+        image = bytearray(output.read_bytes())
+        image[0x20] ^= 1
         output.write_bytes(image)
         with self.assertRaises(verify_np2test.VerificationError):
             verify_np2test.verify(layout, output)

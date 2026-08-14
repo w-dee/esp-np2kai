@@ -21,7 +21,9 @@
     "d88_required": false
   },
   "ipl": {
-    "implemented": false,
+    "implemented": true,
+    "source": "src/ipl.asm",
+    "binary_size": 1024,
     "sector_offset": 0,
     "sector_bytes": 1024,
     "load_physical": 130048,
@@ -337,6 +339,9 @@
   },
   "artifact": {
     "extension_status": "pending-np2kai-reference-attachment-validation",
-    "golden_tracked": false
+    "golden_tracked": true,
+    "golden_path": "tests/guest/np2test/golden/np2test-fd1232.image",
+    "expected_sha256": "2b3cdfd9f780ac668ee33da4dcbab3c3250a68c623d8cdf5f9cfd2a8f1794994",
+    "stage": "3.5a-2-minimal-boot"
   }
 }

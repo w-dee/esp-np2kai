@@ -16,10 +16,16 @@ disk contract and provides a deterministic, filesystem-less image artifact.
 - 1024 bytes per sector
 - 1,261,568 bytes total
 
-The image is currently an empty, zero-filled artifact with the two PC-98 boot
-signatures described by the layout.  It does not contain executable IPL bytes,
-test code, or a golden image yet.  Those require a separate review of the
-assembly layout, memory map, and the result block placement.
+The Stage 0 image contains a deterministic 1,024-byte 8086 IPL at the first
+sector.  It initializes the reviewed stack and result-v1 block, publishes
+`RUNNING`, records one passing smoke test, publishes terminal `PASS`, and then
+halts.  The remaining disk bytes are reserved and zero-filled; payload tests
+are intentionally not part of this milestone.
+
+The neutral raw artifact is tracked as a golden image, with its SHA-256 pinned
+in `np2test/layout.json` and `np2test/golden/SHA256SUMS`.  The golden is a
+reproducibility check for this Stage 0 implementation, not evidence that the
+final NP2kai filename extension has been selected.
 
 The raw filename extension remains unresolved. The builder uses
 `np2test-fd1232.image` as a neutral development artifact while `.hdm`, `.ima`,
@@ -29,8 +35,7 @@ pinned NP2kai reference attachment check; geometry recognition alone does not
 prove full boot compatibility.
 
 The result-v1 wire contract is complete in
-`protocol/result-v1.md`; executable guest code will consume it in a later
-milestone.
+`protocol/result-v1.md`; this IPL is its first executable producer.
 
 The build contract uses the Ubuntu 24.04 `nasm=2.16.01-1build1` package and
 CPython 3.12 standard-library execution. The semantic versions are checked at

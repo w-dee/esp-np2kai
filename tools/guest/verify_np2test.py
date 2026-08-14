@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Validate an NP2TEST foundation image and its optional digest file."""
+"""Validate an NP2TEST Stage 0 image and its optional digest file."""
 
 from __future__ import annotations
 
@@ -30,17 +30,21 @@ def verify(layout_path: Path, image_path: Path, sha256_path: Path | None = None,
     if len(image) != expected_size:
         raise VerificationError(f"image size is {len(image)}, expected {expected_size}")
 
-    expected_nonzero: dict[int, int] = {}
+    ipl_size = layout["ipl"]["binary_size"]
+    for offset, byte in enumerate(image[ipl_size:], start=ipl_size):
+        if byte != 0:
+            raise VerificationError(f"unexpected payload byte 0x{byte:02x} at offset 0x{offset:x}")
+
     for signature in layout["ipl"]["signatures"]:
         offset = signature["offset"]
-        for index, byte in enumerate(bytes.fromhex(signature["bytes"])):
-            expected_nonzero[offset + index] = byte
-    for offset, byte in enumerate(image):
-        expected = expected_nonzero.get(offset, 0)
-        if byte != expected:
-            raise VerificationError(f"unexpected byte 0x{byte:02x} at offset 0x{offset:x}")
+        expected = bytes.fromhex(signature["bytes"])
+        if image[offset:offset + len(expected)] != expected:
+            raise VerificationError(f"IPL signature at offset 0x{offset:x} is invalid")
 
     digest = hashlib.sha256(image).hexdigest()
+    layout_expected_sha256 = layout["artifact"].get("expected_sha256")
+    if layout_expected_sha256 is not None and digest != layout_expected_sha256:
+        raise VerificationError(f"sha256 is {digest}, expected layout golden {layout_expected_sha256}")
     if expected_sha256 is not None and digest != expected_sha256.lower():
         raise VerificationError(f"sha256 is {digest}, expected {expected_sha256}")
     if sha256_path is not None:

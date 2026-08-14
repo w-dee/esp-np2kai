@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
-"""Build and structurally validate the deterministic NP2TEST foundation image."""
+"""Build and structurally validate the deterministic NP2TEST Stage 0 image."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -303,8 +304,10 @@ def validate_layout(layout: Any) -> dict[str, Any]:
         raise LayoutError("image.d88_required must be false")
 
     ipl = _mapping(root.get("ipl"), "ipl")
-    if ipl.get("implemented") is not False or ipl.get("reserved_region") != "ipl":
-        raise LayoutError("IPL must remain unimplemented and use the declared IPL region")
+    if ipl.get("implemented") is not True or ipl.get("reserved_region") != "ipl":
+        raise LayoutError("Stage 0 IPL must be implemented and use the declared IPL region")
+    if ipl.get("source") != "src/ipl.asm" or _integer(ipl.get("binary_size"), "ipl.binary_size") != 1024:
+        raise LayoutError("Stage 0 IPL source and binary size must be fixed to src/ipl.asm and 1024 bytes")
     if _integer(ipl.get("sector_offset"), "ipl.sector_offset") != 0 or _integer(ipl.get("sector_bytes"), "ipl.sector_bytes") != 1024:
         raise LayoutError("ipl must start at sector offset zero with 1024-byte sectors")
     if _integer(ipl.get("load_physical"), "ipl.load_physical") != 0x1FC00:
@@ -344,8 +347,15 @@ def validate_layout(layout: Any) -> dict[str, Any]:
     if toolchain.get("output") != "bin":
         raise LayoutError("toolchain output must be NASM bin")
     artifact = _mapping(root.get("artifact"), "artifact")
-    if artifact.get("extension_status") != PENDING_EXTENSION_STATUS or artifact.get("golden_tracked") is not False:
-        raise LayoutError("artifact extension status or golden policy is invalid")
+    if artifact.get("extension_status") != PENDING_EXTENSION_STATUS:
+        raise LayoutError("artifact extension status must remain pending until NP2kai validation")
+    if artifact.get("golden_tracked") is not True or artifact.get("golden_path") != "tests/guest/np2test/golden/np2test-fd1232.image":
+        raise LayoutError("Stage 0 artifact must track the neutral golden image")
+    if artifact.get("stage") != "3.5a-2-minimal-boot":
+        raise LayoutError("artifact stage must be 3.5a-2-minimal-boot")
+    expected_sha256 = artifact.get("expected_sha256")
+    if expected_sha256 is not None and (not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
+        raise LayoutError("artifact.expected_sha256 must be lowercase SHA-256 or null while being generated")
     return root
 
 
@@ -390,19 +400,57 @@ def check_python(expected: tuple[int, int] = EXPECTED_PYTHON) -> dict[str, Any]:
     }
 
 
+def assemble_ipl(source_path: Path, output_path: Path) -> bytes:
+    """Assemble the fixed 1,024-byte Stage 0 IPL with NASM."""
+
+    executable = shutil.which("nasm")
+    if executable is None:
+        raise LayoutError("nasm is required for the IPL assembly but was not found on PATH")
+    try:
+        subprocess.run(
+            [executable, "-f", "bin", "-o", str(output_path), source_path.name],
+            cwd=source_path.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc)
+        raise LayoutError(f"unable to assemble {source_path}: {detail.strip()}") from exc
+    try:
+        binary = output_path.read_bytes()
+    except OSError as exc:
+        raise LayoutError(f"NASM did not produce {output_path}: {exc}") from exc
+    if len(binary) != 1024:
+        raise LayoutError(f"assembled IPL is {len(binary)} bytes, expected 1024")
+    return binary
+
+
 def build(layout_path: Path, output_path: Path, sha256_path: Path | None = None,
           manifest_path: Path | None = None) -> str:
     layout = load_layout(layout_path)
     nasm_version = check_nasm(layout["toolchain"]["assembler"]["version"])
     python_version = check_python((layout["toolchain"]["python"]["supported_major"], layout["toolchain"]["python"]["supported_minor"]))
+    source_path = layout_path.parent / layout["ipl"]["source"]
+    if not source_path.is_file():
+        raise LayoutError(f"IPL source does not exist: {source_path}")
+    with tempfile.TemporaryDirectory(prefix="np2test-ipl-") as tempdir:
+        ipl_path = Path(tempdir) / "ipl.bin"
+        ipl = assemble_ipl(source_path, ipl_path)
+
     image = bytearray(layout["image"]["size_bytes"])
+    image[: len(ipl)] = ipl
     for signature in layout["ipl"]["signatures"]:
         offset = signature["offset"]
-        image[offset:offset + len(SIGNATURE)] = SIGNATURE
+        if image[offset:offset + len(SIGNATURE)] != SIGNATURE:
+            raise LayoutError(f"assembled IPL is missing signature at offset 0x{offset:x}")
 
+    digest = hashlib.sha256(image).hexdigest()
+    expected_sha256 = layout["artifact"].get("expected_sha256")
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise LayoutError(f"built image sha256 is {digest}, expected {expected_sha256}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_bytes(image)
-    digest = hashlib.sha256(image).hexdigest()
     sha256_path = sha256_path or output_path.with_name(output_path.name + ".sha256")
     sha256_path.parent.mkdir(parents=True, exist_ok=True)
     sha256_path.write_text(f"{digest}  {output_path.name}\n", encoding="ascii")
@@ -418,7 +466,8 @@ def build(layout_path: Path, output_path: Path, sha256_path: Path | None = None,
             "assembler": {"command": "nasm", "version": nasm_version},
             "python": python_version,
         },
-        "stage": "3.5a-1-empty-image",
+        "stage": "3.5a-2-minimal-boot",
+        "ipl_sha256": hashlib.sha256(ipl).hexdigest(),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")

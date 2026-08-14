@@ -9,12 +9,12 @@ The result block is owned by NP2TEST at physical address `0x29000` through
 | --- | ---: | ---: | --- |
 | IPL | `0x1fc00..0x1ffff` | 1,024 bytes | NP2kai FD1232 load/entry sector |
 | Payload reserve | `0x20000..0x27fff` | 32 KiB | Future filesystem-less NP2TEST code/data |
-| Stack | `0x28000..0x28fff` | 4 KiB | Future NP2TEST stack |
+| Stack | `0x28000..0x28fff` | 4 KiB | Stage 0 IPL stack (grows down from `0x29000`) |
 | Result | `0x29000..0x2907f` | 128 bytes | result-v1 block |
 
 The ranges are adjacent but non-overlapping. The payload and stack reservations
-are part of the v1 contract even though executable guest code is intentionally
-not present in this milestone.
+are part of the v1 contract. Stage 0 uses the stack reservation for IPL calls;
+the payload reservation remains empty until a later milestone.
 
 ## Evidence
 
