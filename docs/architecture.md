@@ -67,6 +67,44 @@ These empty directories must not be created at this stage. Introduce the
 organization incrementally as the implementation grows and concrete
 dependency boundaries require it.
 
+## Vendored NP2kai core boundary
+
+Step 3 establishes a fixed, byte-preserved NP2kai snapshot under
+`third_party/np2kai/`. It is not a Git submodule or an upstream working-tree
+copy. The machine-authoritative import definition is
+[`import-manifest.json`](../third_party/np2kai/import-manifest.json); its
+upstream SHA, not the observed `wx_alpha` branch name, is the reproducibility
+anchor. The vendor-local
+[`README.md`](../third_party/np2kai/README.md) is the generated human-readable
+summary.
+
+The imported tree is an inspected, source-inspection-based candidate source
+set for the initial baseline. It is not a compiler-proven or linker-proven
+complete dependency closure. Step 4 is the first stage that integrates this
+candidate set into a build and exposes missing or unnecessary dependencies.
+
+The baseline intent is:
+
+- i286 CPU
+- guest video core included; host display backend absent
+- guest sound state retained at the source-inspection-selected minimum;
+  sound generation and host audio backend absent
+- frontend absent, network disabled, and minimum single-thread operation
+
+Desktop frontends, i386/HAXM and other optimized cores, network/VST domains,
+optional FM/MAME sound generators, optional Cirrus/TGUI graphics backends, and
+ROM or disk-image assets are outside this boundary. The exact machine-readable
+exclusion list is maintained in the manifest rather than duplicated here.
+
+The baseline retains `src/fdd/sxsicd.h` because the declaration/include closure
+requires it, while `src/fdd/sxsicd.c` is excluded because CD-ROM/IDE
+implementation is outside the Step 3 baseline. This does not establish CD-ROM
+or IDE runtime support.
+
+Host contracts and adapters remain outside the vendor tree. Compile, link,
+startup, CPU execution, display, audio, storage, and input integration are
+subsequent work, beginning with the Ubuntu-native headless Step 4 core.
+
 ## Conceptual layers
 
 - **NP2/NP2kai emulator core**: guest CPU, memory, timers, I/O devices, disk
