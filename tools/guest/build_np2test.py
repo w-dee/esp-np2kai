@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import binascii
 import hashlib
 import json
 import re
@@ -58,7 +59,18 @@ EXPECTED_EXCLUDED_RANGES = {
     "pc98-text-vram": (0xA0000, 0x8000),
     "pc98-graphics-vram-b-r-g": (0xA8000, 0x18000),
     "pc98-graphics-vram-e": (0xE0000, 0x8000),
-    "pc98-itf-rom": (0xF8000, 0x8000),
+    "pc98-bios-firmware": (0xE8000, 0x18000),
+}
+EXPECTED_EXTENDED_EXCLUDED_RANGES = {
+    "np2kai-extended-itf-rom": (0x1F8000, 0x8000),
+}
+EXPECTED_LIVE_POLLING = {
+    "while_running": "poll-state-only",
+    "body_validation": "deferred-until-terminal-state",
+    "timeout_before_running": "NOT_REACHED",
+    "timeout_after_running": "RUNNING_TIMEOUT",
+    "stop_before_timeout_diagnostics": True,
+    "final_states_immutable": ["PASS", "FAIL"],
 }
 
 
@@ -129,6 +141,26 @@ def _validate_memory(root: dict[str, Any]) -> dict[str, dict[str, int]]:
     _validate_non_overlapping(excluded_ranges, "memory.excluded_ranges")
     if {name: (start, size) for start, size, name in excluded_ranges} != EXPECTED_EXCLUDED_RANGES:
         raise LayoutError("memory.excluded_ranges do not match the PC-98 reserved map")
+
+    extended = memory.get("extended_excluded_ranges")
+    if not isinstance(extended, list):
+        raise LayoutError("memory.extended_excluded_ranges must be a list")
+    extended_ranges: list[tuple[int, int, str]] = []
+    for index, item in enumerate(extended):
+        item_object = _mapping(item, f"memory.extended_excluded_ranges[{index}]")
+        name = item_object.get("name")
+        if not isinstance(name, str):
+            raise LayoutError(f"memory.extended_excluded_ranges[{index}].name must be a string")
+        start = _integer(item_object.get("start"), f"memory.extended_excluded_ranges[{index}].start")
+        size = _integer(item_object.get("size_bytes"), f"memory.extended_excluded_ranges[{index}].size_bytes")
+        if start < address_size or size <= 0:
+            raise LayoutError(f"memory.extended_excluded_ranges[{index}] must be outside the 1 MiB validator space")
+        if item_object.get("address_space") != "np2kai-extended" or item_object.get("within_validator_address_space") is not False:
+            raise LayoutError(f"memory.extended_excluded_ranges[{index}] has invalid address-space metadata")
+        extended_ranges.append((start, size, name))
+    _validate_non_overlapping(extended_ranges, "memory.extended_excluded_ranges")
+    if {name: (start, size) for start, size, name in extended_ranges} != EXPECTED_EXTENDED_EXCLUDED_RANGES:
+        raise LayoutError("memory.extended_excluded_ranges do not match the NP2kai extended ITF-ROM map")
 
     owned = memory.get("owned_regions")
     if not isinstance(owned, list):
@@ -206,8 +238,13 @@ def _validate_result(root: dict[str, Any], owned_regions: dict[str, dict[str, in
     checksum = _mapping(wire.get("checksum"), "result.wire.checksum")
     if checksum.get("field") != "checksum" or checksum.get("algorithm") != "CRC-32/ISO-HDLC":
         raise LayoutError("result checksum must be CRC-32/ISO-HDLC over the body")
-    if checksum.get("polynomial") != "0x04c11db7" or checksum.get("initial") != "0xffffffff" or checksum.get("final_xor") != "0xffffffff":
+    if checksum.get("polynomial") != "0x04c11db7" or checksum.get("reflected_polynomial") != "0xedb88320" or checksum.get("refin") is not True or checksum.get("refout") is not True or checksum.get("initial") != "0xffffffff" or checksum.get("final_xor") != "0xffffffff":
         raise LayoutError("result checksum parameters are invalid")
+    check_vector = checksum.get("check_vector")
+    if check_vector != {"input_ascii": "123456789", "expected_hex": "0xcbf43926"}:
+        raise LayoutError("result checksum check vector is invalid")
+    if crc32_iso_hdlc(check_vector["input_ascii"].encode("ascii")) != int(check_vector["expected_hex"], 16):
+        raise LayoutError("CRC-32/ISO-HDLC implementation does not match the standard check vector")
     if checksum.get("byte_order") != "little" or checksum.get("coverage_ranges") != [{"start": 0, "end_exclusive": 120}]:
         raise LayoutError("result checksum coverage must be exactly bytes [0, 120)")
     checksum_field = field_by_name["checksum"]
@@ -224,6 +261,8 @@ def _validate_result(root: dict[str, Any], owned_regions: dict[str, dict[str, in
         raise LayoutError("result state encoding is invalid")
     if state.get("guest_fail_meaning") != "one or more guest tests completed with a failing result" or state.get("host_integrity_failures") != "INVALID":
         raise LayoutError("result guest FAIL and host INVALID semantics are ambiguous")
+    if state.get("live_polling") != EXPECTED_LIVE_POLLING:
+        raise LayoutError("result live-polling and final-immutability contract is invalid")
     if field_by_name["state"].get("write_order") != "last":
         raise LayoutError("result state must be written last")
     future = _mapping(wire.get("future_extensions"), "result.wire.future_extensions")
@@ -308,6 +347,12 @@ def validate_layout(layout: Any) -> dict[str, Any]:
     if artifact.get("extension_status") != PENDING_EXTENSION_STATUS or artifact.get("golden_tracked") is not False:
         raise LayoutError("artifact extension status or golden policy is invalid")
     return root
+
+
+def crc32_iso_hdlc(data: bytes) -> int:
+    """Return CRC-32/ISO-HDLC with reflected input and output."""
+
+    return binascii.crc32(data) & 0xffffffff
 
 
 def load_layout(path: Path) -> dict[str, Any]:

@@ -73,9 +73,18 @@
         "size_bytes": 32768
       },
       {
-        "name": "pc98-itf-rom",
-        "start": 1015808,
-        "size_bytes": 32768
+        "name": "pc98-bios-firmware",
+        "start": 950272,
+        "size_bytes": 98304
+      }
+    ],
+    "extended_excluded_ranges": [
+      {
+        "name": "np2kai-extended-itf-rom",
+        "start": 2064384,
+        "size_bytes": 32768,
+        "address_space": "np2kai-extended",
+        "within_validator_address_space": false
       }
     ],
     "owned_regions": [
@@ -260,6 +269,9 @@
         "field": "checksum",
         "algorithm": "CRC-32/ISO-HDLC",
         "polynomial": "0x04c11db7",
+        "reflected_polynomial": "0xedb88320",
+        "refin": true,
+        "refout": true,
         "initial": "0xffffffff",
         "final_xor": "0xffffffff",
         "byte_order": "little",
@@ -268,9 +280,13 @@
             "start": 0,
             "end_exclusive": 120
           }
-        ]
+        ],
+        "check_vector": {
+          "input_ascii": "123456789",
+          "expected_hex": "0xcbf43926"
+        }
       },
-      "state": {
+        "state": {
         "field": "state",
         "values": {
           "UNINITIALIZED": 0,
@@ -279,7 +295,18 @@
           "FAIL": 3
         },
         "guest_fail_meaning": "one or more guest tests completed with a failing result",
-        "host_integrity_failures": "INVALID"
+        "host_integrity_failures": "INVALID",
+        "live_polling": {
+          "while_running": "poll-state-only",
+          "body_validation": "deferred-until-terminal-state",
+          "timeout_before_running": "NOT_REACHED",
+          "timeout_after_running": "RUNNING_TIMEOUT",
+          "stop_before_timeout_diagnostics": true,
+          "final_states_immutable": [
+            "PASS",
+            "FAIL"
+          ]
+        }
       },
       "future_extensions": {
         "version_1_requires_exact_block_size": true,

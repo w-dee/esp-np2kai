@@ -88,6 +88,58 @@ class NP2TestFoundationTests(unittest.TestCase):
         with self.assertRaises(build_np2test.LayoutError):
             build_np2test.load_layout(layout)
 
+    def test_crc32_iso_hdlc_check_vector_and_reflection_are_explicit(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        checksum = layout["result"]["wire"]["checksum"]
+        self.assertTrue(checksum["refin"])
+        self.assertTrue(checksum["refout"])
+        self.assertEqual(checksum["polynomial"], "0x04c11db7")
+        self.assertEqual(checksum["reflected_polynomial"], "0xedb88320")
+        self.assertEqual(build_np2test.crc32_iso_hdlc(b"123456789"), 0xcbf43926)
+
+    def test_crc_reflection_parameter_is_validated(self) -> None:
+        layout = self.copy_layout(lambda value: value["result"]["wire"]["checksum"].update(refin=False))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(layout)
+
+    def test_state_is_outside_crc_and_live_polling_is_state_only(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        fields = {field["name"]: field for field in layout["result"]["wire"]["fields"]}
+        self.assertEqual(fields["state"]["coverage"], "excluded")
+        self.assertEqual(fields["state"]["offset"], 124)
+        self.assertEqual(layout["result"]["wire"]["checksum"]["coverage_ranges"], [{"start": 0, "end_exclusive": 120}])
+        live = layout["result"]["wire"]["state"]["live_polling"]
+        self.assertEqual(live["while_running"], "poll-state-only")
+        self.assertEqual(live["body_validation"], "deferred-until-terminal-state")
+        self.assertEqual(live["final_states_immutable"], ["PASS", "FAIL"])
+        invalid = self.copy_layout(lambda value: value["result"]["wire"]["fields"][16].update(coverage="included"))
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(invalid)
+
+    def test_old_itf_rom_exclusion_is_rejected(self) -> None:
+        def old_map(value):
+            value["memory"]["excluded_ranges"][-1].update(name="pc98-itf-rom", start=0xF8000, size_bytes=0x8000)
+
+        layout = self.copy_layout(old_map)
+        with self.assertRaises(build_np2test.LayoutError):
+            build_np2test.load_layout(layout)
+
+    def test_firmware_exclusion_and_extended_itf_map_are_exact(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        excluded = {item["name"]: item for item in layout["memory"]["excluded_ranges"]}
+        self.assertEqual((excluded["pc98-bios-firmware"]["start"], excluded["pc98-bios-firmware"]["size_bytes"]), (0xE8000, 0x18000))
+        extended = layout["memory"]["extended_excluded_ranges"][0]
+        self.assertEqual((extended["start"], extended["size_bytes"]), (0x1F8000, 0x8000))
+        self.assertFalse(extended["within_validator_address_space"])
+
+    def test_owned_regions_remain_outside_all_exclusions(self) -> None:
+        layout = build_np2test.load_layout(LAYOUT_PATH)
+        exclusions = [(item["start"], item["start"] + item["size_bytes"]) for item in layout["memory"]["excluded_ranges"]]
+        for region in layout["memory"]["owned_regions"]:
+            start = region["start"]
+            end = start + region["size_bytes"]
+            self.assertFalse(any(start < excluded_end and excluded_start < end for excluded_start, excluded_end in exclusions), region["name"])
+
     def test_invalid_state_encoding_is_rejected(self) -> None:
         layout = self.copy_layout(lambda value: value["result"]["wire"]["state"]["values"].update(PASS=4))
         with self.assertRaises(build_np2test.LayoutError):

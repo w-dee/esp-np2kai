@@ -36,8 +36,10 @@ must not exceed 64 bytes.
 
 The checksum covers exactly byte range `[0x00, 0x78)`. The checksum field,
 the state byte, and the reserved tail are not covered. CRC-32/ISO-HDLC uses
-polynomial `0x04c11db7`, initial value `0xffffffff`, and final XOR
-`0xffffffff`.
+normal-form polynomial `0x04c11db7`, reflected implementation polynomial
+`0xedb88320`, `refin=true`, `refout=true`, initial value `0xffffffff`, and
+final XOR `0xffffffff`. The standard check vector is ASCII `123456789`, which
+must produce `0xcbf43926`; the stored checksum field remains little-endian.
 
 ## Commit protocol
 
@@ -50,13 +52,29 @@ commit write atomic with respect to the checksum: changing `RUNNING` to
 2. The guest computes and writes the checksum at `0x78`.
 3. The guest writes `RUNNING` (`1`) to `0x7c` last, committing a valid running
    block.
-4. When tests finish, the guest updates the checksum-covered counts and
-   diagnostic fields, recomputes the checksum, and writes `PASS` (`2`) or
-   `FAIL` (`3`) to `0x7c` last.
+4. While state remains `RUNNING`, the guest may update the checksum-covered
+   counts and diagnostic fields and recompute the checksum.
+5. When tests finish, the guest writes `PASS` (`2`) or `FAIL` (`3`) to `0x7c`
+   last. After that final commit, the entire 128-byte block—including body,
+   checksum, reserved bytes, and state—is immutable.
 
-The host reads the state, reads the complete 128-byte block, then reads the
-state again. A state change during the read, a nonzero reserved byte, an
-unsupported encoding, or a checksum mismatch is `INVALID`.
+While guest execution is live, the host polls only the one-byte state field.
+It must not validate the body or classify a checksum mismatch from a
+`RUNNING` block as `INVALID`, because the guest may be between body and CRC
+writes.
+
+The live polling sequence is:
+
+- `UNINITIALIZED`: continue polling; if timeout occurs before `RUNNING`, report
+  `NOT_REACHED`.
+- `RUNNING`: continue polling without reading the body for a terminal verdict.
+- `PASS` or `FAIL`: the guest has committed an immutable block; read and
+  validate the complete block.
+- Any unsupported state: stop/pause execution before inspecting the stable
+  block and report `INVALID`.
+
+If timeout occurs after `RUNNING`, stop/pause execution first, retain the now
+stable block for diagnostics, and report `RUNNING_TIMEOUT`.
 
 ## State and host outcomes
 
@@ -74,15 +92,17 @@ normalization distinguishes these outcomes:
 | Host outcome | Meaning |
 | --- | --- |
 | `HARNESS_ERROR` | Image attachment or emulator startup failed; outside the guest protocol. |
-| `NOT_REACHED` | Attachment and guest start succeeded, but no valid committed result block was reached before the timeout/terminal condition. An all-zero `UNINITIALIZED` area is the normal evidence. |
-| `RUNNING_TIMEOUT` | A valid `RUNNING` block was observed, but the guest did not finish before the timeout. |
-| `PASS` | A consistent, valid `PASS` block was observed with completed required tests and zero failed tests. |
-| `FAIL` | A consistent, valid guest `FAIL` block was observed. |
-| `INVALID` | Bad magic/version, malformed layout, unsupported state, torn read, nonzero reserved bytes, or checksum failure. |
+| `NOT_REACHED` | Attachment and guest start succeeded, but state never reached `RUNNING` before timeout. An all-zero `UNINITIALIZED` area is the normal evidence. |
+| `RUNNING_TIMEOUT` | `RUNNING` was observed, execution was stopped/paused first, and the now-stable block was retained for diagnostics after timeout. |
+| `PASS` | A consistent, valid immutable `PASS` block was observed with completed required tests and zero failed tests. |
+| `FAIL` | A consistent, valid immutable guest `FAIL` block was observed. |
+| `INVALID` | After stopping/pausing when necessary: bad magic/version, malformed layout, unsupported state, torn terminal read, nonzero reserved bytes, or checksum failure. |
 
 The raw result block, emulator log, attachment command, and normalized host
 outcome must be retained together for diagnosis. An unsupported future
-version is `INVALID`; v1 does not guess at a newer wire format.
+version is `INVALID`; v1 does not guess at a newer wire format. A host may
+repeat state reads defensively, but a transient body mutation while `RUNNING`
+must never be treated as a terminal integrity error.
 
 ## Future extensions
 

@@ -22,19 +22,27 @@ The pinned NP2kai source provides the following address facts:
 
 - [`src/i286c/cpumem.h`](../../../third_party/np2kai/src/i286c/cpumem.h)
   describes `0x000000..0x0fffff` as main memory, maps text/graphics VRAM at
-  `0xa0000`/`0xa8000`/`0xb0000`/`0xb8000`/`0xe0000`, and reserves the ITF ROM
-  at `0x1f8000..0x1fffff`.
+  `0xa0000`/`0xa8000`/`0xb0000`/`0xb8000`/`0xe0000`, and maps the ITF ROM at
+  `0x1f8000..0x1fffff` in the extended address space (not within the current
+  1 MiB validator address space).
 - [`src/bios/biosmem.h`](../../../third_party/np2kai/src/bios/biosmem.h)
   places PC-98 BIOS data and work fields in the low `0x0401..0x05fa` area,
   including the boot-device byte at `0x0584`.
 - [`src/bios/bios1b.c`](../../../third_party/np2kai/src/bios/bios1b.c)
   loads a 1,024-byte FD1232 IPL at `0x1fc00` and enters at `1fc0:0000`.
+- [`src/bios/bios.h`](../../../third_party/np2kai/src/bios/bios.h) defines
+  `BIOS_BASE` as `0xfd800`; [`src/bios/bios.c`](../../../third_party/np2kai/src/bios/bios.c)
+  copies the simulated BIOS there and initializes firmware data in the
+  `0xe8000..0xfffff` range. This is the conservative first-MiB firmware
+  exclusion used by the layout.
 
 The selected result range is therefore outside the conservative low-memory
 BIOS reservation (`0x0000..0x0fff`), the IPL/payload/stack reservations, the
-PC-98 text and graphics VRAM ranges, and the firmware/ITF-ROM range. It is
-ordinary main RAM in the pinned NP2kai map and remains owned by NP2TEST for the
-diagnostic lifetime.
+PC-98 text and graphics VRAM ranges, and the `0xe8000..0xfffff` firmware range.
+The separate `0x1f8000..0x1fffff` ITF-ROM mapping is recorded as an extended
+exclusion but is outside the current 1 MiB validator. It is ordinary main RAM
+in the pinned NP2kai map and remains owned by NP2TEST for the diagnostic
+lifetime.
 
 The [PC-9800 Series Technical Data Book BIOS reference](https://vtda.org/docs/computing/NEC/PC-9800TechnicalDataBookBIOS%2BOCR_1992.pdf)
 is retained as supporting historical evidence; the pinned NP2kai source takes
