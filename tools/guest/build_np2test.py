@@ -28,7 +28,8 @@ EXPECTED_PYTHON = (3, 12)
 EXPECTED_SIZE = 1_261_568
 EXPECTED_RESULT_SIZE = 128
 SIGNATURE = bytes.fromhex("55aa")
-PENDING_EXTENSION_STATUS = "pending-np2kai-reference-attachment-validation"
+SELECTED_EXTENSION_STATUS = "validated-np2kai-reference-attachment"
+EXPECTED_EXTENSION = ".hdm"
 EXPECTED_RESULT_FIELDS = (
     ("magic", 0, 4, "bytes", "included"),
     ("version", 4, 2, "u16le", "included"),
@@ -282,10 +283,10 @@ def validate_layout(layout: Any) -> dict[str, Any]:
         raise LayoutError("schema_version must be 1 and name must be np2test")
 
     image = _mapping(root.get("image"), "image")
-    if image.get("format") != "raw" or image.get("extension") is not None:
-        raise LayoutError("image must be raw with no selected extension yet")
-    if image.get("extension_selection") != PENDING_EXTENSION_STATUS:
-        raise LayoutError("image extension status must name the remaining NP2kai validation")
+    if image.get("format") != "raw" or image.get("extension") != EXPECTED_EXTENSION:
+        raise LayoutError("image must be raw with the validated .hdm extension")
+    if image.get("extension_selection") != SELECTED_EXTENSION_STATUS:
+        raise LayoutError("image extension status must record the validated NP2kai attachment")
     candidates = image.get("extension_candidates")
     if not isinstance(candidates, list) or not candidates or len(set(candidates)) != len(candidates):
         raise LayoutError("image.extension_candidates must be a non-empty unique list")
@@ -347,8 +348,8 @@ def validate_layout(layout: Any) -> dict[str, Any]:
     if toolchain.get("output") != "bin":
         raise LayoutError("toolchain output must be NASM bin")
     artifact = _mapping(root.get("artifact"), "artifact")
-    if artifact.get("extension_status") != PENDING_EXTENSION_STATUS:
-        raise LayoutError("artifact extension status must remain pending until NP2kai validation")
+    if artifact.get("extension_status") != SELECTED_EXTENSION_STATUS:
+        raise LayoutError("artifact extension status must record the validated NP2kai attachment")
     if artifact.get("golden_tracked") is not True or artifact.get("golden_path") != "tests/guest/np2test/golden/np2test-fd1232.image":
         raise LayoutError("Stage 0 artifact must track the neutral golden image")
     if artifact.get("stage") != "3.5a-2-minimal-boot":

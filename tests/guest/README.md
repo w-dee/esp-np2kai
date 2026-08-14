@@ -22,17 +22,16 @@ sector.  It initializes the reviewed stack and result-v1 block, publishes
 halts.  The remaining disk bytes are reserved and zero-filled; payload tests
 are intentionally not part of this milestone.
 
-The neutral raw artifact is tracked as a golden image, with its SHA-256 pinned
-in `np2test/layout.json` and `np2test/golden/SHA256SUMS`.  The golden is a
-reproducibility check for this Stage 0 implementation, not evidence that the
-final NP2kai filename extension has been selected.
+The raw attachment extension is selected as `.hdm` after the pinned SDL
+NP2kai reference run.  `.ima` and `.img` also accepted the same bytes in the
+candidate check, but `.hdm` is the explicit 1.25 MB/1024-byte raw convention
+used for this fixture.  The neutral build output remains
+`np2test-fd1232.image`; the selected runtime extension does not change bytes.
 
-The raw filename extension remains unresolved. The builder uses
-`np2test-fd1232.image` as a neutral development artifact while `.hdm`, `.ima`,
-`.img`, and `.fdd` remain candidates. DOSBox-X geometry recognition is recorded
-in `np2test/reference-validation.md`, but final selection still requires a
-pinned NP2kai reference attachment check; geometry recognition alone does not
-prove full boot compatibility.
+The golden image's SHA-256 is pinned in `np2test/layout.json` and
+`np2test/golden/SHA256SUMS`.  The golden is a reproducibility check for this
+Stage 0 implementation; runtime evidence is recorded in
+`np2test/reference-validation.md`.
 
 The result-v1 wire contract is complete in
 `protocol/result-v1.md`; this IPL is its first executable producer.

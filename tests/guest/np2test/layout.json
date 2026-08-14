@@ -3,14 +3,14 @@
   "name": "np2test",
   "image": {
     "format": "raw",
-    "extension": null,
+    "extension": ".hdm",
     "extension_candidates": [
       ".hdm",
       ".ima",
       ".img",
       ".fdd"
     ],
-    "extension_selection": "pending-np2kai-reference-attachment-validation",
+    "extension_selection": "validated-np2kai-reference-attachment",
     "geometry": {
       "cylinders": 77,
       "heads": 2,
@@ -338,7 +338,7 @@
     "output": "bin"
   },
   "artifact": {
-    "extension_status": "pending-np2kai-reference-attachment-validation",
+    "extension_status": "validated-np2kai-reference-attachment",
     "golden_tracked": true,
     "golden_path": "tests/guest/np2test/golden/np2test-fd1232.image",
     "expected_sha256": "2b3cdfd9f780ac668ee33da4dcbab3c3250a68c623d8cdf5f9cfd2a8f1794994",

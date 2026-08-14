@@ -79,8 +79,8 @@ class NP2TestFoundationTests(unittest.TestCase):
         with self.assertRaises(build_np2test.LayoutError):
             build_np2test.load_layout(layout)
 
-    def test_selected_extension_is_rejected_until_review(self) -> None:
-        layout = self.copy_layout(lambda value: value["image"].update(extension=".hdm"))
+    def test_unvalidated_extension_is_rejected_after_reference_selection(self) -> None:
+        layout = self.copy_layout(lambda value: value["image"].update(extension=".img"))
         with self.assertRaises(build_np2test.LayoutError):
             build_np2test.load_layout(layout)
 
