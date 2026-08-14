@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "name": "np2test",
+  "image": {
+    "format": "raw",
+    "extension": null,
+    "extension_candidates": [
+      ".hdm",
+      ".ima",
+      ".img",
+      ".fdd"
+    ],
+    "extension_selection": "deferred-to-3.5a-1",
+    "geometry": {
+      "cylinders": 77,
+      "heads": 2,
+      "sectors_per_track": 8,
+      "bytes_per_sector": 1024
+    },
+    "size_bytes": 1261568,
+    "d88_required": false
+  },
+  "ipl": {
+    "implemented": false,
+    "sector_offset": 0,
+    "sector_bytes": 1024,
+    "load_physical": 130048,
+    "entry": {
+      "cs": 8128,
+      "ip": 0
+    },
+    "signatures": [
+      {
+        "offset": 510,
+        "bytes": "55aa"
+      },
+      {
+        "offset": 1022,
+        "bytes": "55aa"
+      }
+    ]
+  },
+  "payload": {
+    "implemented": false,
+    "placements": []
+  },
+  "result": {
+    "protocol": "result-v1",
+    "physical_address": null,
+    "size_bytes": null,
+    "numeric_layout_status": "deferred-to-3.5a-2"
+  },
+  "toolchain": {
+    "assembler": "nasm",
+    "version": "2.16.01",
+    "output": "bin",
+    "python": "python3"
+  },
+  "artifact": {
+    "extension_status": "deferred-to-3.5a-1",
+    "golden_tracked": false
+  }
+}
