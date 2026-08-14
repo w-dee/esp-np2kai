@@ -4,28 +4,27 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
-import re
-import stat
 import sys
+import tempfile
 from typing import Any
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
+import import_np2kai as importer  # noqa: E402
+
 from import_np2kai import (  # noqa: E402
-    EXPECTED_GENERATED,
     ImportError as ImportFailure,
     blob_bytes,
-    render_license_map,
-    render_readme,
-    render_hashes,
+    import_snapshot,
     normalize_url,
     tree_mode,
+    validate_license_documents,
     validate_manifest,
+    validate_snapshot_tree,
     validate_source,
 )
 
@@ -33,9 +32,6 @@ from import_np2kai import (  # noqa: E402
 EXPECTED_URL = "https://github.com/AZO234/NP2kai"
 EXPECTED_COMMIT = "e2dc9046aa5c786fcfbfb87e883457e421026e31"
 EXPECTED_VERSION = "0.86.0.22"
-HASH_LINE = re.compile(r"^([0-9a-f]{64})  (.+)$")
-
-
 class VerificationError(RuntimeError):
     pass
 
@@ -54,16 +50,6 @@ def load_manifest(root: Path) -> tuple[dict[str, Any], bytes]:
     except ImportFailure as exc:
         raise VerificationError(f"invalid manifest: {exc}") from exc
     return manifest, data
-
-
-def actual_files(root: Path) -> set[str]:
-    files: set[str] = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise VerificationError(f"symlink is not allowed in vendor snapshot: {path}")
-        if path.is_file():
-            files.add(path.relative_to(root).as_posix())
-    return files
 
 
 def verify_identity(manifest: dict[str, Any]) -> None:
@@ -91,62 +77,10 @@ def verify_identity(manifest: dict[str, Any]) -> None:
 
 
 def verify_license_evidence(manifest: dict[str, Any]) -> None:
-    by_origin = {entry["upstream_path"]: entry for entry in manifest["files"]}
-    for entry in manifest["files"]:
-        evidence = entry["license_evidence"]
-        if evidence["review_status"] != "reviewed":
-            raise VerificationError(
-                f"license evidence is not reviewed: {entry['upstream_path']}"
-            )
-        if not evidence["documents"]:
-            raise VerificationError(f"license evidence has no document: {entry['upstream_path']}")
-        for document in evidence["documents"]:
-            referenced = by_origin.get(document)
-            if referenced is None or referenced["role"] != "license":
-                raise VerificationError(
-                    f"license evidence document is not an imported license: {document}"
-                )
-
-
-def verify_hashes(root: Path, manifest: dict[str, Any]) -> None:
-    path = root / "SHA256SUMS"
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise VerificationError(f"cannot read SHA256SUMS: {exc}") from exc
-    expected = {entry["destination_path"] for entry in manifest["files"]}
-    seen: dict[str, str] = {}
-    for line in lines:
-        match = HASH_LINE.fullmatch(line)
-        if match is None:
-            raise VerificationError(f"invalid SHA256SUMS line: {line!r}")
-        digest, destination = match.groups()
-        if destination in seen:
-            raise VerificationError(f"duplicate SHA256SUMS entry: {destination}")
-        seen[destination] = digest
-    if set(seen) != expected:
-        raise VerificationError("SHA256SUMS does not cover exactly the manifest destinations")
-    for destination, expected_digest in seen.items():
-        digest = hashlib.sha256((root / destination).read_bytes()).hexdigest()
-        if digest != expected_digest:
-            raise VerificationError(f"SHA256SUMS mismatch: {destination}")
-
-
-def verify_generated_metadata(root: Path, manifest: dict[str, Any]) -> None:
-    blobs = {
-        entry["destination_path"]: (root / entry["destination_path"]).read_bytes()
-        for entry in manifest["files"]
-    }
-    expected_readme = render_readme(manifest).encode("utf-8")
-    expected_map = render_license_map(manifest, blobs).encode("utf-8")
-    expected_hashes = render_hashes(manifest, blobs).encode("utf-8")
-    for name, expected in {
-        "README.md": expected_readme,
-        "LICENSE-MAP.md": expected_map,
-        "SHA256SUMS": expected_hashes,
-    }.items():
-        if (root / name).read_bytes() != expected:
-            raise VerificationError(f"generated metadata is stale or modified: {name}")
+        validate_license_documents(manifest)
+    except ImportFailure as exc:
+        raise VerificationError(str(exc)) from exc
 
 
 def verify_snapshot(root: Path, source: Path | None) -> None:
@@ -155,26 +89,10 @@ def verify_snapshot(root: Path, source: Path | None) -> None:
     manifest, _manifest_bytes = load_manifest(root)
     verify_identity(manifest)
     verify_license_evidence(manifest)
-
-    expected = (
-        {entry["destination_path"] for entry in manifest["files"]}
-        | {"import-manifest.json"}
-        | EXPECTED_GENERATED
-    )
-    actual = actual_files(root)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
-        raise VerificationError(
-            f"snapshot file set mismatch; missing={missing}, unexpected={unexpected}"
-        )
-    for entry in manifest["files"]:
-        path = root / entry["destination_path"]
-        mode = path.stat().st_mode
-        if not stat.S_ISREG(mode):
-            raise VerificationError(f"snapshot entry is not a regular file: {path}")
-    verify_hashes(root, manifest)
-    verify_generated_metadata(root, manifest)
+    try:
+        validate_snapshot_tree(root, manifest, root.joinpath("import-manifest.json").read_bytes())
+    except ImportFailure as exc:
+        raise VerificationError(str(exc)) from exc
 
     if source is not None:
         try:
@@ -198,6 +116,111 @@ def verify_snapshot(root: Path, source: Path | None) -> None:
     print(f"verified {len(manifest['files'])} allowlisted files in {root}")
 
 
+def snapshot_signature(root: Path) -> dict[str, tuple[bytes, int]]:
+    signature: dict[str, tuple[bytes, int]] = {}
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise VerificationError(f"unexpected symlink in test snapshot: {path}")
+        if path.is_file():
+            signature[path.relative_to(root).as_posix()] = (
+                path.read_bytes(),
+                path.stat().st_mode & 0o777,
+            )
+    return signature
+
+
+def run_replacement_safety_checks(root: Path, source: Path | None) -> None:
+    if source is None:
+        raise VerificationError("--replacement-safety requires --source")
+    manifest_path = root / "import-manifest.json"
+    with tempfile.TemporaryDirectory(prefix="np2kai-replace-tests-") as temp_name:
+        parent = Path(temp_name)
+        managed = parent / "managed-output"
+        import_snapshot(source, manifest_path, managed, replace=False)
+
+        unmanaged = parent / "unmanaged" / "np2kai"
+        unmanaged.mkdir(parents=True)
+        sentinel = unmanaged / "keep-me.txt"
+        sentinel.write_bytes(b"unmanaged sentinel\n")
+        try:
+            import_snapshot(source, manifest_path, unmanaged, replace=True)
+        except ImportFailure:
+            pass
+        else:
+            raise VerificationError("--replace accepted an unmanaged basename-only target")
+        if sentinel.read_bytes() != b"unmanaged sentinel\n":
+            raise VerificationError("unmanaged target contents changed after rejection")
+        print("replacement unmanaged-target rejection: ok")
+
+        symlink_target = parent / "symlink-output"
+        symlink_before = snapshot_signature(managed)
+        symlink_target.symlink_to(managed, target_is_directory=True)
+        try:
+            import_snapshot(source, manifest_path, symlink_target, replace=True)
+        except ImportFailure:
+            pass
+        else:
+            raise VerificationError("--replace followed a symlink output target")
+        if snapshot_signature(managed) != symlink_before:
+            raise VerificationError("symlink rejection changed the managed snapshot")
+        symlink_target.unlink()
+        print("replacement symlink-target rejection: ok")
+
+        before = snapshot_signature(managed)
+        try:
+            import_snapshot(parent / "missing-source", manifest_path, managed, replace=True)
+        except ImportFailure:
+            pass
+        else:
+            raise VerificationError("replacement unexpectedly accepted an invalid source")
+        if snapshot_signature(managed) != before:
+            raise VerificationError("failed replacement changed the managed snapshot")
+        print("replacement failed-at-validation preservation: ok")
+
+        before = snapshot_signature(managed)
+        original_replace = importer.os.replace
+
+        def fail_final_swap(source_path: str | bytes, destination_path: str | bytes) -> None:
+            if Path(source_path).name.startswith(".np2kai-import-") and Path(
+                destination_path
+            ) == managed:
+                raise OSError("forced final swap failure")
+            original_replace(source_path, destination_path)
+
+        importer.os.replace = fail_final_swap
+        try:
+            try:
+                import_snapshot(source, manifest_path, managed, replace=True)
+            except OSError:
+                pass
+            else:
+                raise VerificationError("forced final swap failure was not observed")
+        finally:
+            importer.os.replace = original_replace
+        if snapshot_signature(managed) != before:
+            raise VerificationError("rollback after final swap failure changed the snapshot")
+        verify_snapshot(managed, source)
+        print("replacement rollback after move: ok")
+
+        import_snapshot(source, manifest_path, managed, replace=True)
+        verify_snapshot(managed, source)
+        print("replacement managed-target success: ok")
+
+        reference = parent / "reference-output"
+        import_snapshot(source, manifest_path, reference, replace=False)
+        if snapshot_signature(managed) != snapshot_signature(reference):
+            raise VerificationError("successful replacement was not deterministic")
+        leftovers = [
+            path.name
+            for path in parent.iterdir()
+            if path.name.startswith(".np2kai-import-")
+            or path.name.startswith(".np2kai-backup-")
+        ]
+        if leftovers:
+            raise VerificationError(f"replacement left temporary artifacts: {leftovers}")
+        print("replacement staging/backup cleanup: ok")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     repo_root = Path(__file__).resolve().parents[2]
@@ -212,14 +235,23 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="optional local Git checkout used for pinned blob comparison",
     )
+    parser.add_argument(
+        "--replacement-safety",
+        action="store_true",
+        help="run temporary-directory --replace safety checks (requires --source)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        verify_snapshot(args.vendor_root.resolve(), args.source.resolve() if args.source else None)
-    except VerificationError as exc:
+        vendor_root = args.vendor_root.resolve()
+        source = args.source.resolve() if args.source else None
+        verify_snapshot(vendor_root, source)
+        if args.replacement_safety:
+            run_replacement_safety_checks(vendor_root, source)
+    except (VerificationError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 0

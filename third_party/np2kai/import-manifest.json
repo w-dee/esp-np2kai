@@ -2063,20 +2063,6 @@
       }
     },
     {
-      "upstream_path": "fdd/sxsicd.c",
-      "destination_path": "src/fdd/sxsicd.c",
-      "role": "source",
-      "build_group": "shared-core",
-      "license_evidence": {
-        "upstream_mapping": "np2-default",
-        "documents": [
-          "LICENSES/LICENSE.TXT"
-        ],
-        "source_notice": "preserved-unmodified",
-        "review_status": "reviewed"
-      }
-    },
-    {
       "upstream_path": "fdd/sxsicd.h",
       "destination_path": "src/fdd/sxsicd.h",
       "role": "header",

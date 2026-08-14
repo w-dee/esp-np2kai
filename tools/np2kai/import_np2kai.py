@@ -31,6 +31,7 @@ ALLOWED_MAPPING = {
 }
 ALLOWED_STATUS = {"reviewed", "needs-review"}
 EXPECTED_GENERATED = {"README.md", "LICENSE-MAP.md", "SHA256SUMS"}
+EXPECTED_UPSTREAM_URL = "https://github.com/AZO234/NP2kai"
 NOTICE_RE = re.compile(rb"(?i)(copyright|license|permission|all rights reserved)")
 
 
@@ -174,6 +175,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise ImportError("needs-review license evidence cannot be imported")
 
 
+def validate_license_documents(manifest: dict[str, Any]) -> None:
+    by_origin = {entry["upstream_path"]: entry for entry in manifest["files"]}
+    for entry in manifest["files"]:
+        evidence = entry["license_evidence"]
+        if evidence["review_status"] != "reviewed":
+            raise ImportError(
+                f"license evidence is not reviewed: {entry['upstream_path']}"
+            )
+        for document in evidence["documents"]:
+            referenced = by_origin.get(document)
+            if referenced is None or referenced["role"] != "license":
+                raise ImportError(
+                    f"license evidence document is not an imported license: {document}"
+                )
+
+
 def tree_mode(source: Path, commit: str, path: str) -> int:
     output = git(source, "ls-tree", "-z", commit, "--", path)
     records = output.split(b"\0")
@@ -308,12 +325,112 @@ def write_file(root: Path, relative: str, data: bytes, mode: int = 0o644) -> Non
     os.chmod(path, mode)
 
 
-def existing_files(root: Path) -> set[str]:
-    return {
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() or path.is_symlink()
+def path_exists(path: Path) -> bool:
+    return os.path.lexists(os.fspath(path))
+
+
+def absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def reject_symlink_components(path: Path) -> None:
+    path = absolute_path(path)
+    current = Path(path.anchor)
+    for component in path.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise ImportError(f"symlink path component is not allowed: {current}")
+
+
+def snapshot_files(root: Path) -> set[str]:
+    if root.is_symlink() or not root.is_dir():
+        raise ImportError(f"snapshot root is not a real directory: {root}")
+    files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ImportError(f"symlink is not allowed in snapshot: {path}")
+        if path.is_file():
+            files.add(path.relative_to(root).as_posix())
+    return files
+
+
+def expected_snapshot_files(manifest: dict[str, Any]) -> set[str]:
+    return (
+        {entry["destination_path"] for entry in manifest["files"]}
+        | {"import-manifest.json"}
+        | EXPECTED_GENERATED
+    )
+
+
+def validate_snapshot_tree(
+    root: Path,
+    manifest: dict[str, Any],
+    manifest_bytes: bytes | None = None,
+) -> None:
+    actual = snapshot_files(root)
+    expected = expected_snapshot_files(manifest)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise ImportError(
+            f"snapshot file set mismatch; missing={missing}, unexpected={unexpected}"
+        )
+
+    manifest_path = root / "import-manifest.json"
+    if manifest_bytes is not None and manifest_path.read_bytes() != manifest_bytes:
+        raise ImportError("snapshot manifest bytes do not match the requested manifest")
+
+    blobs = {
+        entry["destination_path"]: (root / entry["destination_path"]).read_bytes()
+        for entry in manifest["files"]
     }
+    hash_lines = (root / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    expected_hashes = {
+        f"{sha256(blobs[entry['destination_path']])}  {entry['destination_path']}"
+        for entry in manifest["files"]
+    }
+    if set(hash_lines) != expected_hashes or len(hash_lines) != len(expected_hashes):
+        raise ImportError("SHA256SUMS does not match the manifest byte set")
+
+    generated = {
+        "README.md": render_readme(manifest).encode("utf-8"),
+        "LICENSE-MAP.md": render_license_map(manifest, blobs).encode("utf-8"),
+        "SHA256SUMS": render_hashes(manifest, blobs).encode("utf-8"),
+    }
+    for name, expected_bytes in generated.items():
+        if (root / name).read_bytes() != expected_bytes:
+            raise ImportError(f"generated metadata is stale or modified: {name}")
+
+
+def read_manifest(path: Path) -> tuple[dict[str, Any], bytes]:
+    try:
+        manifest_bytes = path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ImportError(f"invalid UTF-8 JSON manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ImportError("manifest root must be an object")
+    validate_manifest(manifest)
+    validate_license_documents(manifest)
+    return manifest, manifest_bytes
+
+
+def validate_managed_snapshot(root: Path) -> dict[str, Any]:
+    if root.is_symlink() or not root.is_dir():
+        raise ImportError(f"replacement target is not a real directory: {root}")
+    manifest, manifest_bytes = read_manifest(root / "import-manifest.json")
+    if normalize_url(manifest["upstream"]["url"]) != EXPECTED_UPSTREAM_URL:
+        raise ImportError("replacement target is not an NP2kai importer snapshot")
+    validate_snapshot_tree(root, manifest, manifest_bytes)
+    return manifest
+
+
+def reserve_sibling(parent: Path, prefix: str) -> Path:
+    fd, name = tempfile.mkstemp(prefix=prefix, dir=os.fspath(parent))
+    os.close(fd)
+    path = Path(name)
+    path.unlink()
+    return path
 
 
 def import_snapshot(
@@ -322,33 +439,17 @@ def import_snapshot(
     output_root: Path,
     replace: bool,
 ) -> None:
-    manifest_bytes = manifest_path.read_bytes()
-    try:
-        manifest = json.loads(manifest_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ImportError(f"invalid UTF-8 JSON manifest: {exc}") from exc
-    if not isinstance(manifest, dict):
-        raise ImportError("manifest root must be an object")
-    validate_manifest(manifest)
+    manifest_path = absolute_path(manifest_path)
+    output_root = absolute_path(output_root)
+    reject_symlink_components(output_root.parent)
+    if path_exists(output_root) and output_root.is_symlink():
+        raise ImportError(f"output root may not be a symlink: {output_root}")
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    manifest, manifest_bytes = read_manifest(manifest_path)
     validate_source(source, manifest)
 
-    if output_root.exists():
-        current = existing_files(output_root)
-        if current == {"import-manifest.json"}:
-            (output_root / "import-manifest.json").unlink()
-            output_root.rmdir()
-        elif replace:
-            if output_root.name not in {"np2kai", "np2kai-run1", "np2kai-run2"}:
-                raise ImportError("--replace is restricted to a named NP2kai output directory")
-            shutil.rmtree(output_root)
-        else:
-            raise ImportError(
-                f"output exists with generated or unexpected files: {output_root}; "
-                "use --replace only for this exact vendor/output directory"
-            )
-
-    output_root.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=".np2kai-import-", dir=str(output_root.parent)))
+    stage_path = Path(tempfile.mkdtemp(prefix=".np2kai-import-", dir=str(output_root.parent)))
+    backup: Path | None = None
     try:
         blobs: dict[str, bytes] = {}
         modes: dict[str, int] = {}
@@ -357,14 +458,41 @@ def import_snapshot(
             destination = entry["destination_path"]
             blobs[destination] = data
             modes[destination] = tree_mode(source, manifest["upstream"]["commit"], entry["upstream_path"])
-            write_file(stage, destination, data, modes[destination])
-        write_file(stage, "import-manifest.json", manifest_bytes)
-        write_file(stage, "README.md", render_readme(manifest).encode("utf-8"))
-        write_file(stage, "LICENSE-MAP.md", render_license_map(manifest, blobs).encode("utf-8"))
-        write_file(stage, "SHA256SUMS", render_hashes(manifest, blobs).encode("utf-8"))
-        os.replace(stage, output_root)
+            write_file(stage_path, destination, data, modes[destination])
+        write_file(stage_path, "import-manifest.json", manifest_bytes)
+        write_file(stage_path, "README.md", render_readme(manifest).encode("utf-8"))
+        write_file(stage_path, "LICENSE-MAP.md", render_license_map(manifest, blobs).encode("utf-8"))
+        write_file(stage_path, "SHA256SUMS", render_hashes(manifest, blobs).encode("utf-8"))
+        validate_snapshot_tree(stage_path, manifest, manifest_bytes)
+
+        if path_exists(output_root):
+            if not replace:
+                raise ImportError(
+                    f"output exists with generated or unexpected files: {output_root}; "
+                    "use --replace only for a validated importer snapshot"
+                )
+            validate_managed_snapshot(output_root)
+            backup = reserve_sibling(output_root.parent, ".np2kai-backup-")
+            os.replace(output_root, backup)
+            try:
+                os.replace(stage_path, output_root)
+            except Exception:
+                if not path_exists(output_root):
+                    os.replace(backup, output_root)
+                    backup = None
+                raise
+            shutil.rmtree(backup)
+            backup = None
+        else:
+            os.replace(stage_path, output_root)
     except Exception:
-        shutil.rmtree(stage, ignore_errors=True)
+        if path_exists(stage_path):
+            shutil.rmtree(stage_path, ignore_errors=True)
+        if backup is not None and path_exists(backup) and not path_exists(output_root):
+            try:
+                os.replace(backup, output_root)
+            except OSError:
+                pass
         raise
     print(f"imported {len(manifest['files'])} allowlisted files into {output_root}")
 
@@ -374,7 +502,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", required=True, type=Path, help="local Git checkout of the upstream repository")
     parser.add_argument("--manifest", type=Path, help="manifest JSON (defaults to repo/third_party/np2kai/import-manifest.json)")
     parser.add_argument("--output-root", type=Path, help="output directory (defaults to manifest directory)")
-    parser.add_argument("--replace", action="store_true", help="replace an existing named NP2kai output directory")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an existing validated NP2kai importer snapshot transactionally",
+    )
     return parser.parse_args()
 
 
@@ -382,10 +514,10 @@ def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[2]
     manifest_path = (args.manifest or (repo_root / "third_party/np2kai/import-manifest.json")).resolve()
-    output_root = (args.output_root or manifest_path.parent).resolve()
+    output_root = args.output_root or manifest_path.parent
     try:
         import_snapshot(args.source.resolve(), manifest_path, output_root, args.replace)
-    except ImportError as exc:
+    except (ImportError, OSError) as exc:
         print(f"error: {exc}", file=os.sys.stderr)
         return 2
     return 0

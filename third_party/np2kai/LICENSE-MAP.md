@@ -148,7 +148,6 @@ not an independent license classification or legal opinion.
 | src/fdd/fdd_mtr.h | fdd/fdd_mtr.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/fdd/sxsi.c | fdd/sxsi.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/fdd/sxsi.h | fdd/sxsi.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
-| src/fdd/sxsicd.c | fdd/sxsicd.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/fdd/sxsicd.h | fdd/sxsicd.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/fdd/sxsihdd.c | fdd/sxsihdd.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/fdd/sxsihdd.h | fdd/sxsihdd.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
