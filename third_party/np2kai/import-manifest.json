@@ -1,0 +1,4082 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "url": "https://github.com/AZO234/NP2kai.git",
+    "commit": "e2dc9046aa5c786fcfbfb87e883457e421026e31",
+    "observed_default_branch": "wx_alpha",
+    "project_version": "0.86.0.22",
+    "commit_author": "AZO <typesylph@gmail.com>",
+    "commit_date": "2026-06-19T09:00:21+09:00",
+    "subject": "Merge pull request #212 from orbisai0security/fix-v004-integer-overflow-extmem-alloc"
+  },
+  "baseline": {
+    "cpu": "i286",
+    "frontend": "none",
+    "guest_video_core": "included",
+    "host_display": "none",
+    "guest_sound_state": "source-inspection-selected-minimum",
+    "sound_generation": "disabled",
+    "host_audio": "none",
+    "network": false,
+    "threading": "minimum-single-thread"
+  },
+  "forbidden_prefixes": [
+    "sdl/",
+    "wx/",
+    "x/",
+    "windows/",
+    "jni/",
+    "embed/",
+    "i386c/",
+    "i386hax/",
+    "i286x/",
+    "network/",
+    "cmake/",
+    "vst3sdk/",
+    "romimage/",
+    "np2tool/",
+    "accessories/",
+    "sample/",
+    "misc/",
+    "sound/fmgen/",
+    "sound/mame/",
+    "sound/mamebsd/",
+    "sound/mamebsdsub/",
+    "sound/vermouth/",
+    "wab/cirrus_vga",
+    "wab/tgui9680",
+    "io/pcidev.c",
+    "io/pegc.c",
+    "mem/x86/",
+    "io/x86/",
+    "io/x64/"
+  ],
+  "forbidden_extensions": [
+    ".hdm",
+    ".hdi",
+    ".nhd",
+    ".vhd",
+    ".d88",
+    ".fdi",
+    ".xdf",
+    ".iso",
+    ".img",
+    ".rom",
+    ".bin",
+    ".exe",
+    ".dll",
+    ".sys",
+    ".com"
+  ],
+  "generated_files": [
+    "LICENSE-MAP.md",
+    "README.md",
+    "SHA256SUMS"
+  ],
+  "files": [
+    {
+      "upstream_path": "common.h",
+      "destination_path": "src/common.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "compiler_base.h",
+      "destination_path": "src/compiler_base.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "np2ver.h",
+      "destination_path": "src/np2ver.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "calendar.c",
+      "destination_path": "src/calendar.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "calendar.h",
+      "destination_path": "src/calendar.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "debugsub.c",
+      "destination_path": "src/debugsub.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "debugsub.h",
+      "destination_path": "src/debugsub.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "keystat.c",
+      "destination_path": "src/keystat.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "keystat.h",
+      "destination_path": "src/keystat.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "keystat.tbl",
+      "destination_path": "src/keystat.tbl",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "nevent.c",
+      "destination_path": "src/nevent.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "nevent.h",
+      "destination_path": "src/nevent.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "pccore.c",
+      "destination_path": "src/pccore.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "pccore.h",
+      "destination_path": "src/pccore.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "timing.c",
+      "destination_path": "src/timing.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "timing.h",
+      "destination_path": "src/timing.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "statsave.h",
+      "destination_path": "src/statsave.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/cpumem.c",
+      "destination_path": "src/i286c/cpumem.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/cpumem.h",
+      "destination_path": "src/i286c/cpumem.h",
+      "role": "header",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c.c",
+      "destination_path": "src/i286c/i286c.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c.h",
+      "destination_path": "src/i286c/i286c.h",
+      "role": "header",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c.mcr",
+      "destination_path": "src/i286c/i286c.mcr",
+      "role": "include-fragment",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_0f.c",
+      "destination_path": "src/i286c/i286c_0f.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_8x.c",
+      "destination_path": "src/i286c/i286c_8x.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_ea.c",
+      "destination_path": "src/i286c/i286c_ea.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_f6.c",
+      "destination_path": "src/i286c/i286c_f6.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_fe.c",
+      "destination_path": "src/i286c/i286c_fe.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_mn.c",
+      "destination_path": "src/i286c/i286c_mn.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_rp.c",
+      "destination_path": "src/i286c/i286c_rp.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_sf.c",
+      "destination_path": "src/i286c/i286c_sf.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/i286c_sf.mcr",
+      "destination_path": "src/i286c/i286c_sf.mcr",
+      "role": "include-fragment",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/v30patch.c",
+      "destination_path": "src/i286c/v30patch.c",
+      "role": "source",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/v30patch.h",
+      "destination_path": "src/i286c/v30patch.h",
+      "role": "header",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "i286c/cpucore.h",
+      "destination_path": "src/i286c/cpucore.h",
+      "role": "header",
+      "build_group": "i286",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios.c",
+      "destination_path": "src/bios/bios.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios.h",
+      "destination_path": "src/bios/bios.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios09.c",
+      "destination_path": "src/bios/bios09.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios0c.c",
+      "destination_path": "src/bios/bios0c.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios12.c",
+      "destination_path": "src/bios/bios12.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios13.c",
+      "destination_path": "src/bios/bios13.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios18.c",
+      "destination_path": "src/bios/bios18.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios19.c",
+      "destination_path": "src/bios/bios19.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios1a.c",
+      "destination_path": "src/bios/bios1a.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios1b.c",
+      "destination_path": "src/bios/bios1b.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios1c.c",
+      "destination_path": "src/bios/bios1c.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/bios1f.c",
+      "destination_path": "src/bios/bios1f.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/biosfd80.res",
+      "destination_path": "src/bios/biosfd80.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/biosmem.h",
+      "destination_path": "src/bios/biosmem.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/fdfmt.h",
+      "destination_path": "src/bios/fdfmt.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/itfrom.res",
+      "destination_path": "src/bios/itfrom.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/keytable.res",
+      "destination_path": "src/bios/keytable.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/rsbios.h",
+      "destination_path": "src/bios/rsbios.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/startup.res",
+      "destination_path": "src/bios/startup.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/sxsibios.c",
+      "destination_path": "src/bios/sxsibios.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "bios/sxsibios.h",
+      "destination_path": "src/bios/sxsibios.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/amd98.h",
+      "destination_path": "src/cbus/amd98.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/atapicmd.h",
+      "destination_path": "src/cbus/atapicmd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/board118.h",
+      "destination_path": "src/cbus/board118.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/board14.h",
+      "destination_path": "src/cbus/board14.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/board26k.h",
+      "destination_path": "src/cbus/board26k.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/board86.h",
+      "destination_path": "src/cbus/board86.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardlol.h",
+      "destination_path": "src/cbus/boardlol.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardmo.h",
+      "destination_path": "src/cbus/boardmo.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardpx.h",
+      "destination_path": "src/cbus/boardpx.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardsb16.h",
+      "destination_path": "src/cbus/boardsb16.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardso.h",
+      "destination_path": "src/cbus/boardso.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardspb.h",
+      "destination_path": "src/cbus/boardspb.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/boardx2.h",
+      "destination_path": "src/cbus/boardx2.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/cbuscore.c",
+      "destination_path": "src/cbus/cbuscore.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/cbuscore.h",
+      "destination_path": "src/cbus/cbuscore.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/cs4231io.h",
+      "destination_path": "src/cbus/cs4231io.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/ct1741io.h",
+      "destination_path": "src/cbus/ct1741io.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/ct1745io.h",
+      "destination_path": "src/cbus/ct1745io.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/gpibio.h",
+      "destination_path": "src/cbus/gpibio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/ideio.h",
+      "destination_path": "src/cbus/ideio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/mpu98ii.c",
+      "destination_path": "src/cbus/mpu98ii.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/mpu98ii.h",
+      "destination_path": "src/cbus/mpu98ii.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/pc9861k.h",
+      "destination_path": "src/cbus/pc9861k.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/pcm86io.h",
+      "destination_path": "src/cbus/pcm86io.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/sasiio.h",
+      "destination_path": "src/cbus/sasiio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/scsicmd.h",
+      "destination_path": "src/cbus/scsicmd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/scsiio.h",
+      "destination_path": "src/cbus/scsiio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/smpu98.h",
+      "destination_path": "src/cbus/smpu98.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/codecnv.h",
+      "destination_path": "src/codecnv/codecnv.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/eucsjis.c",
+      "destination_path": "src/codecnv/eucsjis.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/eucucs2.c",
+      "destination_path": "src/codecnv/eucucs2.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/jisucs2.c",
+      "destination_path": "src/codecnv/jisucs2.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/sjiseuc.c",
+      "destination_path": "src/codecnv/sjiseuc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/sjisucs2.c",
+      "destination_path": "src/codecnv/sjisucs2.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/tcswap16.c",
+      "destination_path": "src/codecnv/tcswap16.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/tcswap32.c",
+      "destination_path": "src/codecnv/tcswap32.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/textcnv.c",
+      "destination_path": "src/codecnv/textcnv.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/textcnv.h",
+      "destination_path": "src/codecnv/textcnv.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/ucs2sjis.c",
+      "destination_path": "src/codecnv/ucs2sjis.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/ucs2ucs4.c",
+      "destination_path": "src/codecnv/ucs2ucs4.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/ucs2utf8.c",
+      "destination_path": "src/codecnv/ucs2utf8.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/ucs4ucs2.c",
+      "destination_path": "src/codecnv/ucs4ucs2.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/ucs4utf8.c",
+      "destination_path": "src/codecnv/ucs4utf8.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/utf8ucs2.c",
+      "destination_path": "src/codecnv/utf8ucs2.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "codecnv/utf8ucs4.c",
+      "destination_path": "src/codecnv/utf8ucs4.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/_memory.c",
+      "destination_path": "src/common/_memory.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/_memory.h",
+      "destination_path": "src/common/_memory.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/bmpdata.c",
+      "destination_path": "src/common/bmpdata.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/bmpdata.h",
+      "destination_path": "src/common/bmpdata.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/lstarray.c",
+      "destination_path": "src/common/lstarray.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/lstarray.h",
+      "destination_path": "src/common/lstarray.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/milstr.c",
+      "destination_path": "src/common/milstr.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/milstr.h",
+      "destination_path": "src/common/milstr.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/parts.c",
+      "destination_path": "src/common/parts.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/parts.h",
+      "destination_path": "src/common/parts.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/strres.c",
+      "destination_path": "src/common/strres.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/strres.h",
+      "destination_path": "src/common/strres.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/textfile.c",
+      "destination_path": "src/common/textfile.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "common/textfile.h",
+      "destination_path": "src/common/textfile.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fddfile.c",
+      "destination_path": "src/diskimage/fddfile.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fddfile.h",
+      "destination_path": "src/diskimage/fddfile.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/img_common.h",
+      "destination_path": "src/diskimage/img_common.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/img_strres.c",
+      "destination_path": "src/diskimage/img_strres.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/img_strres.h",
+      "destination_path": "src/diskimage/img_strres.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_bkdsk.c",
+      "destination_path": "src/diskimage/fd/fdd_bkdsk.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_bkdsk.h",
+      "destination_path": "src/diskimage/fd/fdd_bkdsk.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_d88.c",
+      "destination_path": "src/diskimage/fd/fdd_d88.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_d88.h",
+      "destination_path": "src/diskimage/fd/fdd_d88.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_dcp.c",
+      "destination_path": "src/diskimage/fd/fdd_dcp.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_dcp.h",
+      "destination_path": "src/diskimage/fd/fdd_dcp.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_head_d88.h",
+      "destination_path": "src/diskimage/fd/fdd_head_d88.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_head_dcp.h",
+      "destination_path": "src/diskimage/fd/fdd_head_dcp.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_head_nfd.h",
+      "destination_path": "src/diskimage/fd/fdd_head_nfd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_head_vfdd.h",
+      "destination_path": "src/diskimage/fd/fdd_head_vfdd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_nfd.c",
+      "destination_path": "src/diskimage/fd/fdd_nfd.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_nfd.h",
+      "destination_path": "src/diskimage/fd/fdd_nfd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_vfdd.c",
+      "destination_path": "src/diskimage/fd/fdd_vfdd.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_vfdd.h",
+      "destination_path": "src/diskimage/fd/fdd_vfdd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_xdf.c",
+      "destination_path": "src/diskimage/fd/fdd_xdf.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "diskimage/fd/fdd_xdf.h",
+      "destination_path": "src/diskimage/fd/fdd_xdf.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/d88head.h",
+      "destination_path": "src/fdd/d88head.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/diskdrv.c",
+      "destination_path": "src/fdd/diskdrv.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/diskdrv.h",
+      "destination_path": "src/fdd/diskdrv.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/fdd_mtr.c",
+      "destination_path": "src/fdd/fdd_mtr.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/fdd_mtr.h",
+      "destination_path": "src/fdd/fdd_mtr.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/sxsi.c",
+      "destination_path": "src/fdd/sxsi.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/sxsi.h",
+      "destination_path": "src/fdd/sxsi.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/sxsicd.h",
+      "destination_path": "src/fdd/sxsicd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/sxsihdd.c",
+      "destination_path": "src/fdd/sxsihdd.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "fdd/sxsihdd.h",
+      "destination_path": "src/fdd/sxsihdd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/font.c",
+      "destination_path": "src/font/font.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/font.h",
+      "destination_path": "src/font/font.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontdata.c",
+      "destination_path": "src/font/fontdata.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontdata.h",
+      "destination_path": "src/font/fontdata.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontdata.res",
+      "destination_path": "src/font/fontdata.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontfm7.c",
+      "destination_path": "src/font/fontfm7.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontmake.c",
+      "destination_path": "src/font/fontmake.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontmake.h",
+      "destination_path": "src/font/fontmake.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontpc88.c",
+      "destination_path": "src/font/fontpc88.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontpc98.c",
+      "destination_path": "src/font/fontpc98.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontv98.c",
+      "destination_path": "src/font/fontv98.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontx1.c",
+      "destination_path": "src/font/fontx1.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "font/fontx68k.c",
+      "destination_path": "src/font/fontx68k.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/artic.c",
+      "destination_path": "src/io/artic.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/artic.h",
+      "destination_path": "src/io/artic.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/bmsio.c",
+      "destination_path": "src/io/bmsio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/bmsio.h",
+      "destination_path": "src/io/bmsio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/cgrom.c",
+      "destination_path": "src/io/cgrom.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/cgrom.h",
+      "destination_path": "src/io/cgrom.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/cpuio.c",
+      "destination_path": "src/io/cpuio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/cpuio.h",
+      "destination_path": "src/io/cpuio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/crtc.c",
+      "destination_path": "src/io/crtc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/crtc.h",
+      "destination_path": "src/io/crtc.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/dipsw.c",
+      "destination_path": "src/io/dipsw.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/dipsw.h",
+      "destination_path": "src/io/dipsw.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/dmac.c",
+      "destination_path": "src/io/dmac.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/dmac.h",
+      "destination_path": "src/io/dmac.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/egc.c",
+      "destination_path": "src/io/egc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/egc.h",
+      "destination_path": "src/io/egc.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/emsio.c",
+      "destination_path": "src/io/emsio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/emsio.h",
+      "destination_path": "src/io/emsio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/epsonio.c",
+      "destination_path": "src/io/epsonio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/epsonio.h",
+      "destination_path": "src/io/epsonio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/fdc.c",
+      "destination_path": "src/io/fdc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/fdc.h",
+      "destination_path": "src/io/fdc.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/fdd320.c",
+      "destination_path": "src/io/fdd320.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/fdd320.h",
+      "destination_path": "src/io/fdd320.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc.c",
+      "destination_path": "src/io/gdc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc.h",
+      "destination_path": "src/io/gdc.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_cmd.h",
+      "destination_path": "src/io/gdc_cmd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_cmd.tbl",
+      "destination_path": "src/io/gdc_cmd.tbl",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_pset.c",
+      "destination_path": "src/io/gdc_pset.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_pset.h",
+      "destination_path": "src/io/gdc_pset.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_sub.c",
+      "destination_path": "src/io/gdc_sub.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/gdc_sub.h",
+      "destination_path": "src/io/gdc_sub.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/iocore.c",
+      "destination_path": "src/io/iocore.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/iocore.h",
+      "destination_path": "src/io/iocore.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/iocore16.tbl",
+      "destination_path": "src/io/iocore16.tbl",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/mouseif.c",
+      "destination_path": "src/io/mouseif.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/mouseif.h",
+      "destination_path": "src/io/mouseif.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/necio.c",
+      "destination_path": "src/io/necio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/necio.h",
+      "destination_path": "src/io/necio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/nmiio.c",
+      "destination_path": "src/io/nmiio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/nmiio.h",
+      "destination_path": "src/io/nmiio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/np2sysp.c",
+      "destination_path": "src/io/np2sysp.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/np2sysp.h",
+      "destination_path": "src/io/np2sysp.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/pic.c",
+      "destination_path": "src/io/pic.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/pic.h",
+      "destination_path": "src/io/pic.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/pit.c",
+      "destination_path": "src/io/pit.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/pit.h",
+      "destination_path": "src/io/pit.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/printif.c",
+      "destination_path": "src/io/printif.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/printif.h",
+      "destination_path": "src/io/printif.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/serial.c",
+      "destination_path": "src/io/serial.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/serial.h",
+      "destination_path": "src/io/serial.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/sysport.c",
+      "destination_path": "src/io/sysport.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/sysport.h",
+      "destination_path": "src/io/sysport.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/upd4990.c",
+      "destination_path": "src/io/upd4990.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "io/upd4990.h",
+      "destination_path": "src/io/upd4990.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/gcircle.c",
+      "destination_path": "src/lio/gcircle.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/gline.c",
+      "destination_path": "src/lio/gline.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/gpset.c",
+      "destination_path": "src/lio/gpset.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/gput1.c",
+      "destination_path": "src/lio/gput1.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/gscreen.c",
+      "destination_path": "src/lio/gscreen.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/lio.c",
+      "destination_path": "src/lio/lio.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/lio.h",
+      "destination_path": "src/lio/lio.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "lio/lio.res",
+      "destination_path": "src/lio/lio.res",
+      "role": "resource-source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/dmav30.c",
+      "destination_path": "src/mem/dmav30.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/dmav30.h",
+      "destination_path": "src/mem/dmav30.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/dmax86.c",
+      "destination_path": "src/mem/dmax86.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/dmax86.h",
+      "destination_path": "src/mem/dmax86.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memegc.c",
+      "destination_path": "src/mem/memegc.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memegc.h",
+      "destination_path": "src/mem/memegc.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memems.c",
+      "destination_path": "src/mem/memems.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memems.h",
+      "destination_path": "src/mem/memems.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memepp.c",
+      "destination_path": "src/mem/memepp.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memepp.h",
+      "destination_path": "src/mem/memepp.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memtram.c",
+      "destination_path": "src/mem/memtram.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memtram.h",
+      "destination_path": "src/mem/memtram.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memvga.c",
+      "destination_path": "src/mem/memvga.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memvga.h",
+      "destination_path": "src/mem/memvga.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memvram.c",
+      "destination_path": "src/mem/memvram.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "mem/memvram.h",
+      "destination_path": "src/mem/memvram.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "trap/inttrap.c",
+      "destination_path": "src/trap/inttrap.c",
+      "role": "source",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "trap/inttrap.h",
+      "destination_path": "src/trap/inttrap.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "trap/steptrap.c",
+      "destination_path": "src/trap/steptrap.c",
+      "role": "source",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "trap/steptrap.h",
+      "destination_path": "src/trap/steptrap.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/dispsync.c",
+      "destination_path": "src/vram/dispsync.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/dispsync.h",
+      "destination_path": "src/vram/dispsync.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/makegrex.c",
+      "destination_path": "src/vram/makegrex.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/makegrex.h",
+      "destination_path": "src/vram/makegrex.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/makegrph.c",
+      "destination_path": "src/vram/makegrph.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/makegrph.h",
+      "destination_path": "src/vram/makegrph.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/makegrph.mcr",
+      "destination_path": "src/vram/makegrph.mcr",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/maketext.c",
+      "destination_path": "src/vram/maketext.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/maketext.h",
+      "destination_path": "src/vram/maketext.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/maketgrp.c",
+      "destination_path": "src/vram/maketgrp.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/maketgrp.h",
+      "destination_path": "src/vram/maketgrp.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/palettes.c",
+      "destination_path": "src/vram/palettes.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/palettes.h",
+      "destination_path": "src/vram/palettes.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/scrndraw.c",
+      "destination_path": "src/vram/scrndraw.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/scrndraw.h",
+      "destination_path": "src/vram/scrndraw.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/sdraw.c",
+      "destination_path": "src/vram/sdraw.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/sdraw.h",
+      "destination_path": "src/vram/sdraw.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/sdraw.mcr",
+      "destination_path": "src/vram/sdraw.mcr",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/sdrawex.mcr",
+      "destination_path": "src/vram/sdrawex.mcr",
+      "role": "include-fragment",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/sdrawq16.c",
+      "destination_path": "src/vram/sdrawq16.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/vram.c",
+      "destination_path": "src/vram/vram.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "vram/vram.h",
+      "destination_path": "src/vram/vram.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "wab/wab_rly.c",
+      "destination_path": "src/wab/wab_rly.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "wab/wab_rly.h",
+      "destination_path": "src/wab/wab_rly.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/adpcm.h",
+      "destination_path": "src/sound/adpcm.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/beep.h",
+      "destination_path": "src/sound/beep.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/cs4231.h",
+      "destination_path": "src/sound/cs4231.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/ct1741.h",
+      "destination_path": "src/sound/ct1741.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/fmboard.h",
+      "destination_path": "src/sound/fmboard.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opna.h",
+      "destination_path": "src/sound/opna.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opngen.h",
+      "destination_path": "src/sound/opngen.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opl3.h",
+      "destination_path": "src/sound/opl3.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/oplgen.h",
+      "destination_path": "src/sound/oplgen.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opntimer.h",
+      "destination_path": "src/sound/opntimer.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/pcm86.h",
+      "destination_path": "src/sound/pcm86.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/pcmmix.h",
+      "destination_path": "src/sound/pcmmix.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/psggen.h",
+      "destination_path": "src/sound/psggen.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/rhythm.h",
+      "destination_path": "src/sound/rhythm.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/s98.h",
+      "destination_path": "src/sound/s98.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/sound.h",
+      "destination_path": "src/sound/sound.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/soundrom.h",
+      "destination_path": "src/sound/soundrom.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/tms3631.h",
+      "destination_path": "src/sound/tms3631.h",
+      "role": "header",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "LICENSE",
+      "destination_path": "LICENSE",
+      "role": "license",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "explicit-root-mit",
+        "documents": [
+          "LICENSE"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "LICENSES/LICENSE.TXT",
+      "destination_path": "LICENSES/LICENSE.TXT",
+      "role": "license",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "component-specific",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "LICENSES/全体説明.txt",
+      "destination_path": "LICENSES/全体説明.txt",
+      "role": "license",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "component-specific",
+        "documents": [
+          "LICENSES/全体説明.txt"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    }
+  ]
+}

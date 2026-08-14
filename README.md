@@ -13,8 +13,12 @@ Control Plane Base, Binary Data Plane v1, and RAM-backed File Transfer Base
 have been implemented and
 verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The automated checks
 build the firmware, create the merged image, boot it under the emulator, and
-validate these milestones independently. No NP2 or NP2kai source code has been
-imported, and no physical hardware has been validated.
+validate these milestones independently. A pinned NP2kai snapshot for the
+initial i286 core baseline is now vendored and its manifest/blob metadata has
+been verified. It is a source-inspection-based candidate set, not a complete
+dependency closure or an executable core; Ubuntu-native Step 4 compile/link/run
+and physical hardware validation remain outstanding. NP2 source itself has not
+been imported.
 
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
@@ -94,3 +98,4 @@ representative of real target hardware.
 - [Development environment](docs/development-environment.md)
 - [Bring-up plan](docs/bringup-plan.md)
 - [Licensing and provenance](docs/licensing.md)
+- [Vendored NP2kai snapshot](third_party/np2kai/README.md)
