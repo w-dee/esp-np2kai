@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
 """Validate an NP2TEST foundation image and its optional digest file."""
 
 from __future__ import annotations
@@ -9,9 +10,9 @@ import sys
 from pathlib import Path
 
 try:
-    from .build_np2test import LayoutError, check_nasm, load_layout
+    from .build_np2test import LayoutError, load_layout
 except ImportError:  # Direct execution: python3 tools/guest/verify_np2test.py
-    from build_np2test import LayoutError, check_nasm, load_layout
+    from build_np2test import LayoutError, load_layout
 
 
 class VerificationError(ValueError):
@@ -21,7 +22,6 @@ class VerificationError(ValueError):
 def verify(layout_path: Path, image_path: Path, sha256_path: Path | None = None,
            expected_sha256: str | None = None) -> str:
     layout = load_layout(layout_path)
-    check_nasm(layout["toolchain"]["version"])
     try:
         image = image_path.read_bytes()
     except OSError as exc:

@@ -28,3 +28,25 @@ This license applies to the separately identified NP2TEST component under this
 directory, including its original source, layout, builder metadata, and
 generated golden image when one is added. It does not select a license for the
 rest of the esp-np2kai repository.
+
+## Auditable scope map
+
+The following existing project-owned files are also part of this separately
+licensed NP2TEST component and carry the SPDX identifier where their syntax
+permits it:
+
+- `tests/guest/README.md`
+- `tests/guest/protocol/result-v1.md`
+- `tests/guest/np2test/Makefile`
+- `tests/guest/np2test/layout.json`
+- `tests/guest/np2test/reference-validation.md`
+- `tests/guest/np2test/memory-map.md`
+- `tools/guest/build_np2test.py`
+- `tools/guest/verify_np2test.py`
+- `tools/guest/test_np2test.py`
+
+This is an explicit path list, not a license grant for all of `tests/guest/`
+or `tools/guest/`. In particular, future `tests/guest/freedos98/` and
+`tests/guest/elks/` trees, fetched upstream source, overlays, and third-party
+material are outside this BSD-2-Clause scope and retain their own provenance
+and licenses.

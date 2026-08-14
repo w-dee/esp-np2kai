@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BSD-2-Clause
+
 ROOT := $(abspath ../../..)
 LAYOUT := $(ROOT)/tests/guest/np2test/layout.json
 OUTDIR := $(ROOT)/build/guest/np2test

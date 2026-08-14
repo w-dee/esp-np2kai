@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+
 # Reproducible PC-9801 guest fixtures
 
 This directory contains the guest-side fixtures planned for Step 3.5.  The
@@ -19,10 +21,22 @@ signatures described by the layout.  It does not contain executable IPL bytes,
 test code, or a golden image yet.  Those require a separate review of the
 assembly layout, memory map, and the result block placement.
 
-The final raw filename extension remains deliberately unselected.  The
-builder uses `np2test-fd1232.image` as a neutral development artifact while
-`.hdm`, `.ima`, `.img`, and `.fdd` remain candidates for the later NP2kai and
-independent-emulator attachment check.
+The raw filename extension remains unresolved. The builder uses
+`np2test-fd1232.image` as a neutral development artifact while `.hdm`, `.ima`,
+`.img`, and `.fdd` remain candidates. DOSBox-X geometry recognition is recorded
+in `np2test/reference-validation.md`, but final selection still requires a
+pinned NP2kai reference attachment check; geometry recognition alone does not
+prove full boot compatibility.
+
+The result-v1 wire contract is complete in
+`protocol/result-v1.md`; executable guest code will consume it in a later
+milestone.
+
+The build contract uses the Ubuntu 24.04 `nasm=2.16.01-1build1` package and
+CPython 3.12 standard-library execution. The semantic versions are checked at
+build time and the actual Python patch version is recorded in the generated
+manifest. The Ubuntu package `.deb` is not separately SHA-pinned here; the
+canonical CI image/container is the intended artifact pin.
 
 Build and verify the foundation with:
 
