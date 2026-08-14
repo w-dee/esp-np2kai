@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: BSD-2-Clause
+
 name: NP2TEST fixture CI
 
 on:

@@ -37,6 +37,7 @@ permits it:
 
 - `tests/guest/README.md`
 - `tests/guest/protocol/result-v1.md`
+- `.github/workflows/np2test.yml`
 - `tests/guest/np2test/Makefile`
 - `tests/guest/np2test/layout.json`
 - `tests/guest/np2test/reference-validation.md`
@@ -50,6 +51,8 @@ permits it:
 - `tools/guest/build_np2test.py`
 - `tools/guest/verify_np2test.py`
 - `tools/guest/test_np2test.py`
+- `tools/guest/check_np2test_reproducibility.py`
+- `tools/guest/check_np2test_worktree.py`
 
 This is an explicit path list, not a license grant for all of `tests/guest/`
 or `tools/guest/`. In particular, future `tests/guest/freedos98/` and
