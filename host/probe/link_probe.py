@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import shlex
 import subprocess
 from pathlib import Path
@@ -24,6 +26,14 @@ from compile_probe import (
 
 SCHEMA_VERSION = 1
 SOURCE_PATH_GLOB_CHARS = set("*?[]{}")
+MANAGED_REPORT_NAMES = (
+    "combined.o",
+    "link-results.json",
+    "link-results.txt",
+    "object-commands.txt",
+    "undefined-symbols.txt",
+    "symbol-references.tsv",
+)
 
 
 class ProbeError(RuntimeError):
@@ -32,6 +42,53 @@ class ProbeError(RuntimeError):
 
 def fail(message: str) -> None:
     raise ProbeError(message)
+
+
+def reject_symlink_components(path: Path, label: str) -> None:
+    """Reject an output path that would traverse an unexpected symlink."""
+
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            fail(f"unexpected symlink in {label}: {current}")
+
+
+def remove_file_artifact(path: Path, label: str) -> None:
+    """Remove one managed file, never recursively removing an unexpected dir."""
+
+    if not os.path.lexists(path):
+        return
+    if path.is_symlink():
+        path.unlink()
+        return
+    if path.is_dir():
+        fail(f"unexpected directory for managed {label}: {path}")
+    path.unlink()
+
+
+def clean_managed_outputs(output_dir: Path) -> None:
+    """Clear only artifacts owned by this probe from one output directory."""
+
+    reject_symlink_components(output_dir, "link-probe output")
+    if os.path.lexists(output_dir):
+        if output_dir.is_symlink():
+            fail(f"link-probe output directory may not be a symlink: {output_dir}")
+        if not output_dir.is_dir():
+            fail(f"link-probe output is not a directory: {output_dir}")
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    objects = output_dir / "objects"
+    if os.path.lexists(objects):
+        if objects.is_symlink():
+            objects.unlink()
+        elif objects.is_dir():
+            shutil.rmtree(objects)
+        else:
+            fail(f"unexpected non-directory for managed objects: {objects}")
+    for name in MANAGED_REPORT_NAMES:
+        remove_file_artifact(output_dir / name, name)
 
 
 def validate_logical_source(value: str, label: str) -> None:
@@ -159,10 +216,13 @@ def main() -> int:
     parser.add_argument("--cflag", action="append", default=[])
     args = parser.parse_args()
 
+    output_argument = args.output_dir.absolute()
+    clean_managed_outputs(output_argument)
+
     source_root = args.source_root.resolve()
     source_list = args.source_list.resolve()
     source_map = args.source_map.resolve()
-    output_dir = args.output_dir.resolve()
+    output_dir = output_argument.resolve()
     if not source_root.is_dir():
         fail(f"source root is not a directory: {source_root}")
     if not source_list.is_file():
@@ -176,7 +236,6 @@ def main() -> int:
     for source in sources:
         validate_logical_source(source, "source-list entry")
     source_overrides = read_source_map(source_map, sources)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     repo_root = source_root.parents[2]
     source_map_root = source_map.parent.resolve()
@@ -244,6 +303,8 @@ def main() -> int:
             stderr=subprocess.STDOUT,
             check=False,
         )
+        if completed.returncode:
+            remove_file_artifact(object_path, f"failed object {logical}")
         object_results.append(
             {
                 "source": logical,
@@ -300,6 +361,7 @@ def main() -> int:
     link_command = [args.compiler, "-r", "-o", str(combined)] + [
         str(object_paths[source]) for source in sources
     ]
+    remove_file_artifact(combined, "combined.o")
     linked = subprocess.run(
         link_command,
         cwd=compile_cwd,
@@ -315,6 +377,7 @@ def main() -> int:
     ]
     base_summary["relocatable_link_diagnostics"] = normalize_text(linked.stdout, roots)
     if linked.returncode:
+        remove_file_artifact(combined, "combined.o")
         message = "relocatable link failed"
         write_reports(output_dir, base_summary, object_commands, [], {}, message)
         return 1
