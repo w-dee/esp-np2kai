@@ -23,6 +23,7 @@ typedef uint32_t UINT32;
 typedef int64_t SINT64;
 typedef uint64_t UINT64;
 typedef bool BOOL;
+typedef intptr_t INT_PTR;
 
 #ifndef TRUE
 #define TRUE ((BOOL)1)

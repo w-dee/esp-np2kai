@@ -45,6 +45,7 @@ HEADLESS_SCRNMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_test
 HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
 HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
 HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
+HEADLESS_COMMNG_TEST_VAEG_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test_vaeg
 PYTHON ?= python3
 CC ?= cc
 NM ?= nm
@@ -228,4 +229,9 @@ test-headless-commng:
 		"$(HEADLESS_COMMNG_SOURCE)" "$(HEADLESS_COMMNG_TEST_SOURCE)" \
 		-o "$(HEADLESS_COMMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_COMMNG_TEST_OUTPUT)"
-	@printf '%s\n' 'Headless commng backend test passed (static disconnected contract).'
+	@$(CC) -std=c11 -Wall -Wextra -Werror -DVAEG_FIX \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_COMMNG_SOURCE)" "$(HEADLESS_COMMNG_TEST_SOURCE)" \
+		-o "$(HEADLESS_COMMNG_TEST_VAEG_OUTPUT)"
+	@"$(HEADLESS_COMMNG_TEST_VAEG_OUTPUT)"
+	@printf '%s\n' 'Headless commng backend tests passed (normal and VAEG_FIX ABI configurations).'
