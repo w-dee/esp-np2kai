@@ -6,6 +6,7 @@ VENDOR_ROOT := $(HOST_ROOT)/third_party/np2kai
 VENDOR_SRC := $(VENDOR_ROOT)/src
 SOURCE_LIST := $(CURDIR)/probe/host_core_sources.txt
 PROBE_SCRIPT := $(CURDIR)/probe/compile_probe.py
+LINK_PROBE_SCRIPT := $(CURDIR)/probe/link_probe.py
 PREPARER := $(CURDIR)/tools/prepare_step4_sources.py
 PATCH_SET := $(CURDIR)/patches/np2kai/step4/patch-set.json
 IMPORT_MANIFEST := $(HOST_ROOT)/third_party/np2kai/import-manifest.json
@@ -14,8 +15,10 @@ BUILD_DIR ?= $(CURDIR)/build/phase2
 PROBE_OUTPUT := $(BUILD_DIR)/compile
 PATCH_OUTPUT := $(BUILD_DIR)/patches
 MAPPED_PROBE_OUTPUT := $(BUILD_DIR)/compile-mapped
+LINK_PROBE_OUTPUT := $(BUILD_DIR)/link-mapped
 PYTHON ?= python3
 CC ?= cc
+NM ?= nm
 PROBE_INCLUDE_DIRS := \
 	$(CURDIR)/compat \
 	$(VENDOR_SRC) \
@@ -40,7 +43,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -94,3 +97,19 @@ phase1-probe-mapped: phase1-prepare-sources
 		$(foreach f,$(PROBE_CFLAGS),--cflag="$(f)")
 	@printf '%s\n' 'Mapped headless compiler-contract syntax inventory written to $(MAPPED_PROBE_OUTPUT)' \
 		'No link, import, executable, or runtime probe was performed.'
+
+phase1-link-probe-mapped: phase1-prepare-sources
+	@mkdir -p "$(LINK_PROBE_OUTPUT)"
+	@$(PYTHON) "$(LINK_PROBE_SCRIPT)" \
+		--compiler "$(CC)" \
+		--nm "$(NM)" \
+		--source-root "$(VENDOR_SRC)" \
+		--source-list "$(SOURCE_LIST)" \
+		--source-map "$(PATCH_OUTPUT)/source-map.json" \
+		--output-dir "$(LINK_PROBE_OUTPUT)" \
+		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \
+		$(foreach d,$(PROBE_DEFINES),--define "$(d)") \
+		$(foreach d,$(PROBE_STRING_DEFINES),--string-define "$(d)") \
+		$(foreach f,$(PROBE_CFLAGS),--cflag="$(f)")
+	@printf '%s\n' 'Mapped relocatable link-closure evidence written to $(LINK_PROBE_OUTPUT)' \
+		'No executable, runtime, FDD, or NP2TEST probe was performed.'
