@@ -43,7 +43,7 @@ typedef uint32_t DWORD;
 #define OEMSNPRINTF snprintf
 #define OEMSPRINTF sprintf
 #define _T(string) string
-#define _tcsicmp strcasecmp
+#define _tcsicmp milstr_cmp
 #define _tcsnicmp strncasecmp
 
 #ifndef CPU_MULTIPLE_MAX
