@@ -59,6 +59,7 @@ typedef uint32_t DWORD;
 /* Release-like lineage behavior: tracing and assertions are inactive. */
 #define TRACEOUT(arguments) ((void)0)
 #define __ASSERT(condition) ((void)0)
+#define msgbox(title, message) ((void)0)
 
 /* The host timing implementation is intentionally deferred beyond syntax probing. */
 UINT32 np2_host_gettick(void);
@@ -92,5 +93,7 @@ typedef int32_t FILELEN;
  * NELEMENTS, and the memory-allocation macros used by retained sources. */
 #include <common.h>
 #include <common/_memory.h>
+#include <common/lstarray.h>
+#include <common/milstr.h>
 
 #endif /* NP2_HOST_COMPILER_H */
