@@ -32,13 +32,26 @@ int main(void)
 	char data_path[MAX_PATH];
 	char truncate_path[MAX_PATH];
 	char utf8_path[MAX_PATH];
+	char enum_directory[MAX_PATH];
+	char enum_regular[MAX_PATH];
+	char enum_hidden[MAX_PATH];
+	char enum_subdirectory[MAX_PATH];
+	char enum_missing[MAX_PATH];
 	char path[MAX_PATH];
 	char cut[MAX_PATH];
 	char readback[32];
 	FILEH handle;
+	FLISTH list;
+	FLINFO info;
 	UINT read_size;
 	struct stat status;
 	int ok = 1;
+	int seen_dot = 0;
+	int seen_dotdot = 0;
+	int seen_regular = 0;
+	int seen_hidden = 0;
+	int seen_subdirectory = 0;
+	int iteration;
 
 	directory = mkdtemp(directory_template);
 	if (!check(directory != NULL, "mkdtemp failed")) {
@@ -50,6 +63,16 @@ int main(void)
 		"truncate.bin"), "truncate path is too long");
 	ok &= check(make_path(utf8_path, sizeof(utf8_path), directory,
 		"日本語.bin"), "UTF-8 path is too long");
+	ok &= check(make_path(enum_directory, sizeof(enum_directory), directory,
+		"enum"), "enumeration directory path is too long");
+	ok &= check(make_path(enum_regular, sizeof(enum_regular), enum_directory,
+		"regular.bin"), "enumeration regular path is too long");
+	ok &= check(make_path(enum_hidden, sizeof(enum_hidden), enum_directory,
+		".hidden"), "enumeration hidden path is too long");
+	ok &= check(make_path(enum_subdirectory, sizeof(enum_subdirectory),
+		enum_directory, "subdir"), "enumeration subdirectory path is too long");
+	ok &= check(make_path(enum_missing, sizeof(enum_missing), directory,
+		"missing-enum"), "missing enumeration path is too long");
 	if (!ok) {
 		rmdir(directory);
 		return 1;
@@ -195,9 +218,81 @@ int main(void)
 	ok &= check(strcmp(file_getcd("unit.txt"), "./unit.txt") == 0,
 		"file_getcd did not use the ./ base");
 
+	ok &= check(mkdir(enum_directory, 0755) == 0,
+		"enumeration directory creation failed");
+	handle = file_create(enum_regular);
+	ok &= check(handle != FILEH_INVALID, "enumeration regular file creation failed");
+	if (handle != FILEH_INVALID) {
+		file_close(handle);
+	}
+	handle = file_create(enum_hidden);
+	ok &= check(handle != FILEH_INVALID, "enumeration hidden file creation failed");
+	if (handle != FILEH_INVALID) {
+		file_close(handle);
+	}
+	ok &= check(mkdir(enum_subdirectory, 0755) == 0,
+		"enumeration subdirectory creation failed");
+
+	ok &= check(file_listnext(FLISTH_INVALID, &info) == FAILURE,
+		"invalid enumeration handle did not fail");
+	list = file_list1st(enum_missing, &info);
+	ok &= check(list == FLISTH_INVALID,
+		"missing enumeration directory unexpectedly opened");
+	list = file_list1st(enum_directory, &info);
+	ok &= check(list != FLISTH_INVALID,
+		"enumeration directory did not produce a first entry");
+	if (list != FLISTH_INVALID) {
+		/* Terminal FAILURE consumes list; do not call file_listnext again. */
+		do {
+			if (strcmp(info.path, ".") == 0) {
+				seen_dot = 1;
+				ok &= check((info.attr & FILEATTR_DIRECTORY) != 0,
+					". was not reported as a directory");
+			} else if (strcmp(info.path, "..") == 0) {
+				seen_dotdot = 1;
+				ok &= check((info.attr & FILEATTR_DIRECTORY) != 0,
+					".. was not reported as a directory");
+			} else if (strcmp(info.path, "regular.bin") == 0) {
+				seen_regular = 1;
+				ok &= check((info.attr & FILEATTR_DIRECTORY) == 0,
+					"regular file was reported as a directory");
+			} else if (strcmp(info.path, ".hidden") == 0) {
+				seen_hidden = 1;
+				ok &= check((info.attr & FILEATTR_DIRECTORY) == 0,
+					"hidden file was reported as a directory");
+			} else if (strcmp(info.path, "subdir") == 0) {
+				seen_subdirectory = 1;
+				ok &= check((info.attr & FILEATTR_DIRECTORY) != 0,
+					"subdirectory was not reported as a directory");
+			}
+		} while (file_listnext(list, &info) == SUCCESS);
+	}
+	ok &= check(seen_dot && seen_dotdot && seen_regular && seen_hidden &&
+		seen_subdirectory, "enumeration did not return the complete entry set");
+
+	for (iteration = 0; iteration < 64; iteration++) {
+		list = file_list1st(enum_directory, &info);
+		if (!check(list != FLISTH_INVALID,
+			"enumeration lifecycle setup failed")) {
+			ok = 0;
+			break;
+		}
+		while (file_listnext(list, &info) == SUCCESS) {
+			/* Enumeration order is intentionally not part of the contract. */
+		}
+	}
+
 	ok &= check(file_delete(data_path) == 0, "file_delete data failed");
 	ok &= check(file_delete(truncate_path) == 0, "file_delete truncate failed");
 	ok &= check(file_delete(utf8_path) == 0, "file_delete UTF-8 file failed");
+	ok &= check(file_delete(enum_regular) == 0,
+		"file_delete enumeration regular file failed");
+	ok &= check(file_delete(enum_hidden) == 0,
+		"file_delete enumeration hidden file failed");
+	ok &= check(rmdir(enum_subdirectory) == 0,
+		"enumeration subdirectory cleanup failed");
+	ok &= check(rmdir(enum_directory) == 0,
+		"enumeration directory cleanup failed");
 	ok &= check(stat(directory, &status) == 0 && S_ISDIR(status.st_mode),
 		"test directory disappeared unexpectedly");
 	ok &= check(rmdir(directory) == 0, "test directory cleanup failed");

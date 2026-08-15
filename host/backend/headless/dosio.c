@@ -1,7 +1,9 @@
 /* Ubuntu/headless DOSIO backend for the retained portable core. */
 #define _POSIX_C_SOURCE 200809L
 
+#include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -11,6 +13,11 @@
 #include <dosio.h>
 
 static OEMCHAR dosio_curpath[MAX_PATH] = "./";
+
+typedef struct {
+	DIR *directory;
+	OEMCHAR path[MAX_PATH];
+} HEADLESS_FLIST;
 
 static int dosio_is_separator(OEMCHAR value)
 {
@@ -49,6 +56,84 @@ static void dosio_append(OEMCHAR *destination, const OEMCHAR *source, int maxlen
 		destination[offset + index] = source[index];
 	}
 	destination[offset + index] = '\0';
+}
+
+static short dosio_attr_from_stat(const struct stat *status)
+{
+	short attribute = 0;
+
+	if (S_ISDIR(status->st_mode)) {
+		attribute |= FILEATTR_DIRECTORY;
+	}
+	if ((status->st_mode & S_IWUSR) == 0) {
+		attribute |= FILEATTR_READONLY;
+	}
+	return attribute;
+}
+
+static void dosio_flist_release(HEADLESS_FLIST *list)
+{
+	if (list == NULL) {
+		return;
+	}
+	if (list->directory != NULL) {
+		closedir(list->directory);
+		list->directory = NULL;
+	}
+	free(list);
+}
+
+static int dosio_flist_prefix(HEADLESS_FLIST *list, const OEMCHAR *directory)
+{
+	size_t length;
+
+	if ((list == NULL) || (directory == NULL)) {
+		return 0;
+	}
+	length = strlen(directory);
+	if (length >= MAX_PATH) {
+		return 0;
+	}
+	dosio_copy(list->path, directory, MAX_PATH);
+	if ((length > 0) && (list->path[length - 1] == '/')) {
+		return 1;
+	}
+	if (length + 1 >= MAX_PATH) {
+		return 0;
+	}
+	list->path[length] = '/';
+	list->path[length + 1] = '\0';
+	return 1;
+}
+
+static int dosio_flist_next(HEADLESS_FLIST *list, FLINFO *fli)
+{
+	struct dirent *entry;
+	struct stat status;
+	char fullpath[MAX_PATH];
+	size_t prefix_length;
+	size_t name_length;
+
+	if ((list == NULL) || (list->directory == NULL) || (fli == NULL)) {
+		return 0;
+	}
+	entry = readdir(list->directory);
+	if (entry == NULL) {
+		return 0;
+	}
+	prefix_length = strlen(list->path);
+	name_length = strlen(entry->d_name);
+	if (prefix_length + name_length >= MAX_PATH) {
+		return 0;
+	}
+	memcpy(fullpath, list->path, prefix_length);
+	memcpy(fullpath + prefix_length, entry->d_name, name_length + 1);
+	if (stat(fullpath, &status) != 0) {
+		return 0;
+	}
+	fli->attr = (UINT32)dosio_attr_from_stat(&status);
+	dosio_copy(fli->path, entry->d_name, MAX_PATH);
+	return 1;
 }
 
 FILEH file_open(const OEMCHAR *path)
@@ -155,18 +240,11 @@ short file_delete(const OEMCHAR *path)
 short file_attr(const OEMCHAR *path)
 {
 	struct stat status;
-	short attribute = 0;
 
 	if ((path == NULL) || (stat(path, &status) != 0)) {
 		return -1;
 	}
-	if (S_ISDIR(status.st_mode)) {
-		attribute |= FILEATTR_DIRECTORY;
-	}
-	if ((status.st_mode & S_IWUSR) == 0) {
-		attribute |= FILEATTR_READONLY;
-	}
-	return attribute;
+	return dosio_attr_from_stat(&status);
 }
 
 OEMCHAR *file_getcd(const OEMCHAR *path)
@@ -258,4 +336,47 @@ void file_setseparator(OEMCHAR *path, int maxlen)
 		path[length] = '/';
 		path[length + 1] = '\0';
 	}
+}
+
+FLISTH file_list1st(const OEMCHAR *dir, FLINFO *fli)
+{
+	HEADLESS_FLIST *list;
+
+	if (dir == NULL) {
+		return FLISTH_INVALID;
+	}
+	list = (HEADLESS_FLIST *)malloc(sizeof(*list));
+	if (list == NULL) {
+		return FLISTH_INVALID;
+	}
+	list->directory = NULL;
+	if (!dosio_flist_prefix(list, dir)) {
+		dosio_flist_release(list);
+		return FLISTH_INVALID;
+	}
+	list->directory = opendir(dir);
+	if (list->directory == NULL) {
+		dosio_flist_release(list);
+		return FLISTH_INVALID;
+	}
+	if (!dosio_flist_next(list, fli)) {
+		dosio_flist_release(list);
+		return FLISTH_INVALID;
+	}
+	return (FLISTH)list;
+}
+
+BRESULT file_listnext(FLISTH hdl, FLINFO *fli)
+{
+	HEADLESS_FLIST *list = (HEADLESS_FLIST *)hdl;
+
+	if (list == NULL) {
+		return FAILURE;
+	}
+	if (!dosio_flist_next(list, fli)) {
+		/* A terminal failure consumes the trimmed ABI's enumeration handle. */
+		dosio_flist_release(list);
+		return FAILURE;
+	}
+	return SUCCESS;
 }
