@@ -198,6 +198,7 @@ not an independent license classification or legal opinion.
 | src/io/gdc_sub.h | io/gdc_sub.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/io/iocore.c | io/iocore.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/io/iocore.h | io/iocore.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/io/lsidef.h | io/lsidef.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/io/iocore16.tbl | io/iocore16.tbl | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/io/mouseif.c | io/mouseif.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/io/mouseif.h | io/mouseif.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
