@@ -65,13 +65,69 @@ def split_missing_headers(stderr: str) -> list[str]:
     return found
 
 
+def safe_source_map_path(value: object, label: str) -> Path:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise SystemExit(f"unsafe {label}: {value!r}")
+    if "\\" in value:
+        raise SystemExit(f"backslash in {label}: {value!r}")
+    path = Path(value)
+    if path.is_absolute() or path.as_posix() != value:
+        raise SystemExit(f"unsafe {label}: {value!r}")
+    if not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+        raise SystemExit(f"unsafe {label}: {value!r}")
+    return path
+
+
+def read_source_map(path: Path, sources: list[str]) -> dict[str, Path]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot read source map {path}: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise SystemExit(f"unsupported source-map schema: {path}")
+    entries = value.get("entries")
+    if not isinstance(entries, list):
+        raise SystemExit(f"source-map entries must be a list: {path}")
+    source_set = set(sources)
+    mapped: dict[str, Path] = {}
+    map_root = path.parent.resolve()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or set(entry) != {"logical_source", "generated_path"}:
+            raise SystemExit(f"invalid source-map entry {index}: {path}")
+        logical = entry["logical_source"]
+        if not isinstance(logical, str) or logical not in source_set:
+            raise SystemExit(f"source-map logical source is not in the inventory: {logical!r}")
+        if logical in mapped:
+            raise SystemExit(f"duplicate source-map logical source: {logical}")
+        generated_relative = safe_source_map_path(entry["generated_path"], "generated_path")
+        generated = map_root / generated_relative
+        current = map_root
+        for part in generated_relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise SystemExit(f"source-map generated path contains a symlink: {current}")
+        resolved = generated.resolve(strict=False)
+        try:
+            resolved.relative_to(map_root)
+        except ValueError as exc:
+            raise SystemExit(f"source-map generated path escapes its directory: {generated}") from exc
+        if not generated.is_file():
+            raise SystemExit(f"source-map generated file is missing: {generated}")
+        mapped[logical] = generated
+    return mapped
+
+
 def include_inventory(
-    source_root: Path, include_dirs: list[Path], sources: list[str]
+    source_root: Path,
+    include_dirs: list[Path],
+    sources: list[str],
+    source_overrides: dict[str, Path],
 ) -> tuple[list[dict], list[dict]]:
     references = []
     unresolved = []
     for relative in sources:
-        source = (source_root / relative).resolve()
+        source = source_overrides.get(relative, (source_root / relative).resolve())
+        original_source = (source_root / relative).resolve()
         if not source.is_file():
             continue
         for lineno, raw in enumerate(source.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
@@ -81,7 +137,7 @@ def include_inventory(
             delimiter, include = match.groups()
             candidates = []
             if delimiter == '"':
-                candidates.append(source.parent / include)
+                candidates.append(original_source.parent / include)
             candidates.extend(include_dir / include for include_dir in include_dirs)
             resolved = next((candidate.resolve() for candidate in candidates if candidate.is_file()), None)
             item = {
@@ -103,6 +159,7 @@ def main() -> int:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--source-list", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--source-map", type=Path)
     parser.add_argument("--include", action="append", default=[])
     parser.add_argument("--define", action="append", default=[])
     parser.add_argument("--string-define", action="append", default=[])
@@ -113,6 +170,12 @@ def main() -> int:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     sources, source_stages = read_sources(args.source_list)
+    source_map_argument = args.source_map.absolute() if args.source_map else None
+    if source_map_argument and source_map_argument.is_symlink():
+        raise SystemExit(f"source map may not be a symlink: {source_map_argument}")
+    source_overrides = (
+        read_source_map(source_map_argument, sources) if source_map_argument else {}
+    )
     forbidden_definitions = {
         selector: [item for item in args.define if selector in item]
         for selector in FORBIDDEN_SELECTORS
@@ -132,7 +195,7 @@ def main() -> int:
         )
     include_dirs = [Path(item).resolve() for item in args.include]
     include_references, unresolved_includes = include_inventory(
-        source_root, include_dirs, sources
+        source_root, include_dirs, sources, source_overrides
     )
 
     common_flags = []
@@ -151,8 +214,11 @@ def main() -> int:
     results = []
     command_lines = []
     for relative in sources:
-        source = (source_root / relative).resolve()
-        command = [args.compiler, *common_flags, "-fsyntax-only", str(source)]
+        source = source_overrides.get(relative, (source_root / relative).resolve())
+        quote_flags = []
+        if relative in source_overrides:
+            quote_flags = ["-iquote", str((source_root / relative).resolve().parent)]
+        command = [args.compiler, *quote_flags, *common_flags, "-fsyntax-only", str(source)]
         command_lines.append(shlex.join(command))
         completed = subprocess.run(
             command,
@@ -214,6 +280,8 @@ def main() -> int:
         "failed_count": len(results) - passed,
         "results": results,
     }
+    if source_map_argument:
+        summary["source_map"] = str(source_map_argument.resolve())
     (output_dir / "compile_commands.txt").write_text(
         "\n".join(command_lines) + "\n", encoding="utf-8"
     )
