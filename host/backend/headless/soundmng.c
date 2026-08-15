@@ -12,7 +12,8 @@ void soundmng_sync(void) {
 
 BRESULT soundmng_pcmplay(UINT number, BOOL loop) {
 	(void)loop;
-	if ((number == SOUND_PCMSEEK) || (number == SOUND_PCMSEEK1)) {
+	if ((number == SOUND_PCMSEEK) || (number == SOUND_PCMSEEK1) ||
+	    (number == SOUND_RELAY1)) {
 		return SUCCESS;
 	}
 	return FAILURE;

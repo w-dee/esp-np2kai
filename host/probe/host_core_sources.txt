@@ -53,6 +53,7 @@ cbus/cbuscore.c
 cbus/mpu98ii.c
 debugsub.c
 keystat.c
+wab/wab_rly.c
 
 # stage: bios
 # internal BIOS and BIOS-facing handlers

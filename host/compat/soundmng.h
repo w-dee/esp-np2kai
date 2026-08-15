@@ -3,7 +3,8 @@
 
 enum {
     SOUND_PCMSEEK = 0,
-    SOUND_PCMSEEK1
+    SOUND_PCMSEEK1 = 1,
+    SOUND_RELAY1 = 2
 };
 
 void soundmng_play(void);
