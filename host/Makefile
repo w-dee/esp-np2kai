@@ -36,6 +36,9 @@ HEADLESS_SYSMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sysmng_test
 HEADLESS_DOSIO_SOURCE := $(CURDIR)/backend/headless/dosio.c
 HEADLESS_DOSIO_TEST_SOURCE := $(CURDIR)/tests/headless_dosio_test.c
 HEADLESS_DOSIO_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_dosio_test
+HEADLESS_FONT_SOURCE := $(CURDIR)/backend/headless/fontmng.c
+HEADLESS_FONT_TEST_SOURCE := $(CURDIR)/tests/headless_fontmng_test.c
+HEADLESS_FONT_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_fontmng_test
 PYTHON ?= python3
 CC ?= cc
 NM ?= nm
@@ -63,7 +66,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-dosio
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-dosio test-headless-fontmng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -193,3 +196,12 @@ test-headless-dosio:
 		-o "$(HEADLESS_DOSIO_TEST_OUTPUT)"
 	@"$(HEADLESS_DOSIO_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless DOSIO backend test passed (non-directory contract).'
+
+test-headless-fontmng:
+	@mkdir -p "$(dir $(HEADLESS_FONT_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_FONT_SOURCE)" "$(HEADLESS_FONT_TEST_SOURCE)" \
+		-o "$(HEADLESS_FONT_TEST_OUTPUT)"
+	@"$(HEADLESS_FONT_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless fontmng backend test passed (deterministic unavailable-font contract).'
