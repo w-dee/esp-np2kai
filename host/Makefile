@@ -27,6 +27,9 @@ HEADLESS_SOUND_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sound_test
 HEADLESS_TIMING_SOURCE := $(CURDIR)/backend/headless/timing.c
 HEADLESS_TIMING_TEST_SOURCE := $(CURDIR)/tests/headless_timing_test.c
 HEADLESS_TIMING_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_timing_test
+HEADLESS_TIMEMNG_SOURCE := $(CURDIR)/backend/headless/timemng.c
+HEADLESS_TIMEMNG_TEST_SOURCE := $(CURDIR)/tests/headless_timemng_test.c
+HEADLESS_TIMEMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_timemng_test
 HEADLESS_SYSMNG_SOURCE := $(CURDIR)/backend/headless/sysmng.c
 HEADLESS_SYSMNG_TEST_SOURCE := $(CURDIR)/tests/headless_sysmng_test.c
 HEADLESS_SYSMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sysmng_test
@@ -57,7 +60,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-sysmng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -160,6 +163,15 @@ test-headless-timing:
 		-o "$(HEADLESS_TIMING_TEST_OUTPUT)"
 	@"$(HEADLESS_TIMING_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless timing backend test passed (modulo-forward samples).'
+
+test-headless-timemng:
+	@mkdir -p "$(dir $(HEADLESS_TIMEMNG_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_TIMEMNG_SOURCE)" "$(HEADLESS_TIMEMNG_TEST_SOURCE)" \
+		-o "$(HEADLESS_TIMEMNG_TEST_OUTPUT)"
+	@"$(HEADLESS_TIMEMNG_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless calendar-time backend test passed (local civil-time ranges).'
 
 test-headless-sysmng:
 	@mkdir -p "$(dir $(HEADLESS_SYSMNG_TEST_OUTPUT))"
