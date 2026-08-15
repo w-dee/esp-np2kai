@@ -1,0 +1,30 @@
+--- a/cbus/mpu98ii.c
++++ b/cbus/mpu98ii.c
+@@ -1098,7 +1098,11 @@
+ 	if (cm_mpu98 == NULL) {
+ 		cm_mpu98 = commng_create(COMCREATE_MPU98II, FALSE);
+ 	}
++#if !defined(DISABLE_SOUND)
+ 	if (cm_mpu98->connect != COMCONNECT_OFF || port == (cs4231.port[10] + 1)) {
++#else
++	if (cm_mpu98->connect != COMCONNECT_OFF) {
++#endif
+ 		ret = mpu98.status;
+ 		if ((mpu98.r.cnt == 0) && (mpu98.intreq == 0)) {
+ 			ret |= MIDIIN_AVAIL;
+@@ -1185,6 +1189,7 @@
+ 			iocore_attachout(0x331, mpu98ii_o2);
+ 			iocore_attachinp(0x331, mpu98ii_i2);
+ 		}
++#if !defined(DISABLE_SOUND)
+ 		// PC-9801-118
+ 		if(g_nSoundID == SOUNDID_PC_9801_118 || g_nSoundID == SOUNDID_PC_9801_86_118 || g_nSoundID == SOUNDID_PC_9801_118_SB16 || g_nSoundID == SOUNDID_PC_9801_86_118_SB16){
+ 			iocore_attachout(cs4231.port[10], mpu98ii_o0);
+@@ -1192,6 +1197,7 @@
+ 			iocore_attachout(cs4231.port[10]+1, mpu98ii_o2);
+ 			iocore_attachinp(cs4231.port[10]+1, mpu98ii_i2);
+ 		}
++#endif
+ 	}
+ }
+ 

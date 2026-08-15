@@ -1,0 +1,31 @@
+--- a/io/pit.c
++++ b/io/pit.c
+@@ -389,6 +389,7 @@
+ 
+ 	PITCH	pitch;
+ 
++#if !defined(DISABLE_SOUND)
+ 	if(g_beep.mode == 0) {
+ 		switch(beep_mode_bit) {
+ 		case 0:
+@@ -413,6 +414,7 @@
+ 		}
+ 		beep_mode_bit_c ^= 1;
+ 	}
++#endif
+ 
+ 	pitch = pit.ch + 1;
+ 	if (pit_setcount(pitch, dat)) {
+@@ -455,10 +457,12 @@
+ 	PITCH	pitch;
+ 
+ 	if((dat & 0xC0) == 0x40) {
++#if !defined(DISABLE_SOUND)
+ 		if(CPU_CLOCK - g_beep.beep_laskclk >= 20000000) {
+ 			g_beep.beep_data_load_loc = 0;
+ 			g_beep.beep_data_curr_loc = 0;
+ 		}
++#endif
+ 		beep_mode_bit = ((dat >> 4) & 3) - 1;
+ 		beep_mode_bit_c = 0;
+ 	}

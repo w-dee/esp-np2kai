@@ -9,6 +9,30 @@
       "patch_path": "0001-pccore-non-fmgen-vol-midi.patch",
       "patch_sha256": "d1db161d60ccba028b5921e132d9e514c1d79f155c55487ddd0dc1acce612d19",
       "patched_sha256": "67886ad6e8ec32e6d1f4e35f1b991183993402d74dac5122513ea5ac91f13b1b"
+    },
+    {
+      "logical_source": "bios/bios.c",
+      "pristine_path": "bios/bios.c",
+      "pristine_sha256": "a6cba29264844539aa1f5b336ae926268562b9c3d56baff521a0234298f4b42a",
+      "patch_path": "0002-bios-disable-sound-init.patch",
+      "patch_sha256": "51eb140f2b69596f113be1e9c7ffd68934aed3e38f71d003e4872f7161328068",
+      "patched_sha256": "2a6cf3918812e7ca72a9949c1f7bb6421527a36e09285d1ec864837320ae6b35"
+    },
+    {
+      "logical_source": "io/pit.c",
+      "pristine_path": "io/pit.c",
+      "pristine_sha256": "489858a314d7bae767c21d8cded7fafbbf49e4a809aba0b577c0f77918fd9684",
+      "patch_path": "0003-pit-disable-beep-sample-state.patch",
+      "patch_sha256": "bc685e2f478cee64c5175e3e0bd08bc953138bd7dd1a015b0222b9da286bd890",
+      "patched_sha256": "0a43f1cb2c4ef76478485062f09f12d7bb920ad5fa8962709520550c7d23f08a"
+    },
+    {
+      "logical_source": "cbus/mpu98ii.c",
+      "pristine_path": "cbus/mpu98ii.c",
+      "pristine_sha256": "51cf3afbb9165cd7c9b1cf2ba140b88a4dc6f1f6b49eb8605e25f0e411f808fd",
+      "patch_path": "0004-mpu98ii-disable-integrated-sound-routing.patch",
+      "patch_sha256": "947d49fb2b2cade96412b626203ea1abb6bc33a52b70317bcd661dfb3d9319d9",
+      "patched_sha256": "e89c52e343c0e8af7a7939e18cb445b4e568f33acd4b9b805d2e7f408b173d50"
     }
   ]
 }
