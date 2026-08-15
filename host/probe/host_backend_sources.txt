@@ -15,3 +15,5 @@ host/backend/headless/sysmng.c
 host/backend/headless/dosio.c
 # stage: headless-font
 host/backend/headless/fontmng.c
+# stage: headless-screen
+host/backend/headless/scrnmng.c
