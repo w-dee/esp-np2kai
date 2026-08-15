@@ -1,10 +1,12 @@
 SHELL := /bin/sh
 
-# Compile-only 112-TU inventory; this is not a native emulator build.
+# Explicit compile/link evidence inventories; this is not a native emulator build.
 HOST_ROOT := $(abspath $(CURDIR)/..)
 VENDOR_ROOT := $(HOST_ROOT)/third_party/np2kai
 VENDOR_SRC := $(VENDOR_ROOT)/src
 SOURCE_LIST := $(CURDIR)/probe/host_core_sources.txt
+HOST_BACKEND_SOURCE_LIST := $(CURDIR)/probe/host_backend_sources.txt
+HOST_BACKEND_SOURCE_ROOT := $(HOST_ROOT)
 PROBE_SCRIPT := $(CURDIR)/probe/compile_probe.py
 LINK_PROBE_SCRIPT := $(CURDIR)/probe/link_probe.py
 PREPARER := $(CURDIR)/tools/prepare_step4_sources.py
@@ -51,6 +53,8 @@ phase1-probe:
 		--compiler "$(CC)" \
 		--source-root "$(VENDOR_SRC)" \
 		--source-list "$(SOURCE_LIST)" \
+		--host-source-root "$(HOST_BACKEND_SOURCE_ROOT)" \
+		--host-source-list "$(HOST_BACKEND_SOURCE_LIST)" \
 		--output-dir "$(PROBE_OUTPUT)" \
 		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \
 		$(foreach d,$(PROBE_DEFINES),--define "$(d)") \
@@ -89,6 +93,8 @@ phase1-probe-mapped: phase1-prepare-sources
 		--compiler "$(CC)" \
 		--source-root "$(VENDOR_SRC)" \
 		--source-list "$(SOURCE_LIST)" \
+		--host-source-root "$(HOST_BACKEND_SOURCE_ROOT)" \
+		--host-source-list "$(HOST_BACKEND_SOURCE_LIST)" \
 		--output-dir "$(MAPPED_PROBE_OUTPUT)" \
 		--source-map "$(PATCH_OUTPUT)/source-map.json" \
 		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \
@@ -105,6 +111,8 @@ phase1-link-probe-mapped: phase1-prepare-sources
 		--nm "$(NM)" \
 		--source-root "$(VENDOR_SRC)" \
 		--source-list "$(SOURCE_LIST)" \
+		--host-source-root "$(HOST_BACKEND_SOURCE_ROOT)" \
+		--host-source-list "$(HOST_BACKEND_SOURCE_LIST)" \
 		--source-map "$(PATCH_OUTPUT)/source-map.json" \
 		--output-dir "$(LINK_PROBE_OUTPUT)" \
 		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \

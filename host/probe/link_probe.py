@@ -19,12 +19,16 @@ from pathlib import Path
 from compile_probe import (
     FORBIDDEN_SELECTORS,
     FORBIDDEN_SOURCE_PARTS,
+    forbidden_source_paths,
+    parse_host_inputs,
     read_source_map,
     read_sources,
+    validate_host_sources,
+    validate_logical_source,
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SOURCE_PATH_GLOB_CHARS = set("*?[]{}")
 MANAGED_REPORT_NAMES = (
     "combined.o",
@@ -89,21 +93,6 @@ def clean_managed_outputs(output_dir: Path) -> None:
             fail(f"unexpected non-directory for managed objects: {objects}")
     for name in MANAGED_REPORT_NAMES:
         remove_file_artifact(output_dir / name, name)
-
-
-def validate_logical_source(value: str, label: str) -> None:
-    path = Path(value)
-    if (
-        not value
-        or "\x00" in value
-        or "\\" in value
-        or path.is_absolute()
-        or path.as_posix() != value
-        or not path.parts
-        or any(part in {"", ".", ".."} for part in path.parts)
-        or any(char in value for char in SOURCE_PATH_GLOB_CHARS)
-    ):
-        fail(f"unsafe {label}: {value!r}")
 
 
 def stable_path(path: Path, roots: list[tuple[Path, str]]) -> str:
@@ -181,10 +170,13 @@ def write_reports(
     write_text(output_dir / "symbol-references.tsv", "".join(tsv_lines))
     text_lines = [
         "Mapped relocatable link-closure probe",
-        f"sources={summary['source_count']}",
+        f"vendored_sources={summary['vendored_source_count']}",
+        f"host_sources={summary['host_source_count']}",
+        f"total_sources={summary['total_source_count']}",
+        f"sources={summary['source_count']} (total)",
         "object_compile="
         f"{summary['object_compile_passed_count']}/"
-        f"{summary['source_count']} PASS, "
+        f"{summary['total_source_count']} PASS, "
         f"{summary['object_compile_failed_count']} FAIL",
         f"relocatable_link_attempted={summary['relocatable_link_attempted']}",
         f"relocatable_link_returncode={summary['relocatable_link_returncode']}",
@@ -208,6 +200,8 @@ def main() -> int:
     parser.add_argument("--nm", required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--source-list", type=Path, required=True)
+    parser.add_argument("--host-source-root", type=Path)
+    parser.add_argument("--host-source-list", type=Path)
     parser.add_argument("--source-map", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--include", action="append", default=[])
@@ -232,10 +226,27 @@ def main() -> int:
     if not source_map.is_file():
         fail(f"source map is not a file: {source_map}")
 
-    sources, source_stages = read_sources(source_list)
+    host_source_root, host_source_list = parse_host_inputs(args)
+    vendor_sources, vendor_stages = read_sources(source_list)
+    host_sources: list[str] = []
+    host_stages: dict[str, str] = {}
+    if host_source_root is not None and host_source_list is not None:
+        host_sources, host_stages = read_sources(host_source_list, allow_empty=True)
+        host_paths = validate_host_sources(host_source_root, host_sources)
+    else:
+        host_paths = {}
+    overlap = sorted(set(vendor_sources) & set(host_sources))
+    if overlap:
+        fail(f"vendor/host logical source collision: {overlap}")
+    sources = vendor_sources + host_sources
+    source_stages = {**vendor_stages, **host_stages}
     for source in sources:
         validate_logical_source(source, "source-list entry")
-    source_overrides = read_source_map(source_map, sources)
+    source_overrides = read_source_map(source_map, vendor_sources)
+    source_paths = {
+        **{source: (source_root / source).resolve(strict=False) for source in vendor_sources},
+        **host_paths,
+    }
 
     repo_root = source_root.parents[2]
     source_map_root = source_map.parent.resolve()
@@ -245,18 +256,16 @@ def main() -> int:
         (source_root, "<SOURCE_ROOT>"),
         (repo_root, "<REPO>"),
     ]
+    if host_source_root is not None and host_source_root != repo_root:
+        roots.insert(3, (host_source_root, "<HOST_SOURCE_ROOT>"))
 
     forbidden_definitions = {
         selector: [item for item in args.define if selector in item]
         for selector in FORBIDDEN_SELECTORS
     }
-    forbidden_paths = {
-        selector: [item for item in sources if item.startswith(selector)]
-        for selector in FORBIDDEN_SOURCE_PARTS
-    }
     selected_forbidden = {
         "definitions": {k: v for k, v in forbidden_definitions.items() if v},
-        "source_paths": {k: v for k, v in forbidden_paths.items() if v},
+        "source_paths": forbidden_source_paths(sources),
     }
     forbidden_audit = {
         "selectors_checked": list(FORBIDDEN_SELECTORS),
@@ -268,10 +277,24 @@ def main() -> int:
     object_commands: list[tuple[str, str]] = []
     object_results: list[dict] = []
     object_paths: dict[str, Path] = {}
+    seen_object_paths: dict[Path, str] = {}
     compile_cwd = repo_root
     for logical in sources:
-        physical = source_overrides.get(logical, source_root / logical).resolve(strict=False)
-        object_path = output_dir / "objects" / Path(logical).with_suffix(Path(logical).suffix + ".o")
+        physical = source_overrides.get(logical, source_paths[logical]).resolve(strict=False)
+        relative_object = Path(logical).with_suffix(Path(logical).suffix + ".o")
+        if logical in host_sources:
+            object_path = output_dir / "objects" / "host-owned" / relative_object
+            ownership = "project-host"
+        elif logical in source_overrides:
+            object_path = output_dir / "objects" / relative_object
+            ownership = "vendor-mapped"
+        else:
+            object_path = output_dir / "objects" / relative_object
+            ownership = "vendor-pristine"
+        prior = seen_object_paths.get(object_path)
+        if prior is not None:
+            fail(f"vendor/host object-path collision: {prior} and {logical} -> {object_path}")
+        seen_object_paths[object_path] = logical
         object_path.parent.mkdir(parents=True, exist_ok=True)
         object_paths[logical] = object_path
         quote_flags = []
@@ -286,6 +309,7 @@ def main() -> int:
                 {
                     "source": logical,
                     "stage": source_stages[logical],
+                    "ownership": ownership,
                     "physical_source": stable_path(physical, roots),
                     "object": stable_path(object_path, roots),
                     "exists": physical.is_file(),
@@ -309,6 +333,7 @@ def main() -> int:
             {
                 "source": logical,
                 "stage": source_stages[logical],
+                "ownership": ownership,
                 "physical_source": stable_path(physical, roots),
                 "object": stable_path(object_path, roots),
                 "exists": physical.is_file(),
@@ -335,6 +360,9 @@ def main() -> int:
             stage: [source for source in sources if source_stages[source] == stage]
             for stage in dict.fromkeys(source_stages.values())
         },
+        "vendored_source_count": len(vendor_sources),
+        "host_source_count": len(host_sources),
+        "total_source_count": len(sources),
         "source_count": len(sources),
         "object_compile_passed_count": passed,
         "object_compile_failed_count": failed,
@@ -346,6 +374,9 @@ def main() -> int:
         "forbidden_selector_audit": forbidden_audit,
         "object_results": object_results,
     }
+    if host_source_root is not None and host_source_list is not None:
+        base_summary["host_source_root"] = stable_path(host_source_root, roots)
+        base_summary["host_source_list"] = stable_path(host_source_list, roots)
 
     if selected_forbidden["definitions"] or selected_forbidden["source_paths"]:
         message = "forbidden selector or source path appeared in probe inputs"
