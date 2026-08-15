@@ -10,7 +10,7 @@ enum {
 void sysmng_update(UINT update);
 void sysmng_cpureset(void);
 
-#define sysmng_fddaccess(value) ((void)(value))
-#define sysmng_hddaccess(value) ((void)(value))
+#define sysmng_fddaccess(value) ((void)0)
+#define sysmng_hddaccess(value) ((void)0)
 
 #endif /* NP2_HOST_SYSMNG_H */

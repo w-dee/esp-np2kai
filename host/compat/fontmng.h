@@ -4,6 +4,7 @@
 typedef struct {
     int width;
     int height;
+    int pitch;
 } _FNTDAT, *FNTDAT;
 
 void *fontmng_create(int size, UINT type, const OEMCHAR *fontface);

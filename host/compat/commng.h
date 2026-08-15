@@ -11,8 +11,8 @@ enum {
 
 enum {
     COMMSG_MIDIRESET = 0,
-    COMMSG_CHANGESPEED = 4,
-    COMMSG_CHANGEMODE = 5
+    COMMSG_CHANGESPEED = 3,
+    COMMSG_CHANGEMODE = 4
 };
 
 struct _commng;

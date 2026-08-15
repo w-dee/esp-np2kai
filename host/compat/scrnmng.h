@@ -20,7 +20,7 @@ RGB16 scrnmng_makepal16(RGB32 pal32);
 
 #define scrnmng_haveextend() (0)
 #define scrnmng_getbpp() (16)
-#define scrnmng_setextend(value) ((void)(value))
+#define scrnmng_setextend(value) ((void)0)
 #define scrnmng_allflash() ((void)0)
 #define scrnmng_palchanged() ((void)0)
 

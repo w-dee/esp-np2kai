@@ -39,9 +39,9 @@ FILEH file_create_c(const OEMCHAR *path);
 FLISTH file_list1st(const OEMCHAR *dir, FLINFO *fli);
 BRESULT file_listnext(FLISTH hdl, FLINFO *fli);
 
-void file_cpyname(OEMCHAR *dst, const OEMCHAR *src, int maxlen);
+#define file_cpyname(dst, src, maxlen) milstr_ncpy((dst), (src), (maxlen))
 void file_catname(OEMCHAR *path, const OEMCHAR *name, int maxlen);
-int file_cmpname(const OEMCHAR *path, const OEMCHAR *name);
+#define file_cmpname(path, name) milstr_cmp((path), (name))
 OEMCHAR *file_getname(const OEMCHAR *path);
 void file_cutname(OEMCHAR *path);
 OEMCHAR *file_getext(const OEMCHAR *path);
