@@ -173,6 +173,20 @@
       }
     },
     {
+      "upstream_path": "generic/softkbd.h",
+      "destination_path": "src/generic/softkbd.h",
+      "role": "header",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
       "upstream_path": "keystat.c",
       "destination_path": "src/keystat.c",
       "role": "source",

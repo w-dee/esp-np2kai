@@ -13,6 +13,7 @@ not an independent license classification or legal opinion.
 | src/calendar.h | calendar.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/debugsub.c | debugsub.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/debugsub.h | debugsub.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/generic/softkbd.h | generic/softkbd.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/keystat.c | keystat.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/keystat.h | keystat.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/keystat.tbl | keystat.tbl | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
