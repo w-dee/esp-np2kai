@@ -72,6 +72,11 @@ bios/sxsibios.c
 # stage: io
 # minimum candidate I/O path
 io/iocore.c
+io/artic.c
+io/egc.c
+io/emsio.c
+io/epsonio.c
+io/necio.c
 io/cpuio.c
 io/cgrom.c
 io/crtc.c
