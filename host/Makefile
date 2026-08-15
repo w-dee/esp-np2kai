@@ -76,7 +76,7 @@ phase1-prepare-sources:
 		--patch-set "$(PATCH_SET)" \
 		--output-root "$(PATCH_OUTPUT)"
 	@printf '%s\n' 'Step 4 source preparation written to $(PATCH_OUTPUT)' \
-		'No source patch, link, executable, or runtime probe was performed.'
+		'No link, executable, or runtime probe was performed.'
 
 phase1-probe-mapped: phase1-prepare-sources
 	@mkdir -p "$(MAPPED_PROBE_OUTPUT)"

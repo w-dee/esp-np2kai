@@ -1,5 +1,14 @@
 {
   "schema_version": 1,
   "upstream_commit": "e2dc9046aa5c786fcfbfb87e883457e421026e31",
-  "entries": []
+  "entries": [
+    {
+      "logical_source": "pccore.c",
+      "pristine_path": "pccore.c",
+      "pristine_sha256": "2733b227289fdb24d7f9770affba51a1f9209f2f00f080146fd29d54e1abf01d",
+      "patch_path": "0001-pccore-non-fmgen-vol-midi.patch",
+      "patch_sha256": "d1db161d60ccba028b5921e132d9e514c1d79f155c55487ddd0dc1acce612d19",
+      "patched_sha256": "67886ad6e8ec32e6d1f4e35f1b991183993402d74dac5122513ea5ac91f13b1b"
+    }
+  ]
 }
