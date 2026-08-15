@@ -1,0 +1,145 @@
+# Phase 1 candidate HOST_CORE_SOURCES. Paths are relative to
+# third_party/np2kai/src. Keep this list explicit; do not replace it with a glob.
+
+# stage: cpu
+# portable i286 CPU
+i286c/cpumem.c
+i286c/i286c.c
+i286c/i286c_0f.c
+i286c/i286c_8x.c
+i286c/i286c_ea.c
+i286c/i286c_f6.c
+i286c/i286c_fe.c
+i286c/i286c_mn.c
+i286c/i286c_rp.c
+i286c/i286c_sf.c
+i286c/v30patch.c
+
+# stage: core
+# core lifecycle, timing, and common helpers
+pccore.c
+nevent.c
+timing.c
+calendar.c
+common/_memory.c
+common/milstr.c
+common/parts.c
+common/strres.c
+common/bmpdata.c
+common/textfile.c
+
+# stage: shared-text
+# shared character conversion helpers referenced by font handling
+codecnv/eucsjis.c
+codecnv/eucucs2.c
+codecnv/jisucs2.c
+codecnv/sjiseuc.c
+codecnv/sjisucs2.c
+codecnv/tcswap16.c
+codecnv/tcswap32.c
+codecnv/textcnv.c
+codecnv/ucs2sjis.c
+codecnv/ucs2ucs4.c
+codecnv/ucs2utf8.c
+codecnv/ucs4ucs2.c
+codecnv/ucs4utf8.c
+codecnv/utf8ucs2.c
+codecnv/utf8ucs4.c
+
+# stage: devices
+# CBUS/MPU and state helpers called by pccore initialization
+cbus/cbuscore.c
+cbus/mpu98ii.c
+debugsub.c
+keystat.c
+
+# stage: bios
+# internal BIOS and BIOS-facing handlers
+bios/bios.c
+bios/bios09.c
+bios/bios0c.c
+bios/bios12.c
+bios/bios13.c
+bios/bios18.c
+bios/bios19.c
+bios/bios1a.c
+bios/bios1b.c
+bios/bios1c.c
+bios/bios1f.c
+bios/sxsibios.c
+
+# stage: io
+# minimum candidate I/O path
+io/iocore.c
+io/cpuio.c
+io/cgrom.c
+io/crtc.c
+io/dipsw.c
+io/dmac.c
+io/fdc.c
+io/fdd320.c
+io/gdc.c
+io/gdc_pset.c
+io/gdc_sub.c
+io/nmiio.c
+io/np2sysp.c
+io/pic.c
+io/pit.c
+io/sysport.c
+io/upd4990.c
+
+# stage: memory
+# minimum candidate memory path
+mem/dmav30.c
+mem/dmax86.c
+mem/memegc.c
+mem/memems.c
+mem/memepp.c
+mem/memtram.c
+mem/memvram.c
+
+# stage: video
+# guest video/LIO state needed by BIOS/core initialization
+vram/dispsync.c
+vram/makegrex.c
+vram/makegrph.c
+vram/maketext.c
+vram/maketgrp.c
+vram/palettes.c
+vram/scrndraw.c
+vram/sdraw.c
+vram/sdrawq16.c
+vram/vram.c
+lio/gcircle.c
+lio/gline.c
+lio/gpset.c
+lio/gput1.c
+lio/gscreen.c
+lio/lio.c
+
+# stage: fonts
+# embedded/font state candidates
+font/font.c
+font/fontdata.c
+font/fontmake.c
+font/fontpc98.c
+font/fontfm7.c
+font/fontpc88.c
+font/fontv98.c
+font/fontx1.c
+font/fontx68k.c
+
+# stage: fdd
+# raw FDD path; all format handlers are probed because the current
+# fddfile.c dispatch table references them under SUPPORT_KAI_IMAGES.
+fdd/diskdrv.c
+fdd/sxsi.c
+fdd/sxsihdd.c
+diskimage/fddfile.c
+diskimage/img_strres.c
+diskimage/fd/fdd_bkdsk.c
+diskimage/fd/fdd_d88.c
+diskimage/fd/fdd_dcp.c
+diskimage/fd/fdd_nfd.c
+diskimage/fd/fdd_vfdd.c
+diskimage/fd/fdd_xdf.c
