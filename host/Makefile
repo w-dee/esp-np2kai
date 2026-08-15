@@ -42,6 +42,9 @@ HEADLESS_FONT_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_fontmng_test
 HEADLESS_SCRNMNG_SOURCE := $(CURDIR)/backend/headless/scrnmng.c
 HEADLESS_SCRNMNG_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_test.c
 HEADLESS_SCRNMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_test
+HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
+HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
+HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
 PYTHON ?= python3
 CC ?= cc
 NM ?= nm
@@ -69,7 +72,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-dosio test-headless-fontmng test-headless-scrnmng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -217,3 +220,12 @@ test-headless-scrnmng:
 		-o "$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless scrnmng backend test passed (NULL-surface contract).'
+
+test-headless-commng:
+	@mkdir -p "$(dir $(HEADLESS_COMMNG_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_COMMNG_SOURCE)" "$(HEADLESS_COMMNG_TEST_SOURCE)" \
+		-o "$(HEADLESS_COMMNG_TEST_OUTPUT)"
+	@"$(HEADLESS_COMMNG_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless commng backend test passed (static disconnected contract).'
