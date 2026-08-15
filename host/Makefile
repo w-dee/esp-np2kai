@@ -1,19 +1,20 @@
 SHELL := /bin/sh
 
-# Phase 1 only: this is a compile-only inventory, not a native emulator build.
+# Compile-only 112-TU inventory; this is not a native emulator build.
 HOST_ROOT := $(abspath $(CURDIR)/..)
 VENDOR_SRC := $(HOST_ROOT)/third_party/np2kai/src
 SOURCE_LIST := $(CURDIR)/probe/host_core_sources.txt
 PROBE_SCRIPT := $(CURDIR)/probe/compile_probe.py
-BUILD_DIR ?= $(CURDIR)/build/phase1
+BUILD_DIR ?= $(CURDIR)/build/phase2
 PROBE_OUTPUT := $(BUILD_DIR)/compile
 PYTHON ?= python3
 CC ?= cc
 PROBE_INCLUDE_DIRS := \
+	$(CURDIR)/compat \
 	$(VENDOR_SRC) \
 	$(VENDOR_SRC)/i286c
 
-# Exact proposed Phase 1 definitions. CPUCORE_IA32, SUPPORT_IA32_HAXM,
+# Exact shared probe definitions. CPUCORE_IA32, SUPPORT_IA32_HAXM,
 # USE_SDL, and all i386/i286x selectors are intentionally absent.
 PROBE_DEFINES := \
 	DISABLE_SOUND \
@@ -26,7 +27,8 @@ PROBE_CFLAGS := \
 	-std=c11 \
 	-Wall \
 	-Wextra \
-	-fno-common
+	-fno-common \
+	-Werror=implicit-function-declaration
 
 .PHONY: phase1-probe phase1-config
 
@@ -41,8 +43,8 @@ phase1-probe:
 		$(foreach d,$(PROBE_DEFINES),--define "$(d)") \
 		$(foreach d,$(PROBE_STRING_DEFINES),--string-define "$(d)") \
 		$(foreach f,$(PROBE_CFLAGS),--cflag="$(f)")
-	@printf '%s\n' 'Phase 1 compile inventory written to $(PROBE_OUTPUT)' \
-		'No link, import, compatibility implementation, or runtime probe was performed.'
+	@printf '%s\n' 'Headless compiler-contract syntax inventory written to $(PROBE_OUTPUT)' \
+		'No link, import, executable, or runtime probe was performed.'
 
 phase1-config:
 	@mkdir -p "$(PROBE_OUTPUT)"
