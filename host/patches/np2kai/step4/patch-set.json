@@ -33,6 +33,14 @@
       "patch_path": "0004-mpu98ii-disable-integrated-sound-routing.patch",
       "patch_sha256": "947d49fb2b2cade96412b626203ea1abb6bc33a52b70317bcd661dfb3d9319d9",
       "patched_sha256": "e89c52e343c0e8af7a7939e18cb445b4e568f33acd4b9b805d2e7f408b173d50"
+    },
+    {
+      "logical_source": "io/np2sysp.c",
+      "pristine_path": "io/np2sysp.c",
+      "pristine_sha256": "8e8d22362eb24c1303386fff3c5697039e70b8c05f487bdd3b7cdf2cd87f89fe",
+      "patch_path": "0005-np2sysp-disable-sound-semantics.patch",
+      "patch_sha256": "422c59ab91db321eb007e0824eef759ce446d0231cd0574218889e057d0c297b",
+      "patched_sha256": "33bfa785d63da75e7e6ee321468061bfa59cff8e8f2eb580c9d3147968c0fa05"
     }
   ]
 }

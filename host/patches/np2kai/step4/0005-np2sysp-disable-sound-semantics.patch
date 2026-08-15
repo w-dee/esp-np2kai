@@ -1,0 +1,158 @@
+--- a/io/np2sysp.c
++++ b/io/np2sysp.c
+@@ -231,7 +231,9 @@
+     pccore.multiple = newclockmul;
+     pccore.maxmultiple = newclockmul;
+     pccore.realclock = pccore.baseclock * pccore.multiple;
++#if !defined(DISABLE_SOUND)
+     pcm86_changeclock(oldclockmult);
++#endif
+     nevent_changeclock(oldclockmult, pccore.multiple);
+ 
+     sound_changeclock();
+@@ -260,7 +262,11 @@
+ 
+   switch (configid) {
+   case NP21W_SWITCH_SOUNDBOARD:
++#if !defined(DISABLE_SOUND)
+     configvalue = g_nSoundID;
++#else
++    configvalue = SOUNDID_NONE;
++#endif
+     break;
+   case NP21W_SWITCH_GD54XXTYPE:
+ #if defined(SUPPORT_WAB) && defined(SUPPORT_CL_GD5430)
+@@ -297,6 +303,7 @@
+     break;
+   case NP21W_SWITCH_SETDEVICEIRQ: {
+     UINT8 targetvalue = (np2sysp.outval >> 16) & 0xff;
++#if !defined(DISABLE_SOUND)
+     int opna_idx;
+     if (g_nSoundID == SOUNDID_PC_9801_86_WSS ||
+         g_nSoundID == SOUNDID_PC_9801_86_118 ||
+@@ -307,11 +314,13 @@
+     } else {
+       opna_idx = 0;
+     }
++#endif
+     configvalue = 0xfe; // デバイスがない場合は0xfeを返す
+     switch (targetvalue) {
+     case NP21W_SWITCH_SETDEVICEIRQ_SUPPORTED:
+       configvalue = 98; // サポート確認用　常時98を返す
+       break;
++#if !defined(DISABLE_SOUND)
+     case NP21W_SWITCH_SETDEVICEIRQ_SND_26:
+       if (g_nSoundID == SOUNDID_PC_9801_26K) {
+         configvalue = g_opna[0].s.irq;
+@@ -366,6 +375,17 @@
+         configvalue = g_opna[1].s.irq;
+       }
+       break;
++#else
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_26:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_86:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_118:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_MATEX:
++#if defined(SUPPORT_SOUND_SB16)
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SB16:
++#endif
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SPB:
++      break;
++#endif
+     case NP21W_SWITCH_SETDEVICEIRQ_MIDI_MPU:
+       if (mpu98.enable) {
+         configvalue = mpu98.irqnum;
+@@ -385,12 +405,17 @@
+       }
+       break;
+ #endif
++#if !defined(DISABLE_SOUND)
+     case NP21W_SWITCH_SETDEVICEIRQ_SND_SO:
+       if (g_nSoundID == SOUNDID_SOUNDORCHESTRA ||
+           g_nSoundID == SOUNDID_SOUNDORCHESTRAV) {
+         configvalue = g_opna[0].s.irq;
+       }
+       break;
++#else
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SO:
++      break;
++#endif
+     default:
+       configvalue = 0xfd; // 番号自体無効なら0xfdを返す
+       break;
+@@ -436,6 +461,7 @@
+ #endif /* defined(SUPPORT_HRTIMER) */
+     break;
+   case NP21W_SWITCH_SOUNDBOARD:
++#if !defined(DISABLE_SOUND)
+     if (configvalue != (UINT8)g_nSoundID) {
+       sound_reset();
+       fmboard_unbind();
+@@ -493,6 +519,9 @@
+       ideio_bindCDDA();
+ #endif /* defined(SUPPORT_IDEIO) */
+     }
++#else
++    configvalue = SOUNDID_NONE;
++#endif
+     break;
+   case NP21W_SWITCH_GD54XXTYPE:
+ #if defined(SUPPORT_WAB) && defined(SUPPORT_CL_GD5430)
+@@ -569,6 +598,7 @@
+     // デバイスのIRQLを設定　デバイスで有効なIRQのみ設定可能　ただし事実上の無効化のためにIRQ14には設定できるようにする
+     UINT8 retvalue = 0xfe; // デバイスがない場合は0xfeを返す
+     UINT8 irqvalue = (np2sysp.outval >> 8) & 0xff;
++#if !defined(DISABLE_SOUND)
+     int opna_idx;
+     if (g_nSoundID == SOUNDID_PC_9801_86_WSS ||
+         g_nSoundID == SOUNDID_PC_9801_86_118 ||
+@@ -579,10 +609,12 @@
+     } else {
+       opna_idx = 0;
+     }
++#endif
+     switch (configvalue) {
+     case NP21W_SWITCH_SETDEVICEIRQ_SUPPORTED:
+       retvalue = 98; // サポート確認用　常時98を返す
+       break;
++#if !defined(DISABLE_SOUND)
+     case NP21W_SWITCH_SETDEVICEIRQ_SND_26:
+       if (irqvalue == 0x03 || irqvalue == 0x0d || irqvalue == 0x0a ||
+           irqvalue == 0x0c || irqvalue == 0xff) {
+@@ -636,6 +668,17 @@
+         retvalue = irqvalue; // 受付されたらその値を返す
+       }
+       break;
++#else
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_26:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_86:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_118:
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_MATEX:
++#if defined(SUPPORT_SOUND_SB16)
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SB16:
++#endif
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SPB:
++      break;
++#endif
+     case NP21W_SWITCH_SETDEVICEIRQ_MIDI_MPU:
+       if (irqvalue == 3 || irqvalue == 5 || irqvalue == 6 || irqvalue == 12 ||
+           irqvalue == 0xff) {
+@@ -662,6 +705,7 @@
+       }
+       break;
+ #endif
++#if !defined(DISABLE_SOUND)
+     case NP21W_SWITCH_SETDEVICEIRQ_SND_SO:
+       if (irqvalue == 0x03 || irqvalue == 0x0d || irqvalue == 0x0a ||
+           irqvalue == 0x0c || irqvalue == 0xff) {
+@@ -672,6 +716,10 @@
+         }
+       }
+       break;
++#else
++    case NP21W_SWITCH_SETDEVICEIRQ_SND_SO:
++      break;
++#endif
+     default:
+       retvalue = 0xfd; // 番号自体無効なら0xfdを返す
+       break;
