@@ -5,3 +5,5 @@
 host/backend/headless/mousemng.c
 # stage: headless-audio
 host/backend/headless/soundmng.c
+# stage: headless-timing
+host/backend/headless/timing.c

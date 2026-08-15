@@ -24,6 +24,9 @@ HEADLESS_MOUSE_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_mouse_test
 HEADLESS_SOUND_SOURCE := $(CURDIR)/backend/headless/soundmng.c
 HEADLESS_SOUND_TEST_SOURCE := $(CURDIR)/tests/headless_sound_test.c
 HEADLESS_SOUND_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sound_test
+HEADLESS_TIMING_SOURCE := $(CURDIR)/backend/headless/timing.c
+HEADLESS_TIMING_TEST_SOURCE := $(CURDIR)/tests/headless_timing_test.c
+HEADLESS_TIMING_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_timing_test
 PYTHON ?= python3
 CC ?= cc
 NM ?= nm
@@ -51,7 +54,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -145,3 +148,12 @@ test-headless-sound:
 		-o "$(HEADLESS_SOUND_TEST_OUTPUT)"
 	@"$(HEADLESS_SOUND_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless sound backend test passed (all deterministic cases).'
+
+test-headless-timing:
+	@mkdir -p "$(dir $(HEADLESS_TIMING_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_TIMING_SOURCE)" "$(HEADLESS_TIMING_TEST_SOURCE)" \
+		-o "$(HEADLESS_TIMING_TEST_OUTPUT)"
+	@"$(HEADLESS_TIMING_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless timing backend test passed (modulo-forward samples).'
