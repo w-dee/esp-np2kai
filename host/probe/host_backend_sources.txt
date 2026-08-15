@@ -1,4 +1,5 @@
 # Project-owned Ubuntu/headless host backend inventory.
-# Paths are repository-relative and must remain explicit; do not use globs.
-# This inventory is intentionally empty until a separately reviewed host
-# backend implementation phase adds its first translation unit.
+# Paths are repository-relative and explicit; do not use globs.
+# Implementation translation units only; test programs are separate.
+# stage: headless-input
+host/backend/headless/mousemng.c
