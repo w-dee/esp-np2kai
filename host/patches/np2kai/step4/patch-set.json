@@ -41,6 +41,14 @@
       "patch_path": "0005-np2sysp-disable-sound-semantics.patch",
       "patch_sha256": "422c59ab91db321eb007e0824eef759ce446d0231cd0574218889e057d0c297b",
       "patched_sha256": "33bfa785d63da75e7e6ee321468061bfa59cff8e8f2eb580c9d3147968c0fa05"
+    },
+    {
+      "logical_source": "io/serial.c",
+      "pristine_path": "io/serial.c",
+      "pristine_sha256": "184edea7e14696a649c439d772d1095c2191f1ecf48f55b52016533a627e0e07",
+      "patch_path": "0006-serial-iocore-adapters.patch",
+      "patch_sha256": "551beafbf729c124ac3122df1c2bfc244879b60b1792ff820f48e189aa5f8562",
+      "patched_sha256": "b443fe5764157f4add4141a1a576036fa3b56d75c56859df9e3db394c2153877"
     }
   ]
 }

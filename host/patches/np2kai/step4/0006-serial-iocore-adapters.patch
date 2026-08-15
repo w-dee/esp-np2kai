@@ -1,0 +1,71 @@
+--- a/io/serial.c
++++ b/io/serial.c
+@@ -81,14 +81,30 @@
+ 	return(keybrd.status | 0x85);
+ }
+ 
++static void IOOUTCALL keyboard_o41_iocore(UINT port, UINT dat) {
++	keyboard_o41(port, (REG8)dat);
++}
++
++static void IOOUTCALL keyboard_o43_iocore(UINT port, UINT dat) {
++	keyboard_o43(port, (REG8)dat);
++}
++
++static UINT IOINPCALL keyboard_i41_iocore(UINT port) {
++	return((UINT)keyboard_i41(port));
++}
++
++static UINT IOINPCALL keyboard_i43_iocore(UINT port) {
++	return((UINT)keyboard_i43(port));
++}
++
+ 
+ // ----
+ 
+ static const IOOUT keybrdo41[2] = {
+-					keyboard_o41,	keyboard_o43};
++					keyboard_o41_iocore,	keyboard_o43_iocore};
+ 
+ static const IOINP keybrdi41[2] = {
+-					keyboard_i41,	keyboard_i43};
++					keyboard_i41_iocore,	keyboard_i43_iocore};
+ 
+ 
+ void keyboard_reset(const NP2CFG *pConfig) {
+@@ -713,6 +729,22 @@
+ 	}
+ }
+ 
++static void IOOUTCALL rs232c_o30_iocore(UINT port, UINT dat) {
++	rs232c_o30(port, (REG8)dat);
++}
++
++static void IOOUTCALL rs232c_o32_iocore(UINT port, UINT dat) {
++	rs232c_o32(port, (REG8)dat);
++}
++
++static UINT IOINPCALL rs232c_i30_iocore(UINT port) {
++	return((UINT)rs232c_i30(port));
++}
++
++static UINT IOINPCALL rs232c_i32_iocore(UINT port) {
++	return((UINT)rs232c_i32(port));
++}
++
+ /*
+  * I/O 132h FIFO ラインステータス
+  * bit 3～7について UNDOCUMENTED 9801/9821 Vol.2に記載の内容は誤り
+@@ -887,10 +919,10 @@
+ // ----
+ 
+ static const IOOUT rs232co30[2] = {
+-					rs232c_o30,	rs232c_o32};
++					rs232c_o30_iocore,	rs232c_o32_iocore};
+ 
+ static const IOINP rs232ci30[2] = {
+-					rs232c_i30,	rs232c_i32};
++					rs232c_i30_iocore,	rs232c_i32_iocore};
+ 
+ void rs232c_reset(const NP2CFG *pConfig) {
+ 
