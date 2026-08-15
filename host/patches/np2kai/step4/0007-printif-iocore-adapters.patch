@@ -1,0 +1,136 @@
+--- a/io/printif.c
++++ b/io/printif.c
+@@ -168,7 +168,7 @@
+     COMMNG prt;
+     prt = cm_prt;
+     if (prt != NULL) {
+-      prt->msg(prt, COMMSG_REOPEN, NULL);
++      prt->msg(prt, COMMSG_REOPEN, 0);
+     }
+   }
+ 
+@@ -294,11 +294,75 @@
+   return (i14eData);
+ }
+ 
++static void IOOUTCALL prt_o40_iocore(UINT port, UINT dat) {
++  prt_o40(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o44_iocore(UINT port, UINT dat) {
++  prt_o44(port, (REG8)dat);
++}
++static UINT IOINPCALL prt_i40_iocore(UINT port) {
++  return (UINT)prt_i40(port);
++}
++static UINT IOINPCALL prt_i42_iocore(UINT port) {
++  return (UINT)prt_i42(port);
++}
++static UINT IOINPCALL prt_i44_iocore(UINT port) {
++  return (UINT)prt_i44(port);
++}
++static void IOOUTCALL prt_o140_iocore(UINT port, UINT dat) {
++  prt_o140(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o141_iocore(UINT port, UINT dat) {
++  prt_o141(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o142_iocore(UINT port, UINT dat) {
++  prt_o142(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o149_iocore(UINT port, UINT dat) {
++  prt_o149(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o14b_iocore(UINT port, UINT dat) {
++  prt_o14b(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o14c_iocore(UINT port, UINT dat) {
++  prt_o14c(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o14d_iocore(UINT port, UINT dat) {
++  prt_o14d(port, (REG8)dat);
++}
++static void IOOUTCALL prt_o14e_iocore(UINT port, UINT dat) {
++  prt_o14e(port, (REG8)dat);
++}
++static UINT IOINPCALL prt_i140_iocore(UINT port) {
++  return (UINT)prt_i140(port);
++}
++static UINT IOINPCALL prt_i141_iocore(UINT port) {
++  return (UINT)prt_i141(port);
++}
++static UINT IOINPCALL prt_i142_iocore(UINT port) {
++  return (UINT)prt_i142(port);
++}
++static UINT IOINPCALL prt_i149_iocore(UINT port) {
++  return (UINT)prt_i149(port);
++}
++static UINT IOINPCALL prt_i14b_iocore(UINT port) {
++  return (UINT)prt_i14b(port);
++}
++static UINT IOINPCALL prt_i14c_iocore(UINT port) {
++  return (UINT)prt_i14c(port);
++}
++static UINT IOINPCALL prt_i14d_iocore(UINT port) {
++  return (UINT)prt_i14d(port);
++}
++static UINT IOINPCALL prt_i14e_iocore(UINT port) {
++  return (UINT)prt_i14e(port);
++}
++
+ // ---- I/F
+ 
+-static const IOOUT prto40[4] = {prt_o40, NULL, prt_o44, NULL};
++static const IOOUT prto40[4] = {prt_o40_iocore, NULL, prt_o44_iocore, NULL};
+ 
+-static const IOINP prti40[4] = {prt_i40, prt_i42, prt_i44, NULL};
++static const IOINP prti40[4] = {prt_i40_iocore, prt_i42_iocore, prt_i44_iocore, NULL};
+ 
+ void printif_reset(const NP2CFG *pConfig) {
+ 
+@@ -325,22 +389,22 @@
+   iocore_attachsysoutex(0x0040, 0x0cf1, prto40, 4);
+   iocore_attachsysinpex(0x0040, 0x0cf1, prti40, 4);
+ 
+-  iocore_attachout(0x0140, prt_o140);
+-  iocore_attachout(0x0141, prt_o141);
+-  iocore_attachout(0x0142, prt_o142);
+-  iocore_attachout(0x0149, prt_o149);
+-  iocore_attachout(0x014b, prt_o14b);
+-  iocore_attachout(0x014c, prt_o14c);
+-  iocore_attachout(0x014d, prt_o14d);
+-  iocore_attachout(0x014e, prt_o14e);
+-  iocore_attachinp(0x0140, prt_i140);
+-  iocore_attachinp(0x0141, prt_i141);
+-  iocore_attachinp(0x0142, prt_i142);
+-  iocore_attachinp(0x0149, prt_i149);
+-  iocore_attachinp(0x014b, prt_i14b);
+-  iocore_attachinp(0x014c, prt_i14c);
+-  iocore_attachinp(0x014d, prt_i14d);
+-  iocore_attachinp(0x014e, prt_i14e);
++  iocore_attachout(0x0140, prt_o140_iocore);
++  iocore_attachout(0x0141, prt_o141_iocore);
++  iocore_attachout(0x0142, prt_o142_iocore);
++  iocore_attachout(0x0149, prt_o149_iocore);
++  iocore_attachout(0x014b, prt_o14b_iocore);
++  iocore_attachout(0x014c, prt_o14c_iocore);
++  iocore_attachout(0x014d, prt_o14d_iocore);
++  iocore_attachout(0x014e, prt_o14e_iocore);
++  iocore_attachinp(0x0140, prt_i140_iocore);
++  iocore_attachinp(0x0141, prt_i141_iocore);
++  iocore_attachinp(0x0142, prt_i142_iocore);
++  iocore_attachinp(0x0149, prt_i149_iocore);
++  iocore_attachinp(0x014b, prt_i14b_iocore);
++  iocore_attachinp(0x014c, prt_i14c_iocore);
++  iocore_attachinp(0x014d, prt_i14d_iocore);
++  iocore_attachinp(0x014e, prt_i14e_iocore);
+ }
+ 
+ void printif_finalize(void) {
+@@ -353,6 +417,6 @@
+ void printif_finishjob(void) {
+ 
+   if (cm_prt) {
+-    cm_prt->msg(cm_prt, COMMSG_REOPEN, NULL);
++    cm_prt->msg(cm_prt, COMMSG_REOPEN, 0);
+   }
+ }

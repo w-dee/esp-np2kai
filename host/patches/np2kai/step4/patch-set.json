@@ -49,6 +49,14 @@
       "patch_path": "0006-serial-iocore-adapters.patch",
       "patch_sha256": "551beafbf729c124ac3122df1c2bfc244879b60b1792ff820f48e189aa5f8562",
       "patched_sha256": "b443fe5764157f4add4141a1a576036fa3b56d75c56859df9e3db394c2153877"
+    },
+    {
+      "logical_source": "io/printif.c",
+      "pristine_path": "io/printif.c",
+      "pristine_sha256": "0cd4abf3da2cea2642187e403fcb5cc369cfbe882ae8f83b072aaa0847640683",
+      "patch_path": "0007-printif-iocore-adapters.patch",
+      "patch_sha256": "b0008d3c6158ad4645dba87fe739dd4fcf68215c76bdc6b1414de56666e4e1a9",
+      "patched_sha256": "a718f920011a5c60843609d3666f3773444d7626a5c753d9bb977dbd31abc68a"
     }
   ]
 }
