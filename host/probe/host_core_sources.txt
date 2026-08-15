@@ -77,6 +77,7 @@ io/egc.c
 io/emsio.c
 io/epsonio.c
 io/necio.c
+io/mouseif.c
 io/cpuio.c
 io/cgrom.c
 io/crtc.c
