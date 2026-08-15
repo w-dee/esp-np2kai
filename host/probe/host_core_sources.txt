@@ -139,6 +139,7 @@ font/fontx68k.c
 # stage: fdd
 # raw FDD path; all format handlers are probed because the current
 # fddfile.c dispatch table references them under SUPPORT_KAI_IMAGES.
+fdd/fdd_mtr.c
 fdd/diskdrv.c
 fdd/sxsi.c
 fdd/sxsihdd.c
