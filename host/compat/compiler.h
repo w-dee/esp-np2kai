@@ -39,11 +39,16 @@ typedef uint32_t DWORD;
 #define OEMCHAR char
 #define OEMTEXT(string) string
 #define OEMSTRLEN strlen
+#define STRLEN OEMSTRLEN
 #define OEMSNPRINTF snprintf
 #define OEMSPRINTF sprintf
 #define _T(string) string
 #define _tcsicmp strcasecmp
 #define _tcsnicmp strncasecmp
+
+#ifndef CPU_MULTIPLE_MAX
+#define CPU_MULTIPLE_MAX 2048
+#endif
 
 /* These entry points are ordinary C functions on the non-i386 probe host. */
 #define CPUCALL
