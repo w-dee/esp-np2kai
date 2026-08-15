@@ -3,3 +3,5 @@
 # Implementation translation units only; test programs are separate.
 # stage: headless-input
 host/backend/headless/mousemng.c
+# stage: headless-audio
+host/backend/headless/soundmng.c

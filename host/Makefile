@@ -21,6 +21,9 @@ LINK_PROBE_OUTPUT := $(BUILD_DIR)/link-mapped
 HEADLESS_MOUSE_SOURCE := $(CURDIR)/backend/headless/mousemng.c
 HEADLESS_MOUSE_TEST_SOURCE := $(CURDIR)/tests/headless_mouse_test.c
 HEADLESS_MOUSE_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_mouse_test
+HEADLESS_SOUND_SOURCE := $(CURDIR)/backend/headless/soundmng.c
+HEADLESS_SOUND_TEST_SOURCE := $(CURDIR)/tests/headless_sound_test.c
+HEADLESS_SOUND_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sound_test
 PYTHON ?= python3
 CC ?= cc
 NM ?= nm
@@ -48,7 +51,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -133,3 +136,12 @@ test-headless-mouse:
 		-o "$(HEADLESS_MOUSE_TEST_OUTPUT)"
 	@"$(HEADLESS_MOUSE_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless mouse backend test passed (four deterministic cases).'
+
+test-headless-sound:
+	@mkdir -p "$(dir $(HEADLESS_SOUND_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(HEADLESS_SOUND_SOURCE)" "$(HEADLESS_SOUND_TEST_SOURCE)" \
+		-o "$(HEADLESS_SOUND_TEST_OUTPUT)"
+	@"$(HEADLESS_SOUND_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless sound backend test passed (all deterministic cases).'
