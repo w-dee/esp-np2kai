@@ -289,6 +289,7 @@ not an independent license classification or legal opinion.
 | src/sound/rhythm.h | sound/rhythm.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/s98.h | sound/s98.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/sound.h | sound/sound.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/sound/soundrom.c | sound/soundrom.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/soundrom.h | sound/soundrom.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/tms3631.h | sound/tms3631.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | LICENSE | LICENSE | explicit-root-mit | LICENSE | present; preserved byte-for-byte | reviewed |

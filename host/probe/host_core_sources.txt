@@ -28,6 +28,7 @@ common/parts.c
 common/strres.c
 common/bmpdata.c
 common/textfile.c
+sound/soundrom.c
 
 # stage: shared-text
 # shared character conversion helpers referenced by font handling

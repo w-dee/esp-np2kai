@@ -4037,6 +4037,20 @@
       }
     },
     {
+      "upstream_path": "sound/soundrom.c",
+      "destination_path": "src/sound/soundrom.c",
+      "role": "source",
+      "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
       "upstream_path": "sound/soundrom.h",
       "destination_path": "src/sound/soundrom.h",
       "role": "header",
