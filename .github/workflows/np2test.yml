@@ -41,3 +41,40 @@ jobs:
           LC_ALL: C
           TZ: UTC
         run: make -C tests/guest/np2test ci-check
+
+  ubuntu-native-headless:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      LC_ALL: C
+      TZ: UTC
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify host toolchain
+        run: |
+          command -v cc
+          command -v make
+          command -v nm
+          command -v python3
+          cc --version
+          make --version
+          nm --version
+          python3 --version
+          python3 - <<'PY'
+          import platform
+          import sys
+
+          if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 12):
+              raise SystemExit(f"expected CPython 3.12, got {platform.python_implementation()} {sys.version}")
+          PY
+
+      - name: Test result-v1 parser
+        run: make -C host test-result-v1-parser
+
+      - name: Test execution controller
+        run: make -C host test-execution-controller
+
+      - name: Run Ubuntu-native headless NP2TEST
+        run: make -C host test-headless-runner-np2test
