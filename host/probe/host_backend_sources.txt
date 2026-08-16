@@ -11,6 +11,8 @@ host/backend/headless/timing.c
 host/backend/headless/timemng.c
 # stage: headless-system
 host/backend/headless/sysmng.c
+# stage: headless-task
+host/backend/headless/taskmng.c
 # stage: headless-dosio
 host/backend/headless/dosio.c
 # stage: headless-font

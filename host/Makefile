@@ -33,6 +33,9 @@ HEADLESS_TIMEMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_timemng_test
 HEADLESS_SYSMNG_SOURCE := $(CURDIR)/backend/headless/sysmng.c
 HEADLESS_SYSMNG_TEST_SOURCE := $(CURDIR)/tests/headless_sysmng_test.c
 HEADLESS_SYSMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sysmng_test
+HEADLESS_TASKMNG_SOURCE := $(CURDIR)/backend/headless/taskmng.c
+HEADLESS_TASKMNG_TEST_SOURCE := $(CURDIR)/tests/headless_taskmng_test.c
+HEADLESS_TASKMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_taskmng_test
 HEADLESS_DOSIO_SOURCE := $(CURDIR)/backend/headless/dosio.c
 HEADLESS_DOSIO_TEST_SOURCE := $(CURDIR)/tests/headless_dosio_test.c
 HEADLESS_DOSIO_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_dosio_test
@@ -73,7 +76,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -194,6 +197,16 @@ test-headless-sysmng:
 		-o "$(HEADLESS_SYSMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_SYSMNG_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless sysmng backend test passed (stateless notifications).'
+
+test-headless-taskmng:
+	@mkdir -p "$(dir $(HEADLESS_TASKMNG_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(CURDIR)/backend/headless" \
+		"$(HEADLESS_TASKMNG_SOURCE)" "$(HEADLESS_TASKMNG_TEST_SOURCE)" \
+		-o "$(HEADLESS_TASKMNG_TEST_OUTPUT)"
+	@"$(HEADLESS_TASKMNG_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless taskmng backend test passed (sticky cooperative exit request).'
 
 test-headless-dosio:
 	@mkdir -p "$(dir $(HEADLESS_DOSIO_TEST_OUTPUT))"
