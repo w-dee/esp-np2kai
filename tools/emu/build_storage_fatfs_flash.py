@@ -156,12 +156,25 @@ def measure_fat_image(image: Path) -> dict[str, int | str]:
     }
 
 
-def verify_high_address_state(state_image: Path) -> None:
+def verify_high_address_state(state_image: Path, marker_text: str,
+                              minimum_offset: int) -> None:
+    try:
+        marker = marker_text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        fail(f"high-address marker must be ASCII: {exc}")
+    if not marker:
+        fail("high-address marker must not be empty")
     data = state_image.read_bytes()
-    offset = data.find(HIGH_ADDRESS_MARKER, HIGH_ADDRESS_SCAN_START)
+    offset = data.find(marker, minimum_offset)
     if offset < 0:
-        fail(f"high-address marker not found beyond 0x{HIGH_ADDRESS_SCAN_START:x}")
-    print(f"STORAGEFATFS_HIGH_ADDRESS_RAW=PASS offset=0x{offset:x}")
+        fail(
+            "high-address marker not found: "
+            f"marker={marker_text!r} minimum_offset=0x{minimum_offset:x}"
+        )
+    print(
+        "STORAGEFATFS_HIGH_ADDRESS_RAW=PASS "
+        f"marker={marker_text} offset=0x{offset:x} minimum_offset=0x{minimum_offset:x}"
+    )
 
 
 def main() -> int:
@@ -170,6 +183,13 @@ def main() -> int:
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verify-state", type=Path)
+    parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
+    parser.add_argument(
+        "--minimum-offset",
+        type=lambda value: int(value, 0),
+        default=HIGH_ADDRESS_SCAN_START,
+        help="minimum physical marker offset (accepts decimal or 0x-prefixed hex)",
+    )
     args = parser.parse_args()
 
     repository_root = args.repository_root.resolve()
@@ -245,7 +265,9 @@ def main() -> int:
             fail(f"merged flash size is not 8 MiB: {output.stat().st_size}")
         print(f"STORAGEFATFS_MERGED path={output} size={output.stat().st_size}")
     if args.verify_state is not None:
-        verify_high_address_state(args.verify_state.resolve())
+        verify_high_address_state(
+            args.verify_state.resolve(), args.marker, args.minimum_offset
+        )
     return 0
 
 
