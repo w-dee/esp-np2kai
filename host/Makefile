@@ -43,6 +43,9 @@ HEADLESS_RUNNER_STAGE1_IMAGE := $(abspath $(CURDIR)/../tests/guest/np2test/golde
 RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
 RESULT_V1_PARSER_TEST_SOURCE := $(CURDIR)/tests/result_v1_parser_test.c
 RESULT_V1_PARSER_TEST_OUTPUT := $(BUILD_DIR)/tests/result_v1_parser_test
+EXECUTION_CONTROLLER_SOURCE := $(CURDIR)/runner/execution_controller.c
+EXECUTION_CONTROLLER_TEST_SOURCE := $(CURDIR)/tests/execution_controller_test.c
+EXECUTION_CONTROLLER_TEST_OUTPUT := $(BUILD_DIR)/tests/execution_controller_test
 HEADLESS_DOSIO_SOURCE := $(CURDIR)/backend/headless/dosio.c
 HEADLESS_DOSIO_TEST_SOURCE := $(CURDIR)/tests/headless_dosio_test.c
 HEADLESS_DOSIO_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_dosio_test
@@ -83,7 +86,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -183,6 +186,14 @@ test-result-v1-parser:
 		"$(RESULT_V1_PARSER_SOURCE)" "$(RESULT_V1_PARSER_TEST_SOURCE)" \
 		-o "$(RESULT_V1_PARSER_TEST_OUTPUT)"
 	@"$(RESULT_V1_PARSER_TEST_OUTPUT)"
+
+test-execution-controller:
+	@mkdir -p "$(dir $(EXECUTION_CONTROLLER_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/runner" \
+		"$(EXECUTION_CONTROLLER_SOURCE)" "$(EXECUTION_CONTROLLER_TEST_SOURCE)" \
+		-o "$(EXECUTION_CONTROLLER_TEST_OUTPUT)"
+	@"$(EXECUTION_CONTROLLER_TEST_OUTPUT)"
 
 test-headless-mouse:
 	@mkdir -p "$(dir $(HEADLESS_MOUSE_TEST_OUTPUT))"
