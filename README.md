@@ -19,8 +19,17 @@ headless runner boots the tracked formal NP2TEST Stage-1 golden. The current
 golden run completes 13 tests with 13 passed, 0 failed, and result-v1 CRC
 `0x58f5b827`. This validates the imported minimum portable core and formal
 Stage-1 path only; it is not a claim of complete PC-9801 compatibility or
-general software support. ESP32-P4 firmware execution remains a later
-validation layer. NP2 source itself has not been imported.
+general software support. NP2 source itself has not been imported.
+
+Step 5 firmware/runtime integration is implemented and validated under a
+non-formal ESP32-P4 `esp-emu` profile. The dedicated FreeRTOS NP2 runner now
+drives the validated 124-translation-unit NP2core through the np2host boundary,
+the read-only raw-NOR NP2TEST fixture, and the shared Stage-1 parser/controller.
+The formal firmware profile remains `EXTMEM=13`; the reduced emulator profile
+uses explicit `EXTMEM=8` only as supplementary evidence. Formal ESP32-P4
+runtime validation remains blocked because esp-emu v0.39.0 exposes 16 MiB
+PSRAM but cannot provide the required contiguous external block after the
+NP2core external BSS placement.
 
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
@@ -93,8 +102,10 @@ Validation is organized in three layers:
 1. **Ubuntu-native** — fastest portable-core and reference validation. The
    bounded Step 4 NP2kai execution belongs to this layer.
 2. **Espressif `esp-emu`** — ESP32-P4 firmware and integration validation. The
-   current Hello World and UART/data/file checks are results for this layer;
-   Step 4 NP2kai has not been run inside `esp-emu` as part of this milestone.
+   current Hello World, UART/data/file checks, raw fixture check, and reduced
+   Stage-1 check are results for this layer. The reduced Stage-1 result is
+   explicitly non-formal; formal `EXTMEM=13` runtime validation remains
+   blocked by the current emulator memory model.
 3. **Real ESP32-P4 hardware** — unsupported peripherals, real timing,
    performance, and board transport validation.
 

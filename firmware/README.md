@@ -32,6 +32,47 @@ defaults select `CONFIG_ESP32P4_REV_MIN_301=y`. This requirement is verified
 for the emulator environment only; physical P4-NANO and TAB5 revision
 compatibility remains unverified.
 
+## Step 5 headless core integration
+
+The Step 5 runtime path is now implemented as a real firmware dependency
+chain:
+
+```text
+main
+  +-- uart_control_transport
+  +-- np2memoryprobe
+  +-- np2fixtureprobe
+  +-- np2test_runner
+          +-- np2core
+          +-- np2host
+          +-- np2fixture
+          +-- shared Stage-1 configuration/parser/controller
+```
+
+`np2test_runner` owns the one-shot FreeRTOS task and directly drives
+`pccore_init()`, `pccore_reset()`, `pccore_exec()`, and `pccore_term()`. The
+np2core external BSS is approximately 5.69 MiB (`.ext_ram.bss=0x5af57c` in
+the final map), including the 2 MiB `mem[]` buffer. The formal profile remains
+`EXTMEM=13`.
+
+The raw fixture is a dedicated read-only NOR partition containing the exact
+FD1232 Stage-1 image. Runtime validation checks its partition metadata,
+SHA-256, mmap/read-only DOSIO access, and vendor FDD/XDF recognition. This
+deliberately avoids a FAT layer under esp-emu; physical microSD/FATFS and
+writable media remain future storage work.
+
+The formal Ubuntu-native result is 13/13 with CRC `0x58f5b827` and
+`NP2TEST_RESULT=PASS`. The ESP32-P4 formal profile is currently blocked on
+esp-emu v0.39.0's 16 MiB PSRAM model and its inability to provide the required
+contiguous external allocation. The reduced profile uses explicit `EXTMEM=8`
+as NON-FORMAL supplementary evidence only; it reaches 13/13, CRC
+`0x58f5b827`, and `NP2REDUCED_RESULT=PASS`, and does not replace formal
+`EXTMEM=13` validation.
+
+The CI workflow keeps three independent jobs: formal fixture CI,
+formal Ubuntu-native headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced
+Stage-1 job. No real ESP32-P4 hardware validation is claimed.
+
 This firmware is the current ESP32-P4-specific firmware baseline. The current
 firmware tree and configuration do not build for ESP32-S31; future S31 work
 would require a separate SoC implementation below the portable emulator and

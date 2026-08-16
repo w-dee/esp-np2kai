@@ -160,18 +160,3 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     "SHELL:-iquote ${NP2HOST_VENDOR_SRC}/bios"
     "SHELL:-iquote ${NP2HOST_VENDOR_SRC}/cbus"
     "SHELL:-iquote ${NP2HOST_VENDOR_SRC}/io")
-
-# The ESP-IDF application link scans component archives in dependency order
-# without rescanning them. Keep the firmware DOSIO object reachable when the
-# NP2 core archive is pulled in by the Phase 2 link probe.
-target_link_options(${COMPONENT_LIB} INTERFACE
-    "-Wl,--undefined=mousemng_getstat"
-    "-Wl,--undefined=soundmng_play"
-    "-Wl,--undefined=sysmng_update"
-    "-Wl,--undefined=fontmng_get"
-    "-Wl,--undefined=scrnmng_setwidth"
-    "-Wl,--undefined=commng_create"
-    "-Wl,--undefined=np2_host_gettick"
-    "-Wl,--undefined=timemng_gettime"
-    "-Wl,--undefined=taskmng_exit"
-    "-Wl,--undefined=file_open")

@@ -148,14 +148,41 @@ result-v1 CRC `0x58f5b827`. First protocol evidence was observed at returned
 slice 202 and terminal `PASS` at returned slice 203; those observations are not
 architectural guarantees.
 
+## ESP32-P4 headless core integration
+
+The implemented firmware dependency graph is:
+
+```text
+main
+  +-- uart_control_transport
+  +-- np2memoryprobe -> np2core
+  +-- np2fixtureprobe -> np2fixture -> np2host
+  +-- np2test_runner -> np2core + np2host + np2fixture
+                         + shared Stage-1 configuration/parser/controller
+```
+
+The dedicated runner directly owns the one-shot NP2 lifecycle through
+`pccore_init()`, `pccore_reset()`, `pccore_exec()`, and `pccore_term()`. The
+validated 124-TU NP2core is connected through the ESP32-P4 np2host boundary,
+with PSRAM external BSS support. External BSS placement is provided by
+ESP-IDF linker facilities rather than vendor-source ESP-specific attributes.
+
+The formal NP2TEST fixture is stored in a dedicated read-only NOR partition.
+Its access path uses mmap/read-only DOSIO and validates the vendor FDD/XDF
+path; it does not introduce a FAT layer under esp-emu. The formal Stage-1
+configuration, result-v1 parser, and execution controller are shared with the
+native headless oracle, while the ESP32-P4 runner remains a platform-side
+adapter around the core lifecycle.
+
 ## Validation-layer boundary
 
 Ubuntu-native execution validates portable core behavior and is the fastest
 reference layer. It is not the target ESP32-P4 firmware. `esp-emu` validates
 actual ESP32-P4 firmware and integration, while real ESP32-P4 hardware is the
 layer for unsupported peripherals, real timing, performance, and board
-transport. Step 4 is complete only for the bounded Ubuntu-native layer; it does
-not claim that NP2kai has run inside `esp-emu` or on hardware.
+transport. The firmware integration is implemented and validated under the
+non-formal reduced emulator profile, but formal `EXTMEM=13` runtime validation
+and all real-hardware validation remain pending.
 
 ## Conceptual layers
 

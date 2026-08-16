@@ -92,11 +92,28 @@ input, or hardware behavior.
 
 ## Step 5: ESP32-P4 headless core
 
-After the completed Ubuntu-native layer, connect the validated portable-core
-boundary to an ESP32-P4 headless firmware implementation and validate it with
-`esp-emu` where applicable. This stage precedes physical-board feature work and
-does not claim physical hardware availability or validation. Step 5 is a higher
-validation layer, not a reclassification of the Step 4 native result.
+Step 5 firmware/runtime integration is implemented and validated under a
+non-formal `EXTMEM=8` esp-emu profile. The path now uses the validated 124-TU
+NP2core, the np2host boundary, PSRAM external BSS, a read-only raw-NOR
+NP2TEST fixture with mmap/DOSIO access, a dedicated FreeRTOS NP2 runner, and
+the shared Stage-1 configuration/parser/controller. The native formal oracle
+remains 13/13 with CRC `0x58f5b827` and `NP2TEST_RESULT=PASS`.
+
+The formal ESP32-P4 profile remains `EXTMEM=13`, but runtime validation is
+blocked on esp-emu v0.39.0: its 16 MiB PSRAM model cannot provide the required
+contiguous external allocation after the approximately 5.69 MiB NP2core
+external BSS placement (including the 2 MiB `mem[]` buffer). The reduced
+`EXTMEM=8` result reaches 13/13 with CRC `0x58f5b827` and
+`NP2REDUCED_RESULT=PASS`; it is explicitly NON-FORMAL supplementary evidence
+and does not replace formal `EXTMEM=13` validation.
+
+The three CI jobs remain independent: formal fixture CI, formal Ubuntu-native
+headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced Stage-1 job. No real
+ESP32-P4 hardware result is claimed. Physical storage, peripherals, and
+future SoC work remain later scopes. Pending bring-up includes formal
+`EXTMEM=13` runtime validation, a real ESP32-P4 with the intended 32 MiB PSRAM,
+ESP32-S31, microSD/FATFS and writable media, display/audio/input/USB, board
+integration, and performance or multicore work.
 
 ## After physical hardware arrival: board features
 
