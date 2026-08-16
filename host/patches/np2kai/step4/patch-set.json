@@ -47,8 +47,8 @@
       "pristine_path": "io/serial.c",
       "pristine_sha256": "184edea7e14696a649c439d772d1095c2191f1ecf48f55b52016533a627e0e07",
       "patch_path": "0006-serial-iocore-adapters.patch",
-      "patch_sha256": "551beafbf729c124ac3122df1c2bfc244879b60b1792ff820f48e189aa5f8562",
-      "patched_sha256": "b443fe5764157f4add4141a1a576036fa3b56d75c56859df9e3db394c2153877"
+      "patch_sha256": "3c2c4610df6f8a0a4e872590ff26c9f1872daa20d4dc71a3c121a2e4ba6f8690",
+      "patched_sha256": "91e28a7c50d3eb540faa2ef4d3dcb7f6503ba491511b402cc5995bf2d3e3d461"
     },
     {
       "logical_source": "io/printif.c",
