@@ -8,6 +8,9 @@
 #include "np2_memory_probe.h"
 #include "np2test_runner/np2test_runner.h"
 #include "uart_control_transport/uart_control_transport.h"
+#if defined(STORAGE_FATFS_PROBE)
+#include "storage_fatfs_probe/storage_fatfs_probe.h"
+#endif
 
 namespace {
 
@@ -22,6 +25,12 @@ extern "C" void app_main(void)
 {
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
+
+#if defined(STORAGE_FATFS_PROBE)
+    if (storage_fatfs_probe_run() != ESP_OK) {
+        return;
+    }
+#endif
 
     const esp_err_t fixture_result = np2_fixture_probe_run();
     if (fixture_result != ESP_OK) {

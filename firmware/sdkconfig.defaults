@@ -13,8 +13,17 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
-# Phase 3.5: the raw NP2TEST fixture extends the emulator flash image beyond
-# the default 2 MiB single-app layout.
-CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Step 6A.1: the approved common validation envelope is 8 MiB.  The raw
+# NP2TEST fixture remains at its reviewed offset and the application remains
+# in the existing 1 MiB factory partition.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Step 6A.1 FATFS/WL contract.  The 64-byte neutral component limit is
+# sufficient for the UTF-8 LFN contract used by storage_fatfs.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_MAX_LFN=64
+CONFIG_FATFS_SECTOR_4096=y
+CONFIG_WL_SECTOR_SIZE_4096=y

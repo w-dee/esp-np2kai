@@ -115,6 +115,11 @@ def main() -> int:
         fail(f"np2test partition must remain exact-size: 0x{fixture.size:x}")
 
     options, images = read_flash_args(build_dir)
+    if "--flash_size" not in options:
+        fail(f"ESP-IDF flash arguments have no flash size: {' '.join(options)}")
+    flash_size = options[options.index("--flash_size") + 1]
+    if flash_size not in {"4MB", "8MB"}:
+        fail(f"unsupported ESP-IDF flash size for raw fixture image: {flash_size}")
     for _, image in images:
         if not image.is_file():
             fail(f"ESP-IDF flash image is missing: {image}")
@@ -137,9 +142,9 @@ def main() -> int:
         "--flash_freq",
         "80m",
         "--flash_size",
-        "4MB",
+        flash_size,
         "--fill-flash-size",
-        "4MB",
+        flash_size,
     ]
     for offset, image in images:
         merge_command.extend((f"0x{offset:x}", str(image)))
