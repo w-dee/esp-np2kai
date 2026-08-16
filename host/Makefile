@@ -38,8 +38,11 @@ HEADLESS_TASKMNG_TEST_SOURCE := $(CURDIR)/tests/headless_taskmng_test.c
 HEADLESS_TASKMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_taskmng_test
 HEADLESS_RUNNER_SOURCE := $(CURDIR)/runner/headless_main.c
 HEADLESS_RUNNER_OBJECT := $(BUILD_DIR)/runner/headless_main.o
+RESULT_V1_PARSER_OBJECT := $(BUILD_DIR)/runner/result_v1_parser.o
+EXECUTION_CONTROLLER_OBJECT := $(BUILD_DIR)/runner/execution_controller.o
 HEADLESS_RUNNER_OUTPUT := $(BUILD_DIR)/runner/headless_runner
 HEADLESS_RUNNER_STAGE1_IMAGE := $(abspath $(CURDIR)/../tests/guest/np2test/golden/np2test-fd1232.image)
+HEADLESS_RUNNER_SUPERVISOR := $(CURDIR)/tests/run_headless_runner.py
 RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
 RESULT_V1_PARSER_TEST_SOURCE := $(CURDIR)/tests/result_v1_parser_test.c
 RESULT_V1_PARSER_TEST_OUTPUT := $(BUILD_DIR)/tests/result_v1_parser_test
@@ -86,7 +89,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -163,21 +166,39 @@ phase1-link-probe-mapped: phase1-prepare-sources
 	@printf '%s\n' 'Mapped relocatable link-closure evidence written to $(LINK_PROBE_OUTPUT)' \
 		'No executable, runtime, FDD, or NP2TEST probe was performed.'
 
-headless-runner: phase1-link-probe-mapped
+$(HEADLESS_RUNNER_OBJECT): $(HEADLESS_RUNNER_SOURCE)
 	@mkdir -p "$(dir $(HEADLESS_RUNNER_OBJECT))"
 	@$(CC) $(PROBE_CFLAGS) -Werror \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
-		-I"$(CURDIR)/backend/headless" \
+		-I"$(CURDIR)/backend/headless" -I"$(CURDIR)/runner" \
 		$(foreach d,$(PROBE_DEFINES),-D$(d)) \
 		-c "$(HEADLESS_RUNNER_SOURCE)" -o "$(HEADLESS_RUNNER_OBJECT)"
+
+$(RESULT_V1_PARSER_OBJECT): $(RESULT_V1_PARSER_SOURCE)
+	@mkdir -p "$(dir $(RESULT_V1_PARSER_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror -I"$(CURDIR)/runner" \
+		-c "$(RESULT_V1_PARSER_SOURCE)" -o "$(RESULT_V1_PARSER_OBJECT)"
+
+$(EXECUTION_CONTROLLER_OBJECT): $(EXECUTION_CONTROLLER_SOURCE)
+	@mkdir -p "$(dir $(EXECUTION_CONTROLLER_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror -I"$(CURDIR)/runner" \
+		-c "$(EXECUTION_CONTROLLER_SOURCE)" -o "$(EXECUTION_CONTROLLER_OBJECT)"
+
+headless-runner: phase1-link-probe-mapped $(HEADLESS_RUNNER_OBJECT) \
+		$(RESULT_V1_PARSER_OBJECT) $(EXECUTION_CONTROLLER_OBJECT)
 	@$(CC) "$(LINK_PROBE_OUTPUT)/combined.o" "$(HEADLESS_RUNNER_OBJECT)" \
+		"$(RESULT_V1_PARSER_OBJECT)" "$(EXECUTION_CONTROLLER_OBJECT)" \
 		-lm -o "$(HEADLESS_RUNNER_OUTPUT)"
 
-test-headless-runner-attach: headless-runner
-	@"$(HEADLESS_RUNNER_OUTPUT)" "$(HEADLESS_RUNNER_STAGE1_IMAGE)"
-	@printf '%s\n' 'Headless runner reset/FDD-attach smoke passed.'
+test-headless-runner-np2test: headless-runner
+	@$(PYTHON) "$(HEADLESS_RUNNER_SUPERVISOR)" \
+		--timeout 30 --expect-result PASS \
+		"$(HEADLESS_RUNNER_OUTPUT)" "$(HEADLESS_RUNNER_STAGE1_IMAGE)"
+	@printf '%s\n' 'Headless runner supervised NP2TEST smoke passed.'
 
-test-headless-runner-lifecycle: test-headless-runner-attach
+test-headless-runner-attach: test-headless-runner-np2test
+
+test-headless-runner-lifecycle: test-headless-runner-np2test
 
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"
