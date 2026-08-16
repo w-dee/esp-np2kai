@@ -139,3 +139,13 @@ extern "C" esp_err_t uart_control_transport_start(const uart_control_metadata_t 
     s_started = true;
     return ESP_OK;
 }
+
+extern "C" bool uart_control_transport_write(const char *data, size_t length)
+{
+    if ((data == nullptr) || (length == 0)) {
+        return false;
+    }
+    return write_machine(nullptr,
+                         reinterpret_cast<const std::uint8_t *>(data),
+                         length);
+}
