@@ -1,5 +1,5 @@
 # Preserve the vendored upstream snapshot exactly as imported from Git blobs.
-/third_party/np2kai/src/** -text
+/third_party/np2kai/src/** -text -whitespace
 /third_party/np2kai/LICENSE -text
 /third_party/np2kai/LICENSES/** -text
 
