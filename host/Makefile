@@ -38,8 +38,11 @@ HEADLESS_TASKMNG_TEST_SOURCE := $(CURDIR)/tests/headless_taskmng_test.c
 HEADLESS_TASKMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_taskmng_test
 HEADLESS_RUNNER_SOURCE := $(CURDIR)/runner/headless_main.c
 HEADLESS_RUNNER_OBJECT := $(BUILD_DIR)/runner/headless_main.o
+HEADLESS_RUNNER_DEPENDENCY := $(BUILD_DIR)/runner/headless_main.d
 RESULT_V1_PARSER_OBJECT := $(BUILD_DIR)/runner/result_v1_parser.o
+RESULT_V1_PARSER_DEPENDENCY := $(BUILD_DIR)/runner/result_v1_parser.d
 EXECUTION_CONTROLLER_OBJECT := $(BUILD_DIR)/runner/execution_controller.o
+EXECUTION_CONTROLLER_DEPENDENCY := $(BUILD_DIR)/runner/execution_controller.d
 HEADLESS_RUNNER_OUTPUT := $(BUILD_DIR)/runner/headless_runner
 HEADLESS_RUNNER_STAGE1_IMAGE := $(abspath $(CURDIR)/../tests/guest/np2test/golden/np2test-fd1232.image)
 HEADLESS_RUNNER_SUPERVISOR := $(CURDIR)/tests/run_headless_runner.py
@@ -88,6 +91,11 @@ PROBE_CFLAGS := \
 	-Wextra \
 	-fno-common \
 	-Werror=implicit-function-declaration
+
+RUNNER_DEPENDENCIES := \
+	$(HEADLESS_RUNNER_DEPENDENCY) \
+	$(RESULT_V1_PARSER_DEPENDENCY) \
+	$(EXECUTION_CONTROLLER_DEPENDENCY)
 
 .PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
@@ -169,6 +177,7 @@ phase1-link-probe-mapped: phase1-prepare-sources
 $(HEADLESS_RUNNER_OBJECT): $(HEADLESS_RUNNER_SOURCE)
 	@mkdir -p "$(dir $(HEADLESS_RUNNER_OBJECT))"
 	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(HEADLESS_RUNNER_DEPENDENCY)" \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
 		-I"$(CURDIR)/backend/headless" -I"$(CURDIR)/runner" \
 		$(foreach d,$(PROBE_DEFINES),-D$(d)) \
@@ -176,12 +185,16 @@ $(HEADLESS_RUNNER_OBJECT): $(HEADLESS_RUNNER_SOURCE)
 
 $(RESULT_V1_PARSER_OBJECT): $(RESULT_V1_PARSER_SOURCE)
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_OBJECT))"
-	@$(CC) $(PROBE_CFLAGS) -Werror -I"$(CURDIR)/runner" \
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(RESULT_V1_PARSER_DEPENDENCY)" \
+		-I"$(CURDIR)/runner" \
 		-c "$(RESULT_V1_PARSER_SOURCE)" -o "$(RESULT_V1_PARSER_OBJECT)"
 
 $(EXECUTION_CONTROLLER_OBJECT): $(EXECUTION_CONTROLLER_SOURCE)
 	@mkdir -p "$(dir $(EXECUTION_CONTROLLER_OBJECT))"
-	@$(CC) $(PROBE_CFLAGS) -Werror -I"$(CURDIR)/runner" \
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(EXECUTION_CONTROLLER_DEPENDENCY)" \
+		-I"$(CURDIR)/runner" \
 		-c "$(EXECUTION_CONTROLLER_SOURCE)" -o "$(EXECUTION_CONTROLLER_OBJECT)"
 
 headless-runner: phase1-link-probe-mapped $(HEADLESS_RUNNER_OBJECT) \
@@ -199,6 +212,8 @@ test-headless-runner-np2test: headless-runner
 test-headless-runner-attach: test-headless-runner-np2test
 
 test-headless-runner-lifecycle: test-headless-runner-np2test
+
+-include $(RUNNER_DEPENDENCIES)
 
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"
