@@ -1,11 +1,17 @@
 #ifndef NP2_HOST_DOSIO_H
 #define NP2_HOST_DOSIO_H
 
+#if defined(NP2_FIRMWARE_DOSIO)
+/* Firmware keeps FILEH opaque and pointer-sized; no stdio FILE is exposed. */
+typedef void *FILEH;
+#define FSEEK_SET 0
+#define FSEEK_END 2
+#else
 typedef FILE *FILEH;
-#define FILEH_INVALID NULL
-
 #define FSEEK_SET SEEK_SET
 #define FSEEK_END SEEK_END
+#endif
+#define FILEH_INVALID NULL
 
 enum {
     FILEATTR_READONLY = 0x01,
