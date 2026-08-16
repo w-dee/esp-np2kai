@@ -36,6 +36,9 @@ HEADLESS_SYSMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_sysmng_test
 HEADLESS_TASKMNG_SOURCE := $(CURDIR)/backend/headless/taskmng.c
 HEADLESS_TASKMNG_TEST_SOURCE := $(CURDIR)/tests/headless_taskmng_test.c
 HEADLESS_TASKMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_taskmng_test
+HEADLESS_RUNNER_SOURCE := $(CURDIR)/runner/headless_main.c
+HEADLESS_RUNNER_OBJECT := $(BUILD_DIR)/runner/headless_main.o
+HEADLESS_RUNNER_OUTPUT := $(BUILD_DIR)/runner/headless_runner
 HEADLESS_DOSIO_SOURCE := $(CURDIR)/backend/headless/dosio.c
 HEADLESS_DOSIO_TEST_SOURCE := $(CURDIR)/tests/headless_dosio_test.c
 HEADLESS_DOSIO_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_dosio_test
@@ -76,7 +79,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-lifecycle test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -152,6 +155,20 @@ phase1-link-probe-mapped: phase1-prepare-sources
 		$(foreach f,$(PROBE_CFLAGS),--cflag="$(f)")
 	@printf '%s\n' 'Mapped relocatable link-closure evidence written to $(LINK_PROBE_OUTPUT)' \
 		'No executable, runtime, FDD, or NP2TEST probe was performed.'
+
+headless-runner: phase1-link-probe-mapped
+	@mkdir -p "$(dir $(HEADLESS_RUNNER_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(CURDIR)/backend/headless" \
+		$(foreach d,$(PROBE_DEFINES),-D$(d)) \
+		-c "$(HEADLESS_RUNNER_SOURCE)" -o "$(HEADLESS_RUNNER_OBJECT)"
+	@$(CC) "$(LINK_PROBE_OUTPUT)/combined.o" "$(HEADLESS_RUNNER_OBJECT)" \
+		-lm -o "$(HEADLESS_RUNNER_OUTPUT)"
+
+test-headless-runner-lifecycle: headless-runner
+	@"$(HEADLESS_RUNNER_OUTPUT)"
+	@printf '%s\n' 'Headless runner init/term lifecycle smoke passed.'
 
 test-headless-mouse:
 	@mkdir -p "$(dir $(HEADLESS_MOUSE_TEST_OUTPUT))"
