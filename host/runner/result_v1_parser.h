@@ -1,0 +1,71 @@
+#ifndef NP2_RESULT_V1_PARSER_H
+#define NP2_RESULT_V1_PARSER_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define NP2_RESULT_V1_SIZE 128u
+#define NP2_RESULT_V1_MAGIC "NP2T"
+#define NP2_RESULT_V1_VERSION 1u
+#define NP2_RESULT_V1_HEADER_SIZE 32u
+#define NP2_RESULT_V1_BLOCK_SIZE 128u
+#define NP2_RESULT_V1_FLAGS 0u
+#define NP2_RESULT_V1_SUITE_ID UINT32_C(0x4e503201)
+#define NP2_RESULT_V1_BUILD_ID UINT32_C(0x00010001)
+#define NP2_RESULT_V1_TOTAL_COUNT 13u
+#define NP2_RESULT_V1_DIAGNOSTIC_SIZE 64u
+
+#define NP2_RESULT_V1_MAGIC_OFFSET 0u
+#define NP2_RESULT_V1_VERSION_OFFSET 4u
+#define NP2_RESULT_V1_HEADER_SIZE_OFFSET 6u
+#define NP2_RESULT_V1_BLOCK_SIZE_OFFSET 8u
+#define NP2_RESULT_V1_FLAGS_OFFSET 10u
+#define NP2_RESULT_V1_SUITE_ID_OFFSET 12u
+#define NP2_RESULT_V1_BUILD_ID_OFFSET 16u
+#define NP2_RESULT_V1_TOTAL_COUNT_OFFSET 20u
+#define NP2_RESULT_V1_COMPLETED_COUNT_OFFSET 22u
+#define NP2_RESULT_V1_PASSED_COUNT_OFFSET 24u
+#define NP2_RESULT_V1_FAILED_COUNT_OFFSET 26u
+#define NP2_RESULT_V1_FIRST_FAILED_ID_OFFSET 28u
+#define NP2_RESULT_V1_DIAGNOSTIC_LENGTH_OFFSET 30u
+#define NP2_RESULT_V1_DIAGNOSTIC_OFFSET 32u
+#define NP2_RESULT_V1_RESERVED_BODY_OFFSET 96u
+#define NP2_RESULT_V1_RESERVED_BODY_SIZE 24u
+#define NP2_RESULT_V1_CRC_OFFSET 120u
+#define NP2_RESULT_V1_CRC_END 120u
+#define NP2_RESULT_V1_STATE_OFFSET 124u
+#define NP2_RESULT_V1_RESERVED_TAIL_OFFSET 125u
+#define NP2_RESULT_V1_RESERVED_TAIL_SIZE 3u
+
+#define NP2_RESULT_V1_STATE_UNINITIALIZED 0u
+#define NP2_RESULT_V1_STATE_RUNNING 1u
+#define NP2_RESULT_V1_STATE_PASS 2u
+#define NP2_RESULT_V1_STATE_FAIL 3u
+#define NP2_RESULT_V1_NO_FAILED_ID UINT16_C(0xffff)
+
+typedef enum {
+	NP2_RESULT_V1_PRE_PROTOCOL = 0,
+	NP2_RESULT_V1_UNINITIALIZED,
+	NP2_RESULT_V1_RUNNING,
+	NP2_RESULT_V1_PASS,
+	NP2_RESULT_V1_FAIL,
+	NP2_RESULT_V1_INVALID
+} np2_result_v1_observation;
+
+typedef struct {
+	np2_result_v1_observation observation;
+	uint16_t completed_count;
+	uint16_t passed_count;
+	uint16_t failed_count;
+	uint16_t first_failed_id;
+	uint16_t diagnostic_length;
+	uint8_t diagnostic[NP2_RESULT_V1_DIAGNOSTIC_SIZE];
+} np2_result_v1_result;
+
+/* Dynamic fields are authoritative only for validated terminal PASS/FAIL. */
+np2_result_v1_observation np2_result_v1_parse(
+	const uint8_t *snapshot,
+	size_t snapshot_size,
+	np2_result_v1_result *result);
+
+#endif /* NP2_RESULT_V1_PARSER_H */

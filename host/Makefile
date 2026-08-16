@@ -40,6 +40,9 @@ HEADLESS_RUNNER_SOURCE := $(CURDIR)/runner/headless_main.c
 HEADLESS_RUNNER_OBJECT := $(BUILD_DIR)/runner/headless_main.o
 HEADLESS_RUNNER_OUTPUT := $(BUILD_DIR)/runner/headless_runner
 HEADLESS_RUNNER_STAGE1_IMAGE := $(abspath $(CURDIR)/../tests/guest/np2test/golden/np2test-fd1232.image)
+RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
+RESULT_V1_PARSER_TEST_SOURCE := $(CURDIR)/tests/result_v1_parser_test.c
+RESULT_V1_PARSER_TEST_OUTPUT := $(BUILD_DIR)/tests/result_v1_parser_test
 HEADLESS_DOSIO_SOURCE := $(CURDIR)/backend/headless/dosio.c
 HEADLESS_DOSIO_TEST_SOURCE := $(CURDIR)/tests/headless_dosio_test.c
 HEADLESS_DOSIO_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_dosio_test
@@ -80,7 +83,7 @@ PROBE_CFLAGS := \
 	-fno-common \
 	-Werror=implicit-function-declaration
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-attach test-headless-runner-lifecycle test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -172,6 +175,14 @@ test-headless-runner-attach: headless-runner
 	@printf '%s\n' 'Headless runner reset/FDD-attach smoke passed.'
 
 test-headless-runner-lifecycle: test-headless-runner-attach
+
+test-result-v1-parser:
+	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/runner" \
+		"$(RESULT_V1_PARSER_SOURCE)" "$(RESULT_V1_PARSER_TEST_SOURCE)" \
+		-o "$(RESULT_V1_PARSER_TEST_OUTPUT)"
+	@"$(RESULT_V1_PARSER_TEST_OUTPUT)"
 
 test-headless-mouse:
 	@mkdir -p "$(dir $(HEADLESS_MOUSE_TEST_OUTPUT))"
