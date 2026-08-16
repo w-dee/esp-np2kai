@@ -123,6 +123,7 @@ idf_component_register(
         "${CMAKE_CURRENT_LIST_DIR}/taskmng_esp.c"
         "${CMAKE_CURRENT_LIST_DIR}/dosio_esp.c"
     INCLUDE_DIRS
+        "${CMAKE_CURRENT_LIST_DIR}/include"
         "${NP2HOST_HOST_COMPAT}"
         "${NP2HOST_VENDOR_SRC}"
         "${NP2HOST_VENDOR_SRC}/i286c"

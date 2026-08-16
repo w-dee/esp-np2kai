@@ -1,0 +1,8 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# Keep the existing single-app/data layout and append one application-owned,
+# read-only raw fixture partition.  Type 0x40 is reserved for this project;
+# subtype 0x01 is the NP2TEST fixture subtype.
+nvs,      data, nvs,      ,         0x6000,
+phy_init, data, phy,      ,         0x1000,
+factory,  app,  factory,  ,         1M,
+np2test,  0x40, 0x01,     ,         0x134000, readonly

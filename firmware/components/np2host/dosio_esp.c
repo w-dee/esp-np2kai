@@ -1,10 +1,63 @@
-/* ESP32-P4 DOSIO boundary: no filesystem is attached in Phase 2. */
+/* ESP32-P4 DOSIO boundary: one read-only raw fixture is attached in Phase 3.5. */
 #include <string.h>
 
 #include <compiler.h>
 #include <dosio.h>
+#include <np2host/dosio_esp.h>
 
 static OEMCHAR np2_dosio_current_path[MAX_PATH] = "./";
+
+typedef struct {
+	const uint8_t *data;
+	size_t size;
+	size_t position;
+	int active;
+} NP2_DOSIO_HANDLE;
+
+static const char *np2_dosio_fixture_path;
+static const uint8_t *np2_dosio_fixture_data;
+static size_t np2_dosio_fixture_size;
+static NP2_DOSIO_HANDLE np2_dosio_fixture_handle;
+
+int np2_dosio_attach_fixture(const char *path,
+							 const uint8_t *data,
+							 size_t size)
+{
+	if ((path == NULL) || (path[0] == '\0') || (data == NULL) || (size == 0)) {
+		return 0;
+	}
+	if (np2_dosio_fixture_handle.active) {
+		return 0;
+	}
+	np2_dosio_fixture_path = path;
+	np2_dosio_fixture_data = data;
+	np2_dosio_fixture_size = size;
+	return 1;
+}
+
+void np2_dosio_detach_fixture(void)
+{
+	np2_dosio_fixture_handle.active = 0;
+	np2_dosio_fixture_path = NULL;
+	np2_dosio_fixture_data = NULL;
+	np2_dosio_fixture_size = 0;
+}
+
+static int np2_dosio_is_fixture_path(const OEMCHAR *path)
+{
+	return (path != NULL) && (np2_dosio_fixture_path != NULL) &&
+		(strcmp(path, np2_dosio_fixture_path) == 0);
+}
+
+static NP2_DOSIO_HANDLE *np2_dosio_handle(FILEH handle)
+{
+	if ((handle == FILEH_INVALID) ||
+		(handle != (FILEH)&np2_dosio_fixture_handle) ||
+		!np2_dosio_fixture_handle.active) {
+		return NULL;
+	}
+	return &np2_dosio_fixture_handle;
+}
 
 static int np2_dosio_is_separator(OEMCHAR value)
 {
@@ -52,13 +105,22 @@ static void np2_dosio_append(OEMCHAR *destination,
 FILEH file_open(const OEMCHAR *path)
 {
 	(void)path;
+	/* All writes remain unsupported; callers must request read-only access. */
 	return FILEH_INVALID;
 }
 
 FILEH file_open_rb(const OEMCHAR *path)
 {
-	(void)path;
-	return FILEH_INVALID;
+	if (!np2_dosio_is_fixture_path(path) ||
+		(np2_dosio_fixture_data == NULL) ||
+		np2_dosio_fixture_handle.active) {
+		return FILEH_INVALID;
+	}
+	np2_dosio_fixture_handle.data = np2_dosio_fixture_data;
+	np2_dosio_fixture_handle.size = np2_dosio_fixture_size;
+	np2_dosio_fixture_handle.position = 0;
+	np2_dosio_fixture_handle.active = 1;
+	return (FILEH)&np2_dosio_fixture_handle;
 }
 
 FILEH file_create(const OEMCHAR *path)
@@ -69,18 +131,43 @@ FILEH file_create(const OEMCHAR *path)
 
 FILEPOS file_seek(FILEH handle, FILEPOS pointer, int method)
 {
-	(void)handle;
-	(void)pointer;
-	(void)method;
-	return (FILEPOS)-1;
+	NP2_DOSIO_HANDLE *fixture = np2_dosio_handle(handle);
+	FILEPOS target;
+
+	if (fixture == NULL || pointer < 0) {
+		return (FILEPOS)-1;
+	}
+	if (method == FSEEK_SET) {
+		target = pointer;
+	} else if (method == FSEEK_END) {
+		target = (FILEPOS)fixture->size + pointer;
+	} else {
+		return (FILEPOS)-1;
+	}
+	if (target < 0 || (uint64_t)target > (uint64_t)fixture->size) {
+		return (FILEPOS)-1;
+	}
+	fixture->position = (size_t)target;
+	return target;
 }
 
 UINT file_read(FILEH handle, void *data, UINT length)
 {
-	(void)handle;
-	(void)data;
-	(void)length;
-	return 0;
+	NP2_DOSIO_HANDLE *fixture = np2_dosio_handle(handle);
+	size_t remaining;
+
+	if ((fixture == NULL) || ((data == NULL) && (length != 0))) {
+		return 0;
+	}
+	remaining = fixture->size - fixture->position;
+	if ((size_t)length > remaining) {
+		length = (UINT)remaining;
+	}
+	if (length != 0) {
+		memcpy(data, fixture->data + fixture->position, length);
+		fixture->position += length;
+	}
+	return length;
 }
 
 UINT file_write(FILEH handle, const void *data, UINT length)
@@ -93,13 +180,23 @@ UINT file_write(FILEH handle, const void *data, UINT length)
 
 short file_close(FILEH handle)
 {
-	return (handle == FILEH_INVALID) ? 0 : -1;
+	NP2_DOSIO_HANDLE *fixture = np2_dosio_handle(handle);
+
+	if (fixture == NULL) {
+		return (handle == FILEH_INVALID) ? 0 : -1;
+	}
+	fixture->active = 0;
+	fixture->data = NULL;
+	fixture->size = 0;
+	fixture->position = 0;
+	return 0;
 }
 
 FILELEN file_getsize(FILEH handle)
 {
-	(void)handle;
-	return 0;
+	NP2_DOSIO_HANDLE *fixture = np2_dosio_handle(handle);
+
+	return (fixture == NULL) ? 0 : (FILELEN)fixture->size;
 }
 
 short file_delete(const OEMCHAR *path)
@@ -110,8 +207,7 @@ short file_delete(const OEMCHAR *path)
 
 short file_attr(const OEMCHAR *path)
 {
-	(void)path;
-	return -1;
+	return np2_dosio_is_fixture_path(path) ? FILEATTR_READONLY : -1;
 }
 
 OEMCHAR *file_getcd(const OEMCHAR *path)
