@@ -136,13 +136,37 @@ python3 -m py_compile tools/np2kai/import_np2kai.py tools/np2kai/verify_np2kai.p
 git diff --check
 ```
 
+## Ubuntu-native host validation
+
+The Step 4 host validation uses a POSIX shell environment, a C compiler exposed
+as `cc`, `make`, binutils including `nm`, and Python 3. The principal full
+validation command is:
+
+```sh
+make -C host test-headless-runner-np2test
+```
+
+This builds the configured portable closure and runs the tracked formal
+NP2TEST Stage-1 golden through the Ubuntu-native headless runner. Focused
+result-v1 parser and execution-controller commands, including their contract
+boundaries, are documented in [`host/README.md`](../host/README.md).
+
+NASM is not required merely to execute the tracked golden through the host
+runner. NASM is required when regenerating and validating the guest fixture via
+the `tests/guest/np2test` build path.
+
+The validation order remains host native first, then ESP32-P4 firmware and
+integration through `esp-emu`, then real hardware. The host result is not an
+`esp-emu` or physical-board result.
+
 ## Development targets
 
 The intended progression is:
 
 1. Binary Data Plane, File Transfer Base/virtual storage, and NP2kai snapshot
    verification (completed foundations).
-2. Ubuntu native builds and tests for the candidate emulator core.
+2. Ubuntu native builds and tests for the bounded portable emulator core
+   (completed Step 4 milestone).
 3. `esp-emu` for the ESP32-P4 headless core, FreeRTOS, RISC-V integration, and
    headless regression.
 4. After physical hardware arrival, ESP32-P4-NANO-KIT-D and M5Stack TAB5 board

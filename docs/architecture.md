@@ -78,10 +78,13 @@ anchor. The vendor-local
 [`README.md`](../third_party/np2kai/README.md) is the generated human-readable
 summary.
 
-The imported tree is an inspected, source-inspection-based candidate source
-set for the initial baseline. It is not a compiler-proven or linker-proven
-complete dependency closure. Step 4 is the first stage that integrates this
-candidate set into a build and exposes missing or unnecessary dependencies.
+The imported tree is an inspected, byte-preserved source set for the initial
+baseline. The allowlist alone is not a general dependency-closure guarantee:
+different feature configurations may require different sources. The current
+Step 4 Ubuntu-native configuration has nevertheless proven its bounded
+closure: 124 vendor translation units plus 10 host translation units compile,
+link as a relocatable unit, and leave zero project/non-system unresolved
+symbols.
 
 The baseline intent is:
 
@@ -104,9 +107,53 @@ license-evidence review, deterministic regeneration, verification, and human
 review. This source-set policy does not establish optional device runtime
 support.
 
-Host contracts and adapters remain outside the vendor tree. Compile, link,
-startup, CPU execution, display, audio, storage, and input integration are
-subsequent work, beginning with the Ubuntu-native headless Step 4 core.
+Host contracts and adapters remain outside the vendor tree. The Step 4
+configuration validates compile/link and bounded startup/CPU execution through
+the Ubuntu-native headless path. Display, audio, storage, input integration,
+broader software compatibility, ESP32-P4 firmware integration, and hardware
+validation remain separate later scopes.
+
+## Ubuntu-native execution boundary
+
+The formal NP2TEST Stage-1 guest publishes a 128-byte `result-v1` memory block.
+The Ubuntu-native execution pipeline is:
+
+```text
+formal NP2TEST guest
+        |
+        v
+result-v1 memory block
+        |
+        v
+result-v1 parser
+        |
+        v
+deterministic execution controller
+        |
+        v
+Ubuntu-native headless runner orchestration
+```
+
+The parser validates the guest block and the controller owns returned-slice
+budgets and normalized outcomes. A separate Python external supervisor bounds
+the host process and wall clock. The deterministic pre-running/running limits
+(512 and 4096 returned slices) measure guest/protocol progress; the supervisor's
+30-second limit handles a non-returning `pccore_exec(FALSE)` call or another
+process-level failure. These timeout domains are intentionally distinct.
+
+The current formal golden run is measured evidence: 13/13 tests pass with
+result-v1 CRC `0x58f5b827`. First protocol evidence was observed at returned
+slice 202 and terminal `PASS` at returned slice 203; those observations are not
+architectural guarantees.
+
+## Validation-layer boundary
+
+Ubuntu-native execution validates portable core behavior and is the fastest
+reference layer. It is not the target ESP32-P4 firmware. `esp-emu` validates
+actual ESP32-P4 firmware and integration, while real ESP32-P4 hardware is the
+layer for unsupported peripherals, real timing, performance, and board
+transport. Step 4 is complete only for the bounded Ubuntu-native layer; it does
+not claim that NP2kai has run inside `esp-emu` or on hardware.
 
 ## Conceptual layers
 

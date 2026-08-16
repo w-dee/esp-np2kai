@@ -8,17 +8,19 @@ portability target, not a current implementation target.
 
 ## Status
 
-Very early bring-up. A minimal headless ESP-IDF Hello World firmware, the UART
-Control Plane Base, Binary Data Plane v1, and RAM-backed File Transfer Base
-have been implemented and
-verified under `esp-emu` v0.39.0 with ESP-IDF v5.5.4. The automated checks
-build the firmware, create the merged image, boot it under the emulator, and
-validate these milestones independently. A pinned NP2kai snapshot for the
-initial i286 core baseline is now vendored and its manifest/blob metadata has
-been verified. It is a source-inspection-based candidate set, not a complete
-dependency closure or an executable core; Ubuntu-native Step 4 compile/link/run
-and physical hardware validation remain outstanding. NP2 source itself has not
-been imported.
+A minimal headless ESP-IDF Hello World firmware, the UART Control Plane Base,
+Binary Data Plane v1, and RAM-backed File Transfer Base are verified under
+`esp-emu` v0.39.0 with ESP-IDF v5.5.4. A pinned NP2kai snapshot for the initial
+i286 core baseline is vendored with verified manifest/blob metadata.
+
+The bounded Step 4 Ubuntu-native validation is now verified: the configured
+portable core closure compiles and links, and the permanent Ubuntu-native
+headless runner boots the tracked formal NP2TEST Stage-1 golden. The current
+golden run completes 13 tests with 13 passed, 0 failed, and result-v1 CRC
+`0x58f5b827`. This validates the imported minimum portable core and formal
+Stage-1 path only; it is not a claim of complete PC-9801 compatibility or
+general software support. ESP32-P4 firmware execution remains a later
+validation layer. NP2 source itself has not been imported.
 
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
@@ -86,11 +88,19 @@ milestone.
 
 ## Validation stages
 
-Validation is planned in three layers: fast Ubuntu native tests,
-SoC/emulator integration where supported, and physical hardware validation for
-peripherals and performance. The verified `esp-emu` Hello World path is
-specifically an ESP32-P4 result. `esp-emu` performance will not be treated as
-representative of real target hardware.
+Validation is organized in three layers:
+
+1. **Ubuntu-native** — fastest portable-core and reference validation. The
+   bounded Step 4 NP2kai execution belongs to this layer.
+2. **Espressif `esp-emu`** — ESP32-P4 firmware and integration validation. The
+   current Hello World and UART/data/file checks are results for this layer;
+   Step 4 NP2kai has not been run inside `esp-emu` as part of this milestone.
+3. **Real ESP32-P4 hardware** — unsupported peripherals, real timing,
+   performance, and board transport validation.
+
+Ubuntu-native success is not a substitute for `esp-emu` or hardware validation.
+The verified `esp-emu` path is specifically an ESP32-P4 result, and its
+performance is not representative of real target hardware.
 
 ## Documentation
 

@@ -53,17 +53,28 @@ make -C tests/guest/np2test check
 python3 tools/guest/test_np2test.py
 ```
 
-The complete runner-independent validation entrypoint is:
+The complete fixture-only validation entrypoint is:
 
 ```sh
 make -C tests/guest/np2test ci-check
 ```
 
 It requires NASM 2.16.01 and CPython 3.12, and uses `LC_ALL=C` and `TZ=UTC`.
-It performs syntax checks, host-side tests, independent double-build
-reproducibility checks, and golden equality.  Golden mismatches fail; CI never
-promotes or overwrites the golden automatically.  This Step 3.5a-4 check
-validates source, toolchain, and artifact structure only; it does not execute
-an emulator.  Guest runtime execution belongs to Step 4.
+It performs syntax checks, fixture-side tests, independent double-build
+reproducibility checks, and golden equality. Golden mismatches fail; CI never
+promotes or overwrites the golden automatically. This check validates the
+fixture source, toolchain, and artifact structure only; it does not execute an
+emulator or consume the golden through the native core.
+
+The separate Ubuntu-native runtime validation is:
+
+```sh
+make -C host test-headless-runner-np2test
+```
+
+That command consumes the tracked golden with the current imported native core
+and permanent supervised headless runner. In CI, `np2test` validates the guest
+fixture while `ubuntu-native-headless` validates parser/controller/full native
+execution; these are separate contracts.
 
 Generated files are written below `build/guest/`, which is ignored by Git.

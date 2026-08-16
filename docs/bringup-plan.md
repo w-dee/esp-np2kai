@@ -58,31 +58,45 @@ remain future work after the headless core milestones.
 ## Steps 1-3: Completed foundations and core import
 
 The Binary Data Plane documentation and implementation, the File Transfer Base
-with virtual/RAM-backed storage, and the pinned NP2kai candidate core import
-are complete. The NP2kai import is a source-inspection-based candidate source
-set with snapshot integrity verification; it is not yet compile/link/run
-validated. The project may follow NP2/NP2kai lineage, but the Step 3 vendored
-source is NP2kai only.
+with virtual/RAM-backed storage, and the pinned NP2kai core import are complete.
+The import remains a byte-preserved allowlist whose contents alone do not claim
+a general dependency closure; the bounded Step 4 configuration below provides
+the current compile/link/runtime evidence. The project may follow NP2/NP2kai
+lineage, but the vendored source is NP2kai only.
 
 ## Step 4: Ubuntu-native headless minimum core
 
-This is the next implementation stage:
+This bounded formal milestone is completed and verified. The Ubuntu-native
+configuration:
 
-- integrate the candidate NP2kai source set into an Ubuntu-native build
-- establish the required portable host contracts and adapters
-- compile, link, and start the headless core
-- use compiler/linker results to identify missing or unnecessary dependencies
-- begin executable i286 CPU, memory, timer, and UART benchmark validation
+- compiles and links 124 vendor plus 10 host translation units;
+- leaves zero project/non-system unresolved symbols;
+- boots the tracked formal NP2TEST Stage-1 FD1232 golden with the permanent
+  headless runner;
+- records 13 completed tests, 13 passed, 0 failed, and result-v1 CRC
+  `0x58f5b827`; and
+- runs as the `ubuntu-native-headless` CI contract alongside guest fixture CI.
 
-The Step 3 snapshot is not a complete dependency closure claim. Any manifest
-change discovered here requires explicit allowlist, provenance, license
-evidence, deterministic regeneration, verification, and human review.
+The deterministic controller budgets are 512 pre-running returned slices and
+4096 running observations/slices. The external Python supervisor has a separate
+30-second wall-clock safety timeout. In the current measured golden run, first
+protocol evidence appeared at returned slice 202 and terminal `PASS` at slice
+203; these are runtime measurements, not architectural guarantees.
+
+The Step 3 snapshot remains an allowlist rather than a universal closure claim.
+Any future manifest change requires explicit allowlist, provenance, license
+evidence, deterministic regeneration, verification, and human review. Step 4 is
+bounded to the imported minimum portable core and formal Stage-1 image; it does
+not validate complete PC-9801 compatibility, arbitrary software, GUI, audio,
+input, or hardware behavior.
 
 ## Step 5: ESP32-P4 headless core
 
-After the Ubuntu-native headless core, connect the validated core boundary to an
-ESP32-P4 headless implementation. This stage precedes physical-board feature
-work and does not claim physical hardware availability or validation.
+After the completed Ubuntu-native layer, connect the validated portable-core
+boundary to an ESP32-P4 headless firmware implementation and validate it with
+`esp-emu` where applicable. This stage precedes physical-board feature work and
+does not claim physical hardware availability or validation. Step 5 is a higher
+validation layer, not a reclassification of the Step 4 native result.
 
 ## After physical hardware arrival: board features
 
