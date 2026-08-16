@@ -27,9 +27,10 @@
 #define NP2_FORMAL_EXTMEM_MB 13U
 #define NP2_REDUCED_EXTMEM_MB 8U
 
-/* Provisional bring-up value. It is deliberately measured, not treated as a
- * final memory- or scheduling-budget decision. */
-#define NP2TEST_RUNNER_STACK_WORDS 32768U
+/* Provisional bring-up value. xTaskCreate() and
+ * uxTaskGetStackHighWaterMark() use bytes on ESP32-P4 in ESP-IDF 5.5.x. It is
+ * deliberately measured, not treated as a final scheduling-budget decision. */
+#define NP2TEST_RUNNER_STACK_BYTES 32768U
 #define NP2TEST_RUNNER_PRIORITY (tskIDLE_PRIORITY + 3)
 
 typedef struct {
@@ -37,6 +38,8 @@ typedef struct {
 } np2test_runner_task_config;
 
 static np2test_runner_task_config np2test_runner_task_state;
+/* One-shot by design: this task owns the NP2 lifecycle for the firmware
+ * lifetime; no restart/reload API is provided. */
 static int np2test_runner_started;
 
 static const char *np2test_profile_name(np2test_profile profile)
@@ -228,9 +231,9 @@ static void np2test_emit_terminal(np2test_runner_task_config *state,
     }
     /* Emit stack evidence before the terminal marker so bounded harnesses can
      * stop on the marker without losing the measurement. */
-    np2test_emit(state, "%s_STACK configured_words=%u high_water_words=%u\n",
+    np2test_emit(state, "%s_STACK configured_bytes=%u high_water_bytes=%u\n",
                  prefix,
-                 (unsigned)NP2TEST_RUNNER_STACK_WORDS,
+                 (unsigned)NP2TEST_RUNNER_STACK_BYTES,
                  (unsigned)uxTaskGetStackHighWaterMark(NULL));
     np2test_emit(state, "%s_RESULT=%s\n", prefix, outcome_name);
 }
@@ -241,7 +244,7 @@ static void np2test_task(void *argument)
     np2_fixture fixture;
     np2_result_v1_result parsed;
     np2_execution_controller controller;
-    np2_execution_outcome outcome = NP2_EXECUTION_HARNESS_ERROR;
+    np2_execution_outcome outcome = NP2_EXECUTION_CONTINUE;
     uint8_t snapshot[NP2_RESULT_V1_SIZE];
     bool core_initialized = false;
     bool have_snapshot = false;
@@ -304,8 +307,7 @@ static void np2test_task(void *argument)
                  (unsigned)fddfile[0].inf.xdf.disktype);
 
     np2_execution_controller_init(&controller);
-    while (outcome == NP2_EXECUTION_HARNESS_ERROR ||
-           outcome == NP2_EXECUTION_CONTINUE) {
+    while (outcome == NP2_EXECUTION_CONTINUE) {
         pccore_exec(FALSE);
         memcpy(snapshot, mem + NP2_RESULT_PHYSICAL_ADDRESS,
                sizeof(snapshot));
@@ -351,7 +353,7 @@ esp_err_t np2test_runner_start(const np2test_runner_config *config)
     np2test_runner_task_state.config = *config;
     task_result = xTaskCreate(np2test_task,
                               "np2test_runner",
-                              NP2TEST_RUNNER_STACK_WORDS,
+                              NP2TEST_RUNNER_STACK_BYTES,
                               &np2test_runner_task_state,
                               NP2TEST_RUNNER_PRIORITY,
                               NULL);

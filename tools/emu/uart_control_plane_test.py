@@ -27,7 +27,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware", required=True, type=Path)
     parser.add_argument("--log", required=True, type=Path)
-    parser.add_argument("--esp-emu", default=os.path.expanduser("~/.local/bin/esp-emu"))
+    parser.add_argument(
+        "--esp-emu",
+        default=os.environ.get("ESP_EMU", os.path.expanduser("~/.local/bin/esp-emu")),
+    )
     return parser.parse_args()
 
 

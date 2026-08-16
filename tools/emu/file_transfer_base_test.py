@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import os
 from pathlib import Path
 import sys
 import traceback
@@ -20,7 +21,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--firmware", required=True, type=Path)
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--uart-log", required=True, type=Path)
-    parser.add_argument("--esp-emu", default=str(Path.home() / ".local/bin/esp-emu"))
+    parser.add_argument(
+        "--esp-emu",
+        default=os.environ.get("ESP_EMU", str(Path.home() / ".local/bin/esp-emu")),
+    )
     args = parser.parse_args()
     args.emulator_timeout = "180s"
     args.process_timeout = 190.0

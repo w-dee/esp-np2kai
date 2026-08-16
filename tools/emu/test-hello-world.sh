@@ -8,40 +8,14 @@ readonly BUILD_DIR="${FIRMWARE_DIR}/build"
 readonly MERGED_IMAGE="${BUILD_DIR}/merged-binary.bin"
 readonly EMULATOR_LOG="${BUILD_DIR}/esp-emu-hello-world.log"
 readonly SUCCESS_MARKER="ESP-NP2KAI HELLO WORLD OK"
-readonly IDF_ACTIVATION_SCRIPT="${HOME}/.espressif/tools/activate_idf_v5.5.4.sh"
-readonly ESP_EMU="${HOME}/.local/bin/esp-emu"
+readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
 
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     exit 1
 }
 
-if [[ ! -f "${IDF_ACTIVATION_SCRIPT}" ]]; then
-    fail "ESP-IDF activation script not found: ${IDF_ACTIVATION_SCRIPT}"
-fi
-
-activate_idf() {
-    local original_argv0="${BASH_ARGV0}"
-    local activation_status
-
-    # ESP-IDF v5.5.4's activation script expects a sourced Bash session and
-    # is not safe under the caller's strict -e/-u options. Keep this workaround
-    # local to activation and restore the strict options immediately after it.
-    eim() { :; }
-    # Make the v5.5.4 source-detection logic see a sourced Bash session.
-    BASH_ARGV0=bash
-    set +eu
-    # shellcheck disable=SC1090
-    source "${IDF_ACTIVATION_SCRIPT}"
-    activation_status="$?"
-    set -eu
-    BASH_ARGV0="${original_argv0}"
-    # Prevent optional `eim select` behavior from changing external settings.
-    unset -f eim
-    return "${activation_status}"
-}
-
-activate_idf
+source "${SCRIPT_DIR}/activate-idf.sh"
 
 if [[ -z "${IDF_PATH:-}" ]]; then
     fail 'IDF_PATH is not set after ESP-IDF activation'
