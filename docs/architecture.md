@@ -109,9 +109,11 @@ support.
 
 Host contracts and adapters remain outside the vendor tree. The Step 4
 configuration validates compile/link and bounded startup/CPU execution through
-the Ubuntu-native headless path. Display, audio, storage, input integration,
-broader software compatibility, ESP32-P4 firmware integration, and hardware
-validation remain separate later scopes.
+the Ubuntu-native headless path. Display, audio, input integration, broader
+software compatibility, target/physical storage integration such as
+microSD/FATFS and real media, ESP32-P4 firmware integration, and hardware
+validation remain separate later scopes. Step 4 storage is limited to the
+read-only tracked FD1232 FDD image path used to boot the formal Stage-1 golden.
 
 ## Ubuntu-native execution boundary
 
