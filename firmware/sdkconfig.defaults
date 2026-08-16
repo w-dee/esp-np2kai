@@ -6,3 +6,9 @@ CONFIG_COMPILER_CXX_RTTI=n
 # Verified with esp-emu v0.39.0, which reports ESP32-P4 revision v3.1.
 # Physical P4-NANO and TAB5 revision compatibility remains unverified.
 CONFIG_ESP32P4_REV_MIN_301=y
+
+# Phase 3: enable the pinned ESP-IDF PSRAM heap and external BSS support.
+# Keep the P4 mode/speed defaults from ESP-IDF 5.5.4.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y

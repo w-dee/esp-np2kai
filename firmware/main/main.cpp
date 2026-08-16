@@ -3,12 +3,18 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
+#include "np2_memory_probe.h"
 #include "uart_control_transport/uart_control_transport.h"
 
 extern "C" void app_main(void)
 {
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
+
+    const esp_err_t memory_result = np2_memory_probe_run();
+    if (memory_result != ESP_OK) {
+        return;
+    }
 
     const esp_app_desc_t *app = esp_app_get_description();
     const uart_control_metadata_t metadata{

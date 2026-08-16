@@ -1,0 +1,10 @@
+[scheme:np2core_extram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:np2core_extram_bss]
+archive: libnp2core.a
+entries:
+    if ESP_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        * (np2core_extram_bss)

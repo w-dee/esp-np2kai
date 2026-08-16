@@ -184,6 +184,7 @@ endforeach()
 
 idf_component_register(
     SRCS ${NP2CORE_SOURCES}
+    LDFRAGMENTS linker.lf
     INCLUDE_DIRS
         "${NP2CORE_HOST_COMPAT}"
         "${NP2CORE_VENDOR_SRC}"

@@ -1,6 +1,6 @@
 idf_component_register(SRCS "main.cpp"
                        INCLUDE_DIRS ""
-                       PRIV_REQUIRES uart_control_transport esp_app_format np2linkprobe)
+                       PRIV_REQUIRES uart_control_transport esp_app_format np2linkprobe np2memoryprobe np2host)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
 
