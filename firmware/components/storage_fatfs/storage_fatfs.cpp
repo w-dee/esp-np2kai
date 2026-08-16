@@ -372,11 +372,20 @@ storage::Error StorageFatfs::begin_write_impl(std::string_view path, std::uint64
             return storage::Error::WriteFailed;
         }
         fd = ::open(staging, O_CREAT | O_EXCL | O_RDWR, 0666);
-        if (fd < 0 && errno != EEXIST) return map_errno(errno, true);
+        if (fd < 0 && errno != EEXIST) {
+            const int open_errno = errno;
+            return open_errno == EIO ? storage::Error::NoSpace :
+                map_errno(open_errno, true);
+        }
     }
     if (fd < 0) return storage::Error::NoSpace;
     if (::ftruncate(fd, static_cast<off_t>(size)) != 0) {
-        const storage::Error error = map_errno(errno, true);
+        const int truncate_errno = errno;
+        // FatFS reports an exhausted allocation during ftruncate() as EIO on
+        // this target/emulator; preserve ordinary write-side EIO mapping.
+        const storage::Error error = (truncate_errno == 0 || truncate_errno == EIO) ?
+            storage::Error::NoSpace :
+            map_errno(truncate_errno, true);
         ::close(fd);
         unlink_path(staging);
         return error;
@@ -607,6 +616,7 @@ storage::Error StorageFatfs::map_errno(int error, bool write_operation)
     case EEXIST: return storage::Error::AlreadyExists;
     case ENOTDIR: return storage::Error::NotADirectory;
     case EISDIR: return storage::Error::NotAFile;
+    case EFBIG:
     case ENOSPC: return storage::Error::NoSpace;
     case EBUSY: return storage::Error::Busy;
     case EINVAL:

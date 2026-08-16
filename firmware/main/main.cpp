@@ -8,6 +8,11 @@
 #include "np2_memory_probe.h"
 #include "np2test_runner/np2test_runner.h"
 #include "uart_control_transport/uart_control_transport.h"
+#if defined(UART_FATFS_PROFILE)
+#include "file_transfer/file_transfer.hpp"
+#include "storage_fatfs/storage_fatfs.hpp"
+#include "uart_control_transport/uart_control_transport.hpp"
+#endif
 #if defined(STORAGE_FATFS_PROBE)
 #include "storage_fatfs_probe/storage_fatfs_probe.h"
 #endif
@@ -18,6 +23,11 @@ bool write_np2_runner_output(void *, const char *data, std::size_t length)
 {
     return uart_control_transport_write(data, length);
 }
+
+#if defined(UART_FATFS_PROFILE)
+storage_fatfs::MountProvider s_fatfs_provider;
+storage_fatfs::StorageFatfs s_fatfs_storage(s_fatfs_provider);
+#endif
 
 } // namespace
 
@@ -46,11 +56,31 @@ extern "C" void app_main(void)
         esp_get_idf_version(),
         "esp32p4",
     };
+#if defined(UART_FATFS_PROFILE)
+    storage::Storage file_storage{};
+    file_transfer::Limits file_limits{};
+    if (s_fatfs_storage.mount() != ESP_OK) {
+        std::printf("ESP-NP2KAI UART FATFS MOUNT FAILED\n");
+        std::fflush(stdout);
+        return;
+    }
+    std::printf("ESP-NP2KAI UART FATFS MOUNTED path=%s partition=%s\n",
+                storage_fatfs::kMountPath, storage_fatfs::kPartitionLabel);
+    std::fflush(stdout);
+    file_storage = s_fatfs_storage.api();
+    file_limits.max_file_bytes = 2 * 1024 * 1024;
+    const esp_err_t start_result =
+        uart_control_transport::start_with_storage(&metadata, file_storage, file_limits);
+#else
     const esp_err_t start_result = uart_control_transport_start(&metadata);
+#endif
     if (start_result != ESP_OK) {
         std::printf("ESP-NP2KAI UART CONTROL START FAILED: %s\n",
                     esp_err_to_name(start_result));
         std::fflush(stdout);
+#if defined(UART_FATFS_PROFILE)
+        s_fatfs_storage.unmount();
+#endif
         return;
     }
 

@@ -18,7 +18,14 @@
 namespace {
 
 constexpr int kRxBufferSize = 2048;
+#if defined(UART_FATFS_PROFILE)
+// The FATFS profile is exercised with large stop-and-wait transfers. Reading
+// a complete wire frame at once avoids unnecessary emulator iterations while
+// leaving the normal RAM profile's scheduling unchanged.
+constexpr std::size_t kReadChunkSize = kRxBufferSize;
+#else
 constexpr std::size_t kReadChunkSize = 64;
+#endif
 // File-transfer dispatch and binary frame handling share this task. Keep enough
 // headroom for the bounded cJSON response objects plus the 1 KiB frame path.
 constexpr std::size_t kControlTaskStackSize = 12288;
@@ -28,6 +35,8 @@ constexpr uart_port_t kConsoleUart = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE
 control_plane::ControlPlane s_control_plane;
 binary_data_plane::TransferManager s_binary_manager;
 storage_ram::StorageRam s_storage_ram;
+storage::Storage s_storage{};
+file_transfer::Limits s_file_transfer_limits{};
 file_transfer::Service s_file_transfer;
 control_plane::ServiceContext s_service_context;
 control_stream::ControlStream s_control_stream;
@@ -56,8 +65,7 @@ void control_task(void *)
 {
     const binary_data_plane::OutputSink binary_sink{nullptr, write_machine};
     binary_data_plane::init(&s_binary_manager, binary_sink);
-    s_storage_ram.init();
-    s_file_transfer.init(s_storage_ram.api(), &s_binary_manager);
+    s_file_transfer.init(s_storage, &s_binary_manager, s_file_transfer_limits);
     s_service_context = control_plane::ServiceContext{&s_binary_manager, &s_file_transfer};
     const control_plane::OutputSink control_sink{nullptr, write_control};
     control_plane::init(&s_control_plane,
@@ -92,13 +100,8 @@ void control_task(void *)
     }
 }
 
-} // namespace
-
-extern "C" esp_err_t uart_control_transport_start(const uart_control_metadata_t *metadata)
+esp_err_t start_impl(const uart_control_metadata_t *metadata)
 {
-    if (metadata == nullptr) {
-        return ESP_ERR_INVALID_ARG;
-    }
     if (s_started) {
         return ESP_OK;
     }
@@ -138,6 +141,36 @@ extern "C" esp_err_t uart_control_transport_start(const uart_control_metadata_t 
 
     s_started = true;
     return ESP_OK;
+}
+
+} // namespace
+
+namespace uart_control_transport {
+
+esp_err_t start_with_storage(const uart_control_metadata_t *metadata,
+                             storage::Storage backend,
+                             file_transfer::Limits limits)
+{
+    if (metadata == nullptr || backend.context == nullptr || backend.stat == nullptr ||
+        backend.list_page == nullptr || backend.begin_read == nullptr ||
+        backend.begin_write == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_started) return ESP_OK;
+    s_storage = backend;
+    s_file_transfer_limits = limits;
+    return start_impl(metadata);
+}
+
+} // namespace uart_control_transport
+
+extern "C" esp_err_t uart_control_transport_start(const uart_control_metadata_t *metadata)
+{
+    if (metadata == nullptr) return ESP_ERR_INVALID_ARG;
+    if (s_started) return ESP_OK;
+    s_storage_ram.init();
+    return uart_control_transport::start_with_storage(
+        metadata, s_storage_ram.api(), file_transfer::Limits{});
 }
 
 extern "C" bool uart_control_transport_write(const char *data, size_t length)

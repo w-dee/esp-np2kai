@@ -5,9 +5,6 @@
 #include "file_transfer/path.hpp"
 
 namespace file_transfer {
-namespace {
-constexpr std::uint64_t kMaxLogicalFileBytes = 192 * 1024;
-}
 
 const char *error_code(Error error)
 {
@@ -74,10 +71,12 @@ const char *terminal_error_message(binary_data_plane::TerminalReason reason)
     return "file transfer failed";
 }
 
-void Service::init(storage::Storage backend, binary_data_plane::TransferManager *manager)
+void Service::init(storage::Storage backend, binary_data_plane::TransferManager *manager,
+                   Limits configured_limits)
 {
     storage = backend;
     binary = manager;
+    limits = configured_limits;
     current = Summary{};
     terminal = Summary{};
     endpoint = EndpointContext{};
@@ -219,7 +218,7 @@ Error Service::begin_write(std::string_view path_value, std::uint64_t size,
     if (result == nullptr) return Error::InternalError;
     if (!path::validate(path_value, false)) return Error::InvalidPath;
     if (active() || binary == nullptr) return Error::Busy;
-    if (size > kMaxLogicalFileBytes) return Error::NoSpace;
+    if (size > limits.max_file_bytes) return Error::NoSpace;
     if (size == 0) {
         if (storage.begin_write == nullptr) return Error::InternalError;
         storage::WriteSession session{};

@@ -62,13 +62,21 @@ const char *file_state_name(Summary::FileState state);
 const char *terminal_error_code(binary_data_plane::TerminalReason reason);
 const char *terminal_error_message(binary_data_plane::TerminalReason reason);
 
+inline constexpr std::uint64_t kDefaultMaxFileBytes = 192 * 1024;
+
+struct Limits {
+    std::uint64_t max_file_bytes = kDefaultMaxFileBytes;
+};
+
 struct Service {
     storage::Storage storage{};
     binary_data_plane::TransferManager *binary = nullptr;
+    Limits limits{};
     Summary current{};
     Summary terminal{};
 
-    void init(storage::Storage backend, binary_data_plane::TransferManager *manager);
+    void init(storage::Storage backend, binary_data_plane::TransferManager *manager,
+              Limits configured_limits = {});
     Error stat(std::string_view path, storage::Metadata *metadata) const;
     Error list(std::string_view path, std::string_view cursor, std::size_t limit,
                ListPage *page) const;

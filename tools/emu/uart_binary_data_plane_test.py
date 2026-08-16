@@ -286,6 +286,7 @@ class Emulator:
             "--log-color",
             "never",
         ]
+        command.extend(getattr(self.args, "extra_emu_args", []))
         self.process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,

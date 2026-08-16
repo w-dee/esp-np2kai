@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS ""
-    PRIV_REQUIRES uart_control_transport esp_app_format np2memoryprobe
+    PRIV_REQUIRES uart_control_transport file_transfer esp_app_format np2memoryprobe
                   np2fixtureprobe np2test_runner storage_fatfs storage_fatfs_probe)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
@@ -13,4 +13,7 @@ if(NP2_REDUCED_EXTMEM8)
 endif()
 if(STORAGE_FATFS_PROBE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE STORAGE_FATFS_PROBE=1)
+endif()
+if(UART_FATFS_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE UART_FATFS_PROFILE=1)
 endif()
