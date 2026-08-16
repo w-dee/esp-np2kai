@@ -118,6 +118,22 @@ static void test_uninitialized_and_running(void)
 	uint8_t snapshot[NP2_RESULT_V1_SIZE];
 	np2_result_v1_result result;
 
+	memset(snapshot, 0, sizeof(snapshot));
+	memcpy(snapshot + NP2_RESULT_V1_MAGIC_OFFSET, NP2_RESULT_V1_MAGIC, 4);
+	result = parse(snapshot, sizeof(snapshot));
+	expect(result.observation == NP2_RESULT_V1_UNINITIALIZED,
+		"magic-only publication window is uninitialized");
+	expect(result.completed_count == 0 && result.passed_count == 0 &&
+			result.failed_count == 0 && result.diagnostic_length == 0,
+		"uninitialized publication window leaves dynamic fields zero");
+
+	memset(snapshot, 0, sizeof(snapshot));
+	memcpy(snapshot + NP2_RESULT_V1_MAGIC_OFFSET, NP2_RESULT_V1_MAGIC, 4);
+	put_u16(snapshot, NP2_RESULT_V1_VERSION_OFFSET, NP2_RESULT_V1_VERSION);
+	result = parse(snapshot, sizeof(snapshot));
+	expect(result.observation == NP2_RESULT_V1_UNINITIALIZED,
+		"partial header publication window is uninitialized");
+
 	make_header(snapshot);
 	snapshot[NP2_RESULT_V1_STATE_OFFSET] = NP2_RESULT_V1_STATE_UNINITIALIZED;
 	put_u16(snapshot, NP2_RESULT_V1_DIAGNOSTIC_LENGTH_OFFSET, 65);
@@ -133,6 +149,13 @@ static void test_uninitialized_and_running(void)
 	result = parse(snapshot, sizeof(snapshot));
 	expect(result.observation == NP2_RESULT_V1_RUNNING,
 		"running accepts stale CRC and live body changes");
+
+	memset(snapshot, 0, sizeof(snapshot));
+	memcpy(snapshot + NP2_RESULT_V1_MAGIC_OFFSET, NP2_RESULT_V1_MAGIC, 4);
+	snapshot[NP2_RESULT_V1_STATE_OFFSET] = NP2_RESULT_V1_STATE_RUNNING;
+	result = parse(snapshot, sizeof(snapshot));
+	expect(result.observation == NP2_RESULT_V1_INVALID,
+		"partial header is invalid once running is committed");
 }
 
 static void test_pass_and_fail(void)

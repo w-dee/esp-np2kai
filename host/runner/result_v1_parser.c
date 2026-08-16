@@ -154,16 +154,22 @@ np2_result_v1_observation np2_result_v1_parse(
 		result->observation = NP2_RESULT_V1_PRE_PROTOCOL;
 		return result->observation;
 	}
+	state = snapshot[NP2_RESULT_V1_STATE_OFFSET];
+	if (state == NP2_RESULT_V1_STATE_UNINITIALIZED) {
+		result->observation = NP2_RESULT_V1_UNINITIALIZED;
+		return result->observation;
+	}
+	if (state != NP2_RESULT_V1_STATE_RUNNING &&
+			state != NP2_RESULT_V1_STATE_PASS &&
+			state != NP2_RESULT_V1_STATE_FAIL) {
+		return result->observation;
+	}
 	if (!fixed_header_is_valid(snapshot)) {
 		return result->observation;
 	}
 
 	read_dynamic_fields(snapshot, result);
-	state = snapshot[NP2_RESULT_V1_STATE_OFFSET];
 	switch (state) {
-		case NP2_RESULT_V1_STATE_UNINITIALIZED:
-			result->observation = NP2_RESULT_V1_UNINITIALIZED;
-			break;
 		case NP2_RESULT_V1_STATE_RUNNING:
 			result->observation = NP2_RESULT_V1_RUNNING;
 			break;
