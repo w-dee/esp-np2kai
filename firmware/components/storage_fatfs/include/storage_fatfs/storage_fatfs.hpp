@@ -17,6 +17,17 @@ inline constexpr char kStagingRoot[] = "/persist/.np2-staging";
 inline constexpr char kFixturePath[] = "/persist/fixtures/np2test-fd1232.hdm";
 inline constexpr std::size_t kPhysicalPathBytes = storage::kMaxPathBytes + 32;
 
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+struct TestHooks {
+    bool fail_mount_initialization = false;
+    int fail_rename_call_1 = -1;
+    int fail_rename_call_2 = -1;
+    int fail_unlink_call = -1;
+    int rename_call_count = 0;
+    int unlink_call_count = 0;
+};
+#endif
+
 class MountProvider {
 public:
     esp_err_t mount();
@@ -25,9 +36,16 @@ public:
     bool mounted() const { return mounted_; }
     wl_handle_t wl_handle() const { return wl_handle_; }
 
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    void set_test_unmount_failure(bool enabled) { test_unmount_failure_ = enabled; }
+#endif
+
 private:
     bool mounted_ = false;
     wl_handle_t wl_handle_ = WL_INVALID_HANDLE;
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    bool test_unmount_failure_ = false;
+#endif
 };
 
 class StorageFatfs {
@@ -40,6 +58,10 @@ public:
     bool has_active_sessions() const;
 
     storage::Storage api();
+
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    void set_test_hooks(TestHooks *hooks) { test_hooks_ = hooks; }
+#endif
 
 private:
     struct ReadContext {
@@ -65,6 +87,9 @@ private:
     std::uint32_t sequence_ = 1;
     ReadContext read_context_{};
     WriteContext write_context_{};
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    TestHooks *test_hooks_ = nullptr;
+#endif
 
     static StorageFatfs *self(void *context);
     static storage::Error stat_cb(void *, std::string_view, storage::Metadata *);
@@ -103,6 +128,8 @@ private:
     bool ensure_directory(const char *path);
     bool make_staging_path(char *, std::size_t, const char *prefix, const char *suffix);
     bool parent_is_directory(std::string_view);
+    int rename_path(const char *, const char *);
+    int unlink_path(const char *);
     void reset_read_context();
     void reset_write_context();
 };

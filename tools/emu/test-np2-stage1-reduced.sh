@@ -22,6 +22,7 @@ if [[ ! -x "${ESP_EMU}" ]]; then
 fi
 
 source "${SCRIPT_DIR}/activate-idf.sh"
+source "${SCRIPT_DIR}/check-firmware-sdkconfig.sh"
 [[ -n "${IDF_PATH:-}" ]] || fail 'IDF_PATH is not set after ESP-IDF activation'
 idf_version="$(idf.py --version)"
 printf '%s\n' "${idf_version}"
@@ -48,10 +49,12 @@ cd -- "${FIRMWARE_DIR}"
 if [[ ! -f "${SDKCONFIG_PATH}" ]]; then
     idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" set-target esp32p4
 fi
+check_firmware_sdkconfig "${SDKCONFIG_PATH}"
 idf.py -B "${BUILD_DIR}" \
     -D "SDKCONFIG=${SDKCONFIG_PATH}" \
     -D "NP2_REDUCED_EXTMEM8=1" \
     reconfigure
+check_firmware_sdkconfig "${SDKCONFIG_PATH}"
 idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" build
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2_fixture_flash.py" \

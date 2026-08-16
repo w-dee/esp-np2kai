@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "esp_log.h"
 #include "esp_vfs_fat.h"
 
 namespace storage_fatfs {
@@ -18,6 +19,7 @@ namespace {
 
 constexpr std::size_t kMaxDirectoryEntries = 64;
 constexpr std::size_t kFatIoChunkBytes = 512;
+constexpr char kLogTag[] = "storage_fatfs";
 
 bool is_fat_invalid(unsigned char value)
 {
@@ -75,6 +77,12 @@ esp_err_t MountProvider::mount()
 esp_err_t MountProvider::unmount()
 {
     if (!mounted_) return ESP_ERR_INVALID_STATE;
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (test_unmount_failure_) {
+        errno = EIO;
+        return ESP_FAIL;
+    }
+#endif
     const esp_err_t result = esp_vfs_fat_spiflash_unmount_rw_wl(kMountPath, wl_handle_);
     if (result != ESP_OK) return result;
     wl_handle_ = WL_INVALID_HANDLE;
@@ -88,31 +96,45 @@ esp_err_t StorageFatfs::mount()
     esp_err_t result = provider_.mount();
     if (result != ESP_OK) return result;
 
+    const auto cleanup_mount_failure = [this](esp_err_t failure) {
+        const esp_err_t cleanup = provider_.unmount();
+        return cleanup == ESP_OK ? failure : cleanup;
+    };
+
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (test_hooks_ != nullptr && test_hooks_->fail_mount_initialization) {
+        return cleanup_mount_failure(ESP_FAIL);
+    }
+#endif
+
     if (!ensure_directory(kFileTransferRoot) ||
         !ensure_directory(kFixtureRoot) ||
         !ensure_directory(kStagingRoot)) {
-        provider_.unmount();
-        return ESP_FAIL;
+        return cleanup_mount_failure(ESP_FAIL);
     }
 
     DIR *directory = ::opendir(kStagingRoot);
     if (directory == nullptr) {
-        provider_.unmount();
-        return ESP_FAIL;
+        return cleanup_mount_failure(ESP_FAIL);
     }
-    while (const dirent *entry = ::readdir(directory)) {
+    errno = 0;
+    const dirent *entry = nullptr;
+    while ((entry = ::readdir(directory)) != nullptr) {
         const std::string_view name(entry->d_name);
         if (name.size() < 5 || name.substr(name.size() - 4) != ".tmp") continue;
         static char orphan[kPhysicalPathBytes]{};
         if (std::snprintf(orphan, sizeof(orphan), "%s/%s", kStagingRoot,
                           entry->d_name) >= static_cast<int>(sizeof(orphan)) ||
-            ::unlink(orphan) != 0) {
+            unlink_path(orphan) != 0) {
             ::closedir(directory);
-            provider_.unmount();
-            return ESP_FAIL;
+            return cleanup_mount_failure(ESP_FAIL);
         }
     }
-    ::closedir(directory);
+    const int read_error = errno;
+    const int close_result = ::closedir(directory);
+    if (read_error != 0 || close_result != 0) {
+        return cleanup_mount_failure(ESP_FAIL);
+    }
     return ESP_OK;
 }
 
@@ -246,7 +268,9 @@ storage::Error StorageFatfs::list_page_impl(std::string_view path, std::string_v
     static std::array<Candidate, kMaxDirectoryEntries> candidates{};
     std::size_t candidate_count = 0;
 
-    while (const dirent *entry = ::readdir(directory)) {
+    errno = 0;
+    const dirent *entry = nullptr;
+    while ((entry = ::readdir(directory)) != nullptr) {
         const std::string_view name(entry->d_name);
         if (name == "." || name == ".." || !valid_component(name) ||
             (!cursor.empty() && name <= cursor)) {
@@ -263,7 +287,10 @@ storage::Error StorageFatfs::list_page_impl(std::string_view path, std::string_v
         }
         ++candidate_count;
     }
-    ::closedir(directory);
+    const int read_error = errno;
+    const int close_result = ::closedir(directory);
+    if (read_error != 0) return map_errno(read_error, false);
+    if (close_result != 0) return map_errno(errno, false);
 
     std::sort(candidates.begin(), candidates.begin() + candidate_count,
               [](const Candidate &left, const Candidate &right) {
@@ -351,7 +378,7 @@ storage::Error StorageFatfs::begin_write_impl(std::string_view path, std::uint64
     if (::ftruncate(fd, static_cast<off_t>(size)) != 0) {
         const storage::Error error = map_errno(errno, true);
         ::close(fd);
-        ::unlink(staging);
+        unlink_path(staging);
         return error;
     }
 
@@ -359,7 +386,7 @@ storage::Error StorageFatfs::begin_write_impl(std::string_view path, std::uint64
     if (!copy_string(write_context_.staging_path, sizeof(write_context_.staging_path), staging) ||
         !copy_string(write_context_.target_path, sizeof(write_context_.target_path), target)) {
         ::close(fd);
-        ::unlink(staging);
+        unlink_path(staging);
         reset_write_context();
         return storage::Error::WriteFailed;
     }
@@ -443,25 +470,34 @@ storage::Error StorageFatfs::commit_impl()
     if (write_context_.target_exists) {
         if (!make_staging_path(write_context_.backup_path,
                                sizeof(write_context_.backup_path), "b", ".bak") ||
-            ::rename(write_context_.target_path, write_context_.backup_path) != 0) {
+            rename_path(write_context_.target_path, write_context_.backup_path) != 0) {
             abort_impl();
             return storage::Error::CommitFailed;
         }
         write_context_.target_moved = true;
     }
 
-    if (::rename(write_context_.staging_path, write_context_.target_path) != 0) {
+    if (rename_path(write_context_.staging_path, write_context_.target_path) != 0) {
         if (write_context_.target_moved) {
-            ::rename(write_context_.backup_path, write_context_.target_path);
+            if (rename_path(write_context_.backup_path, write_context_.target_path) != 0) {
+                ESP_LOGE(kLogTag,
+                         "replacement install and rollback failed; preserving staging and backup");
+                return storage::Error::CommitFailed;
+            }
         }
-        ::unlink(write_context_.staging_path);
+        if (unlink_path(write_context_.staging_path) != 0) {
+            ESP_LOGW(kLogTag, "staging cleanup pending after failed replacement: %s",
+                     write_context_.staging_path);
+        }
         reset_write_context();
         return storage::Error::CommitFailed;
     }
 
-    if (write_context_.target_moved && ::unlink(write_context_.backup_path) != 0) {
+    if (write_context_.target_moved && unlink_path(write_context_.backup_path) != 0) {
+        ESP_LOGW(kLogTag, "replacement committed; backup cleanup pending: %s",
+                 write_context_.backup_path);
         reset_write_context();
-        return storage::Error::CommitFailed;
+        return storage::Error::Ok;
     }
     reset_write_context();
     return storage::Error::Ok;
@@ -471,12 +507,22 @@ void StorageFatfs::abort_impl()
 {
     if (!write_context_.active) return;
     if (write_context_.fd >= 0) ::close(write_context_.fd);
-    ::unlink(write_context_.staging_path);
+    const int staging_unlink_result = unlink_path(write_context_.staging_path);
+    const int staging_unlink_errno = errno;
     if (write_context_.target_moved) {
         struct stat target{};
-        if (::stat(write_context_.target_path, &target) != 0) {
-            ::rename(write_context_.backup_path, write_context_.target_path);
+        if (::stat(write_context_.target_path, &target) != 0 && errno == ENOENT) {
+            if (rename_path(write_context_.backup_path, write_context_.target_path) != 0) {
+                ESP_LOGE(kLogTag, "replacement abort could not restore backup: %s",
+                         write_context_.backup_path);
+                reset_write_context();
+                return;
+            }
         }
+    }
+    if (staging_unlink_result != 0 && staging_unlink_errno != ENOENT) {
+        ESP_LOGW(kLogTag, "staging cleanup pending after abort: %s",
+                 write_context_.staging_path);
     }
     reset_write_context();
 }
@@ -605,6 +651,36 @@ bool StorageFatfs::parent_is_directory(std::string_view path)
     if (!make_physical_path(parent, physical, sizeof(physical))) return false;
     struct stat result{};
     return stat_path(physical, &result) && S_ISDIR(result.st_mode);
+}
+
+int StorageFatfs::rename_path(const char *from, const char *to)
+{
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (test_hooks_ != nullptr) {
+        ++test_hooks_->rename_call_count;
+        const int call = test_hooks_->rename_call_count;
+        if (call == test_hooks_->fail_rename_call_1 ||
+            call == test_hooks_->fail_rename_call_2) {
+            errno = EIO;
+            return -1;
+        }
+    }
+#endif
+    return ::rename(from, to);
+}
+
+int StorageFatfs::unlink_path(const char *path)
+{
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (test_hooks_ != nullptr) {
+        ++test_hooks_->unlink_call_count;
+        if (test_hooks_->unlink_call_count == test_hooks_->fail_unlink_call) {
+            errno = EIO;
+            return -1;
+        }
+    }
+#endif
+    return ::unlink(path);
 }
 
 void StorageFatfs::reset_read_context()

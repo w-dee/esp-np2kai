@@ -17,6 +17,7 @@ fail() {
 }
 
 source "${SCRIPT_DIR}/activate-idf.sh"
+source "${SCRIPT_DIR}/check-firmware-sdkconfig.sh"
 
 [[ -n "${IDF_PATH:-}" ]] || fail 'IDF_PATH is not set after ESP-IDF activation'
 idf_version="$(idf.py --version)"
@@ -31,6 +32,7 @@ if [[ -f "${FIRMWARE_DIR}/sdkconfig" ]]; then
     grep -qx 'CONFIG_IDF_TARGET="esp32p4"' "${FIRMWARE_DIR}/sdkconfig" ||
         fail 'firmware/sdkconfig is not configured for esp32p4'
 fi
+check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
 
 python3 "${REPOSITORY_ROOT}/tools/guest/verify_np2test.py" \
     --layout "${REPOSITORY_ROOT}/tests/guest/np2test/layout.json" \

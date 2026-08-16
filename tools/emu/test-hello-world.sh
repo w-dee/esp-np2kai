@@ -16,6 +16,7 @@ fail() {
 }
 
 source "${SCRIPT_DIR}/activate-idf.sh"
+source "${SCRIPT_DIR}/check-firmware-sdkconfig.sh"
 
 if [[ -z "${IDF_PATH:-}" ]]; then
     fail 'IDF_PATH is not set after ESP-IDF activation'
@@ -63,6 +64,7 @@ if [[ -f "${FIRMWARE_DIR}/sdkconfig" ]]; then
 else
     printf '%s\n' 'firmware/sdkconfig is absent; the build will use sdkconfig.defaults.'
 fi
+check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
 
 cd -- "${FIRMWARE_DIR}"
 idf.py build
@@ -71,6 +73,7 @@ if ! grep -qx 'CONFIG_IDF_TARGET="esp32p4"' sdkconfig; then
     configured_target="$(grep -E '^CONFIG_IDF_TARGET=' sdkconfig || true)"
     fail "generated firmware/sdkconfig is not configured for esp32p4: ${configured_target:-target is unset}"
 fi
+check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
 
 idf.py merge-bin -f raw -o merged-binary.bin
 
