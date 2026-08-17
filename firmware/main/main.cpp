@@ -6,6 +6,9 @@
 #include "esp_idf_version.h"
 #include "np2_fixture_probe.h"
 #include "np2_memory_probe.h"
+#if defined(NP2_DOSIO_PROBE)
+#include "np2dosio_probe/np2dosio_probe.h"
+#endif
 #include "np2test_runner/np2test_runner.h"
 #include "uart_control_transport/uart_control_transport.h"
 #if defined(UART_FATFS_PROFILE)
@@ -35,6 +38,13 @@ extern "C" void app_main(void)
 {
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
+
+#if defined(NP2_DOSIO_PROBE)
+    if (np2dosio_probe_run() != ESP_OK) {
+        return;
+    }
+    return;
+#endif
 
 #if defined(STORAGE_FATFS_PROBE)
     if (storage_fatfs_probe_run() != ESP_OK) {
