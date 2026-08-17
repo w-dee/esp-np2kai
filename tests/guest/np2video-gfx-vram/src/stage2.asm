@@ -13,7 +13,7 @@ org 0
 %define STATE_PROGRAMMING_VIDEO 2
 %define STATE_SCENE_READY 3
 
-%define PLANE_BYTES 0x4000
+%define PLANE_WORDS 0x4000
 
 ; The raw stage2 loader enters here at physical 2000:0008.
 stage2_header:
@@ -105,7 +105,8 @@ palette_loop:
     and al, 0x0f
     out dx, al
     mov dx, 0x00ac
-    mov al, ah
+    mov al, byte [si - 2]
+    and al, 0xf0
     shr al, 1
     shr al, 1
     shr al, 1
@@ -125,22 +126,25 @@ clear_planes:
     mov es, ax
     xor di, di
     xor ax, ax
-    mov cx, PLANE_BYTES
+    mov cx, PLANE_WORDS
     rep stosw
     mov ax, 0xb000
     mov es, ax
     xor di, di
-    mov cx, PLANE_BYTES
+    xor ax, ax
+    mov cx, PLANE_WORDS
     rep stosw
     mov ax, 0xb800
     mov es, ax
     xor di, di
-    mov cx, PLANE_BYTES
+    xor ax, ax
+    mov cx, PLANE_WORDS
     rep stosw
     mov ax, 0xe000
     mov es, ax
     xor di, di
-    mov cx, PLANE_BYTES
+    xor ax, ax
+    mov cx, PLANE_WORDS
     rep stosw
     ret
 
@@ -275,7 +279,7 @@ draw_scene:
     mov [sw_row], ax
     mov [sw_index], ax
 swatch_row:
-    mov [sw_col], ax
+    mov word [sw_col], 0
 swatch_column:
     mov ax, [sw_col]
     mov cl, 5
@@ -285,6 +289,10 @@ swatch_column:
     mov ax, [sw_row]
     mov cl, 4
     shl ax, cl
+    mov dx, [sw_row]
+    mov cl, 2
+    shl dx, cl
+    add ax, dx
     mov dx, [sw_row]
     shl dx, 1
     add ax, dx

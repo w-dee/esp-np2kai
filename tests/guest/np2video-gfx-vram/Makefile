@@ -6,6 +6,7 @@ OUTDIR := $(ROOT)/build/guest/np2video-gfx-vram
 IMAGE := $(OUTDIR)/np2video-gfx-vram-fd1232.image
 BUILDER := $(ROOT)/tools/guest/build_np2video_stage2.py
 TEST := $(ROOT)/tools/guest/test_np2video_gfx_vram.py
+BMP_TEST := $(ROOT)/tools/guest/test_np2video_gfx_vram_bmp.py
 
 export LC_ALL := C
 export TZ := UTC
@@ -20,7 +21,7 @@ test:
 	python3 $(TEST)
 
 syntax-check:
-	python3 -m py_compile $(BUILDER) $(TEST)
+	python3 -m py_compile $(BUILDER) $(TEST) $(BMP_TEST)
 
 reproducibility-check:
 	python3 $(TEST) --reproducibility

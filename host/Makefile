@@ -69,6 +69,7 @@ NP2_SHA256_DEPENDENCY := $(BUILD_DIR)/compat/np2_sha256.d
 NP2_SHA256_TEST_SOURCE := $(CURDIR)/tests/np2_sha256_test.c
 NP2_SHA256_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_sha256_test
 VIDEO_BMP_VALIDATOR := $(CURDIR)/tests/validate_video_bmp.py
+VIDEO_GFX_BMP_VALIDATOR := $(HOST_ROOT)/tools/guest/test_np2video_gfx_vram_bmp.py
 VIDEO_CLI_TEST := $(CURDIR)/tests/test_video_runner_cli.py
 VIDEO_GOLDEN_DESCRIPTOR := $(abspath $(CURDIR)/../tests/guest/np2video/golden.json)
 VIDEO_GOLDEN_SUPERVISOR := $(CURDIR)/tests/run_video_golden.py
@@ -336,6 +337,7 @@ test-video-runner-gfx-vram-reference-bmp: video-runner
 		--dump-framebuffer "$(VIDEO_RUNNER_GFX_BMP)" \
 		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_GFX_FIXTURE)"
 	@$(PYTHON) "$(VIDEO_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GFX_BMP)"
+	@$(PYTHON) "$(VIDEO_GFX_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GFX_BMP)"
 
 test-video-runner-cli: video-runner
 	@$(PYTHON) "$(VIDEO_CLI_TEST)" "$(VIDEO_RUNNER_OUTPUT)"
