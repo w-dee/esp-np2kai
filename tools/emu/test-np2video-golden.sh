@@ -109,22 +109,10 @@ set -e
 if (( emulator_status != 0 )); then
     fail "esp-emu returned status ${emulator_status}; output: ${EMULATOR_LOG}"
 fi
-result_count="$(grep -Ec '^NP2VIDEO_GOLDEN_RESULT=(PASS|FAIL|HARNESS_ERROR)' \
-    "${EMULATOR_LOG}" || true)"
-pass_count="$(grep -Ec '^NP2VIDEO_GOLDEN_RESULT=PASS$' \
-    "${EMULATOR_LOG}" || true)"
-(( result_count == 1 )) || fail "expected exactly one terminal video result"
-(( pass_count == 1 )) || fail "video golden did not pass"
-grep -Eq '^NP2VIDEO_MEMORY extmem_mb=8 actual_bytes=8388608 ptr_external=1 ' "${EMULATOR_LOG}" ||
-    fail "external EXTMEM evidence is missing"
-grep -Fqx 'NP2VIDEO_FIXTURE scene_id=1 fixture_sha256=f4ae6584339cbdb94e80e6fb48f9a27724fee7a9f350668b618d33b2794c8eca image_bytes=1261568 partition=np2test' "${EMULATOR_LOG}" ||
-    fail "fixture identity evidence is missing"
-grep -Fq 'NP2VIDEO_READY scene_id=1 state=SCENE_READY' "${EMULATOR_LOG}" ||
-    fail "PRE-READY evidence is missing"
-grep -Fq 'NP2VIDEO_FRAMEBUFFER scene_id=1 width=640 height=400 bytes=512000 format=rgb565le bpp=16 pitch=1280' "${EMULATOR_LOG}" ||
-    fail "framebuffer metadata evidence is missing"
-grep -Fq 'crc_algorithm=crc32_iso_hdlc crc32=0x0a280896 storage_external=1' "${EMULATOR_LOG}" ||
-    fail "framebuffer CRC evidence is missing"
+python3 "${REPOSITORY_ROOT}/tools/guest/validate_np2video_esp_log.py" \
+    --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+    --log "${EMULATOR_LOG}" ||
+    fail "ESP np2video log validation failed"
 
 printf 'NP2VIDEO_RESULT=PASS\n'
 printf 'NP2VIDEO_RUN_ROOT=%s\n' "${VIDEO_RUN_ROOT}"

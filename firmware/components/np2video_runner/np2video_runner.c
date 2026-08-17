@@ -213,7 +213,7 @@ static void np2video_task(void *argument)
     np2video_sha256_text(digest);
 
     np2video_emit(state,
-                  "NP2VIDEO_PROFILE profile=esp32p4-esp-emu "
+                  "NP2VIDEO_PROFILE profile=esp32p4-reduced-video "
                   "formal_extmem=%u effective_extmem=%u\n",
                   NP2VIDEO_FORMAL_EXTMEM_MB,
                   NP2VIDEO_EFFECTIVE_EXTMEM_MB);

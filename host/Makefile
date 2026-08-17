@@ -72,6 +72,7 @@ VIDEO_GOLDEN_DESCRIPTOR := $(abspath $(CURDIR)/../tests/guest/np2video/golden.js
 VIDEO_GOLDEN_SUPERVISOR := $(CURDIR)/tests/run_video_golden.py
 VIDEO_GOLDEN_TEST := $(CURDIR)/tests/test_video_golden.py
 VIDEO_GOLDEN_HEADER_TEST := $(HOST_ROOT)/tools/guest/test_np2video_golden_header.py
+VIDEO_GOLDEN_LOG_TEST := $(HOST_ROOT)/tools/guest/test_np2video_esp_log.py
 HEADLESS_BMP_OBJECT := $(BUILD_DIR)/backend/headless/scrnmng_bmp.o
 HEADLESS_BMP_DEPENDENCY := $(BUILD_DIR)/backend/headless/scrnmng_bmp.d
 RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
@@ -141,7 +142,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-cli test-video-runner-golden test-video-golden-checker test-video-golden-header test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-cli test-video-runner-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -334,6 +335,9 @@ test-video-golden-checker:
 
 test-video-golden-header:
 	@$(PYTHON) "$(VIDEO_GOLDEN_HEADER_TEST)"
+
+test-video-golden-log:
+	@$(PYTHON) "$(VIDEO_GOLDEN_LOG_TEST)"
 
 -include $(RUNNER_DEPENDENCIES) $(VIDEO_RUNNER_DEPENDENCIES)
 
