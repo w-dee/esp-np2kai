@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the approved np2video reference against its tracked descriptor."""
+"""Validate a selected np2video reference against its tracked descriptor."""
 
 from __future__ import annotations
 

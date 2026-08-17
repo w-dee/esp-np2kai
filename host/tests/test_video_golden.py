@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Negative and parser tests for the tracked np2video golden descriptor."""
+"""Negative and parser tests for the tracked np2video golden descriptors."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 DESCRIPTORS = (
     ROOT / "tests/guest/np2video/golden.json",
     ROOT / "tests/guest/np2video-gfx-vram/golden.json",
+    ROOT / "tests/guest/np2video-gdc/golden.json",
 )
 
 
@@ -54,6 +55,13 @@ def main() -> int:
         )
         _must_reject(wrong_sha, descriptor)
 
+        wrong_fixture = valid.replace(
+            f"fixture_id={descriptor['fixture_id']}".encode(),
+            b"fixture_id=synthetic-wrong-fixture",
+            1,
+        )
+        _must_reject(wrong_fixture, descriptor)
+
         wrong_crc = valid.replace(
             f"crc32={descriptor['crc32']}".encode(), b"crc32=0xffffffff", 1
         )
@@ -78,6 +86,12 @@ def main() -> int:
             f"format={descriptor['pixel_format']}".encode(), b"format=rgb555le", 1
         )
         _must_reject(wrong_pixel_format, descriptor)
+        wrong_crc_algorithm = valid.replace(
+            f"crc_algorithm={descriptor['crc_algorithm']}".encode(),
+            b"crc_algorithm=crc32_wrong",
+            1,
+        )
+        _must_reject(wrong_crc_algorithm, descriptor)
 
         changed_generation = valid.replace(
             b"generation=1 surface_update_sequence=1",
