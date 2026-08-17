@@ -23,12 +23,16 @@ typedef struct {
     const uint8_t *mapped;
     esp_partition_mmap_handle_t map_handle;
     uint8_t digest[32];
+    int source;
     int dosio_attached;
     int fdd_attached;
 } np2_fixture;
 
+void np2_fixture_init(np2_fixture *fixture);
 esp_err_t np2_fixture_acquire(np2_fixture *fixture);
 esp_err_t np2_fixture_attach_dosio(np2_fixture *fixture);
+esp_err_t np2_fixture_attach_vfs_dosio(np2_fixture *fixture,
+                                       const char *physical_path);
 esp_err_t np2_fixture_attach_fdd(np2_fixture *fixture);
 void np2_fixture_detach_fdd(np2_fixture *fixture);
 void np2_fixture_release(np2_fixture *fixture);

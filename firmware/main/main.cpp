@@ -11,10 +11,16 @@
 #endif
 #include "np2test_runner/np2test_runner.h"
 #include "uart_control_transport/uart_control_transport.h"
+#if defined(NP2_VFS_FIXTURE_PROFILE) && defined(UART_FATFS_PROFILE)
+#error "NP2_VFS_FIXTURE_PROFILE and UART_FATFS_PROFILE are mutually exclusive"
+#endif
 #if defined(UART_FATFS_PROFILE)
 #include "file_transfer/file_transfer.hpp"
 #include "storage_fatfs/storage_fatfs.hpp"
 #include "uart_control_transport/uart_control_transport.hpp"
+#endif
+#if defined(NP2_VFS_FIXTURE_PROFILE)
+#include "storage_fatfs/storage_fatfs.hpp"
 #endif
 #if defined(STORAGE_FATFS_PROBE)
 #include "storage_fatfs_probe/storage_fatfs_probe.h"
@@ -27,7 +33,7 @@ bool write_np2_runner_output(void *, const char *data, std::size_t length)
     return uart_control_transport_write(data, length);
 }
 
-#if defined(UART_FATFS_PROFILE)
+#if defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE)
 storage_fatfs::MountProvider s_fatfs_provider;
 storage_fatfs::StorageFatfs s_fatfs_storage(s_fatfs_provider);
 #endif
@@ -52,12 +58,25 @@ extern "C" void app_main(void)
     }
 #endif
 
+#if defined(NP2_VFS_FIXTURE_PROFILE)
+    if (s_fatfs_storage.mount() != ESP_OK) {
+        std::printf("NP2REDUCED_RESULT=HARNESS_ERROR reason=storage_mount\n");
+        std::fflush(stdout);
+        return;
+    }
+    std::printf("NP2REDUCED_VFS_MOUNT path=%s partition=%s\n",
+                storage_fatfs::kMountPath, storage_fatfs::kPartitionLabel);
+    std::fflush(stdout);
+    const esp_err_t fixture_result = ESP_OK;
+    const esp_err_t memory_result = ESP_OK;
+#else
     const esp_err_t fixture_result = np2_fixture_probe_run();
     if (fixture_result != ESP_OK) {
         std::fflush(stdout);
     }
 
     const esp_err_t memory_result = np2_memory_probe_run();
+#endif
 
     const esp_app_desc_t *app = esp_app_get_description();
     const uart_control_metadata_t metadata{
@@ -88,7 +107,7 @@ extern "C" void app_main(void)
         std::printf("ESP-NP2KAI UART CONTROL START FAILED: %s\n",
                     esp_err_to_name(start_result));
         std::fflush(stdout);
-#if defined(UART_FATFS_PROFILE)
+#if defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE)
         s_fatfs_storage.unmount();
 #endif
         return;
@@ -99,6 +118,13 @@ extern "C" void app_main(void)
         NP2TEST_PROFILE_REDUCED_EXTMEM8,
 #else
         NP2TEST_PROFILE_FORMAL,
+#endif
+#if defined(NP2_VFS_FIXTURE_PROFILE)
+        NP2TEST_DISK_SOURCE_VFS_FILE,
+        storage_fatfs::kFixturePath,
+#else
+        NP2TEST_DISK_SOURCE_RAW_FIXTURE,
+        nullptr,
 #endif
         write_np2_runner_output,
         nullptr,

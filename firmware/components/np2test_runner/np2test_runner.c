@@ -35,6 +35,7 @@
 
 typedef struct {
     np2test_runner_config config;
+    char vfs_path[NP2TEST_VFS_PATH_MAX];
 } np2test_runner_task_config;
 
 static np2test_runner_task_config np2test_runner_task_state;
@@ -58,6 +59,11 @@ static unsigned np2test_requested_extmem(np2test_profile profile)
 {
     return (profile == NP2TEST_PROFILE_REDUCED_EXTMEM8) ?
                NP2_REDUCED_EXTMEM_MB : NP2_FORMAL_EXTMEM_MB;
+}
+
+static const char *np2test_disk_source_name(np2test_disk_source source)
+{
+    return (source == NP2TEST_DISK_SOURCE_VFS_FILE) ? "vfs" : "raw";
 }
 
 static bool np2test_emit(np2test_runner_task_config *state,
@@ -251,7 +257,7 @@ static void np2test_task(void *argument)
     bool emitted_running = false;
     esp_err_t fixture_error;
 
-    memset(&fixture, 0, sizeof(fixture));
+    np2_fixture_init(&fixture);
     memset(&parsed, 0, sizeof(parsed));
     memset(snapshot, 0, sizeof(snapshot));
 
@@ -262,17 +268,42 @@ static void np2test_task(void *argument)
                  (unsigned)NP2_FORMAL_EXTMEM_MB,
                  (unsigned)np2test_requested_extmem(state->config.profile));
 
-    fixture_error = np2_fixture_acquire(&fixture);
-    if (fixture_error != ESP_OK) {
-        np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=fixture_%s\n",
+    if (state->config.disk_source == NP2TEST_DISK_SOURCE_RAW_FIXTURE) {
+        fixture_error = np2_fixture_acquire(&fixture);
+        if (fixture_error != ESP_OK) {
+            np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=fixture_%s\n",
+                         np2test_namespace(state->config.profile),
+                         np2_fixture_error_name(fixture_error));
+            goto runner_done;
+        }
+        if (np2_fixture_attach_dosio(&fixture) != ESP_OK) {
+            np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=dosio_attach\n",
+                         np2test_namespace(state->config.profile));
+            goto runner_cleanup;
+        }
+        np2test_emit(state,
+                     "%s_DISK_SOURCE kind=%s logical=%s partition=%s\n",
                      np2test_namespace(state->config.profile),
-                     np2_fixture_error_name(fixture_error));
-        goto runner_done;
-    }
-    if (np2_fixture_attach_dosio(&fixture) != ESP_OK) {
-        np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=dosio_attach\n",
+                     np2test_disk_source_name(state->config.disk_source),
+                     NP2_FIXTURE_PATH, NP2_FIXTURE_PARTITION_LABEL);
+    } else if (state->config.disk_source == NP2TEST_DISK_SOURCE_VFS_FILE) {
+        fixture_error = np2_fixture_attach_vfs_dosio(&fixture, state->vfs_path);
+        if (fixture_error != ESP_OK) {
+            np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=%s\n",
+                         np2test_namespace(state->config.profile),
+                         fixture_error == ESP_ERR_INVALID_ARG ?
+                             "vfs_path_invalid" : "dosio_attach");
+            goto runner_cleanup;
+        }
+        np2test_emit(state,
+                     "%s_DISK_SOURCE kind=%s logical=%s physical=%s\n",
+                     np2test_namespace(state->config.profile),
+                     np2test_disk_source_name(state->config.disk_source),
+                     NP2_FIXTURE_PATH, state->vfs_path);
+    } else {
+        np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=disk_source_invalid\n",
                      np2test_namespace(state->config.profile));
-        goto runner_cleanup;
+        goto runner_done;
     }
 
     /* This task is the sole owner of the NP2 configuration and lifecycle. */
@@ -343,14 +374,34 @@ runner_done:
 esp_err_t np2test_runner_start(const np2test_runner_config *config)
 {
     BaseType_t task_result;
+    size_t path_length = 0;
 
     if ((config == NULL) || (config->output == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (config->disk_source == NP2TEST_DISK_SOURCE_VFS_FILE) {
+        if (config->vfs_path == NULL || config->vfs_path[0] == '\0') {
+            return ESP_ERR_INVALID_ARG;
+        }
+        path_length = strlen(config->vfs_path);
+        if (path_length >= sizeof(np2test_runner_task_state.vfs_path)) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    } else if (config->disk_source != NP2TEST_DISK_SOURCE_RAW_FIXTURE) {
         return ESP_ERR_INVALID_ARG;
     }
     if (np2test_runner_started) {
         return ESP_ERR_INVALID_STATE;
     }
     np2test_runner_task_state.config = *config;
+    np2test_runner_task_state.vfs_path[0] = '\0';
+    np2test_runner_task_state.config.vfs_path = NULL;
+    if (config->disk_source == NP2TEST_DISK_SOURCE_VFS_FILE) {
+        memcpy(np2test_runner_task_state.vfs_path, config->vfs_path,
+               path_length + 1);
+        np2test_runner_task_state.config.vfs_path =
+            np2test_runner_task_state.vfs_path;
+    }
     task_result = xTaskCreate(np2test_task,
                               "np2test_runner",
                               NP2TEST_RUNNER_STACK_BYTES,

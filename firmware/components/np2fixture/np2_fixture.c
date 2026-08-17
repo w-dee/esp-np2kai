@@ -8,6 +8,12 @@
 #include <diskimage/fddfile.h>
 #include <np2host/dosio_esp.h>
 
+typedef enum {
+    NP2_FIXTURE_SOURCE_NONE = 0,
+    NP2_FIXTURE_SOURCE_RAW,
+    NP2_FIXTURE_SOURCE_VFS,
+} np2_fixture_source;
+
 static const uint8_t np2_fixture_expected_sha256[32] = {
     0x3b, 0x73, 0x66, 0x7d, 0x23, 0x56, 0x15, 0xe8,
     0x92, 0x05, 0xfb, 0xda, 0xb0, 0x4d, 0x3e, 0x6c,
@@ -18,6 +24,8 @@ static const uint8_t np2_fixture_expected_sha256[32] = {
 const char *np2_fixture_error_name(esp_err_t error)
 {
     switch (error) {
+        case ESP_ERR_INVALID_ARG:
+            return "invalid_argument";
         case ESP_ERR_NOT_FOUND:
             return "partition_missing";
         case ESP_ERR_INVALID_SIZE:
@@ -33,6 +41,13 @@ const char *np2_fixture_error_name(esp_err_t error)
     }
 }
 
+void np2_fixture_init(np2_fixture *fixture)
+{
+    if (fixture != NULL) {
+        memset(fixture, 0, sizeof(*fixture));
+    }
+}
+
 esp_err_t np2_fixture_acquire(np2_fixture *fixture)
 {
     const esp_partition_t *partition;
@@ -41,7 +56,7 @@ esp_err_t np2_fixture_acquire(np2_fixture *fixture)
     if (fixture == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    memset(fixture, 0, sizeof(*fixture));
+    np2_fixture_init(fixture);
 
     partition = esp_partition_find_first(NP2_FIXTURE_PARTITION_TYPE,
                                           NP2_FIXTURE_PARTITION_SUBTYPE,
@@ -67,6 +82,7 @@ esp_err_t np2_fixture_acquire(np2_fixture *fixture)
     }
     fixture->partition = partition;
     fixture->mapped = mapped;
+    fixture->source = NP2_FIXTURE_SOURCE_RAW;
     return ESP_OK;
 }
 
@@ -81,6 +97,22 @@ esp_err_t np2_fixture_attach_dosio(np2_fixture *fixture)
                                   NP2_FIXTURE_IMAGE_SIZE)) {
         return ESP_FAIL;
     }
+    fixture->dosio_attached = 1;
+    return ESP_OK;
+}
+
+esp_err_t np2_fixture_attach_vfs_dosio(np2_fixture *fixture,
+                                       const char *physical_path)
+{
+    if ((fixture == NULL) || (physical_path == NULL) ||
+        (physical_path[0] == '\0') || (fixture->source != NP2_FIXTURE_SOURCE_NONE) ||
+        fixture->mapped != NULL || fixture->dosio_attached) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!np2_dosio_attach_vfs_file(NP2_FIXTURE_PATH, physical_path)) {
+        return ESP_FAIL;
+    }
+    fixture->source = NP2_FIXTURE_SOURCE_VFS;
     fixture->dosio_attached = 1;
     return ESP_OK;
 }
@@ -126,11 +158,16 @@ void np2_fixture_release(np2_fixture *fixture)
     }
     np2_fixture_detach_fdd(fixture);
     if (fixture->dosio_attached) {
-        np2_dosio_detach_fixture();
+        if (fixture->source == NP2_FIXTURE_SOURCE_VFS) {
+            np2_dosio_detach_vfs_file();
+        } else {
+            np2_dosio_detach_fixture();
+        }
         fixture->dosio_attached = 0;
     }
-    if (fixture->mapped != NULL) {
+    if ((fixture->source == NP2_FIXTURE_SOURCE_RAW) &&
+        (fixture->mapped != NULL)) {
         esp_partition_munmap(fixture->map_handle);
     }
-    memset(fixture, 0, sizeof(*fixture));
+    np2_fixture_init(fixture);
 }
