@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "fixture_id": "np2video-7a3c-gfx-vram",
+  "scene_id": 2,
+  "fixture_sha256": "c512ce998cdbcc397b930c1377b976ead63e5330c9121523af3ed88632b0fe0d",
+  "image_size": 1261568,
+  "width": 640,
+  "height": 400,
+  "pixel_format": "rgb565le",
+  "bpp": 16,
+  "pitch": 1280,
+  "visible_bytes": 512000,
+  "crc_algorithm": "crc32_iso_hdlc",
+  "crc32": "0x4fa8c690",
+  "synchronization": {
+    "ready_state": "SCENE_READY",
+    "generation": "must_remain_stable",
+    "surface_update_sequence": "must_increase_after_ready"
+  },
+  "bmp": "diagnostic-only"
+}

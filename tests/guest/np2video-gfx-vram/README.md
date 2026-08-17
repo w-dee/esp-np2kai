@@ -15,6 +15,7 @@ tracked. Build and test the fixture with:
 ```sh
 make -C tests/guest/np2video-gfx-vram test
 make -C tests/guest/np2video-gfx-vram reproducibility-check
+make -C host test-video-gfx-vram-golden
 ```
 
 The builder assembles stage2 first, derives its exact byte and sector counts,
@@ -29,7 +30,8 @@ make -C host test-video-runner-gfx-vram-reference
 make -C host test-video-runner-gfx-vram-reference-bmp
 ```
 
-The framebuffer CRC printed by the host runner is a reference observation
-only. `GRAPHICS CRC IS NOT YET GOLDEN`; no graphics golden descriptor is part
-of this step. Human visual inspection must approve the retained BMP before a
-later step freezes any SHA-256 or CRC value.
+The human-approved direct CPU-VRAM scene is authoritative through
+`golden.json`, which records the deterministic raw HDM SHA-256 and the
+RGB565LE framebuffer metadata and CRC32. The BMP remains diagnostic-only and
+is never part of the golden identity. The fixture covers no GDC drawing
+commands; Step 7A.3d remains future work.

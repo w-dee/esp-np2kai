@@ -33,6 +33,7 @@ REQUIRED_DESCRIPTOR_FIELDS = (
 )
 KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+FIXTURE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,63}$")
 
 
 def load_descriptor(path: Path) -> dict[str, Any]:
@@ -48,11 +49,13 @@ def load_descriptor(path: Path) -> dict[str, Any]:
     if descriptor["schema_version"] != 1:
         raise GoldenError("unsupported golden descriptor schema")
     if (not isinstance(descriptor["fixture_id"], str) or
-            not descriptor["fixture_id"]):
-        raise GoldenError("fixture_id must be a non-empty string")
+            not FIXTURE_ID_PATTERN.fullmatch(descriptor["fixture_id"])):
+        raise GoldenError("fixture_id must contain only ASCII letters, digits, '.', '_' or '-'")
     for field in ("scene_id", "image_size", "width", "height", "bpp", "pitch", "visible_bytes"):
         if isinstance(descriptor[field], bool) or not isinstance(descriptor[field], int):
             raise GoldenError(f"{field} must be an integer")
+    if not 0 <= descriptor["scene_id"] <= 65535:
+        raise GoldenError("scene_id must fit in uint16")
     if not SHA256_PATTERN.fullmatch(descriptor["fixture_sha256"]):
         raise GoldenError("fixture_sha256 must be lowercase SHA-256")
     if not isinstance(descriptor["pixel_format"], str) or not descriptor["pixel_format"]:
@@ -136,6 +139,8 @@ def validate_stdout(stdout: bytes, descriptor: dict[str, Any]) -> None:
         _integer(fields, "scene_id", line_name)
     if _integer(fixture, "scene_id", "NP2VIDEO_FIXTURE") != descriptor["scene_id"]:
         raise GoldenError("fixture scene_id mismatch")
+    if _require(fixture, "fixture_id", "NP2VIDEO_FIXTURE") != descriptor["fixture_id"]:
+        raise GoldenError("fixture_id mismatch")
     if _require(fixture, "fixture_sha256", "NP2VIDEO_FIXTURE") != descriptor["fixture_sha256"]:
         raise GoldenError("fixture SHA-256 mismatch")
     if _integer(fixture, "image_bytes", "NP2VIDEO_FIXTURE") != descriptor["image_size"]:
@@ -143,6 +148,8 @@ def validate_stdout(stdout: bytes, descriptor: dict[str, Any]) -> None:
 
     if _integer(ready, "scene_id", "NP2VIDEO_READY") != descriptor["scene_id"]:
         raise GoldenError("READY scene_id mismatch")
+    if _require(ready, "fixture_id", "NP2VIDEO_READY") != descriptor["fixture_id"]:
+        raise GoldenError("READY fixture_id mismatch")
     if _require(ready, "state", "NP2VIDEO_READY") != "SCENE_READY":
         raise GoldenError("READY state is not SCENE_READY")
     ready_generation = _integer(ready, "generation", "NP2VIDEO_READY")
@@ -169,6 +176,8 @@ def validate_stdout(stdout: bytes, descriptor: dict[str, Any]) -> None:
             actual = _integer(framebuffer, key, "NP2VIDEO_FRAMEBUFFER")
         if actual != expected:
             raise GoldenError(f"framebuffer {key} mismatch: expected {expected}, got {actual}")
+    if _require(framebuffer, "fixture_id", "NP2VIDEO_FRAMEBUFFER") != descriptor["fixture_id"]:
+        raise GoldenError("framebuffer fixture_id mismatch")
     if _require(framebuffer, "crc32", "NP2VIDEO_FRAMEBUFFER").lower() != descriptor["crc32"].lower():
         raise GoldenError("framebuffer CRC mismatch")
     framebuffer_generation = _integer(framebuffer, "generation", "NP2VIDEO_FRAMEBUFFER")
@@ -179,9 +188,15 @@ def validate_stdout(stdout: bytes, descriptor: dict[str, Any]) -> None:
         raise GoldenError("no framebuffer update occurred after READY")
 
 
-def _run_child(runner: str, fixture: str, timeout: float) -> tuple[int, bytes, bytes]:
+def _run_child(runner: str, fixture: str, descriptor: dict[str, Any],
+		timeout: float) -> tuple[int, bytes, bytes]:
     try:
-        process = subprocess.Popen([runner, fixture], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            [runner, fixture, "--fixture-id", descriptor["fixture_id"],
+			 "--scene-id", str(descriptor["scene_id"])],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
     except OSError as error:
         raise GoldenError(f"cannot start video_runner: {error}") from error
     try:
@@ -195,7 +210,7 @@ def _run_child(runner: str, fixture: str, timeout: float) -> tuple[int, bytes, b
 
 def run_golden(runner: str, fixture: str, descriptor_path: Path, timeout: float) -> None:
     descriptor = load_descriptor(descriptor_path)
-    returncode, stdout, stderr = _run_child(runner, fixture, timeout)
+    returncode, stdout, stderr = _run_child(runner, fixture, descriptor, timeout)
     if stderr:
         sys.stderr.buffer.write(stderr)
         sys.stderr.buffer.flush()

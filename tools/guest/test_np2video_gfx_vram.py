@@ -15,6 +15,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/guest/np2video-gfx-vram"
 LAYOUT = FIXTURE / "layout.json"
+GOLDEN = FIXTURE / "golden.json"
 BUILDER = ROOT / "tools/guest/build_np2video_stage2.py"
 IMAGE_SIZE = 1_261_568
 IPL_SIZE = 1024
@@ -128,7 +129,10 @@ def main() -> int:
     parser.add_argument("--reproducibility", action="store_true")
     args = parser.parse_args()
     layout = json.loads(LAYOUT.read_text(encoding="utf-8"))
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert_layout_contract(layout)
+    assert golden["fixture_id"] == layout["fixture"]["id"]
+    assert golden["scene_id"] == layout["fixture"]["scene_id"]
 
     with tempfile.TemporaryDirectory(prefix="np2video-gfx-vram-test-") as temp_name:
         temp = pathlib.Path(temp_name)
@@ -159,6 +163,7 @@ def main() -> int:
         assert first_bytes[payload_end:] == b"\0" * (IMAGE_SIZE - payload_end)
 
         digest = hashlib.sha256(first_bytes).hexdigest()
+        assert digest == golden["fixture_sha256"]
         assert manifest["sha256"] == digest
         assert manifest["stage2_sha256"] == hashlib.sha256(stage2).hexdigest()
         sidecar = first.with_name(first.name + ".sha256").read_text(encoding="ascii")
