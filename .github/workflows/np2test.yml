@@ -119,6 +119,9 @@ jobs:
       - name: Test deterministic np2video fixture
         run: make -C tests/guest/np2video syntax-check test reproducibility-check
 
+      - name: Test deterministic direct-VRAM graphics fixture
+        run: make -C tests/guest/np2video-gfx-vram syntax-check test reproducibility-check
+
       - name: Test np2video golden checker
         run: make -C host test-video-golden-checker
 
@@ -135,6 +138,9 @@ jobs:
 
       - name: Run approved np2video golden regression
         run: make -C host test-video-runner-golden
+
+      - name: Run approved direct-VRAM graphics golden regression
+        run: make -C host test-video-gfx-vram-golden
 
   # NON-FORMAL supplementary firmware evidence only. The native job above is
   # the formal EXTMEM=13 Stage-1 oracle; this job uses explicit EXTMEM=8 because
