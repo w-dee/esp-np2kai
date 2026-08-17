@@ -137,3 +137,16 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
           bash tools/emu/test-np2-stage1-reduced.sh
+
+      - name: Run Step 6A bounded storage validation
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          bash tools/emu/test-step6a-ci.sh

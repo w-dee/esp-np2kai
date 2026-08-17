@@ -20,6 +20,7 @@ EXPECTED_FLASH_SIZE = 0x800000
 HIGH_ADDRESS_SCAN_START = 0x400000
 HIGH_ADDRESS_MARKER = b"STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1"
 HIGH_ADDRESS_PREFILL_PATH = "high-address-prefill/filler.bin"
+NOSPACE_PREFILL_PATH = "files/upload/prefill.bin"
 
 
 def fail(message: str) -> "NoReturn":
@@ -101,7 +102,8 @@ def verify_partition_table(partitions) -> object:
 
 
 def populate_source(source: Path, fixture: Path,
-                    high_address_prefill_bytes: int = 0) -> None:
+                    high_address_prefill_bytes: int = 0,
+                    nospace_prefill_bytes: int = 0) -> None:
     (source / "files/seed").mkdir(parents=True)
     (source / "files/upload").mkdir(parents=True)
     (source / "files/long").mkdir(parents=True)
@@ -120,6 +122,8 @@ def populate_source(source: Path, fixture: Path,
         # Keep the filler outside /persist/files and use a byte pattern that
         # cannot contain either Step-6A high-address marker.
         prefill.write_bytes(b"\xa5" * high_address_prefill_bytes)
+    if nospace_prefill_bytes:
+        (source / NOSPACE_PREFILL_PATH).write_bytes(b"\x5a" * nospace_prefill_bytes)
 
 
 def measure_fat_image(image: Path) -> dict[str, int | str]:
@@ -197,6 +201,12 @@ def main() -> int:
         default=0,
         help="temporary private FATFS filler size for bounded high-address tests",
     )
+    parser.add_argument(
+        "--nospace-prefill-bytes",
+        type=int,
+        default=0,
+        help="temporary /upload/prefill.bin size for bounded NoSpace tests",
+    )
     parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
     parser.add_argument(
         "--minimum-offset",
@@ -207,6 +217,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.high_address_prefill_bytes < 0:
         parser.error("--high-address-prefill-bytes must be non-negative")
+    if args.nospace_prefill_bytes < 0:
+        parser.error("--nospace-prefill-bytes must be non-negative")
+    if args.high_address_prefill_bytes and args.nospace_prefill_bytes:
+        parser.error("high-address and NoSpace prefills are mutually exclusive")
 
     repository_root = args.repository_root.resolve()
     build_dir = args.build_dir.resolve()
@@ -228,12 +242,22 @@ def main() -> int:
         temporary_path = Path(temporary)
         source = temporary_path / "source"
         source.mkdir()
-        populate_source(source, fixture, args.high_address_prefill_bytes)
+        populate_source(
+            source,
+            fixture,
+            args.high_address_prefill_bytes,
+            args.nospace_prefill_bytes,
+        )
         if args.high_address_prefill_bytes:
             print(
                 "STORAGEFATFS_HIGH_ADDRESS_PREFILL "
                 f"bytes={args.high_address_prefill_bytes} "
                 f"path={HIGH_ADDRESS_PREFILL_PATH}"
+            )
+        if args.nospace_prefill_bytes:
+            print(
+                "STORAGEFATFS_NOSPACE_PREFILL "
+                f"bytes={args.nospace_prefill_bytes} path={NOSPACE_PREFILL_PATH}"
             )
         storage_image = temporary_path / "storage.bin"
         generator = idf_path / "components/fatfs/wl_fatfsgen.py"

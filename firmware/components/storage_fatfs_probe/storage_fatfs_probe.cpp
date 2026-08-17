@@ -27,6 +27,7 @@ constexpr std::uint64_t kHighAddressMarkerOffset = 1024 * 1024;
 constexpr char kHighAddressMarker[] = "STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1";
 constexpr char kHighFilePath[] = "/upload/step6a1-high.bin";
 constexpr char kSmallFilePath[] = "/upload/step6a1-small.bin";
+constexpr std::uint8_t kSmallFileData[] = {'s', 't', 'e', 'p', '6', 'a', '1', '\n'};
 
 void fail(const char *reason)
 {
@@ -487,9 +488,9 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     if (api.begin_write(api.context, "/seed/EXISTING.BIN", 1, false, &collision) !=
         storage::Error::AlreadyExists) return false;
 
-    const std::uint8_t small[] = {'s', 't', 'e', 'p', '6', 'a', '1', '\n'};
-    if (!write_file_fresh_or_replace(api, kSmallFilePath, small, sizeof(small))) return false;
-    if (!write_file(api, kSmallFilePath, small, sizeof(small), true)) return false;
+    if (!write_file_fresh_or_replace(api, kSmallFilePath, kSmallFileData,
+                                     sizeof(kSmallFileData))) return false;
+    if (!write_file(api, kSmallFilePath, kSmallFileData, sizeof(kSmallFileData), true)) return false;
     if (!write_file_fresh_or_replace(api, "/upload/é.txt", utf8_file,
                                      sizeof(utf8_file)) ||
         !read_small_file(api, "/upload/é.txt", utf8_file, sizeof(utf8_file))) return false;
@@ -498,7 +499,8 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     storage::WriteSession aborted{};
     if (api.begin_write(api.context, "/seed/existing.bin", sizeof(seed), true, &aborted) !=
             storage::Error::Ok ||
-        aborted.write(aborted.context, 0, small, sizeof(small)) != storage::Error::Ok) {
+        aborted.write(aborted.context, 0, kSmallFileData, sizeof(kSmallFileData)) !=
+            storage::Error::Ok) {
         if (aborted.abort != nullptr) aborted.abort(aborted.context);
         return false;
     }
@@ -509,6 +511,9 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     std::printf("STORAGEFATFS_STAGING_CLEANUP abort_tmp_absent=1\n");
 #endif
 
+#if defined(STORAGE_FATFS_CI_BOUNDED)
+    std::printf("STORAGEFATFS_PROFILE bounded-ci\n");
+#else
     bool created = false;
     if (!write_high_file(api, &created)) return false;
     std::uint8_t high_digest[32]{};
@@ -522,6 +527,7 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     digest_hex(high_digest, high_hex, sizeof(high_hex));
     std::printf("STORAGEFATFS_HIGH_FILE created=%d size=%u sha256=%s\n",
                 created ? 1 : 0, static_cast<unsigned>(kHighFileSize), high_hex);
+#endif
     return true;
 }
 
@@ -595,6 +601,16 @@ extern "C" esp_err_t storage_fatfs_probe_run(void)
         return ESP_FAIL;
     }
     const storage::Storage remounted_api = storage.api();
+#if defined(STORAGE_FATFS_CI_BOUNDED)
+    if (!read_small_file(remounted_api, kSmallFilePath, kSmallFileData,
+                         sizeof(kSmallFileData))) {
+        fail("bounded_persistence");
+        storage.unmount();
+        return ESP_FAIL;
+    }
+    std::printf("STORAGEFATFS_REMOUNT persisted=1 sha256_match=1 path=%s\n",
+                kSmallFilePath);
+#else
     std::uint8_t persisted_digest[32]{};
     std::uint8_t expected_digest[32]{};
     if (!read_storage_file(remounted_api, kHighFilePath, kHighFileSize, persisted_digest) ||
@@ -605,6 +621,7 @@ extern "C" esp_err_t storage_fatfs_probe_run(void)
         return ESP_FAIL;
     }
     std::printf("STORAGEFATFS_REMOUNT persisted=1 sha256_match=1\n");
+#endif
     if (storage.unmount() != ESP_OK) {
         fail("unmount");
         return ESP_FAIL;

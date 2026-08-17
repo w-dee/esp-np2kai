@@ -4,7 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
-readonly BUILD_DIR="${FIRMWARE_DIR}/build-reduced-extmem8"
+readonly BUILD_DIR="${NP2_REDUCED_BUILD_DIR:-${FIRMWARE_DIR}/build-reduced-extmem8}"
 readonly SDKCONFIG_PATH="${BUILD_DIR}/sdkconfig"
 readonly MERGED_IMAGE="${BUILD_DIR}/np2fixture-reduced-merged.bin"
 readonly EMULATOR_LOG="${BUILD_DIR}/esp-emu-np2-stage1-reduced.log"
