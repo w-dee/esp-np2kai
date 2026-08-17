@@ -14,7 +14,7 @@ void *scrnmng_storage_alloc(size_t bytes)
 		heap_caps_free(ptr);
 		ptr = NULL;
 	}
-	return ptr;ｗ
+	return ptr;
 }
 
 void scrnmng_storage_free(void *ptr)
