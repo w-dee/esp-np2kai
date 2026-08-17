@@ -49,6 +49,27 @@ EXECUTION_CONTROLLER_DEPENDENCY := $(BUILD_DIR)/runner/execution_controller.d
 HEADLESS_RUNNER_OUTPUT := $(BUILD_DIR)/runner/headless_runner
 HEADLESS_RUNNER_STAGE1_IMAGE := $(abspath $(CURDIR)/../tests/guest/np2test/golden/np2test-fd1232.image)
 HEADLESS_RUNNER_SUPERVISOR := $(CURDIR)/tests/run_headless_runner.py
+VIDEO_RUNNER_SOURCE := $(CURDIR)/runner/video_main.c
+VIDEO_RUNNER_OBJECT := $(BUILD_DIR)/runner/video_main.o
+VIDEO_RUNNER_DEPENDENCY := $(BUILD_DIR)/runner/video_main.d
+VIDEO_RUNNER_OUTPUT := $(BUILD_DIR)/runner/video_runner
+VIDEO_RUNNER_FIXTURE := $(abspath $(CURDIR)/../build/guest/np2video/np2video-fd1232.image)
+VIDEO_RUNNER_SUPERVISOR := $(CURDIR)/tests/run_video_runner.py
+VIDEO_RUNNER_BMP := $(BUILD_DIR)/runner/np2video-reference.bmp
+VIDEO_CONTROL_SOURCE := $(CURDIR)/runner/video_control_v1.c
+VIDEO_CONTROL_OBJECT := $(BUILD_DIR)/runner/video_control_v1.o
+VIDEO_CONTROL_DEPENDENCY := $(BUILD_DIR)/runner/video_control_v1.d
+VIDEO_CONTROL_TEST_SOURCE := $(CURDIR)/tests/video_control_v1_test.c
+VIDEO_CONTROL_TEST_OUTPUT := $(BUILD_DIR)/tests/video_control_v1_test
+NP2_SHA256_SOURCE := $(CURDIR)/compat/np2_sha256.c
+NP2_SHA256_OBJECT := $(BUILD_DIR)/compat/np2_sha256.o
+NP2_SHA256_DEPENDENCY := $(BUILD_DIR)/compat/np2_sha256.d
+NP2_SHA256_TEST_SOURCE := $(CURDIR)/tests/np2_sha256_test.c
+NP2_SHA256_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_sha256_test
+VIDEO_BMP_VALIDATOR := $(CURDIR)/tests/validate_video_bmp.py
+VIDEO_CLI_TEST := $(CURDIR)/tests/test_video_runner_cli.py
+HEADLESS_BMP_OBJECT := $(BUILD_DIR)/backend/headless/scrnmng_bmp.o
+HEADLESS_BMP_DEPENDENCY := $(BUILD_DIR)/backend/headless/scrnmng_bmp.d
 RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
 RESULT_V1_PARSER_TEST_SOURCE := $(CURDIR)/tests/result_v1_parser_test.c
 RESULT_V1_PARSER_TEST_OUTPUT := $(BUILD_DIR)/tests/result_v1_parser_test
@@ -110,7 +131,13 @@ RUNNER_DEPENDENCIES := \
 	$(RESULT_V1_PARSER_DEPENDENCY) \
 	$(EXECUTION_CONTROLLER_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
+VIDEO_RUNNER_DEPENDENCIES := \
+	$(VIDEO_RUNNER_DEPENDENCY) \
+	$(VIDEO_CONTROL_DEPENDENCY) \
+	$(NP2_SHA256_DEPENDENCY) \
+	$(HEADLESS_BMP_DEPENDENCY)
+
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-cli test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -219,6 +246,38 @@ $(EXECUTION_CONTROLLER_OBJECT): $(EXECUTION_CONTROLLER_SOURCE)
 		-I"$(CURDIR)/runner" \
 		-c "$(EXECUTION_CONTROLLER_SOURCE)" -o "$(EXECUTION_CONTROLLER_OBJECT)"
 
+$(VIDEO_RUNNER_OBJECT): $(VIDEO_RUNNER_SOURCE)
+	@mkdir -p "$(dir $(VIDEO_RUNNER_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(VIDEO_RUNNER_DEPENDENCY)" \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(CURDIR)/backend/headless" -I"$(CURDIR)/runner" \
+		$(foreach d,$(PROBE_DEFINES),-D$(d)) \
+		-c "$(VIDEO_RUNNER_SOURCE)" -o "$(VIDEO_RUNNER_OBJECT)"
+
+$(VIDEO_CONTROL_OBJECT): $(VIDEO_CONTROL_SOURCE)
+	@mkdir -p "$(dir $(VIDEO_CONTROL_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(VIDEO_CONTROL_DEPENDENCY)" \
+		-I"$(CURDIR)/runner" \
+		-c "$(VIDEO_CONTROL_SOURCE)" -o "$(VIDEO_CONTROL_OBJECT)"
+
+$(NP2_SHA256_OBJECT): $(NP2_SHA256_SOURCE)
+	@mkdir -p "$(dir $(NP2_SHA256_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror \
+		-MMD -MP -MF "$(NP2_SHA256_DEPENDENCY)" \
+		-I"$(CURDIR)/compat" \
+		-c "$(NP2_SHA256_SOURCE)" -o "$(NP2_SHA256_OBJECT)"
+
+$(HEADLESS_BMP_OBJECT): $(HEADLESS_BMP_SOURCE)
+	@mkdir -p "$(dir $(HEADLESS_BMP_OBJECT))"
+	@$(CC) $(PROBE_CFLAGS) -Werror -DBYTESEX_LITTLE \
+		-MMD -MP -MF "$(HEADLESS_BMP_DEPENDENCY)" \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(CURDIR)/backend/headless" \
+		$(foreach d,$(PROBE_DEFINES),-D$(d)) \
+		-c "$(HEADLESS_BMP_SOURCE)" -o "$(HEADLESS_BMP_OBJECT)"
+
 headless-runner: phase1-link-probe-mapped $(HEADLESS_RUNNER_OBJECT) \
 		$(STAGE1_MACHINE_CONFIG_OBJECT) \
 		$(RESULT_V1_PARSER_OBJECT) $(EXECUTION_CONTROLLER_OBJECT)
@@ -237,7 +296,46 @@ test-headless-runner-attach: test-headless-runner-np2test
 
 test-headless-runner-lifecycle: test-headless-runner-np2test
 
--include $(RUNNER_DEPENDENCIES)
+video-runner: phase1-link-probe-mapped $(VIDEO_RUNNER_OBJECT) \
+		$(STAGE1_MACHINE_CONFIG_OBJECT) $(VIDEO_CONTROL_OBJECT) \
+		$(NP2_SHA256_OBJECT) $(HEADLESS_BMP_OBJECT)
+	@mkdir -p "$(dir $(VIDEO_RUNNER_OUTPUT))"
+	@$(CC) "$(LINK_PROBE_OUTPUT)/combined.o" "$(VIDEO_RUNNER_OBJECT)" \
+		"$(STAGE1_MACHINE_CONFIG_OBJECT)" "$(VIDEO_CONTROL_OBJECT)" \
+		"$(NP2_SHA256_OBJECT)" "$(HEADLESS_BMP_OBJECT)" -lm -o "$(VIDEO_RUNNER_OUTPUT)"
+
+test-video-runner-reference: video-runner
+	@$(MAKE) --no-print-directory -C "$(CURDIR)/../tests/guest/np2video" image
+	@$(PYTHON) "$(VIDEO_RUNNER_SUPERVISOR)" --timeout 30 \
+		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_FIXTURE)"
+
+test-video-runner-reference-bmp: video-runner
+	@$(MAKE) --no-print-directory -C "$(CURDIR)/../tests/guest/np2video" image
+	@$(PYTHON) "$(VIDEO_RUNNER_SUPERVISOR)" --timeout 30 \
+		--dump-framebuffer "$(VIDEO_RUNNER_BMP)" \
+		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_FIXTURE)"
+	@$(PYTHON) "$(VIDEO_BMP_VALIDATOR)" "$(VIDEO_RUNNER_BMP)"
+
+test-video-runner-cli: video-runner
+	@$(PYTHON) "$(VIDEO_CLI_TEST)" "$(VIDEO_RUNNER_OUTPUT)"
+
+-include $(RUNNER_DEPENDENCIES) $(VIDEO_RUNNER_DEPENDENCIES)
+
+test-video-control-v1:
+	@mkdir -p "$(dir $(VIDEO_CONTROL_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/runner" "$(VIDEO_CONTROL_SOURCE)" \
+		"$(VIDEO_CONTROL_TEST_SOURCE)" -o "$(VIDEO_CONTROL_TEST_OUTPUT)"
+	@"$(VIDEO_CONTROL_TEST_OUTPUT)"
+	@printf '%s\n' 'NP2V v1 parser tests passed.'
+
+test-sha256:
+	@mkdir -p "$(dir $(NP2_SHA256_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" "$(NP2_SHA256_SOURCE)" \
+		"$(NP2_SHA256_TEST_SOURCE)" -o "$(NP2_SHA256_TEST_OUTPUT)"
+	@"$(NP2_SHA256_TEST_OUTPUT)"
+	@printf '%s\n' 'Portable SHA-256 utility test passed.'
 
 test-crc32:
 	@mkdir -p "$(dir $(NP2_CRC32_TEST_OUTPUT))"

@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "name": "np2video",
+  "fixture": {
+    "id": "np2video-7a3a-text",
+    "scene_id": 1,
+    "description": "640x400 80x25 8x16 deterministic ASCII text scene"
+  },
+  "image": {
+    "format": "raw",
+    "extension": ".hdm",
+    "geometry": {
+      "cylinders": 77,
+      "heads": 2,
+      "sectors_per_track": 8,
+      "bytes_per_sector": 1024
+    },
+    "size_bytes": 1261568,
+    "d88_required": false
+  },
+  "ipl": {
+    "implemented": true,
+    "source": "src/ipl.asm",
+    "binary_size": 1024,
+    "sector_offset": 0,
+    "sector_bytes": 1024,
+    "load_physical": 130048,
+    "entry": {
+      "cs": 8128,
+      "ip": 0
+    },
+    "signatures": [
+      {"offset": 510, "bytes": "55aa"},
+      {"offset": 1022, "bytes": "55aa"}
+    ]
+  },
+  "control_block": {
+    "protocol": "NP2V",
+    "version": 1,
+    "physical_address": 172032,
+    "size_bytes": 32,
+    "state_offset": 31,
+    "state_written_last": true,
+    "states": {
+      "BOOTING": 1,
+      "PROGRAMMING_VIDEO": 2,
+      "SCENE_READY": 3,
+      "ERROR": 4
+    }
+  },
+  "scene": {
+    "width": 640,
+    "height": 400,
+    "columns": 80,
+    "rows": 25,
+    "raster_height": 16,
+    "text_vram": 655360,
+    "attribute_vram": 663552,
+    "attribute": "visible-white",
+    "character_encoding": "ASCII",
+    "cursor": "hidden",
+    "graphics": false,
+    "blink": false,
+    "underline": false,
+    "reverse": false,
+    "rows_text": [
+      "+------------------------------------------------------------------------------+",
+      "|                                                                              |",
+      "|   NP2 VIDEO FIXTURE 7A.3A                                                    |",
+      "|                                                                              |",
+      "|   TEXT VRAM A0000  ATTR A2000                                                |",
+      "|                                                                              |",
+      "| LEFT                                                                RIGHT    |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|         ABCDEFGHIJKLMNOPQRSTUVWXYZ                                           |",
+      "|                                                                              |",
+      "|                   0123456789                                                 |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|       X=LEFT  Y=TOP                                                          |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                                              |",
+      "|                                                           BOTTOM             |",
+      "|                                                                              |",
+      "+------------------------------------------------------------------------------+"
+    ]
+  },
+  "memory": {
+    "address_space": {"start": 0, "size_bytes": 1048576},
+    "excluded_ranges": [
+      {"name": "pc98-low-bios-data", "start": 0, "size_bytes": 4096},
+      {"name": "pc98-text-vram", "start": 655360, "size_bytes": 32768},
+      {"name": "pc98-graphics-vram-b-r-g", "start": 688128, "size_bytes": 98304},
+      {"name": "pc98-graphics-vram-e", "start": 917504, "size_bytes": 32768},
+      {"name": "pc98-bios-firmware", "start": 950272, "size_bytes": 98304}
+    ],
+    "owned_regions": [
+      {"name": "ipl", "kind": "ipl", "start": 130048, "size_bytes": 1024, "alignment": 1024},
+      {"name": "payload-reserve", "kind": "payload", "start": 131072, "size_bytes": 32768, "alignment": 1024},
+      {"name": "stack", "kind": "stack", "start": 163840, "size_bytes": 4096, "alignment": 16},
+      {"name": "video-control", "kind": "control", "start": 172032, "size_bytes": 32, "alignment": 16}
+    ]
+  }
+}
