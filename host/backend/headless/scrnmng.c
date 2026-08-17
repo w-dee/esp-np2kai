@@ -265,6 +265,16 @@ SCRNMNG_SNAPSHOT_STATUS scrnmng_snapshot(SCRNMNG_SNAPSHOT *snapshot)
 	return SCRNMNG_SNAPSHOT_OK;
 }
 
+void scrnmng_get_surface_counters(uint32_t *generation, uint32_t *sequence)
+{
+	if (generation != NULL) {
+		*generation = scrnmng_surface_generation;
+	}
+	if (sequence != NULL) {
+		*sequence = scrnmng_surface_update_sequence;
+	}
+}
+
 void scrnmng_setwidth(int posx, int width)
 {
 	(void)posx;

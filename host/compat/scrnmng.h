@@ -79,6 +79,7 @@ void scrnmng_getstatus(SCRNMNG_STATUS *status);
 SCRNMNG_SNAPSHOT_STATUS scrnmng_snapshot(SCRNMNG_SNAPSHOT *snapshot);
 const char *scrnmng_snapshot_status_name(SCRNMNG_SNAPSHOT_STATUS status);
 SCRNMNG_SNAPSHOT_STATUS scrnmng_get_surface_view(SCRNMNG_SURFACE_VIEW *view);
+void scrnmng_get_surface_counters(uint32_t *generation, uint32_t *sequence);
 void scrnmng_update(void);
 RGB16 scrnmng_makepal16(RGB32 pal32);
 

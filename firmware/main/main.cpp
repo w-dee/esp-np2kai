@@ -4,13 +4,18 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
+#if defined(NP2_VIDEO_PROFILE)
+#include "np2video_runner/np2video_runner.h"
+#else
 #include "np2_fixture_probe.h"
 #include "np2_memory_probe.h"
 #if defined(NP2_DOSIO_PROBE)
 #include "np2dosio_probe/np2dosio_probe.h"
 #endif
 #include "np2test_runner/np2test_runner.h"
+#endif
 #include "uart_control_transport/uart_control_transport.h"
+#if !defined(NP2_VIDEO_PROFILE)
 #if defined(NP2_VFS_FIXTURE_PROFILE) && defined(UART_FATFS_PROFILE)
 #error "NP2_VFS_FIXTURE_PROFILE and UART_FATFS_PROFILE are mutually exclusive"
 #endif
@@ -24,6 +29,7 @@
 #endif
 #if defined(STORAGE_FATFS_PROBE)
 #include "storage_fatfs_probe/storage_fatfs_probe.h"
+#endif
 #endif
 
 namespace {
@@ -45,6 +51,31 @@ extern "C" void app_main(void)
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
 
+#if defined(NP2_VIDEO_PROFILE)
+    const esp_app_desc_t *video_app = esp_app_get_description();
+    const uart_control_metadata_t video_metadata{
+        video_app->project_name,
+        video_app->version,
+        esp_get_idf_version(),
+        "esp32p4",
+    };
+    const esp_err_t video_start_result =
+        uart_control_transport_start(&video_metadata);
+    if (video_start_result != ESP_OK) {
+        std::printf("NP2VIDEO_GOLDEN_RESULT=HARNESS_ERROR reason=uart_start_%s\n",
+                    esp_err_to_name(video_start_result));
+        std::fflush(stdout);
+        return;
+    }
+    const esp_err_t video_runner_result =
+        np2video_runner_start(write_np2_runner_output, nullptr);
+    if (video_runner_result != ESP_OK) {
+        std::printf("NP2VIDEO_GOLDEN_RESULT=HARNESS_ERROR reason=task_start_%s\n",
+                    esp_err_to_name(video_runner_result));
+        std::fflush(stdout);
+    }
+    return;
+#else
 #if defined(NP2_DOSIO_PROBE)
     if (np2dosio_probe_run() != ESP_OK) {
         return;
@@ -161,4 +192,5 @@ extern "C" void app_main(void)
     }
 #endif
     return;
+#endif
 }

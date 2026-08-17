@@ -1,9 +1,27 @@
+set(NP2_VIDEO_PROFILE_ACTIVE FALSE)
+if(NP2_VIDEO_PROFILE OR "$ENV{NP2_VIDEO_PROFILE}" STREQUAL "1")
+    set(NP2_VIDEO_PROFILE_ACTIVE TRUE)
+endif()
+
+if(NP2_VIDEO_PROFILE_ACTIVE AND
+   (NP2_VFS_FIXTURE_PROFILE OR UART_FATFS_PROFILE OR NP2_DOSIO_PROBE OR
+    STORAGE_FATFS_PROBE))
+    message(FATAL_ERROR
+            "NP2_VIDEO_PROFILE is mutually exclusive with probe/storage profiles")
+endif()
+
+set(NP2_MAIN_PRIV_REQUIRES uart_control_transport file_transfer esp_app_format)
+if(NP2_VIDEO_PROFILE_ACTIVE)
+    list(APPEND NP2_MAIN_PRIV_REQUIRES np2video_runner)
+else()
+    list(APPEND NP2_MAIN_PRIV_REQUIRES np2memoryprobe np2fixtureprobe np2test_runner
+         np2dosio_probe storage_fatfs storage_fatfs_probe)
+endif()
+
 idf_component_register(
     SRCS "main.cpp"
     INCLUDE_DIRS ""
-    PRIV_REQUIRES uart_control_transport file_transfer esp_app_format np2memoryprobe
-                  np2fixtureprobe np2test_runner np2dosio_probe storage_fatfs
-                  storage_fatfs_probe)
+    PRIV_REQUIRES ${NP2_MAIN_PRIV_REQUIRES})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
 
@@ -11,6 +29,9 @@ target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
 # explicit CMake cache option used by the dedicated emulator harness.
 if(NP2_REDUCED_EXTMEM8)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE NP2_REDUCED_EXTMEM8=1)
+endif()
+if(NP2_VIDEO_PROFILE_ACTIVE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NP2_VIDEO_PROFILE=1)
 endif()
 if(STORAGE_FATFS_PROBE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE STORAGE_FATFS_PROBE=1)

@@ -14,12 +14,30 @@ typedef enum {
     NP2_FIXTURE_SOURCE_VFS,
 } np2_fixture_source;
 
-static const uint8_t np2_fixture_expected_sha256[32] = {
+static const uint8_t np2_fixture_expected_sha256[NP2_FIXTURE_SHA256_SIZE] = {
     0x3b, 0x73, 0x66, 0x7d, 0x23, 0x56, 0x15, 0xe8,
     0x92, 0x05, 0xfb, 0xda, 0xb0, 0x4d, 0x3e, 0x6c,
     0xf9, 0xc2, 0xf9, 0xa1, 0xf3, 0xa1, 0xde, 0x82,
     0xcd, 0xb2, 0xb3, 0x86, 0x2a, 0xa3, 0x94, 0xb3,
 };
+
+static const np2_fixture_descriptor np2_fixture_default_descriptor = {
+    NP2_FIXTURE_PARTITION_LABEL,
+    NP2_FIXTURE_PATH,
+    NP2_FIXTURE_IMAGE_SIZE,
+    np2_fixture_expected_sha256,
+    NP2_FIXTURE_TRACKS,
+    NP2_FIXTURE_SECTORS,
+    NP2_FIXTURE_N,
+    DISKTYPE_2HD,
+};
+
+static const np2_fixture_descriptor *np2_fixture_get_descriptor(
+    const np2_fixture *fixture)
+{
+    return ((fixture != NULL) && (fixture->descriptor != NULL)) ?
+               fixture->descriptor : &np2_fixture_default_descriptor;
+}
 
 const char *np2_fixture_error_name(esp_err_t error)
 {
@@ -50,31 +68,42 @@ void np2_fixture_init(np2_fixture *fixture)
 
 esp_err_t np2_fixture_acquire(np2_fixture *fixture)
 {
+    return np2_fixture_acquire_for(fixture, &np2_fixture_default_descriptor);
+}
+
+esp_err_t np2_fixture_acquire_for(
+    np2_fixture *fixture, const np2_fixture_descriptor *descriptor)
+{
     const esp_partition_t *partition;
     const void *mapped = NULL;
 
-    if (fixture == NULL) {
+    if ((fixture == NULL) || (descriptor == NULL) ||
+        (descriptor->partition_label == NULL) ||
+        (descriptor->logical_path == NULL) ||
+        (descriptor->expected_sha256 == NULL) ||
+        (descriptor->image_size == 0U) || (descriptor->tracks == 0U) ||
+        (descriptor->sectors == 0U) || (descriptor->n == 0U)) {
         return ESP_ERR_INVALID_ARG;
     }
     np2_fixture_init(fixture);
 
     partition = esp_partition_find_first(NP2_FIXTURE_PARTITION_TYPE,
                                           NP2_FIXTURE_PARTITION_SUBTYPE,
-                                          NP2_FIXTURE_PARTITION_LABEL);
+                                          descriptor->partition_label);
     if (partition == NULL) {
         return ESP_ERR_NOT_FOUND;
     }
-    if ((partition->size < NP2_FIXTURE_IMAGE_SIZE) || !partition->readonly) {
+    if ((partition->size < descriptor->image_size) || !partition->readonly) {
         return ESP_ERR_INVALID_SIZE;
     }
     if (esp_partition_get_sha256(partition, fixture->digest) != ESP_OK) {
         return ESP_FAIL;
     }
-    if (memcmp(fixture->digest, np2_fixture_expected_sha256,
+    if (memcmp(fixture->digest, descriptor->expected_sha256,
                sizeof(fixture->digest)) != 0) {
         return ESP_ERR_INVALID_CRC;
     }
-    if (esp_partition_mmap(partition, 0, NP2_FIXTURE_IMAGE_SIZE,
+    if (esp_partition_mmap(partition, 0, descriptor->image_size,
                            ESP_PARTITION_MMAP_DATA,
                            &mapped,
                            &fixture->map_handle) != ESP_OK) {
@@ -82,19 +111,23 @@ esp_err_t np2_fixture_acquire(np2_fixture *fixture)
     }
     fixture->partition = partition;
     fixture->mapped = mapped;
+    fixture->descriptor = descriptor;
     fixture->source = NP2_FIXTURE_SOURCE_RAW;
     return ESP_OK;
 }
 
 esp_err_t np2_fixture_attach_dosio(np2_fixture *fixture)
 {
+    const np2_fixture_descriptor *descriptor;
+
     if ((fixture == NULL) || (fixture->mapped == NULL) ||
         fixture->dosio_attached) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!np2_dosio_attach_fixture(NP2_FIXTURE_PATH,
+    descriptor = np2_fixture_get_descriptor(fixture);
+    if (!np2_dosio_attach_fixture(descriptor->logical_path,
                                   fixture->mapped,
-                                  NP2_FIXTURE_IMAGE_SIZE)) {
+                                  descriptor->image_size)) {
         return ESP_FAIL;
     }
     fixture->dosio_attached = 1;
@@ -120,21 +153,23 @@ esp_err_t np2_fixture_attach_vfs_dosio(np2_fixture *fixture,
 esp_err_t np2_fixture_attach_fdd(np2_fixture *fixture)
 {
     FDDFILE fdd;
+    const np2_fixture_descriptor *descriptor;
 
     if ((fixture == NULL) || !fixture->dosio_attached ||
         fixture->fdd_attached) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (fdd_set(0, NP2_FIXTURE_PATH, FTYPE_NONE, 1) != SUCCESS ||
+    descriptor = np2_fixture_get_descriptor(fixture);
+    if (fdd_set(0, descriptor->logical_path, FTYPE_NONE, 1) != SUCCESS ||
         !fdd_diskready(0)) {
         return ESP_FAIL;
     }
     fdd = fddfile + 0;
     if ((fdd->type != DISKTYPE_BETA) ||
-        (fdd->inf.xdf.tracks != NP2_FIXTURE_TRACKS) ||
-        (fdd->inf.xdf.sectors != NP2_FIXTURE_SECTORS) ||
-        (fdd->inf.xdf.n != NP2_FIXTURE_N) ||
-        (fdd->inf.xdf.disktype != DISKTYPE_2HD) ||
+        (fdd->inf.xdf.tracks != descriptor->tracks) ||
+        (fdd->inf.xdf.sectors != descriptor->sectors) ||
+        (fdd->inf.xdf.n != descriptor->n) ||
+        (fdd->inf.xdf.disktype != descriptor->disktype) ||
         !fdd->ro) {
         fdd_eject(0);
         return ESP_ERR_INVALID_SIZE;
