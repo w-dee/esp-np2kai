@@ -233,6 +233,26 @@ bool has_staging_suffix(const char *suffix)
     return found && read_error == 0 && close_result == 0;
 }
 
+bool staging_suffix_absent(const char *suffix)
+{
+    DIR *directory = ::opendir(storage_fatfs::kStagingRoot);
+    if (directory == nullptr) return false;
+    bool found = false;
+    errno = 0;
+    const dirent *entry = nullptr;
+    while ((entry = ::readdir(directory)) != nullptr) {
+        const std::string_view name(entry->d_name);
+        if (name.size() >= std::strlen(suffix) &&
+            name.substr(name.size() - std::strlen(suffix)) == suffix) {
+            found = true;
+            break;
+        }
+    }
+    const int read_error = errno;
+    const int close_result = ::closedir(directory);
+    return !found && read_error == 0 && close_result == 0;
+}
+
 bool remove_staging_suffix(const char *suffix)
 {
     DIR *directory = ::opendir(storage_fatfs::kStagingRoot);
@@ -267,6 +287,7 @@ bool run_replacement_error_checks(storage_fatfs::StorageFatfs &storage)
     const std::uint8_t new_data[] = {'n', 'e', 'w', '\n'};
 
     if (!remove_staging_suffix(".bak") || !remove_staging_suffix(".tmp") ||
+        !staging_suffix_absent(".tmp") ||
         !write_file_fresh_or_replace(api, kPath, old_data, sizeof(old_data))) {
         return false;
     }
@@ -279,7 +300,7 @@ bool run_replacement_error_checks(storage_fatfs::StorageFatfs &storage)
     if (!begin_write_with_data(api, kPath, new_data, sizeof(new_data), true, &session) ||
         session.commit(session.context) != storage::Error::CommitFailed ||
         !read_small_file(api, kPath, old_data, sizeof(old_data)) ||
-        has_staging_suffix(".tmp")) {
+        !staging_suffix_absent(".tmp")) {
         abort_session(&session);
         storage.set_test_hooks(nullptr);
         return false;
@@ -338,6 +359,8 @@ bool run_replacement_error_checks(storage_fatfs::StorageFatfs &storage)
     std::printf("STORAGEFATFS_REPLACEMENT backup_cleanup_failure=content_committed\n");
     storage.set_test_hooks(nullptr);
     if (!remove_staging_suffix(".bak")) return false;
+    if (!staging_suffix_absent(".tmp")) return false;
+    std::printf("STORAGEFATFS_STAGING_CLEANUP failed_write_tmp_absent=1\n");
     return true;
 }
 
@@ -481,6 +504,10 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     }
     aborted.abort(aborted.context);
     if (!read_small_file(api, "/seed/existing.bin", seed, sizeof(seed))) return false;
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (!staging_suffix_absent(".tmp")) return false;
+    std::printf("STORAGEFATFS_STAGING_CLEANUP abort_tmp_absent=1\n");
+#endif
 
     bool created = false;
     if (!write_high_file(api, &created)) return false;
@@ -554,6 +581,8 @@ extern "C" esp_err_t storage_fatfs_probe_run(void)
         storage.unmount();
         return ESP_FAIL;
     }
+    std::printf("STORAGEFATFS_STAGING_CLEANUP=PASS "
+                "failed_write_tmp_absent=1 abort_tmp_absent=1\n");
     if (!run_mount_cleanup_checks(provider, storage)) {
         fail("mount_cleanup_checks");
         storage.unmount();

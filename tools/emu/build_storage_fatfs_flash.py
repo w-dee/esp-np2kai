@@ -19,6 +19,7 @@ EXPECTED_STORAGE_SIZE = 0x5BC000
 EXPECTED_FLASH_SIZE = 0x800000
 HIGH_ADDRESS_SCAN_START = 0x400000
 HIGH_ADDRESS_MARKER = b"STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1"
+HIGH_ADDRESS_PREFILL_PATH = "high-address-prefill/filler.bin"
 
 
 def fail(message: str) -> "NoReturn":
@@ -99,7 +100,8 @@ def verify_partition_table(partitions) -> object:
     return storage
 
 
-def populate_source(source: Path, fixture: Path) -> None:
+def populate_source(source: Path, fixture: Path,
+                    high_address_prefill_bytes: int = 0) -> None:
     (source / "files/seed").mkdir(parents=True)
     (source / "files/upload").mkdir(parents=True)
     (source / "files/long").mkdir(parents=True)
@@ -112,6 +114,12 @@ def populate_source(source: Path, fixture: Path) -> None:
     (source / "files/long/utf8-long.txt").write_bytes(b"utf8\n")
     (source / "files/long/long-name-abcdefghijklmnopqrstuvwxyz.txt").write_bytes(b"long\n")
     (source / ".np2-staging/.keep").write_bytes(b"staging\n")
+    if high_address_prefill_bytes:
+        prefill = source / HIGH_ADDRESS_PREFILL_PATH
+        prefill.parent.mkdir(parents=True)
+        # Keep the filler outside /persist/files and use a byte pattern that
+        # cannot contain either Step-6A high-address marker.
+        prefill.write_bytes(b"\xa5" * high_address_prefill_bytes)
 
 
 def measure_fat_image(image: Path) -> dict[str, int | str]:
@@ -183,6 +191,12 @@ def main() -> int:
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--verify-state", type=Path)
+    parser.add_argument(
+        "--high-address-prefill-bytes",
+        type=int,
+        default=0,
+        help="temporary private FATFS filler size for bounded high-address tests",
+    )
     parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
     parser.add_argument(
         "--minimum-offset",
@@ -191,6 +205,8 @@ def main() -> int:
         help="minimum physical marker offset (accepts decimal or 0x-prefixed hex)",
     )
     args = parser.parse_args()
+    if args.high_address_prefill_bytes < 0:
+        parser.error("--high-address-prefill-bytes must be non-negative")
 
     repository_root = args.repository_root.resolve()
     build_dir = args.build_dir.resolve()
@@ -212,7 +228,13 @@ def main() -> int:
         temporary_path = Path(temporary)
         source = temporary_path / "source"
         source.mkdir()
-        populate_source(source, fixture)
+        populate_source(source, fixture, args.high_address_prefill_bytes)
+        if args.high_address_prefill_bytes:
+            print(
+                "STORAGEFATFS_HIGH_ADDRESS_PREFILL "
+                f"bytes={args.high_address_prefill_bytes} "
+                f"path={HIGH_ADDRESS_PREFILL_PATH}"
+            )
         storage_image = temporary_path / "storage.bin"
         generator = idf_path / "components/fatfs/wl_fatfsgen.py"
         generator_command = [

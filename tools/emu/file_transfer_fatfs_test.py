@@ -20,6 +20,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 LARGE_FILE_BYTES = 512 * 1024
 REPLACEMENT_FILE_BYTES = 256 * 1024
 PERSISTENCE_FILE_BYTES = 256 * 1024
+HIGH_ADDRESS_FILE_BYTES = 64 * 1024
 HIGH_ADDRESS_MARKER = b"STEP6A2-FATFS-FILE-TRANSFER-HIGH-ADDRESS-v1"
 HIGH_ADDRESS_OFFSET = 1024 * 1024
 READY_MARKER = wire.READY_MARKER
@@ -187,6 +188,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         choices=("basic", "large", "matrix", "nospace", "nospace-preloaded",
+                 "high-address-write",
                  "replacement", "persistence-write", "persistence-read"),
         required=True,
     )
@@ -209,6 +211,14 @@ def parse_args() -> argparse.Namespace:
         help="persistence payload size in bytes (default: 262144)",
     )
     parser.add_argument("--save-state", action="store_true")
+    parser.add_argument("--verify-state", type=Path)
+    parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
+    parser.add_argument(
+        "--minimum-offset",
+        type=lambda value: int(value, 0),
+        default=0x400000,
+        help="minimum physical marker offset for high-address-write",
+    )
     parser.add_argument(
         "--esp-emu",
         default=os.environ.get("ESP_EMU", str(Path.home() / ".local/bin/esp-emu")),
@@ -228,6 +238,13 @@ def parse_args() -> argparse.Namespace:
         parser.error("--save-state is required for persistence-write")
     if args.mode == "persistence-read" and args.save_state:
         parser.error("--save-state is only valid for persistence-write")
+    if args.mode == "high-address-write":
+        if not args.save_state:
+            parser.error("--save-state is required for high-address-write")
+        if args.verify_state is None:
+            args.verify_state = args.firmware
+    elif args.verify_state is not None:
+        parser.error("--verify-state is only valid for high-address-write")
     bounded_mode = args.mode not in ("matrix", "nospace")
     args.emulator_timeout = "600s" if bounded_mode else "3600s"
     args.process_timeout = 620.0 if bounded_mode else 3620.0
@@ -237,15 +254,17 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def payload(size: int, salt: int = 0, high_address_marker: bool = False) -> bytes:
+def payload(size: int, salt: int = 0, high_address_marker: bool = False,
+            marker_offset: int | None = None) -> bytes:
     value = bytearray(
         (index * 73 + (index >> 8) * 19 + salt * 17 + (index >> 16) * 11) & 0xFF
         for index in range(size)
     )
     if high_address_marker:
-        if HIGH_ADDRESS_OFFSET + len(HIGH_ADDRESS_MARKER) > size:
+        offset = HIGH_ADDRESS_OFFSET if marker_offset is None else marker_offset
+        if offset < 0 or offset + len(HIGH_ADDRESS_MARKER) > size:
             raise AssertionError("high-address marker does not fit in payload")
-        value[HIGH_ADDRESS_OFFSET : HIGH_ADDRESS_OFFSET + len(HIGH_ADDRESS_MARKER)] = HIGH_ADDRESS_MARKER
+        value[offset : offset + len(HIGH_ADDRESS_MARKER)] = HIGH_ADDRESS_MARKER
     return bytes(value)
 
 
@@ -309,17 +328,16 @@ def list_all(emu: wire.Emulator, request_id: int, path: str,
             raise AssertionError(f"missing continuation cursor: {page}")
 
 
-def staging_snapshot(emu: wire.Emulator, request_id: int) -> tuple[str, ...]:
+def require_staging_namespace_hidden(emu: wire.Emulator, request_id: int) -> None:
     response = send_request(emu, request_id, "file.stat", {"path": "/.np2-staging"})
     if response.get("ok") is not True:
         if response.get("error", {}).get("code") == "NOT_FOUND":
-            return ("<absent>",)
+            return
         raise AssertionError(f"staging stat failed: {response}")
-    result = wire.require_response(response, request_id)
-    if result.get("type") != "directory":
-        raise AssertionError(f"staging path is not a directory: {result}")
-    names, _ = list_all(emu, request_id + 1, "/.np2-staging", limit=16)
-    return tuple(names)
+    raise AssertionError(
+        "private staging namespace is visible through File Transfer: "
+        f"{response}"
+    )
 
 
 def begin_write(emu: wire.Emulator, request_id: int, path: str, size: int,
@@ -771,10 +789,12 @@ def run_nospace(emu: wire.Emulator) -> None:
     root = require_response(emu, 401, "file.stat", {"path": "/"})
     if root.get("type") != "directory":
         raise AssertionError(f"post-NO_SPACE root stat failed: {root}")
+    require_staging_namespace_hidden(emu, 402)
     print(
         "FATFS_FILE_TRANSFER_NOSPACE=PASS "
         f"failed_size={failure_size} error={failure_code} "
-        f"committed={len(committed)} endpoint_idle=1 staging_cleanup_evidence=1"
+        f"committed={len(committed)} endpoint_idle=1 endpoint_recoverable=1 "
+        "staging_namespace_hidden=1"
     )
 
 
@@ -786,7 +806,7 @@ def run_nospace_preloaded(emu: wire.Emulator) -> None:
     if (prefilled.get("type") != "file" or
             prefilled.get("size_bytes") != 4 * 1024 * 1024):
         raise AssertionError(f"prefilled capacity fixture is missing: {prefilled}")
-    staging_before = staging_snapshot(emu, 198)
+    require_staging_namespace_hidden(emu, 198)
     prefilled_before = bytearray()
     check_download(emu, 205, "/upload/prefill.bin", None, 0, 4096, prefilled_before)
     response = send_request(emu, 200, "file.write.begin", {
@@ -809,17 +829,14 @@ def run_nospace_preloaded(emu: wire.Emulator) -> None:
     check_download(emu, 207, "/upload/prefill.bin", None, 0, 4096, prefilled_after)
     if prefilled_before != prefilled_after:
         raise AssertionError("prefilled file bytes changed after NO_SPACE")
-    staging_after = staging_snapshot(emu, 206)
-    if staging_before != staging_after:
-        raise AssertionError(
-            f"staging directory changed after NO_SPACE: before={staging_before} after={staging_after}"
-        )
+    require_staging_namespace_hidden(emu, 206)
     if require_response(emu, 202, "system.ping") != {"pong": True}:
         raise AssertionError("post-NO_SPACE preloaded ping failed")
     print(
         "FATFS_FILE_TRANSFER_NOSPACE=PASS "
         f"failed_size={failed_size} error=NO_SPACE committed=preloaded "
-        "preexisting_intact=1 endpoint_idle=1 staging_cleanup_evidence=1"
+        "preexisting_intact=1 endpoint_idle=1 endpoint_recoverable=1 "
+        "staging_namespace_hidden=1"
     )
 
 
@@ -869,6 +886,25 @@ def run_persistence_read(emu: wire.Emulator, size: int) -> None:
     )
 
 
+def run_high_address_write(emu: wire.Emulator) -> None:
+    require_file_transfer_capability(emu)
+    data = payload(
+        HIGH_ADDRESS_FILE_BYTES,
+        113,
+        high_address_marker=True,
+        marker_offset=0,
+    )
+    path = "/upload/step6a2-high-address.bin"
+    transfer_id = check_upload(emu, 1000, path, data)
+    if transfer_id is None:
+        raise AssertionError("high-address upload was synchronous")
+    check_download(emu, 1002, path, data)
+    print(
+        "FATFS_FILE_TRANSFER_HIGH_ADDRESS "
+        f"upload_size={len(data)} sha256={digest(data)} readback=PASS"
+    )
+
+
 def main() -> int:
     global ACTIVE_OBSERVER
     args = parse_args()
@@ -886,6 +922,7 @@ def main() -> int:
             "replacement": args.replacement_size,
             "persistence-write": args.persistence_size,
             "persistence-read": args.persistence_size,
+            "high-address-write": HIGH_ADDRESS_FILE_BYTES,
         }.get(args.mode, 0))
         if args.mode == "basic":
             run_basic(emu)
@@ -897,6 +934,8 @@ def main() -> int:
             run_nospace(emu)
         elif args.mode == "nospace-preloaded":
             run_nospace_preloaded(emu)
+        elif args.mode == "high-address-write":
+            run_high_address_write(emu)
         elif args.mode == "replacement":
             run_replacement(emu, args.replacement_size)
         elif args.mode == "persistence-write":
@@ -930,6 +969,22 @@ def main() -> int:
         ACTIVE_OBSERVER = None
         print(f"ERROR: esp-emu exit status was {exit_status}", file=sys.stderr)
         return 1
+    if args.mode == "high-address-write":
+        try:
+            import build_storage_fatfs_flash as flash_builder
+            flash_builder.verify_high_address_state(
+                args.verify_state.resolve(), args.marker, args.minimum_offset
+            )
+        except SystemExit as exc:
+            observer.summary("FAIL")
+            ACTIVE_OBSERVER = None
+            print(f"ERROR: high-address verification failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            "FATFS_FILE_TRANSFER_HIGH_ADDRESS=PASS "
+            f"save_state=PASS marker={args.marker} "
+            f"minimum_offset=0x{args.minimum_offset:x}"
+        )
     observer.summary("PASS")
     ACTIVE_OBSERVER = None
     print(f"PASS: FATFS FILE TRANSFER {args.mode} OK")
