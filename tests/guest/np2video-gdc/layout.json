@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "name": "np2video-gdc",
+  "fixture": {
+    "id": "np2video-7a3d-gdc",
+    "scene_id": 3,
+    "description": "640x400 deterministic GDC VECTL analog 16-color reference scene"
+  },
+  "image": {
+    "format": "raw",
+    "extension": ".hdm",
+    "geometry": {
+      "cylinders": 77,
+      "heads": 2,
+      "sectors_per_track": 8,
+      "bytes_per_sector": 1024
+    },
+    "size_bytes": 1261568,
+    "d88_required": false
+  },
+  "ipl": {
+    "implemented": true,
+    "source": "src/ipl.asm",
+    "binary_size": 1024,
+    "sector_offset": 0,
+    "sector_bytes": 1024,
+    "load_physical": 130048,
+    "entry": {"cs": 8128, "ip": 0},
+    "signatures": [
+      {"offset": 510, "bytes": "55aa"},
+      {"offset": 1022, "bytes": "55aa"}
+    ]
+  },
+  "payload": {
+    "implemented": true,
+    "source": "src/stage2.asm",
+    "format": "flat-16-bit",
+    "disk_offset": 1024,
+    "sector_offset": 1,
+    "max_size_bytes": 32768,
+    "max_sector_count": 32,
+    "load_physical": 131072,
+    "load_segment": 8192,
+    "entry_offset": 8,
+    "header_size": 8,
+    "padding": "zero"
+  },
+  "control_block": {
+    "protocol": "NP2V",
+    "version": 1,
+    "physical_address": 172032,
+    "size_bytes": 32,
+    "state_offset": 31,
+    "state_written_last": true,
+    "states": {
+      "BOOTING": 1,
+      "PROGRAMMING_VIDEO": 2,
+      "SCENE_READY": 3,
+      "ERROR": 4
+    }
+  },
+  "mode_setup": {
+    "int18_sequence": [
+      {"ah": "0a", "al": "00"},
+      {"ah": "42", "ch": "c0"},
+      {"ah": "0d", "description": "disable text display"},
+      {"ah": "40", "description": "enable graphics display"}
+    ],
+    "analog_16_port": "006a",
+    "analog_16_value": 1,
+    "display_page_port": "00a4",
+    "access_page_port": "00a6",
+    "page": 0
+  },
+  "palette": {
+    "encoding": "GRB-nibble-word",
+    "ports": {"index": "00a8", "green": "00aa", "red": "00ac", "blue": "00ae"},
+    "entries": [
+      "000", "007", "070", "077", "700", "707", "770", "777",
+      "444", "00f", "0f0", "0ff", "f00", "f0f", "ff0", "fff"
+    ]
+  },
+  "gdc": {
+    "ports": {"status_data": "00a0", "command": "00a2", "display_page": "00a4", "access_page": "00a6"},
+    "status_bits": {"busy": "0x08", "fifo_empty": "0x04", "fifo_full": "0x02"},
+    "commands": {"SET": "0x2b", "CSRW": "0x49", "VECTW": "0x4c", "VECTE": "0x6c", "TEXTW": "0x78"},
+    "operation": {"command": "0x2b", "name": "SET", "persistent": true},
+    "textw": {"command": "0x78", "bytes": [255, 255, 0, 0, 0, 0, 0, 0]},
+    "plane_selectors": {"0": "E", "1": "B", "2": "R", "3": "G"},
+    "palette_bits": {"B": 0, "R": 1, "G": 2, "E": 3},
+    "csrw": "word=y*40+(x>>4), plane=(csrw>>14)&3, bit=x&0xf",
+    "vectw": {
+      "fields": ["ope", "DC", "D", "D2", "D1", "DM"],
+      "normal_values": "DC=major,D=minor-major,D2=minor-2*major,D1=2*minor,DM=0"
+    },
+    "draw_operation": "VECTL",
+    "forbidden_operations": ["VECTR", "VECTC", "VECTT", "TEXT", "GRCG", "EGC"]
+  },
+  "graphics_vram": {
+    "display_page": 0,
+    "access_page": 0,
+    "planes": {
+      "B": {"window": "a8000", "index_bit": 0},
+      "R": {"window": "b0000", "index_bit": 1},
+      "G": {"window": "b8000", "index_bit": 2},
+      "E": {"window": "e0000", "index_bit": 3}
+    },
+    "bytes_per_row": 80,
+    "pixels_per_byte": 8,
+    "bit_order": "bit7-leftmost",
+    "clear": "all four page-0 planes, 32768 bytes each"
+  },
+  "scene": {
+    "width": 640,
+    "height": 400,
+    "pixel_format": "indexed-analog-16",
+    "graphics": true,
+    "gdc_commands": true,
+    "text": false,
+    "cursor": "hidden",
+    "fill": false,
+    "primitive": "VECTL",
+    "lines": [
+      {"name": "frame-top", "from": [8, 8], "to": [631, 8], "color": 15, "ope": "0x0a", "DC": 623, "D": -623, "D2": -1246, "D1": 0, "DM": 0},
+      {"name": "frame-right", "from": [631, 8], "to": [631, 391], "color": 15, "ope": "0x0f", "DC": 383, "D": -383, "D2": -766, "D1": 0, "DM": 0},
+      {"name": "frame-bottom", "from": [631, 391], "to": [8, 391], "color": 15, "ope": "0x0e", "DC": 623, "D": -623, "D2": -1246, "D1": 0, "DM": 0},
+      {"name": "frame-left", "from": [8, 391], "to": [8, 8], "color": 15, "ope": "0x0b", "DC": 383, "D": -383, "D2": -766, "D1": 0, "DM": 0},
+      {"name": "blue-horizontal", "from": [37, 56], "to": [230, 56], "color": 1, "ope": "0x0a", "DC": 193, "D": -193, "D2": -386, "D1": 0, "DM": 0},
+      {"name": "red-reverse-horizontal", "from": [602, 88], "to": [397, 88], "color": 2, "ope": "0x0e", "DC": 205, "D": -205, "D2": -410, "D1": 0, "DM": 0},
+      {"name": "green-down", "from": [73, 120], "to": [73, 300], "color": 4, "ope": "0x0f", "DC": 180, "D": -180, "D2": -360, "D1": 0, "DM": 0},
+      {"name": "gray-up", "from": [559, 322], "to": [559, 154], "color": 8, "ope": "0x0b", "DC": 168, "D": -168, "D2": -336, "D1": 0, "DM": 0},
+      {"name": "magenta-diagonal", "from": [100, 260], "to": [240, 345], "color": 11, "ope": "0x09", "DC": 140, "D": 30, "D2": -110, "D1": 170, "DM": 0},
+      {"name": "cyan-diagonal", "from": [550, 330], "to": [390, 230], "color": 13, "ope": "0x0d", "DC": 160, "D": 40, "D2": -120, "D1": 200, "DM": 0},
+      {"name": "yellow-top", "from": [270, 120], "to": [460, 120], "color": 14, "ope": "0x0a", "DC": 190, "D": -190, "D2": -380, "D1": 0, "DM": 0},
+      {"name": "yellow-right", "from": [460, 120], "to": [460, 200], "color": 14, "ope": "0x0f", "DC": 80, "D": -80, "D2": -160, "D1": 0, "DM": 0},
+      {"name": "yellow-bottom", "from": [460, 200], "to": [270, 200], "color": 14, "ope": "0x0e", "DC": 190, "D": -190, "D2": -380, "D1": 0, "DM": 0},
+      {"name": "yellow-left", "from": [270, 200], "to": [270, 120], "color": 14, "ope": "0x0b", "DC": 80, "D": -80, "D2": -160, "D1": 0, "DM": 0}
+    ]
+  },
+  "memory": {
+    "address_space": {"start": 0, "size_bytes": 1048576},
+    "excluded_ranges": [
+      {"name": "pc98-low-bios-data", "start": 0, "size_bytes": 4096},
+      {"name": "pc98-text-vram", "start": 655360, "size_bytes": 32768},
+      {"name": "pc98-graphics-vram-b-r-g", "start": 688128, "size_bytes": 98304},
+      {"name": "pc98-graphics-vram-e", "start": 917504, "size_bytes": 32768},
+      {"name": "pc98-bios-firmware", "start": 950272, "size_bytes": 98304}
+    ],
+    "owned_regions": [
+      {"name": "ipl", "kind": "ipl", "start": 130048, "size_bytes": 1024, "alignment": 1024},
+      {"name": "payload-reserve", "kind": "payload", "start": 131072, "size_bytes": 32768, "alignment": 1024},
+      {"name": "stack", "kind": "stack", "start": 163840, "size_bytes": 4096, "alignment": 16},
+      {"name": "video-control", "kind": "control", "start": 172032, "size_bytes": 32, "alignment": 16}
+    ]
+  }
+}

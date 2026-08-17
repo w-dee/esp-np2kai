@@ -58,6 +58,8 @@ VIDEO_RUNNER_SUPERVISOR := $(CURDIR)/tests/run_video_runner.py
 VIDEO_RUNNER_BMP := $(BUILD_DIR)/runner/np2video-reference.bmp
 VIDEO_RUNNER_GFX_FIXTURE := $(abspath $(CURDIR)/../build/guest/np2video-gfx-vram/np2video-gfx-vram-fd1232.image)
 VIDEO_RUNNER_GFX_BMP := $(BUILD_DIR)/runner/np2video-gfx-vram-reference.bmp
+VIDEO_RUNNER_GDC_FIXTURE := $(abspath $(CURDIR)/../build/guest/np2video-gdc/np2video-gdc-fd1232.image)
+VIDEO_RUNNER_GDC_BMP := $(BUILD_DIR)/runner/np2video-gdc-reference.bmp
 VIDEO_CONTROL_SOURCE := $(CURDIR)/runner/video_control_v1.c
 VIDEO_CONTROL_OBJECT := $(BUILD_DIR)/runner/video_control_v1.o
 VIDEO_CONTROL_DEPENDENCY := $(BUILD_DIR)/runner/video_control_v1.d
@@ -70,6 +72,7 @@ NP2_SHA256_TEST_SOURCE := $(CURDIR)/tests/np2_sha256_test.c
 NP2_SHA256_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_sha256_test
 VIDEO_BMP_VALIDATOR := $(CURDIR)/tests/validate_video_bmp.py
 VIDEO_GFX_BMP_VALIDATOR := $(HOST_ROOT)/tools/guest/test_np2video_gfx_vram_bmp.py
+VIDEO_GDC_BMP_VALIDATOR := $(HOST_ROOT)/tools/guest/test_np2video_gdc_bmp.py
 VIDEO_CLI_TEST := $(CURDIR)/tests/test_video_runner_cli.py
 VIDEO_GOLDEN_DESCRIPTOR := $(abspath $(CURDIR)/../tests/guest/np2video/golden.json)
 VIDEO_GFX_GOLDEN_DESCRIPTOR := $(abspath $(CURDIR)/../tests/guest/np2video-gfx-vram/golden.json)
@@ -146,7 +149,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -339,6 +342,23 @@ test-video-runner-gfx-vram-reference-bmp: video-runner
 		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_GFX_FIXTURE)"
 	@$(PYTHON) "$(VIDEO_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GFX_BMP)"
 	@$(PYTHON) "$(VIDEO_GFX_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GFX_BMP)"
+
+test-video-gdc-reference: video-runner
+	@$(MAKE) --no-print-directory -C "$(CURDIR)/../tests/guest/np2video-gdc" image
+	@$(PYTHON) "$(VIDEO_RUNNER_SUPERVISOR)" --timeout 30 \
+		--fixture-id np2video-7a3d-gdc --scene-id 3 \
+		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_GDC_FIXTURE)"
+	@printf '%s\n' 'NP2VIDEO_GDC_RESULT=REFERENCE_READY'
+
+test-video-gdc-reference-bmp: video-runner
+	@$(MAKE) --no-print-directory -C "$(CURDIR)/../tests/guest/np2video-gdc" image
+	@$(PYTHON) "$(VIDEO_RUNNER_SUPERVISOR)" --timeout 30 \
+		--fixture-id np2video-7a3d-gdc --scene-id 3 \
+		--dump-framebuffer "$(VIDEO_RUNNER_GDC_BMP)" \
+		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_GDC_FIXTURE)"
+	@$(PYTHON) "$(VIDEO_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GDC_BMP)"
+	@$(PYTHON) "$(VIDEO_GDC_BMP_VALIDATOR)" "$(VIDEO_RUNNER_GDC_BMP)"
+	@printf '%s\n' 'NP2VIDEO_GDC_RESULT=REFERENCE_READY'
 
 test-video-runner-cli: video-runner
 	@$(PYTHON) "$(VIDEO_CLI_TEST)" "$(VIDEO_RUNNER_OUTPUT)"

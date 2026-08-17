@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 from typing import Any, Iterable
@@ -25,6 +26,8 @@ STAGE2_HEADER_SIZE = 8
 CONTROL_PHYSICAL = 0x2A000
 CONTROL_SIZE = 32
 STACK_PHYSICAL = 0x28000
+PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+FIXTURE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,63}$")
 
 
 class FixtureError(Exception):
@@ -49,8 +52,12 @@ def _load_layout(path: pathlib.Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise FixtureError(f"cannot read layout: {error}") from error
 
-    if root.get("schema_version") != 1 or root.get("name") != "np2video-gfx-vram":
-        raise FixtureError("layout identity is not np2video-gfx-vram schema v1")
+    if root.get("schema_version") != 1:
+        raise FixtureError("layout schema_version must be 1")
+    project_name = root.get("name")
+    if (not isinstance(project_name, str) or
+            PROJECT_NAME_PATTERN.fullmatch(project_name) is None):
+        raise FixtureError("layout.name must be a non-empty ASCII project name")
     image = _mapping(root.get("image"), "image")
     geometry = _mapping(image.get("geometry"), "image.geometry")
     if image.get("format") != "raw" or image.get("extension") != ".hdm":
@@ -66,10 +73,13 @@ def _load_layout(path: pathlib.Path) -> dict[str, Any]:
         raise FixtureError("image geometry does not match the NP2kai 2HD HDM profile")
 
     fixture = _mapping(root.get("fixture"), "fixture")
-    if not isinstance(fixture.get("id"), str) or not fixture["id"]:
-        raise FixtureError("fixture.id must be a non-empty string")
-    if _integer(fixture.get("scene_id"), "fixture.scene_id") != 2:
-        raise FixtureError("fixture.scene_id must be 2")
+    fixture_id = fixture.get("id")
+    if not isinstance(fixture_id, str) or FIXTURE_ID_PATTERN.fullmatch(fixture_id) is None:
+        raise FixtureError(
+            "fixture.id must contain 1..63 ASCII letters, digits, '.', '_' or '-'")
+    scene_id = _integer(fixture.get("scene_id"), "fixture.scene_id")
+    if not 1 <= scene_id <= 65535:
+        raise FixtureError("fixture.scene_id must be a positive uint16")
 
     ipl = _mapping(root.get("ipl"), "ipl")
     if (
