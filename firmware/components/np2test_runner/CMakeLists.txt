@@ -23,6 +23,7 @@ idf_component_register(
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SUPPORT_KAI_IMAGES
     SUPPORT_FAST_MEMORYCHECK
+    SUPPORT_16BPP
     BYTESEX_LITTLE
     OSLANG_UTF8
     SUPPORT_UTF8

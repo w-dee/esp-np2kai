@@ -82,6 +82,7 @@ PROBE_DEFINES := \
 	DISABLE_SOUND \
 	SUPPORT_KAI_IMAGES \
 	SUPPORT_FAST_MEMORYCHECK \
+	SUPPORT_16BPP \
 	BYTESEX_LITTLE \
 	OSLANG_UTF8 \
 	SUPPORT_UTF8
@@ -323,10 +324,11 @@ test-headless-scrnmng:
 	@mkdir -p "$(dir $(HEADLESS_SCRNMNG_TEST_OUTPUT))"
 	@$(CC) -std=c11 -Wall -Wextra -Werror -DBYTESEX_LITTLE \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
-		"$(HEADLESS_SCRNMNG_SOURCE)" "$(HEADLESS_SCRNMNG_TEST_SOURCE)" \
+		"$(HEADLESS_SCRNMNG_SOURCE)" "$(CURDIR)/backend/headless/scrnmng_storage.c" \
+		"$(HEADLESS_SCRNMNG_TEST_SOURCE)" \
 		-o "$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
-	@printf '%s\n' 'Headless scrnmng backend test passed (NULL-surface contract).'
+	@printf '%s\n' 'Headless scrnmng backend test passed (persistent RGB565 surface contract).'
 
 test-headless-commng:
 	@mkdir -p "$(dir $(HEADLESS_COMMNG_TEST_OUTPUT))"

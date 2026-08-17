@@ -15,6 +15,7 @@
 #include <cpucore.h>
 #include <diskimage/fddfile.h>
 #include <pccore.h>
+#include <scrnmng.h>
 
 #include <execution_controller.h>
 #include <result_v1_parser.h>
@@ -99,6 +100,28 @@ static void np2test_emit_heap(np2test_runner_task_config *state,
                  (i286core.e.ext != NULL &&
                   esp_ptr_external_ram(i286core.e.ext)) ? 1 : 0,
                  (unsigned long)esp_psram_get_size(),
+                 (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
+
+static void np2test_emit_framebuffer(np2test_runner_task_config *state,
+                                     const char *phase)
+{
+    SCRNMNG_STATUS status;
+
+    scrnmng_getstatus(&status);
+    np2test_emit(state,
+                 "%s_FRAMEBUFFER phase=%s width=%d height=%d "
+                 "requested_width=%d requested_height=%d bytes=%lu "
+                 "initialized=%d failed=%d external=%d free_spiram=%lu "
+                 "largest_spiram=%lu\n",
+                 np2test_namespace(state->config.profile), phase,
+                 status.width, status.height,
+                 status.requested_width, status.requested_height,
+                 (unsigned long)status.bytes,
+                 status.initialized ? 1 : 0,
+                 status.failed ? 1 : 0,
+                 status.external ? 1 : 0,
                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 }
@@ -322,6 +345,15 @@ static void np2test_task(void *argument)
                      np2test_namespace(state->config.profile));
         goto runner_cleanup;
     }
+    np2test_emit_framebuffer(state, "before");
+    if (!scrnmng_initialize()) {
+        np2test_emit_framebuffer(state, "failure");
+        np2test_emit(state,
+                     "%s_RESULT=HARNESS_ERROR reason=framebuffer_allocation\n",
+                     np2test_namespace(state->config.profile));
+        goto runner_cleanup;
+    }
+    np2test_emit_framebuffer(state, "after");
     if (np2_fixture_attach_fdd(&fixture) != ESP_OK) {
         np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=fdd_attach\n",
                      np2test_namespace(state->config.profile));
@@ -340,6 +372,13 @@ static void np2test_task(void *argument)
     np2_execution_controller_init(&controller);
     while (outcome == NP2_EXECUTION_CONTINUE) {
         pccore_exec(FALSE);
+        if (scrnmng_haserror()) {
+            np2test_emit_framebuffer(state, "failure");
+            np2test_emit(state,
+                         "%s_RESULT=HARNESS_ERROR reason=framebuffer_resize\n",
+                         np2test_namespace(state->config.profile));
+            goto runner_cleanup;
+        }
         memcpy(snapshot, mem + NP2_RESULT_PHYSICAL_ADDRESS,
                sizeof(snapshot));
         have_snapshot = true;
@@ -365,6 +404,7 @@ runner_cleanup:
     if (core_initialized) {
         pccore_term();
     }
+    scrnmng_shutdown();
     np2_fixture_release(&fixture);
 
 runner_done:

@@ -19,5 +19,6 @@ host/backend/headless/dosio.c
 host/backend/headless/fontmng.c
 # stage: headless-screen
 host/backend/headless/scrnmng.c
+host/backend/headless/scrnmng_storage.c
 # stage: headless-communication
 host/backend/headless/commng.c

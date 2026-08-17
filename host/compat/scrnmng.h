@@ -1,6 +1,8 @@
 #ifndef NP2_HOST_SCRNMNG_H
 #define NP2_HOST_SCRNMNG_H
 
+#include <stddef.h>
+
 typedef struct {
     UINT8 *ptr;
     int xalign;
@@ -11,10 +13,25 @@ typedef struct {
     int extend;
 } SCRNSURF;
 
+typedef struct {
+    int width;
+    int height;
+    int requested_width;
+    int requested_height;
+    size_t bytes;
+    BOOL initialized;
+    BOOL failed;
+    BOOL external;
+} SCRNMNG_STATUS;
+
 const SCRNSURF *scrnmng_surflock(void);
 void scrnmng_surfunlock(const SCRNSURF *surf);
 void scrnmng_setwidth(int posx, int width);
 void scrnmng_setheight(int posy, int height);
+BOOL scrnmng_initialize(void);
+void scrnmng_shutdown(void);
+BOOL scrnmng_haserror(void);
+void scrnmng_getstatus(SCRNMNG_STATUS *status);
 void scrnmng_update(void);
 RGB16 scrnmng_makepal16(RGB32 pal32);
 

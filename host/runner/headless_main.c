@@ -6,6 +6,7 @@
 
 #include <cpumem.h>
 #include <diskimage/fddfile.h>
+#include <scrnmng.h>
 
 #include <execution_controller.h>
 #include <taskmng_control.h>
@@ -89,6 +90,16 @@ static void print_counter_diagnostics(
 			(unsigned)controller->pre_running_slices);
 	fprintf(stderr, "NP2TEST_RUNNING_SLICES=%u\n",
 			(unsigned)controller->running_slices);
+}
+
+static void print_framebuffer_failure(void)
+{
+	SCRNMNG_STATUS status;
+
+	scrnmng_getstatus(&status);
+	fprintf(stderr,
+			"headless_runner: framebuffer failure requested=%dx%d bytes=%zu\n",
+			status.requested_width, status.requested_height, status.bytes);
 }
 
 static void print_execution_diagnostics(
@@ -251,6 +262,10 @@ int main(int argc, char **argv)
 	pccore_init();
 	core_initialized = 1;
 	pccore_reset();
+	if (!scrnmng_initialize()) {
+		print_framebuffer_failure();
+		goto core_cleanup;
+	}
 
 	if (fdd_set(0, canonical_path, FTYPE_NONE, 1) != SUCCESS) {
 		fprintf(stderr, "headless_runner: FDD attach failed\n");
@@ -282,6 +297,10 @@ int main(int argc, char **argv)
 	outcome = NP2_EXECUTION_CONTINUE;
 	while (outcome == NP2_EXECUTION_CONTINUE) {
 		pccore_exec(FALSE);
+		if (scrnmng_haserror()) {
+			print_framebuffer_failure();
+			goto core_cleanup;
+		}
 		memcpy(snapshot, mem + RESULT_PHYSICAL_ADDRESS, sizeof(snapshot));
 		have_snapshot = 1;
 		observation = np2_result_v1_parse(snapshot, sizeof(snapshot), &parsed);
@@ -296,6 +315,7 @@ core_cleanup:
 	if (core_initialized) {
 		pccore_term();
 	}
+	scrnmng_shutdown();
 	if (temp_dir && chdir("/") != 0) {
 		fprintf(stderr, "headless_runner: cannot leave isolated CWD\n");
 		cleanup_failed = 1;
