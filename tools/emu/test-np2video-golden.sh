@@ -25,6 +25,52 @@ fail() {
     exit 1
 }
 
+usage() {
+    printf 'usage: %s [--fixture text|gfx-vram]\n' "${BASH_SOURCE[0]}"
+}
+
+fixture_kind=text
+while (($# > 0)); do
+    case "$1" in
+        --fixture)
+            if (($# < 2)); then
+                usage >&2
+                exit 2
+            fi
+            fixture_kind="$2"
+            shift 2
+            ;;
+        --fixture=*)
+            fixture_kind="${1#*=}"
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "${fixture_kind}" in
+    text)
+        readonly FIXTURE_DESCRIPTOR="${REPOSITORY_ROOT}/tests/guest/np2video/golden.json"
+        readonly FIXTURE_LAYOUT="${REPOSITORY_ROOT}/tests/guest/np2video/layout.json"
+        readonly FIXTURE_BUILDER="${REPOSITORY_ROOT}/tools/guest/build_np2video.py"
+        ;;
+    gfx-vram)
+        readonly FIXTURE_DESCRIPTOR="${REPOSITORY_ROOT}/tests/guest/np2video-gfx-vram/golden.json"
+        readonly FIXTURE_LAYOUT="${REPOSITORY_ROOT}/tests/guest/np2video-gfx-vram/layout.json"
+        readonly FIXTURE_BUILDER="${REPOSITORY_ROOT}/tools/guest/build_np2video_stage2.py"
+        ;;
+    *)
+        fail "unsupported fixture: ${fixture_kind}"
+        ;;
+esac
+
 if [[ -e "${BUILD_DIR}" ]]; then
     fail "video build directory is not fresh: ${BUILD_DIR}"
 fi
@@ -46,11 +92,11 @@ printf '%s\n' "${emu_version_line}"
 
 mkdir -p "${FIXTURE_DIR}"
 mkdir -p "$(dirname -- "${BOOTSTRAP_HEADER}")"
-python3 "${REPOSITORY_ROOT}/tools/guest/build_np2video.py" \
-    --layout "${REPOSITORY_ROOT}/tests/guest/np2video/layout.json" \
+python3 "${FIXTURE_BUILDER}" \
+    --layout "${FIXTURE_LAYOUT}" \
     --output "${FIXTURE_IMAGE}"
 python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
-    --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+    --descriptor "${FIXTURE_DESCRIPTOR}" \
     --output "${BOOTSTRAP_HEADER}"
 export NP2VIDEO_GOLDEN_HEADER="${BOOTSTRAP_HEADER}"
 
@@ -64,7 +110,7 @@ idf.py -B "${BUILD_DIR}" \
 check_firmware_sdkconfig "${SDKCONFIG_PATH}"
 mkdir -p "${GENERATED_DIR}"
 python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
-    --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+    --descriptor "${FIXTURE_DESCRIPTOR}" \
     --output "${GOLDEN_HEADER}"
 export NP2VIDEO_GOLDEN_HEADER="${GOLDEN_HEADER}"
 idf.py -B "${BUILD_DIR}" \
@@ -91,7 +137,7 @@ printf 'NP2VIDEO_APP size=%s limit=%s headroom=%s\n' \
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2video_fixture_flash.py" \
     --repository-root "${REPOSITORY_ROOT}" \
     --build-dir "${BUILD_DIR}" \
-    --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+    --descriptor "${FIXTURE_DESCRIPTOR}" \
     --fixture "${FIXTURE_IMAGE}" \
     --output "${MERGED_IMAGE}"
 
@@ -110,9 +156,12 @@ if (( emulator_status != 0 )); then
     fail "esp-emu returned status ${emulator_status}; output: ${EMULATOR_LOG}"
 fi
 python3 "${REPOSITORY_ROOT}/tools/guest/validate_np2video_esp_log.py" \
-    --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+    --descriptor "${FIXTURE_DESCRIPTOR}" \
     --log "${EMULATOR_LOG}" ||
     fail "ESP np2video log validation failed"
 
 printf 'NP2VIDEO_RESULT=PASS\n'
+if [[ "${fixture_kind}" == gfx-vram ]]; then
+    printf 'NP2VIDEO_GFX_VRAM_ESP_GOLDEN_RESULT=PASS\n'
+fi
 printf 'NP2VIDEO_RUN_ROOT=%s\n' "${VIDEO_RUN_ROOT}"

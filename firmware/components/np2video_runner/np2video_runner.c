@@ -152,8 +152,8 @@ static int np2video_has_magic(const uint8_t *bytes)
 static const char *np2video_control_failure(const uint8_t *control_bytes,
                                              np2v_control *control)
 {
-    const np2v_control_status status =
-        np2v_control_parse(control_bytes, NP2V_CONTROL_SIZE, control);
+    const np2v_control_status status = np2v_control_parse_for_scene(
+        control_bytes, NP2V_CONTROL_SIZE, np2video_golden_scene_id, control);
 
     if (status == NP2V_CONTROL_INVALID && !np2video_has_magic(control_bytes)) {
         return NULL;
@@ -253,8 +253,9 @@ static void np2video_task(void *argument)
         goto cleanup;
     }
     np2video_emit(state,
-                  "NP2VIDEO_FIXTURE scene_id=%u fixture_sha256=%s "
+                  "NP2VIDEO_FIXTURE fixture_id=%s scene_id=%u fixture_sha256=%s "
                   "image_bytes=%lu partition=%s\n",
+                  np2video_golden_fixture_id,
                   (unsigned)np2video_golden_scene_id, digest,
                   (unsigned long)np2video_golden_fixture_image_size,
                   NP2_FIXTURE_PARTITION_LABEL);
@@ -288,8 +289,9 @@ static void np2video_task(void *argument)
     }
     scrnmng_get_surface_counters(&ready_generation, &ready_sequence);
     np2video_emit(state,
-                  "NP2VIDEO_READY scene_id=%u state=SCENE_READY "
+                  "NP2VIDEO_READY fixture_id=%s scene_id=%u state=SCENE_READY "
                   "generation=%u surface_update_sequence=%u\n",
+                  np2video_golden_fixture_id,
                   (unsigned)np2video_golden_scene_id,
                   (unsigned)ready_generation,
                   (unsigned)ready_sequence);
@@ -345,11 +347,13 @@ static void np2video_task(void *argument)
 
         scrnmng_getstatus(&status);
         np2video_emit(state,
-                      "NP2VIDEO_FRAMEBUFFER scene_id=%u width=%d height=%d "
+                      "NP2VIDEO_FRAMEBUFFER fixture_id=%s scene_id=%u "
+                      "width=%d height=%d "
                       "bytes=%lu format=rgb565le bpp=%u pitch=%lu "
                       "generation=%u surface_update_sequence=%u "
                       "crc_algorithm=crc32_iso_hdlc crc32=0x%08lx "
                       "storage_external=%d\n",
+                      np2video_golden_fixture_id,
                       (unsigned)np2video_golden_scene_id,
                       final_snapshot.width, final_snapshot.height,
                       (unsigned long)final_snapshot.visible_bytes,

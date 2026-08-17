@@ -11,34 +11,46 @@ from pathlib import Path
 
 def main() -> int:
     root = Path(__file__).resolve().parents[2]
-    descriptor = root / "tests/guest/np2video/golden.json"
+    descriptors = (
+        root / "tests/guest/np2video/golden.json",
+        root / "tests/guest/np2video-gfx-vram/golden.json",
+    )
     generator = root / "tools/guest/generate_np2video_golden_header.py"
-    values = json.loads(descriptor.read_text(encoding="utf-8"))
-    with tempfile.TemporaryDirectory(prefix="np2video-golden-header-") as name:
-        directory = Path(name)
-        first = directory / "first.h"
-        second = directory / "second.h"
-        for output in (first, second):
-            subprocess.run(
-                ["python3", str(generator), "--descriptor", str(descriptor),
-                 "--output", str(output)], check=True,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        first_bytes = first.read_bytes()
-        if first_bytes != second.read_bytes():
-            raise AssertionError("golden header generation is not deterministic")
-        header = first_bytes.decode("ascii")
-        for key in ("scene_id", "image_size", "width", "height", "bpp",
-                    "pitch", "visible_bytes"):
-            token = f"= {values[key]}U;"
-            if token not in header:
-                raise AssertionError(f"generated header is missing {key}")
-        if f"0x{int(values['crc32'], 16):08x}U" not in header:
-            raise AssertionError("generated header is missing crc32")
-        expected_bytes = [
-            f"0x{byte:02x}" for byte in bytes.fromhex(values["fixture_sha256"])
-        ]
-        if not all(byte in header for byte in expected_bytes):
-            raise AssertionError("generated header is missing fixture SHA bytes")
+    for descriptor in descriptors:
+        values = json.loads(descriptor.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory(prefix="np2video-golden-header-") as name:
+            directory = Path(name)
+            first = directory / "first.h"
+            second = directory / "second.h"
+            for output in (first, second):
+                subprocess.run(
+                    ["python3", str(generator), "--descriptor", str(descriptor),
+                     "--output", str(output)], check=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            first_bytes = first.read_bytes()
+            if first_bytes != second.read_bytes():
+                raise AssertionError("golden header generation is not deterministic")
+            header = first_bytes.decode("ascii")
+            expected_fixture = (
+                f'static const char np2video_golden_fixture_id[] = '
+                f'"{values["fixture_id"]}";'
+            )
+            if expected_fixture not in header:
+                raise AssertionError("generated header is missing fixture_id")
+            if "Generated from golden.json" not in header:
+                raise AssertionError("generated header comment is not descriptor-neutral")
+            for key in ("scene_id", "image_size", "width", "height", "bpp",
+                        "pitch", "visible_bytes"):
+                token = f"= {values[key]}U;"
+                if token not in header:
+                    raise AssertionError(f"generated header is missing {key}")
+            if f"0x{int(values['crc32'], 16):08x}U" not in header:
+                raise AssertionError("generated header is missing crc32")
+            expected_bytes = [
+                f"0x{byte:02x}" for byte in bytes.fromhex(values["fixture_sha256"])
+            ]
+            if not all(byte in header for byte in expected_bytes):
+                raise AssertionError("generated header is missing fixture SHA bytes")
     print("np2video golden header test: PASS")
     return 0
 

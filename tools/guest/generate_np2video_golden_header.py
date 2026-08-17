@@ -14,6 +14,9 @@ class GoldenError(ValueError):
     pass
 
 
+FIXTURE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
 def _integer(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise GoldenError(f"{name} must be a non-negative integer")
@@ -30,12 +33,17 @@ def _load(path: Path) -> dict[str, Any]:
     if root.get("schema_version") != 1:
         raise GoldenError("golden schema_version must be 1")
     required = (
-        "scene_id", "fixture_sha256", "image_size", "width", "height", "bpp",
+        "fixture_id", "scene_id", "fixture_sha256", "image_size", "width", "height", "bpp",
         "pitch", "visible_bytes", "pixel_format", "crc_algorithm", "crc32",
     )
     for name in required:
         if name not in root:
             raise GoldenError(f"golden descriptor is missing {name}")
+    fixture_id = root["fixture_id"]
+    if (not isinstance(fixture_id, str) or
+            FIXTURE_ID_PATTERN.fullmatch(fixture_id) is None):
+        raise GoldenError(
+            "fixture_id must contain 1-64 ASCII letters, digits, '.', '_' or '-'")
     digest = root["fixture_sha256"]
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise GoldenError("fixture_sha256 must be 64 lowercase hexadecimal digits")
@@ -51,6 +59,7 @@ def _load(path: Path) -> dict[str, Any]:
         for name in ("scene_id", "image_size", "width", "height", "bpp",
                      "pitch", "visible_bytes")
     }
+    values["fixture_id"] = fixture_id
     values["fixture_sha256"] = digest
     values["crc32"] = int(crc, 16)
     return values
@@ -58,12 +67,13 @@ def _load(path: Path) -> dict[str, Any]:
 
 def _header(values: dict[str, Any]) -> str:
     digest = ", ".join(f"0x{byte:02x}" for byte in bytes.fromhex(values["fixture_sha256"]))
-    return f"""/* Generated from tests/guest/np2video/golden.json; do not edit or commit. */
+    return f"""/* Generated from golden.json; do not edit or commit. */
 #ifndef NP2VIDEO_GOLDEN_H
 #define NP2VIDEO_GOLDEN_H
 
 #include <stdint.h>
 
+static const char np2video_golden_fixture_id[] = "{values["fixture_id"]}";
 static const uint16_t np2video_golden_scene_id = {values["scene_id"]}U;
 static const uint32_t np2video_golden_fixture_image_size = {values["image_size"]}U;
 static const uint8_t np2video_golden_fixture_sha256[32] = {{

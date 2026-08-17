@@ -14,6 +14,9 @@ class ValidationError(ValueError):
     """Raised when an ESP np2video log violates the golden contract."""
 
 
+FIXTURE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
 def _integer(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValidationError(f"{name} must be a non-negative integer")
@@ -29,13 +32,18 @@ def _load_descriptor(path: Path) -> dict[str, Any]:
         raise ValidationError("golden descriptor must be schema v1")
 
     required = (
-        "scene_id", "fixture_sha256", "image_size", "width", "height",
+        "fixture_id", "scene_id", "fixture_sha256", "image_size", "width", "height",
         "pixel_format", "bpp", "pitch", "visible_bytes", "crc_algorithm",
         "crc32", "synchronization",
     )
     missing = [name for name in required if name not in root]
     if missing:
         raise ValidationError(f"golden descriptor is missing {', '.join(missing)}")
+    fixture_id = root["fixture_id"]
+    if (not isinstance(fixture_id, str) or
+            FIXTURE_ID_PATTERN.fullmatch(fixture_id) is None):
+        raise ValidationError(
+            "fixture_id must contain 1-64 ASCII letters, digits, '.', '_' or '-'")
     digest = root["fixture_sha256"]
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValidationError("fixture_sha256 is not lowercase hexadecimal SHA-256")
@@ -58,6 +66,7 @@ def _load_descriptor(path: Path) -> dict[str, Any]:
         )
     }
     values.update({
+        "fixture_id": fixture_id,
         "fixture_sha256": digest,
         "pixel_format": root["pixel_format"],
         "crc_algorithm": root["crc_algorithm"],
@@ -115,10 +124,10 @@ def validate_text(text: str, descriptor: dict[str, Any]) -> None:
     markers = {
         "NP2VIDEO_PROFILE": {"profile", "formal_extmem", "effective_extmem"},
         "NP2VIDEO_MEMORY": {"extmem_mb", "actual_bytes", "ptr_external"},
-        "NP2VIDEO_FIXTURE": {"scene_id", "fixture_sha256", "image_bytes", "partition"},
-        "NP2VIDEO_READY": {"scene_id", "state", "generation", "surface_update_sequence"},
+        "NP2VIDEO_FIXTURE": {"fixture_id", "scene_id", "fixture_sha256", "image_bytes", "partition"},
+        "NP2VIDEO_READY": {"fixture_id", "scene_id", "state", "generation", "surface_update_sequence"},
         "NP2VIDEO_FRAMEBUFFER": {
-            "scene_id", "width", "height", "bytes", "format", "bpp", "pitch",
+            "fixture_id", "scene_id", "width", "height", "bytes", "format", "bpp", "pitch",
             "generation", "surface_update_sequence", "crc_algorithm", "crc32",
             "storage_external",
         },
@@ -170,14 +179,16 @@ def validate_text(text: str, descriptor: dict[str, Any]) -> None:
         raise ValidationError("external EXTMEM evidence is invalid")
 
     fixture = _one(parsed, "NP2VIDEO_FIXTURE")
-    if (_field_int(fixture, "scene_id") != descriptor["scene_id"] or
+    if (fixture["fixture_id"] != descriptor["fixture_id"] or
+            _field_int(fixture, "scene_id") != descriptor["scene_id"] or
             fixture["fixture_sha256"] != descriptor["fixture_sha256"] or
             _field_int(fixture, "image_bytes") != descriptor["image_size"] or
             fixture["partition"] != "np2test"):
         raise ValidationError("fixture identity does not match golden.json")
 
     ready = _one(parsed, "NP2VIDEO_READY")
-    if (_field_int(ready, "scene_id") != descriptor["scene_id"] or
+    if (ready["fixture_id"] != descriptor["fixture_id"] or
+            _field_int(ready, "scene_id") != descriptor["scene_id"] or
             ready["state"] != descriptor["ready_state"]):
         raise ValidationError("READY state does not match golden synchronization contract")
     ready_generation = _field_int(ready, "generation")
@@ -187,6 +198,7 @@ def validate_text(text: str, descriptor: dict[str, Any]) -> None:
     if line_positions["NP2VIDEO_READY"] > line_positions["NP2VIDEO_FRAMEBUFFER"]:
         raise ValidationError("framebuffer line precedes READY line")
     expected_framebuffer = {
+        "fixture_id": descriptor["fixture_id"],
         "scene_id": descriptor["scene_id"],
         "width": descriptor["width"],
         "height": descriptor["height"],
@@ -194,7 +206,11 @@ def validate_text(text: str, descriptor: dict[str, Any]) -> None:
         "bpp": descriptor["bpp"],
         "pitch": descriptor["pitch"],
     }
+    if framebuffer["fixture_id"] != expected_framebuffer["fixture_id"]:
+        raise ValidationError("framebuffer fixture_id does not match golden.json")
     for name, expected in expected_framebuffer.items():
+        if name == "fixture_id":
+            continue
         if _field_int(framebuffer, name) != expected:
             raise ValidationError(f"framebuffer {name} does not match golden.json")
     if framebuffer["format"] != descriptor["pixel_format"]:
