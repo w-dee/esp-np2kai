@@ -8,6 +8,11 @@
                 "${workspaceFolder}/firmware/components/control_plane",
                 "${workspaceFolder}/firmware/components/control_plane/include",
                 "${workspaceFolder}/firmware/components/uart_control_transport/include",
+                "${workspaceFolder}/host/compat",
+                "${workspaceFolder}/host/backend/headless",
+                "${workspaceFolder}/host/runner",
+                "${workspaceFolder}/third_party/np2kai/src",
+                "${workspaceFolder}/third_party/np2kai/src/i286c",
                 "${env:IDF_PATH}/components/**",
                 "${config:idf.espIdfPath}/components/**"
             ],
