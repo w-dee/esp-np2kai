@@ -26,7 +26,7 @@ fail() {
 }
 
 usage() {
-    printf 'usage: %s [--fixture text|gfx-vram]\n' "${BASH_SOURCE[0]}"
+    printf 'usage: %s [--fixture text|gfx-vram|gdc]\n' "${BASH_SOURCE[0]}"
 }
 
 fixture_kind=text
@@ -64,6 +64,11 @@ case "${fixture_kind}" in
     gfx-vram)
         readonly FIXTURE_DESCRIPTOR="${REPOSITORY_ROOT}/tests/guest/np2video-gfx-vram/golden.json"
         readonly FIXTURE_LAYOUT="${REPOSITORY_ROOT}/tests/guest/np2video-gfx-vram/layout.json"
+        readonly FIXTURE_BUILDER="${REPOSITORY_ROOT}/tools/guest/build_np2video_stage2.py"
+        ;;
+    gdc)
+        readonly FIXTURE_DESCRIPTOR="${REPOSITORY_ROOT}/tests/guest/np2video-gdc/golden.json"
+        readonly FIXTURE_LAYOUT="${REPOSITORY_ROOT}/tests/guest/np2video-gdc/layout.json"
         readonly FIXTURE_BUILDER="${REPOSITORY_ROOT}/tools/guest/build_np2video_stage2.py"
         ;;
     *)
@@ -163,5 +168,7 @@ python3 "${REPOSITORY_ROOT}/tools/guest/validate_np2video_esp_log.py" \
 printf 'NP2VIDEO_RESULT=PASS\n'
 if [[ "${fixture_kind}" == gfx-vram ]]; then
     printf 'NP2VIDEO_GFX_VRAM_ESP_GOLDEN_RESULT=PASS\n'
+elif [[ "${fixture_kind}" == gdc ]]; then
+    printf 'NP2VIDEO_GDC_ESP_GOLDEN_RESULT=PASS\n'
 fi
 printf 'NP2VIDEO_RUN_ROOT=%s\n' "${VIDEO_RUN_ROOT}"

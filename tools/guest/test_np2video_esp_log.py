@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DESCRIPTOR_PATHS = (
     ROOT / "tests/guest/np2video/golden.json",
     ROOT / "tests/guest/np2video-gfx-vram/golden.json",
+    ROOT / "tests/guest/np2video-gdc/golden.json",
 )
 
 

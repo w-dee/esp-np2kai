@@ -14,6 +14,7 @@ def main() -> int:
     descriptors = (
         root / "tests/guest/np2video/golden.json",
         root / "tests/guest/np2video-gfx-vram/golden.json",
+        root / "tests/guest/np2video-gdc/golden.json",
     )
     generator = root / "tools/guest/generate_np2video_golden_header.py"
     for descriptor in descriptors:

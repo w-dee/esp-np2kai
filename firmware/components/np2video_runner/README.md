@@ -16,9 +16,12 @@ Run the local validation from the repository root:
 ```sh
 bash tools/emu/test-np2video-golden.sh
 bash tools/emu/test-np2video-golden.sh --fixture gfx-vram
+bash tools/emu/test-np2video-golden.sh --fixture gdc
 ```
 
-The no-argument command remains the approved text fixture regression. The
-`gfx-vram` selection runs the approved direct-VRAM graphics fixture. Each
-invocation preserves its separate build, merged flash image, and esp-emu log
-under a temporary `NP2VIDEO_RUN_ROOT` for review.
+The no-argument command runs the approved text renderer oracle. The `gfx-vram`
+selection runs the approved direct-VRAM graphics oracle. The `gdc` selection
+runs the approved actual slave-GDC drawing-command oracle; this does not imply
+complete GDC/uPD7220 compliance. Each invocation preserves its separate build,
+merged flash image, and esp-emu log under a temporary `NP2VIDEO_RUN_ROOT` for
+review.
