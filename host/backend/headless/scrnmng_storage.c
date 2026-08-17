@@ -1,7 +1,5 @@
 #include <scrnmng_storage.h>
 
-#if !defined(NP2_FIRMWARE_DOSIO)
-
 #include <stdlib.h>
 
 void *scrnmng_storage_alloc(size_t bytes)
@@ -19,5 +17,3 @@ int scrnmng_storage_is_external(const void *ptr)
 	(void)ptr;
 	return 0;
 }
-
-#endif

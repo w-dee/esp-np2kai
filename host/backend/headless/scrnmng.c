@@ -145,7 +145,8 @@ void scrnmng_getstatus(SCRNMNG_STATUS *status)
 
 const SCRNSURF *scrnmng_surflock(void)
 {
-	if (!scrnmng_initialized || scrnmng_failed || scrnmng_surface.ptr == NULL) {
+	if (!scrnmng_initialized || scrnmng_failed || scrnmng_locked ||
+			scrnmng_surface.ptr == NULL) {
 		return NULL;
 	}
 	scrnmng_locked = 1;
@@ -154,7 +155,7 @@ const SCRNSURF *scrnmng_surflock(void)
 
 void scrnmng_surfunlock(const SCRNSURF *surf)
 {
-	if (surf != &scrnmng_surface) {
+	if (!scrnmng_locked || surf != &scrnmng_surface) {
 		return;
 	}
 	scrnmng_locked = 0;

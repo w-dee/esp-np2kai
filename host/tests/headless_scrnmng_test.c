@@ -60,6 +60,7 @@ int main(void)
 {
 	const SCRNSURF *surface;
 	const SCRNSURF *locked_surface;
+	SCRNSURF unrelated_surface;
 	SCRNMNG_STATUS status;
 	UINT8 preserved_value;
 
@@ -76,14 +77,24 @@ int main(void)
 	preserved_value = surface->ptr[0];
 	surface->ptr[0] = 0x5a;
 	locked_surface = scrnmng_surflock();
-	if (locked_surface != surface) {
-		scrnmng_surfunlock(surface);
+	if (locked_surface != NULL || scrnmng_haserror()) {
+		return 1;
+	}
+	scrnmng_surfunlock(NULL);
+	unrelated_surface = *surface;
+	scrnmng_surfunlock(&unrelated_surface);
+	if (scrnmng_surflock() != NULL || scrnmng_haserror()) {
+		return 1;
+	}
+	scrnmng_surfunlock(surface);
+
+	locked_surface = scrnmng_surflock();
+	if (locked_surface == NULL || locked_surface->ptr[0] != 0x5a ||
+			preserved_value != 0) {
+		scrnmng_surfunlock(locked_surface);
 		return 1;
 	}
 	scrnmng_surfunlock(locked_surface);
-	if (surface->ptr[0] != 0x5a || preserved_value != 0) {
-		return 1;
-	}
 
 	locked_surface = scrnmng_surflock();
 	if (locked_surface == NULL) {
