@@ -31,6 +31,15 @@ runtime validation remains blocked because esp-emu v0.39.0 exposes 16 MiB
 PSRAM but cannot provide the required contiguous external block after the
 NP2core external BSS placement.
 
+Step 6A is complete: the hardware-independent persistent storage integration
+uses ESP-IDF VFS/FATFS/WL on an emulator-supported SPI-NOR partition. The
+FATFS-backed File Transfer service, generic DOSIO VFS path, and VFS-backed NP2
+Stage-1 run are validated under esp-emu. The reduced non-formal runtime
+profile reaches 13/13 with CRC `0x58f5b827`, and a raw-partition poisoning test
+confirmed that the VFS run used the independent FATFS fixture source. Step 6B,
+physical ESP32-P4 microSD/SDMMC integration, remains future work; formal
+`EXTMEM=13` remains native-only.
+
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
 TAB5 revision compatibility remains unverified.
@@ -55,8 +64,9 @@ The File Transfer Base is verified over the same UART-TCP path. It adds a
 neutral streaming storage interface, a bounded 256 KiB RAM backend, logical
 UTF-8 paths, paginated metadata, ranged reads, and staged complete-file writes.
 Its 131,109-byte round-trip regression covers final-ACK replay, abort-safe
-replacement, zero-length files, and path/error bounds. This is not microSD,
-FATFS, or physical-media validation.
+replacement, zero-length files, and path/error bounds. This paragraph records
+the completed RAM-backed foundation; the persistent FATFS backend is the
+separate Step 6A result above and is not microSD or physical-media validation.
 
 ## Development model
 

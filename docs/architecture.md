@@ -110,10 +110,12 @@ support.
 Host contracts and adapters remain outside the vendor tree. The Step 4
 configuration validates compile/link and bounded startup/CPU execution through
 the Ubuntu-native headless path. Display, audio, input integration, broader
-software compatibility, target/physical storage integration such as
-microSD/FATFS and real media, ESP32-P4 firmware integration, and hardware
-validation remain separate later scopes. Step 4 storage is limited to the
-read-only tracked FD1232 FDD image path used to boot the formal Stage-1 golden.
+software compatibility, target/physical storage integration such as physical
+microSD/SDMMC and real media, ESP32-P4 firmware integration, and hardware
+validation remain separate later scopes. At the Step 4 milestone, storage was
+limited to the read-only tracked FD1232 FDD image path used to boot the formal
+Stage-1 golden; Step 6A later adds a separate emulator FATFS/VFS path without
+changing that oracle.
 
 ## Ubuntu-native execution boundary
 
@@ -168,11 +170,12 @@ with PSRAM external BSS support. External BSS placement is provided by
 ESP-IDF linker facilities rather than vendor-source ESP-specific attributes.
 
 The formal NP2TEST fixture is stored in a dedicated read-only NOR partition.
-Its access path uses mmap/read-only DOSIO and validates the vendor FDD/XDF
-path; it does not introduce a FAT layer under esp-emu. The formal Stage-1
-configuration, result-v1 parser, and execution controller are shared with the
-native headless oracle, while the ESP32-P4 runner remains a platform-side
-adapter around the core lifecycle.
+Its raw access path uses mmap/read-only DOSIO and validates the vendor FDD/XDF
+path; it remains an independent oracle and is not replaced by FATFS. The
+formal Stage-1 configuration, result-v1 parser, and execution controller are
+shared with the native headless oracle, while the ESP32-P4 runner remains a
+platform-side adapter around the core lifecycle. Step 6A additionally mounts
+FATFS/WL and exercises the same NP2 path through generic VFS/DOSIO.
 
 ## Validation-layer boundary
 
@@ -452,9 +455,121 @@ also has a count limit of 1..16 and a 768-byte response budget. Nonempty
 reads/writes use Binary Data Plane bytes; zero-length operations complete
 synchronously without a transfer ID.
 
-Only the RAM backend and esp-emu UART-TCP path are verified. A future FATFS or
-microSD backend should implement the same `storage` contract; real media and
-physical board transport are not part of this milestone.
+The RAM backend and esp-emu UART-TCP path are the completed File Transfer Base
+foundation. Step 6A now also verifies a persistent `StorageFatfs` backend under
+the same neutral contract. Real media and physical board transport remain
+outside both milestones.
+
+## Step 6A persistent storage architecture
+
+Step 6A is the completed, hardware-independent persistent storage integration
+using emulator-supported SPI-NOR plus ESP-IDF FATFS/Wear Levelling (WL). It is
+not the physical microSD implementation planned for Step 6B.
+
+The common validation image uses an 8 MiB flash envelope. This is an
+intentional esp-emu validation envelope, not the physical maximum of the
+P4-NANO hardware:
+
+```text
+factory       offset 0x010000  size 0x100000
+raw np2test   offset 0x110000  size 0x134000  read-only
+FATFS storage offset 0x244000  size 0x5BC000
+total common flash envelope: 8 MiB
+```
+
+The factory application partition remains `0x100000` (1 MiB). Representative
+Step 6A build measurements fit within it, but the remaining headroom is a
+capacity risk rather than an ABI guarantee:
+
+```text
+raw-reduced       0xec540  remaining 0x13ac0
+storage-provider  0xfadc0  remaining 0x5240
+uart-fatfs        0xb5ce0  remaining 0x4a320
+dosio             0x4bb30  remaining 0xb44d0
+vfs               0xf66a0  remaining 0x9960
+```
+
+Future actual overflow remains a human-review partition-layout gate; Step 6A
+did not resize the partition.
+
+The mounted namespace is:
+
+```text
+/persist
+├── files          File Transfer visible namespace
+├── fixtures       private NP2 fixture namespace
+└── .np2-staging   private replacement/staging state
+```
+
+File Transfer logical `/` maps to `/persist/files`. The `fixtures` and
+`.np2-staging` namespaces are therefore not exposed through File Transfer;
+this is namespace isolation, not arbitrary filesystem access.
+
+The storage dependencies are deliberately layered:
+
+```text
+File Transfer
+    -> storage::Storage
+    -> StorageFatfs
+    -> ESP-IDF VFS/FATFS/WL
+    -> SPI NOR
+
+NP2 / FDD / XDF
+    -> DOSIO
+    -> generic POSIX/VFS backend
+    -> mounted filesystem
+```
+
+`np2host`, `np2fixture`, and `np2test_runner` do not depend on
+`storage_fatfs`. The Step 6A application composition owns the FATFS mount and
+provides the generic VFS path to the runner. This keeps a future SDMMC FATFS
+mount, or another mounted filesystem, out of NP2 host/core-specific logic.
+
+The raw and VFS disk sources have distinct roles. The raw source is the
+read-only `np2test` partition at logical `./np2test-fd1232.hdm`. The VFS source
+is `/persist/fixtures/np2test-fd1232.hdm`, mapped through DOSIO to the same
+logical NP2 path. Both use the same FDD/XDF, NP2 CPU, Stage-1 guest, and
+result-v1 parser/controller. The raw source remains a permanent deterministic
+independent oracle.
+
+Step 6A File Transfer service capacity is 2 MiB. Routine CI uses a bounded
+512 KiB upload/download workload; development evidence also covered 2 MiB
+transfers, replacement, persistence, and abort preservation. Validated persistent behavior
+includes metadata/stat, listing/pagination, ranged reads, UTF-8, FAT
+case-insensitive collision handling, FAT-invalid names, staged replacement,
+abort preservation, actual FAT NoSpace mapping, cross-process persistence, and
+high-address physical flash persistence. These File Transfer writes do not make
+the NP2 guest disk writable: the NP2 disk path remains read-only through DOSIO.
+
+During Step 6A.1 development, `StorageFatfs` direct underlying POSIX
+`pread`/`pwrite` operations of 4096 bytes were observed to hang under the
+pinned esp-emu/IDF combination, while 512-byte operations passed. The current
+512-byte bound is therefore an emulator-observed local compatibility
+workaround. It is not a FATFS requirement, a physical ESP requirement, or a
+proven exact failure threshold. Step 6A.3 separately established that generic
+DOSIO VFS reads can perform 4096-byte POSIX reads successfully; hardware
+validation remains future work.
+
+The strongest Step 6A.4 source-independence proof used a temporary 8 MiB image
+copy. Only the raw partition's first `0x1000` bytes at offset `0x110000` were
+poisoned. Its SHA changed from
+`3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3` to
+`92ecf3e62e8ea67a2e618b58cf57e6a8db0f7a4ca5891507d53854285fe108f`, while
+the FATFS storage region remained unchanged. The VFS-backed NP2 run still
+completed 13 tests with 13 passed, 0 failed, and CRC `0x58f5b827`. This is
+evidence of source independence, not a claim of arbitrary filesystem or guest
+software compatibility.
+
+The conceptual provider replacement for future physical storage is:
+
+```text
+File Transfer -> storage::Storage -> StorageFatfs -> VFS/FATFS/WL -> SPI NOR
+NP2 -> FDD/XDF -> DOSIO -> POSIX/VFS -> mounted FATFS -> SPI NOR
+                                               ^
+                         Step 6B may replace the mount provider here
+```
+
+No FATFS-specific logic is introduced into NP2 core/host boundaries.
 
 Machine-readable JSON and binary frames use the raw UART driver path so
 stdout/VFS newline conversion cannot change arbitrary binary bytes. Normal

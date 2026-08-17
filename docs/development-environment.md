@@ -224,8 +224,76 @@ Its additional artifacts are:
 - `firmware/build/esp-emu-file-transfer-base.log`
 - `firmware/build/esp-emu-file-transfer-base.uart.bin`
 
-This remains an emulator and RAM-backend result. It does not validate FATFS,
-microSD hardware, durability, physical UART transport, throughput, or timing.
+This paragraph documents the completed RAM-backed File Transfer Base. It
+remains an emulator result and does not validate FATFS, microSD hardware,
+durability, physical UART transport, throughput, or timing. Persistent FATFS
+validation is documented separately as Step 6A below.
+
+## Step 6A routine persistent-storage validation
+
+Step 6A's authoritative local entry point is:
+
+```bash
+source <pinned-ESP-IDF-install>/export.sh
+export ESP_EMU=<pinned-esp-emu-0.39.0>
+idf.py --version
+${ESP_EMU} --version
+bash tools/emu/test-step6a-ci.sh
+```
+
+Use ESP-IDF v5.5.4 and esp-emu v0.39.0. The helper checks both versions and
+also verifies the tracked NP2 fixture before running. It uses independent
+temporary build directories and does not depend on a developer-local
+`firmware/sdkconfig`; it does not modify the checked-in partition table.
+
+The bounded routine covers:
+
+- raw reduced Stage-1;
+- bounded StorageFatfs provider hooks, replacement/rollback, cleanup, and
+  remount persistence;
+- FATFS File Transfer basic and routine 512 KiB upload/download;
+- preloaded NoSpace mapping;
+- 256 KiB cross-process persistence;
+- high-address physical-flash persistence;
+- DOSIO VFS access;
+- normal VFS NP2 execution; and
+- raw-poisoned VFS source-independence.
+
+The File Transfer service limit in the Step 6A FATFS profile is 2 MiB. The
+512 KiB transfer is only the routine CI workload. Extended/manual development
+evidence also covers 2 MiB transfer, replacement, persistence, and abort
+preservation; the old full matrix, natural-fill NoSpace, and other extended
+experiments are not part of routine CI.
+
+UART-intensive File Transfer tests under esp-emu are dominated by stop-and-
+wait frame/ACK scheduling. Observed transfer time was approximately linear,
+not a protocol deadlock. The UART test harness uses `--batch-size 5000`;
+tested larger values 50000, 100000, and 200000 increased ACK latency and test
+time. This is a test-harness setting, not a global esp-emu recommendation;
+non-UART tests retain their normal emulator configuration.
+
+The first pushed Step 6A CI run succeeded on GitHub Actions:
+
+```text
+workflow: NP2TEST fixture CI
+run: #75
+commit: 9378dab22e39836c588ae668a04fadd7d788b1cc
+jobs: np2test, ubuntu-native-headless, NON-FORMAL ESP32-P4 esp-emu reduced Stage-1
+conclusion: success
+```
+
+Observed first-run timing was approximately 3m29s provisioning, 1m02s for
+the existing raw reduced validation, 9m00s for the Step 6A bounded suite, and
+13m37s for the complete esp-emu job. These are observations, not guaranteed
+timings. The existing 30-minute job timeout remains unchanged. Provisioning
+is performed once in the existing esp-emu job; Step 6A does not add a second
+job or duplicate provisioning.
+
+The formal machine configuration remains `EXTMEM=13` and the authoritative
+formal result is the Ubuntu-native 13/13 CRC `0x58f5b827`. The ESP32-P4
+esp-emu result is explicitly NON-FORMAL reduced `EXTMEM=8`; its VFS/FATFS NP2
+run also reaches 13/13 with CRC `0x58f5b827`. No real P4 hardware, physical
+microSD, SDMMC, or physical UART validation is implied.
 
 The primary success evidence is protocol validation on the UART-TCP socket.
 After the final JSON response, the helper performs controlled esp-emu cleanup;
