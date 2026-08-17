@@ -207,3 +207,83 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
           bash tools/emu/test-step6a-ci.sh
+
+  esp32p4-esp-emu-video-golden:
+    name: ESP32-P4 esp-emu video golden
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LC_ALL: C
+      TZ: UTC
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Provision NASM
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nasm=2.16.01-1build1
+
+      - name: Verify video toolchain
+        run: |
+          command -v cc
+          command -v make
+          command -v python3
+          command -v nasm
+          cc --version
+          make --version
+          python3 --version
+          nasm -v
+          test "$(nasm -v)" = "NASM version 2.16.01"
+          python3 - <<'PY'
+          import platform
+          import sys
+
+          if platform.python_implementation() != "CPython" or sys.version_info[:2] != (3, 12):
+              raise SystemExit(f"expected CPython 3.12, got {platform.python_implementation()} {sys.version}")
+          PY
+
+      - name: Provision pinned ESP-IDF and esp-emu
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly idf_commit="735507283d5b2f9fb363a1901172dbd9e847945d"
+          readonly emu_bin_dir="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin"
+          readonly emu_installer="${RUNNER_TEMP}/esp-emu-install.sh"
+          readonly emu_installer_sha256="7d116867e9a54b8ab90b12fffec93eb5782b3b01f74191078be5278fa6fd5688"
+
+          git clone --depth 1 --branch "${ESP_IDF_VERSION}" --recursive \
+            https://github.com/espressif/esp-idf.git "${idf_root}"
+          test "$(git -C "${idf_root}" rev-parse HEAD)" = "${idf_commit}"
+          "${idf_root}/install.sh" esp32p4
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+
+          curl -fsSL \
+            "https://raw.githubusercontent.com/espressif/esp-emulator/60511395403787e243e45749e4f8bc2972b4d7c1/install.sh" \
+            -o "${emu_installer}"
+          printf '%s  %s\n' "${emu_installer_sha256}" "${emu_installer}" | sha256sum -c -
+          sh "${emu_installer}" \
+            --version "${ESP_EMU_VERSION}" \
+            --bin-dir "${emu_bin_dir}"
+          export ESP_EMU="${emu_bin_dir}/esp-emu"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+
+      - name: Test ESP video golden support infrastructure
+        run: make -C host test-video-golden-header test-video-golden-log
+
+      - name: Run ESP32-P4 esp-emu video golden
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          bash tools/emu/test-np2video-golden.sh
