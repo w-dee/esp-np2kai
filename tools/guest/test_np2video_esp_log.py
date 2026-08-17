@@ -47,13 +47,28 @@ def replace_line(text: str, prefix: str, replacement: str) -> str:
     raise AssertionError(f"missing line for test: {prefix}")
 
 
-def expect_descriptor_rejected(name: str, root: dict[str, object]) -> None:
+def expect_descriptor_accepted(name: str, root: dict[str, object]) -> None:
     with tempfile.TemporaryDirectory(prefix="np2video-esp-descriptor-") as directory:
         path = Path(directory) / "golden.json"
         path.write_text(json.dumps(root), encoding="utf-8")
         try:
             _load_descriptor(path)
-        except ValidationError:
+        except ValidationError as error:
+            raise AssertionError(f"validator rejected valid descriptor: {name}: {error}")
+
+
+def expect_descriptor_rejected(
+    name: str, root: dict[str, object], expected_message: str | None = None
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="np2video-esp-descriptor-") as directory:
+        path = Path(directory) / "golden.json"
+        path.write_text(json.dumps(root), encoding="utf-8")
+        try:
+            _load_descriptor(path)
+        except ValidationError as error:
+            if expected_message is not None and expected_message not in str(error):
+                raise AssertionError(
+                    f"validator error omitted {expected_message}: {name}")
             return
     raise AssertionError(f"validator accepted invalid descriptor: {name}")
 
@@ -140,6 +155,22 @@ def main() -> int:
 
     for descriptor_path in DESCRIPTOR_PATHS:
         raw_descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        boundary_cases = (
+            ("A" * 63, True),
+            ("A" * 64, False),
+            ("", False),
+            ("A" * 62 + "!", False),
+        )
+        for index, (fixture_id, accepted) in enumerate(boundary_cases):
+            synthetic_descriptor = dict(raw_descriptor)
+            synthetic_descriptor["fixture_id"] = fixture_id
+            case_name = f"fixture_id boundary {index}"
+            if accepted:
+                expect_descriptor_accepted(case_name, synthetic_descriptor)
+            else:
+                expect_descriptor_rejected(
+                    case_name, synthetic_descriptor, expected_message="1-63")
+        total_cases += len(boundary_cases)
         missing_fixture = dict(raw_descriptor)
         missing_fixture.pop("fixture_id")
         expect_descriptor_rejected("missing fixture_id", missing_fixture)

@@ -14,7 +14,7 @@ class ValidationError(ValueError):
     """Raised when an ESP np2video log violates the golden contract."""
 
 
-FIXTURE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")
+FIXTURE_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,63}")
 
 
 def _integer(value: Any, name: str) -> int:
@@ -43,7 +43,7 @@ def _load_descriptor(path: Path) -> dict[str, Any]:
     if (not isinstance(fixture_id, str) or
             FIXTURE_ID_PATTERN.fullmatch(fixture_id) is None):
         raise ValidationError(
-            "fixture_id must contain 1-64 ASCII letters, digits, '.', '_' or '-'")
+            "fixture_id must contain 1-63 ASCII letters, digits, '.', '_' or '-'")
     digest = root["fixture_sha256"]
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValidationError("fixture_sha256 is not lowercase hexadecimal SHA-256")

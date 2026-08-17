@@ -51,6 +51,28 @@ def main() -> int:
             ]
             if not all(byte in header for byte in expected_bytes):
                 raise AssertionError("generated header is missing fixture SHA bytes")
+            boundary_cases = (
+                ("A" * 63, True),
+                ("A" * 64, False),
+                ("", False),
+                ("A" * 62 + "!", False),
+            )
+            for index, (fixture_id, accepted) in enumerate(boundary_cases):
+                synthetic_descriptor = directory / f"boundary-{index}.json"
+                synthetic_descriptor.write_text(
+                    json.dumps({**values, "fixture_id": fixture_id}),
+                    encoding="utf-8")
+                result = subprocess.run(
+                    ["python3", str(generator), "--descriptor",
+                     str(synthetic_descriptor), "--output",
+                     str(directory / f"boundary-{index}.h")],
+                    check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True)
+                if (result.returncode == 0) != accepted:
+                    raise AssertionError(
+                        f"fixture_id boundary acceptance mismatch: {len(fixture_id)}")
+                if not accepted and "1-63" not in result.stderr:
+                    raise AssertionError("fixture_id boundary error omits 1-63 contract")
     print("np2video golden header test: PASS")
     return 0
 
