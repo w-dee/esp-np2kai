@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -165,15 +166,47 @@ static NP2_DOSIO_HANDLE *np2_dosio_handle(FILEH handle)
 static int np2_dosio_open_regular(const char *path, struct stat *status)
 {
 	int fd;
+	int open_errno;
+	int fstat_result;
+
+	printf("NP2DOSIO_DIAG dosio_open_regular_enter path=%s\n",
+		   path != NULL ? path : "(null)");
+	fflush(stdout);
 
 	if ((path == NULL) || (status == NULL)) {
+		printf("NP2DOSIO_DIAG dosio_open_regular_exit fd=-1 errno=%d\n", EINVAL);
+		fflush(stdout);
 		return -1;
 	}
+	printf("NP2DOSIO_DIAG dosio_before_open\n");
+	fflush(stdout);
 	fd = open(path, O_RDONLY);
-	if ((fd < 0) || (fstat(fd, status) != 0) || !S_ISREG(status->st_mode)) {
-		if (fd >= 0) close(fd);
+	open_errno = errno;
+	printf("NP2DOSIO_DIAG dosio_after_open fd=%d errno=%d\n", fd, open_errno);
+	fflush(stdout);
+	if (fd < 0) {
+		printf("NP2DOSIO_DIAG dosio_open_regular_exit fd=-1 errno=%d\n", open_errno);
+		fflush(stdout);
 		return -1;
 	}
+	printf("NP2DOSIO_DIAG dosio_before_fstat\n");
+	fflush(stdout);
+	fstat_result = fstat(fd, status);
+	printf("NP2DOSIO_DIAG dosio_after_fstat rc=%d errno=%d size=%lld mode=%o\n",
+		   fstat_result, errno, (long long)status->st_size,
+		   (unsigned int)status->st_mode);
+	fflush(stdout);
+	if ((fstat_result != 0) || !S_ISREG(status->st_mode)) {
+		printf("NP2DOSIO_DIAG dosio_before_close_failure\n");
+		fflush(stdout);
+		close(fd);
+		printf("NP2DOSIO_DIAG dosio_open_regular_exit fd=-1 errno=%d\n",
+		   fstat_result != 0 ? errno : EINVAL);
+		fflush(stdout);
+		return -1;
+	}
+	printf("NP2DOSIO_DIAG dosio_open_regular_exit fd=%d errno=0\n", fd);
+	fflush(stdout);
 	return fd;
 }
 

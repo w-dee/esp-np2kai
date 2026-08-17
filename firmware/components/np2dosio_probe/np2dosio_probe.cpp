@@ -1,9 +1,14 @@
 #include "np2dosio_probe/np2dosio_probe.h"
 
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <compiler.h>
 #include <common.h>
@@ -15,6 +20,9 @@ extern "C" {
 }
 #include <mbedtls/sha256.h>
 #include <np2host/dosio_esp.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "sdkconfig.h"
 
 #include "storage_fatfs/storage_fatfs.hpp"
 
@@ -25,6 +33,7 @@ constexpr char kFixtureSha256[] =
     "3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3";
 constexpr char kLogicalPath[] = "./np2test-fd1232.hdm";
 constexpr char kPhysicalPath[] = "/persist/fixtures/np2test-fd1232.hdm";
+constexpr char kSmallPhysicalPath[] = "/persist/files/seed/existing.bin";
 constexpr char kMissingPhysicalPath[] = "/persist/fixtures/missing.hdm";
 constexpr std::array<std::uint8_t, 16> kAtZero = {
     0xfa, 0xfc, 0x31, 0xc0, 0x8e, 0xd8, 0xb8, 0x00,
@@ -54,6 +63,96 @@ bool digest_hex(const std::uint8_t digest[32], char out[65])
     }
     out[64] = '\0';
     return true;
+}
+
+bool run_attach_tests();
+bool attach_valid_mapping();
+
+void diag_stack(const char *point)
+{
+    const UBaseType_t high_water = uxTaskGetStackHighWaterMark(nullptr);
+    std::printf("NP2DOSIO_DIAG stack point=%s configured_stack_bytes=%d "
+                "high_water_bytes=%lu semantics=bytes\n",
+                point, CONFIG_ESP_MAIN_TASK_STACK_SIZE,
+                static_cast<unsigned long>(high_water));
+    std::fflush(stdout);
+}
+
+bool direct_open_fstat_close(const char *label, const char *path)
+{
+    struct stat status{};
+    std::printf("NP2DOSIO_DIAG direct_open_begin label=%s path=%s\n", label, path);
+    std::fflush(stdout);
+    const int fd = ::open(path, O_RDONLY, 0);
+    const int open_errno = errno;
+    std::printf("NP2DOSIO_DIAG direct_open_end label=%s fd=%d errno=%d\n",
+                label, fd, open_errno);
+    std::fflush(stdout);
+    if (fd < 0) return false;
+
+    std::printf("NP2DOSIO_DIAG direct_fstat_begin label=%s\n", label);
+    std::fflush(stdout);
+    const int fstat_result = ::fstat(fd, &status);
+    const int fstat_errno = errno;
+    std::printf("NP2DOSIO_DIAG direct_fstat_end label=%s rc=%d errno=%d size=%lld mode=%o\n",
+                label, fstat_result, fstat_errno, (long long)status.st_size,
+                (unsigned int)status.st_mode);
+    std::fflush(stdout);
+
+    const int close_result = ::close(fd);
+    const int close_errno = errno;
+    std::printf("NP2DOSIO_DIAG direct_close_end label=%s rc=%d errno=%d\n",
+                label, close_result, close_errno);
+    std::fflush(stdout);
+    return fstat_result == 0 && S_ISREG(status.st_mode) && close_result == 0;
+}
+
+bool run_blocker_diagnostic()
+{
+    diag_stack("pre_direct_open_small_before_attach");
+    const bool small_before = direct_open_fstat_close(
+        "small_before_attach", kSmallPhysicalPath);
+    std::printf("NP2DOSIO_DIAG small_before_attach=%s\n",
+                small_before ? "PASS" : "FAIL");
+    std::fflush(stdout);
+
+    diag_stack("pre_direct_open_fixture_before_attach");
+    const bool direct_before = direct_open_fstat_close(
+        "fixture_before_attach", kPhysicalPath);
+    std::printf("NP2DOSIO_DIAG direct_before_attach=%s\n",
+                direct_before ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    if (!direct_before) return false;
+
+    if (!attach_valid_mapping()) return false;
+    diag_stack("post_single_attach");
+
+    diag_stack("pre_direct_open_fixture_after_single_attach");
+    const bool direct_after = direct_open_fstat_close(
+        "fixture_after_single_attach", kPhysicalPath);
+    std::printf("NP2DOSIO_DIAG direct_after_single_attach=%s\n",
+                direct_after ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    if (!direct_after) return false;
+
+    std::printf("NP2DOSIO_DIAG dosio_file_attr_begin logical=%s\n", kLogicalPath);
+    std::fflush(stdout);
+    const short attribute = file_attr(kLogicalPath);
+    std::printf("NP2DOSIO_DIAG dosio_file_attr_end attr=%d\n", attribute);
+    std::fflush(stdout);
+    if (attribute != FILEATTR_READONLY) return false;
+
+    np2_dosio_detach_vfs_file();
+    if (!run_attach_tests()) return false;
+    diag_stack("post_attach_tests");
+
+    diag_stack("pre_direct_open_fixture_after_attach_tests");
+    const bool direct_after_tests = direct_open_fstat_close(
+        "fixture_after_attach_tests", kPhysicalPath);
+    std::printf("NP2DOSIO_DIAG direct_after_attach_tests=%s\n",
+                direct_after_tests ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return direct_after_tests;
 }
 
 bool attach_valid_mapping()
@@ -277,14 +376,24 @@ bool run_all_tests()
 
 extern "C" esp_err_t np2dosio_probe_run(void)
 {
+    diag_stack("entry");
     storage_fatfs::MountProvider provider;
     storage_fatfs::StorageFatfs storage(provider);
+    std::printf("NP2DOSIO_DIAG object_sizes MountProvider=%lu StorageFatfs=%lu "
+                "run_attach_overlong=%lu direct_stat=%lu\n",
+                static_cast<unsigned long>(sizeof(provider)),
+                static_cast<unsigned long>(sizeof(storage)),
+                static_cast<unsigned long>(MAX_PATH + 1),
+                static_cast<unsigned long>(sizeof(struct stat)));
+    std::fflush(stdout);
 
+    diag_stack("pre_mount");
     if (storage.mount() != ESP_OK) {
         fail("storage_mount");
         return ESP_FAIL;
     }
-    const bool tests_passed = run_all_tests();
+    diag_stack("post_mount");
+    const bool tests_passed = run_blocker_diagnostic();
     np2_dosio_detach_vfs_file();
     const esp_err_t unmount_result = storage.unmount();
     if (!tests_passed) {
