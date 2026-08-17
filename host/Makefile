@@ -64,6 +64,14 @@ HEADLESS_FONT_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_fontmng_test
 HEADLESS_SCRNMNG_SOURCE := $(CURDIR)/backend/headless/scrnmng.c
 HEADLESS_SCRNMNG_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_test.c
 HEADLESS_SCRNMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_test
+HEADLESS_SCRNMNG_SNAPSHOT_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_snapshot_test.c
+HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_snapshot_test
+HEADLESS_BMP_SOURCE := $(CURDIR)/backend/headless/scrnmng_bmp.c
+HEADLESS_BMP_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_bmp_test.c
+HEADLESS_BMP_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_bmp_test
+NP2_CRC32_SOURCE := $(CURDIR)/compat/np2_crc32.c
+NP2_CRC32_TEST_SOURCE := $(CURDIR)/tests/np2_crc32_test.c
+NP2_CRC32_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_crc32_test
 HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
 HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
 HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
@@ -102,7 +110,7 @@ RUNNER_DEPENDENCIES := \
 	$(RESULT_V1_PARSER_DEPENDENCY) \
 	$(EXECUTION_CONTROLLER_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -201,7 +209,7 @@ $(RESULT_V1_PARSER_OBJECT): $(RESULT_V1_PARSER_SOURCE)
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_OBJECT))"
 	@$(CC) $(PROBE_CFLAGS) -Werror \
 		-MMD -MP -MF "$(RESULT_V1_PARSER_DEPENDENCY)" \
-		-I"$(CURDIR)/runner" \
+		-I"$(CURDIR)/runner" -I"$(CURDIR)/compat" \
 		-c "$(RESULT_V1_PARSER_SOURCE)" -o "$(RESULT_V1_PARSER_OBJECT)"
 
 $(EXECUTION_CONTROLLER_OBJECT): $(EXECUTION_CONTROLLER_SOURCE)
@@ -231,11 +239,20 @@ test-headless-runner-lifecycle: test-headless-runner-np2test
 
 -include $(RUNNER_DEPENDENCIES)
 
+test-crc32:
+	@mkdir -p "$(dir $(NP2_CRC32_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_CRC32_TEST_SOURCE)" -o "$(NP2_CRC32_TEST_OUTPUT)"
+	@"$(NP2_CRC32_TEST_OUTPUT)"
+	@printf '%s\n' 'Portable CRC-32/ISO-HDLC utility test passed.'
+
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"
 	@$(CC) -std=c11 -Wall -Wextra -Werror \
-		-I"$(CURDIR)/runner" \
-		"$(RESULT_V1_PARSER_SOURCE)" "$(RESULT_V1_PARSER_TEST_SOURCE)" \
+		-I"$(CURDIR)/runner" -I"$(CURDIR)/compat" \
+		"$(NP2_CRC32_SOURCE)" "$(RESULT_V1_PARSER_SOURCE)" \
+		"$(RESULT_V1_PARSER_TEST_SOURCE)" \
 		-o "$(RESULT_V1_PARSER_TEST_OUTPUT)"
 	@"$(RESULT_V1_PARSER_TEST_OUTPUT)"
 
@@ -324,11 +341,34 @@ test-headless-scrnmng:
 	@mkdir -p "$(dir $(HEADLESS_SCRNMNG_TEST_OUTPUT))"
 	@$(CC) -std=c11 -Wall -Wextra -Werror -DBYTESEX_LITTLE \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
-		"$(HEADLESS_SCRNMNG_SOURCE)" "$(CURDIR)/backend/headless/scrnmng_storage.c" \
+		"$(NP2_CRC32_SOURCE)" "$(HEADLESS_SCRNMNG_SOURCE)" \
+		"$(CURDIR)/backend/headless/scrnmng_storage.c" \
 		"$(HEADLESS_SCRNMNG_TEST_SOURCE)" \
 		-o "$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_SCRNMNG_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless scrnmng backend test passed (persistent RGB565 surface contract).'
+
+test-headless-scrnmng-snapshot:
+	@mkdir -p "$(dir $(HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -DBYTESEX_LITTLE \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(NP2_CRC32_SOURCE)" "$(HEADLESS_SCRNMNG_SOURCE)" \
+		"$(CURDIR)/backend/headless/scrnmng_storage.c" \
+		"$(HEADLESS_SCRNMNG_SNAPSHOT_TEST_SOURCE)" \
+		-o "$(HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT)"
+	@"$(HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless scrnmng snapshot test passed (CRC, metadata, sequence, resize).'
+
+test-headless-scrnmng-bmp:
+	@mkdir -p "$(dir $(HEADLESS_BMP_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -DBYTESEX_LITTLE \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		"$(NP2_CRC32_SOURCE)" "$(HEADLESS_SCRNMNG_SOURCE)" \
+		"$(CURDIR)/backend/headless/scrnmng_storage.c" \
+		"$(HEADLESS_BMP_SOURCE)" "$(HEADLESS_BMP_TEST_SOURCE)" \
+		-o "$(HEADLESS_BMP_TEST_OUTPUT)"
+	@"$(HEADLESS_BMP_TEST_OUTPUT)"
+	@printf '%s\n' 'Headless scrnmng BMP test passed (24-bit BGR, orientation, padding).'
 
 test-headless-commng:
 	@mkdir -p "$(dir $(HEADLESS_COMMNG_TEST_OUTPUT))"

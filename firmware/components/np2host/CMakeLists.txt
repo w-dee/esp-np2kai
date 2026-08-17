@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # The Step 4 backend inventory remains the sole source of truth.  The stage
-# annotations classify its eleven project-owned translation units into six
+# annotations classify its twelve project-owned translation units into seven
 # portable direct reuses and five ESP32-P4 replacements.
 get_filename_component(NP2HOST_REPO_ROOT
                        "${CMAKE_CURRENT_LIST_DIR}/../../.." REALPATH)
@@ -89,9 +89,9 @@ endforeach()
 
 list(LENGTH NP2HOST_ALL_SOURCES NP2HOST_SOURCE_COUNT)
 list(LENGTH NP2HOST_REUSABLE_SOURCES NP2HOST_REUSABLE_COUNT)
-if(NOT NP2HOST_SOURCE_COUNT EQUAL 11 OR NOT NP2HOST_REUSABLE_COUNT EQUAL 6)
+if(NOT NP2HOST_SOURCE_COUNT EQUAL 12 OR NOT NP2HOST_REUSABLE_COUNT EQUAL 7)
     message(FATAL_ERROR
-            "np2host: expected 11 inventory sources and 6 reusable sources, got "
+            "np2host: expected 12 inventory sources and 7 reusable sources, got "
             "${NP2HOST_SOURCE_COUNT} and ${NP2HOST_REUSABLE_COUNT}")
 endif()
 foreach(NP2HOST_REQUIRED_STAGE IN ITEMS

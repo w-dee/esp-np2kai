@@ -126,6 +126,34 @@ static void np2test_emit_framebuffer(np2test_runner_task_config *state,
                  (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 }
 
+static void np2test_emit_framebuffer_snapshot(
+    np2test_runner_task_config *state, const char *phase)
+{
+    SCRNMNG_SNAPSHOT snapshot;
+    SCRNMNG_STATUS status;
+    const SCRNMNG_SNAPSHOT_STATUS result = scrnmng_snapshot(&snapshot);
+
+    if (result != SCRNMNG_SNAPSHOT_OK) {
+        np2test_emit(state,
+                     "NP2FRAMEBUFFER_SNAPSHOT version=1 phase=%s status=%s\n",
+                     phase, scrnmng_snapshot_status_name(result));
+        return;
+    }
+    scrnmng_getstatus(&status);
+    np2test_emit(state,
+                 "NP2FRAMEBUFFER_SNAPSHOT version=1 phase=%s "
+                 "surface_update_sequence=%u surface_generation=%u "
+                 "width=%d height=%d format=rgb565le bpp=%u pitch=%lu "
+                 "visible_bytes=%lu crc_algorithm=crc32_iso_hdlc "
+                 "crc32=0x%08x storage_external=%d\n",
+                 phase, (unsigned)snapshot.surface_update_sequence,
+                 (unsigned)snapshot.surface_generation, snapshot.width,
+                 snapshot.height, (unsigned)snapshot.bpp,
+                 (unsigned long)snapshot.pitch,
+                 (unsigned long)snapshot.visible_bytes,
+                 (unsigned)snapshot.crc32, status.external ? 1 : 0);
+}
+
 static bool np2test_verify_extmem(np2test_runner_task_config *state)
 {
     const UINT32 expected_bytes =
@@ -354,6 +382,7 @@ static void np2test_task(void *argument)
         goto runner_cleanup;
     }
     np2test_emit_framebuffer(state, "after");
+    np2test_emit_framebuffer_snapshot(state, "after_initialize");
     if (np2_fixture_attach_fdd(&fixture) != ESP_OK) {
         np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=fdd_attach\n",
                      np2test_namespace(state->config.profile));

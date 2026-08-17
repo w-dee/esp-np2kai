@@ -58,8 +58,8 @@ These are deterministic slice budgets, not wall-clock durations.
 
 ## Current validation evidence
 
-The canonical configured closure contains 124 vendor translation units and 10
-host translation units, for 134 total; the relocatable link has zero
+The canonical configured closure contains 124 vendor translation units and 12
+shared host translation units, for 136 total; the relocatable link has zero
 project/non-system unresolved symbols. The formal Stage-1 golden currently
 reports:
 
@@ -71,6 +71,19 @@ In the current measured golden run, first protocol evidence was observed at
 returned slice 202 and terminal `PASS` at returned slice 203. These are runtime
 measurements, not ABI or architectural guarantees; `RUNNING` may be skipped
 observationally.
+
+## Step 7A.2 framebuffer inspection
+
+The headless framebuffer snapshot contract hashes only the visible row-by-row
+RGB565 little-endian bytes with CRC-32/ISO-HDLC. Its metadata includes dimensions,
+bpp, pixel format, pitch, visible byte count, surface generation, and completed
+surface-update sequence. The update sequence is not a guest frame or VSYNC count
+and does not imply that pixel values changed.
+
+The host-only `scrnmng_write_bmp()` diagnostic converts the same RGB565 surface
+to an explicitly requested, uncompressed 24-bit bottom-up BGR BMP. BMP bytes are
+never part of the canonical CRC identity, and the ESP32 build does not include
+the BMP writer.
 
 ## CI contracts
 

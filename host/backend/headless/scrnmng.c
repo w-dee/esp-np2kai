@@ -1,9 +1,11 @@
 #include <compiler.h>
+#include <np2_crc32.h>
 #include <scrnmng.h>
 #include <scrnmng_storage.h>
 #include <vram/scrndraw.h>
 
 #include <stdint.h>
+#include <string.h>
 
 static SCRNSURF scrnmng_surface;
 static int scrnmng_requested_width = 640;
@@ -16,6 +18,8 @@ static int scrnmng_resize_pending;
 static int scrnmng_failure_width;
 static int scrnmng_failure_height;
 static size_t scrnmng_failure_bytes;
+static uint32_t scrnmng_surface_generation;
+static uint32_t scrnmng_surface_update_sequence;
 
 static BOOL scrnmng_calculate_size(int width, int height, size_t *bytes)
 {
@@ -82,6 +86,7 @@ static BOOL scrnmng_resize(void)
 	scrnmng_bytes = bytes;
 	scrnmng_initialized = 1;
 	scrnmng_resize_pending = 0;
+	++scrnmng_surface_generation;
 	return TRUE;
 }
 
@@ -118,6 +123,8 @@ void scrnmng_shutdown(void)
 	scrnmng_failure_width = 0;
 	scrnmng_failure_height = 0;
 	scrnmng_failure_bytes = 0;
+	scrnmng_surface_generation = 0;
+	scrnmng_surface_update_sequence = 0;
 }
 
 BOOL scrnmng_haserror(void)
@@ -159,9 +166,103 @@ void scrnmng_surfunlock(const SCRNSURF *surf)
 		return;
 	}
 	scrnmng_locked = 0;
+	++scrnmng_surface_update_sequence;
 	if (scrnmng_resize_pending && !scrnmng_failed) {
 		(void)scrnmng_resize();
 	}
+}
+
+const char *scrnmng_snapshot_status_name(SCRNMNG_SNAPSHOT_STATUS status)
+{
+	switch (status) {
+	case SCRNMNG_SNAPSHOT_OK:
+		return "ok";
+	case SCRNMNG_SNAPSHOT_INVALID_ARGUMENT:
+		return "invalid_argument";
+	case SCRNMNG_SNAPSHOT_NOT_INITIALIZED:
+		return "not_initialized";
+	case SCRNMNG_SNAPSHOT_FAILED:
+		return "failed";
+	case SCRNMNG_SNAPSHOT_BUSY:
+		return "busy";
+	case SCRNMNG_SNAPSHOT_UNSUPPORTED:
+		return "unsupported";
+	default:
+		return "invalid";
+	}
+}
+
+SCRNMNG_SNAPSHOT_STATUS scrnmng_get_surface_view(SCRNMNG_SURFACE_VIEW *view)
+{
+	if (view == NULL) {
+		return SCRNMNG_SNAPSHOT_INVALID_ARGUMENT;
+	}
+	if (scrnmng_failed) {
+		return SCRNMNG_SNAPSHOT_FAILED;
+	}
+	if (!scrnmng_initialized) {
+		return SCRNMNG_SNAPSHOT_NOT_INITIALIZED;
+	}
+	if (scrnmng_locked) {
+		return SCRNMNG_SNAPSHOT_BUSY;
+	}
+	if ((scrnmng_surface.ptr == NULL) || (scrnmng_surface.bpp != 16)) {
+		return SCRNMNG_SNAPSHOT_UNSUPPORTED;
+	}
+	view->ptr = scrnmng_surface.ptr;
+	view->width = scrnmng_surface.width;
+	view->height = scrnmng_surface.height;
+	view->bpp = scrnmng_surface.bpp;
+	view->pixel_format = SCRNMNG_PIXEL_FORMAT_RGB565LE;
+	view->pitch = (size_t)scrnmng_surface.yalign;
+	return SCRNMNG_SNAPSHOT_OK;
+}
+
+SCRNMNG_SNAPSHOT_STATUS scrnmng_snapshot(SCRNMNG_SNAPSHOT *snapshot)
+{
+	SCRNMNG_SURFACE_VIEW view;
+	SCRNMNG_SNAPSHOT_STATUS status;
+	size_t row_bytes;
+	size_t visible_bytes;
+	size_t row;
+	uint32_t crc;
+
+	if (snapshot == NULL) {
+		return SCRNMNG_SNAPSHOT_INVALID_ARGUMENT;
+	}
+	memset(snapshot, 0, sizeof(*snapshot));
+	status = scrnmng_get_surface_view(&view);
+	if (status != SCRNMNG_SNAPSHOT_OK) {
+		return status;
+	}
+	if ((size_t)view.width > SIZE_MAX / sizeof(UINT16)) {
+		return SCRNMNG_SNAPSHOT_UNSUPPORTED;
+	}
+	row_bytes = (size_t)view.width * sizeof(UINT16);
+	if ((size_t)view.height > SIZE_MAX / row_bytes) {
+		return SCRNMNG_SNAPSHOT_UNSUPPORTED;
+	}
+	visible_bytes = row_bytes * (size_t)view.height;
+	if (view.pitch < row_bytes) {
+		return SCRNMNG_SNAPSHOT_UNSUPPORTED;
+	}
+	crc = np2_crc32_iso_hdlc_init();
+	for (row = 0; row < (size_t)view.height; ++row) {
+		crc = np2_crc32_iso_hdlc_update(crc,
+				view.ptr + row * view.pitch, row_bytes);
+	}
+	snapshot->width = view.width;
+	snapshot->height = view.height;
+	snapshot->bpp = view.bpp;
+	snapshot->pixel_format = view.pixel_format;
+	snapshot->pitch = view.pitch;
+	snapshot->visible_bytes = visible_bytes;
+	snapshot->surface_generation = scrnmng_surface_generation;
+	snapshot->surface_update_sequence = scrnmng_surface_update_sequence;
+	snapshot->crc_algorithm = NP2_CRC32_ISO_HDLC_ALGORITHM;
+	snapshot->crc_version = NP2_CRC32_ISO_HDLC_VERSION;
+	snapshot->crc32 = np2_crc32_iso_hdlc_finish(crc);
+	return SCRNMNG_SNAPSHOT_OK;
 }
 
 void scrnmng_setwidth(int posx, int width)

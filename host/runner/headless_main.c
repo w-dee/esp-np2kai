@@ -99,7 +99,33 @@ static void print_framebuffer_failure(void)
 	scrnmng_getstatus(&status);
 	fprintf(stderr,
 			"headless_runner: framebuffer failure requested=%dx%d bytes=%zu\n",
-			status.requested_width, status.requested_height, status.bytes);
+				status.requested_width, status.requested_height, status.bytes);
+}
+
+static void print_framebuffer_snapshot(const char *phase)
+{
+	SCRNMNG_SNAPSHOT snapshot;
+	SCRNMNG_STATUS status;
+	const SCRNMNG_SNAPSHOT_STATUS result = scrnmng_snapshot(&snapshot);
+
+	if (result != SCRNMNG_SNAPSHOT_OK) {
+		fprintf(stderr,
+				"NP2FRAMEBUFFER_SNAPSHOT version=1 phase=%s status=%s\n",
+				phase, scrnmng_snapshot_status_name(result));
+		return;
+	}
+	scrnmng_getstatus(&status);
+	fprintf(stderr,
+			"NP2FRAMEBUFFER_SNAPSHOT version=1 phase=%s "
+			"surface_update_sequence=%u surface_generation=%u "
+			"width=%d height=%d format=rgb565le bpp=%u pitch=%zu "
+			"visible_bytes=%zu crc_algorithm=crc32_iso_hdlc "
+			"crc32=0x%08x storage_external=%d\n",
+			phase, (unsigned)snapshot.surface_update_sequence,
+			(unsigned)snapshot.surface_generation, snapshot.width,
+			snapshot.height, (unsigned)snapshot.bpp, snapshot.pitch,
+			snapshot.visible_bytes, (unsigned)snapshot.crc32,
+			status.external ? 1 : 0);
 }
 
 static void print_execution_diagnostics(
@@ -266,6 +292,7 @@ int main(int argc, char **argv)
 		print_framebuffer_failure();
 		goto core_cleanup;
 	}
+	print_framebuffer_snapshot("after_initialize");
 
 	if (fdd_set(0, canonical_path, FTYPE_NONE, 1) != SUCCESS) {
 		fprintf(stderr, "headless_runner: FDD attach failed\n");

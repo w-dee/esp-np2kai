@@ -1,5 +1,7 @@
 #include "result_v1_parser.h"
 
+#include <np2_crc32.h>
+
 #include <string.h>
 
 static uint16_t read_u16le(const uint8_t *bytes)
@@ -13,25 +15,6 @@ static uint32_t read_u32le(const uint8_t *bytes)
 			((uint32_t)bytes[1] << 8) |
 			((uint32_t)bytes[2] << 16) |
 			((uint32_t)bytes[3] << 24);
-}
-
-static uint32_t crc32_iso_hdlc(const uint8_t *bytes, size_t size)
-{
-	uint32_t crc = UINT32_C(0xffffffff);
-	size_t offset;
-	unsigned bit;
-
-	for (offset = 0; offset < size; ++offset) {
-		crc ^= bytes[offset];
-		for (bit = 0; bit < 8; ++bit) {
-			if (crc & UINT32_C(1)) {
-				crc = (crc >> 1) ^ UINT32_C(0xedb88320);
-			} else {
-				crc >>= 1;
-			}
-		}
-	}
-	return crc ^ UINT32_C(0xffffffff);
 }
 
 static int has_magic(const uint8_t *snapshot)
@@ -111,7 +94,7 @@ static int terminal_common_is_valid(const uint8_t *snapshot,
 	}
 
 	stored_crc = read_u32le(snapshot + NP2_RESULT_V1_CRC_OFFSET);
-	return stored_crc == crc32_iso_hdlc(snapshot, NP2_RESULT_V1_CRC_END);
+	return stored_crc == np2_crc32_iso_hdlc(snapshot, NP2_RESULT_V1_CRC_END);
 }
 
 static int pass_is_valid(const np2_result_v1_result *result)
