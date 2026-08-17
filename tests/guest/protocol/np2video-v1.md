@@ -23,5 +23,6 @@ new update sequence in the same generation.
 
 The fixture image is a reproducible 1,261,568-byte raw 2HD image. Its IPL
 clears text/attribute VRAM, writes an 80x25 ASCII scene into `0xa0000` and
-`0xa2000`, and then enters `CLI; HLT; JMP`. No expected framebuffer CRC is
-defined in this step.
+`0xa2000`, and then enters `CLI; HLT; JMP`. The human-approved framebuffer
+identity is maintained separately in `tests/guest/np2video/golden.json`; the
+BMP remains diagnostic-only.
