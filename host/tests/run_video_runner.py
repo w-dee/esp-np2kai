@@ -20,6 +20,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("runner")
     parser.add_argument("fixture")
     parser.add_argument("--dump-framebuffer", dest="bmp")
+    parser.add_argument("--fixture-id", default="np2video-7a3a-text")
+    parser.add_argument("--scene-id", type=int, default=1)
     return parser
 
 
@@ -31,10 +33,12 @@ def _emit(data: bytes, stream) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    if args.timeout <= 0 or args.expect_result != "REFERENCE_READY":
+    if (args.timeout <= 0 or args.expect_result != "REFERENCE_READY" or
+            args.scene_id < 0 or args.scene_id > 65535 or not args.fixture_id):
         print("supervisor: invalid runner options", file=sys.stderr)
         return 64
-    command = [args.runner, args.fixture]
+    command = [args.runner, args.fixture, "--fixture-id", args.fixture_id,
+               "--scene-id", str(args.scene_id)]
     if args.bmp is not None:
         command += ["--dump-framebuffer", args.bmp]
     try:

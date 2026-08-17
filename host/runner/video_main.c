@@ -25,10 +25,55 @@
 #define VIDEO_FIXTURE_SIZE 1261568
 #define VIDEO_READY_SLICE_LIMIT UINT32_C(4096)
 #define VIDEO_POST_READY_SLICE_LIMIT UINT32_C(4)
+#define VIDEO_DEFAULT_FIXTURE_ID "np2video-7a3a-text"
+#define VIDEO_MAX_FIXTURE_ID_LENGTH 63U
 
 static void print_usage(void)
 {
-	fprintf(stderr, "usage: video_runner <video-image> [--dump-framebuffer <path.bmp>]\n");
+	fprintf(stderr, "usage: video_runner <video-image> [--dump-framebuffer <path.bmp>] "
+			"[--fixture-id <id>] [--scene-id <id>]\n");
+}
+
+static int valid_fixture_id(const char *fixture_id)
+{
+	size_t index;
+	size_t length;
+
+	if (fixture_id == NULL) {
+		return 0;
+	}
+	length = strlen(fixture_id);
+	if (length == 0 || length > VIDEO_MAX_FIXTURE_ID_LENGTH) {
+		return 0;
+	}
+	for (index = 0; index < length; ++index) {
+		char character = fixture_id[index];
+
+		if (!((character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') ||
+				character == '.' || character == '_' || character == '-')) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int parse_scene_id(const char *argument, uint16_t *scene_id)
+{
+	char *end;
+	unsigned long value;
+
+	if (argument == NULL || argument[0] == '\0') {
+		return 0;
+	}
+	errno = 0;
+	value = strtoul(argument, &end, 10);
+	if (errno != 0 || *end != '\0' || value > UINT16_MAX) {
+		return 0;
+	}
+	*scene_id = (uint16_t)value;
+	return 1;
 }
 
 static void print_digest(const uint8_t digest[NP2_SHA256_DIGEST_SIZE],
@@ -212,17 +257,19 @@ static int validate_framebuffer(const SCRNMNG_SNAPSHOT *snapshot,
 	return 1;
 }
 
-static void print_framebuffer(const SCRNMNG_SNAPSHOT *snapshot)
+static void print_framebuffer(const char *fixture_id, uint16_t scene_id,
+		const SCRNMNG_SNAPSHOT *snapshot)
 {
 	SCRNMNG_STATUS status;
 
 	scrnmng_getstatus(&status);
 	fprintf(stdout,
-			"NP2VIDEO_FRAMEBUFFER scene_id=1 width=%d height=%d bytes=%zu "
+			"NP2VIDEO_FRAMEBUFFER fixture_id=%s scene_id=%u width=%d height=%d bytes=%zu "
 			"format=rgb565le bpp=%u pitch=%zu generation=%u "
 			"surface_update_sequence=%u crc_algorithm=crc32_iso_hdlc "
 			"crc32=0x%08x storage_external=%d\n",
-			snapshot->width, snapshot->height, snapshot->visible_bytes,
+			fixture_id, (unsigned)scene_id, snapshot->width, snapshot->height,
+			snapshot->visible_bytes,
 			(unsigned)snapshot->bpp, snapshot->pitch,
 			(unsigned)snapshot->surface_generation,
 			(unsigned)snapshot->surface_update_sequence,
@@ -233,6 +280,8 @@ int main(int argc, char **argv)
 {
 	char *canonical_path = NULL;
 	char *bmp_path = NULL;
+	const char *fixture_id = VIDEO_DEFAULT_FIXTURE_ID;
+	uint16_t scene_id = NP2V_CONTROL_SCENE_ID;
 	char temp_template[] = "/tmp/esp-np2kai-video-XXXXXX";
 	char *temp_dir = NULL;
 	const char *failure = "unknown";
@@ -250,13 +299,32 @@ int main(int argc, char **argv)
 	int ready = 0;
 	int success = 0;
 
-	if (argc != 2 && argc != 4) {
+	int argument_index;
+
+	if (argc < 2) {
 		print_usage();
 		return 64;
 	}
-	if (argc == 4) {
-		if (strcmp(argv[2], "--dump-framebuffer") != 0 ||
-				!make_absolute_path(argv[3], &bmp_path)) {
+	for (argument_index = 2; argument_index < argc; ++argument_index) {
+		if (strcmp(argv[argument_index], "--dump-framebuffer") == 0) {
+			if (++argument_index >= argc || bmp_path != NULL ||
+					!make_absolute_path(argv[argument_index], &bmp_path)) {
+				print_usage();
+				return 64;
+			}
+		} else if (strcmp(argv[argument_index], "--fixture-id") == 0) {
+			if (++argument_index >= argc || !valid_fixture_id(argv[argument_index])) {
+				print_usage();
+				return 64;
+			}
+			fixture_id = argv[argument_index];
+		} else if (strcmp(argv[argument_index], "--scene-id") == 0) {
+			if (++argument_index >= argc ||
+					!parse_scene_id(argv[argument_index], &scene_id)) {
+				print_usage();
+				return 64;
+			}
+		} else {
 			print_usage();
 			return 64;
 		}
@@ -298,8 +366,9 @@ int main(int argc, char **argv)
 			failure = "framebuffer failure during PRE-READY";
 			goto cleanup;
 		}
-		control_status = np2v_control_parse(
-				mem + NP2V_CONTROL_PHYSICAL_ADDRESS, NP2V_CONTROL_SIZE, &control);
+		control_status = np2v_control_parse_for_scene(
+				mem + NP2V_CONTROL_PHYSICAL_ADDRESS, NP2V_CONTROL_SIZE,
+				scene_id, &control);
 		/* Before the guest publishes its magic, the control address is ordinary
 		 * uninitialized guest RAM and must not be treated as a protocol fault. */
 		if (control_status == NP2V_CONTROL_INVALID &&
@@ -311,6 +380,8 @@ int main(int argc, char **argv)
 			goto cleanup;
 		}
 		if (control_status == NP2V_CONTROL_VALID && control.state == NP2V_STATE_ERROR) {
+			fprintf(stderr, "video_runner: guest NP2V ERROR diagnostic=0x%04x\n",
+					(unsigned)control.diagnostic);
 			failure = "guest reported NP2V ERROR";
 			goto cleanup;
 		}
@@ -336,11 +407,12 @@ int main(int argc, char **argv)
 	ready_generation = ready_snapshot.surface_generation;
 	ready_sequence = ready_snapshot.surface_update_sequence;
 	fprintf(stdout,
-			"NP2VIDEO_FIXTURE scene_id=1 fixture_sha256=%s image_bytes=%d\n",
-			digest_text, VIDEO_FIXTURE_SIZE);
+			"NP2VIDEO_FIXTURE fixture_id=%s scene_id=%u fixture_sha256=%s image_bytes=%d\n",
+			fixture_id, (unsigned)scene_id, digest_text, VIDEO_FIXTURE_SIZE);
 	fprintf(stdout,
-			"NP2VIDEO_READY scene_id=1 state=SCENE_READY generation=%u "
+			"NP2VIDEO_READY fixture_id=%s scene_id=%u state=SCENE_READY generation=%u "
 			"surface_update_sequence=%u\n",
+			fixture_id, (unsigned)scene_id,
 			(unsigned)ready_generation, (unsigned)ready_sequence);
 
 	/* POST-READY: enable rendering and require a new update in the same surface. */
@@ -350,8 +422,9 @@ int main(int argc, char **argv)
 			failure = "framebuffer failure during POST-READY";
 			goto cleanup;
 		}
-		control_status = np2v_control_parse(
-				mem + NP2V_CONTROL_PHYSICAL_ADDRESS, NP2V_CONTROL_SIZE, &control);
+		control_status = np2v_control_parse_for_scene(
+				mem + NP2V_CONTROL_PHYSICAL_ADDRESS, NP2V_CONTROL_SIZE,
+				scene_id, &control);
 		if (control_status != NP2V_CONTROL_VALID ||
 				control.state != NP2V_STATE_SCENE_READY) {
 			failure = "NP2V state changed after SCENE_READY";
@@ -374,7 +447,7 @@ int main(int argc, char **argv)
 		failure = "no valid post-ready framebuffer update was observed";
 		goto cleanup;
 	}
-	print_framebuffer(&final_snapshot);
+	print_framebuffer(fixture_id, scene_id, &final_snapshot);
 	if (bmp_path != NULL) {
 		SCRNMNG_BMP_STATUS bmp_status = scrnmng_write_bmp(bmp_path);
 

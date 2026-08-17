@@ -14,6 +14,12 @@ static void make_valid(uint8_t bytes[NP2V_CONTROL_SIZE])
 	bytes[31] = NP2V_STATE_SCENE_READY;
 }
 
+static void set_scene(uint8_t bytes[NP2V_CONTROL_SIZE], uint16_t scene_id)
+{
+	bytes[10] = (uint8_t)(scene_id & 0xff);
+	bytes[11] = (uint8_t)(scene_id >> 8);
+}
+
 int main(void)
 {
 	uint8_t bytes[NP2V_CONTROL_SIZE];
@@ -29,6 +35,11 @@ int main(void)
 	assert(np2v_control_parse(bytes, sizeof(bytes), &control) == NP2V_CONTROL_VALID);
 	assert(control.scene_id == 1);
 	assert(control.state == NP2V_STATE_SCENE_READY);
+	set_scene(bytes, 2);
+	assert(np2v_control_parse(bytes, sizeof(bytes), &control) == NP2V_CONTROL_INVALID);
+	assert(np2v_control_parse_for_scene(bytes, sizeof(bytes), 2, &control) ==
+			NP2V_CONTROL_VALID);
+	assert(control.scene_id == 2);
 
 	bytes[0] = 'X';
 	assert(np2v_control_parse(bytes, sizeof(bytes), &control) == NP2V_CONTROL_INVALID);

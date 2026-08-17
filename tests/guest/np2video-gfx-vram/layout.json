@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "name": "np2video-gfx-vram",
+  "fixture": {
+    "id": "np2video-7a3c-gfx-vram",
+    "scene_id": 2,
+    "description": "640x400 deterministic direct-VRAM analog 16-color reference scene"
+  },
+  "image": {
+    "format": "raw",
+    "extension": ".hdm",
+    "geometry": {
+      "cylinders": 77,
+      "heads": 2,
+      "sectors_per_track": 8,
+      "bytes_per_sector": 1024
+    },
+    "size_bytes": 1261568,
+    "d88_required": false
+  },
+  "ipl": {
+    "implemented": true,
+    "source": "src/ipl.asm",
+    "binary_size": 1024,
+    "sector_offset": 0,
+    "sector_bytes": 1024,
+    "load_physical": 130048,
+    "entry": {
+      "cs": 8128,
+      "ip": 0
+    },
+    "signatures": [
+      {"offset": 510, "bytes": "55aa"},
+      {"offset": 1022, "bytes": "55aa"}
+    ]
+  },
+  "payload": {
+    "implemented": true,
+    "source": "src/stage2.asm",
+    "format": "flat-16-bit",
+    "disk_offset": 1024,
+    "sector_offset": 1,
+    "max_size_bytes": 32768,
+    "max_sector_count": 32,
+    "load_physical": 131072,
+    "load_segment": 8192,
+    "entry_offset": 8,
+    "header_size": 8,
+    "padding": "zero"
+  },
+  "control_block": {
+    "protocol": "NP2V",
+    "version": 1,
+    "physical_address": 172032,
+    "size_bytes": 32,
+    "state_offset": 31,
+    "state_written_last": true,
+    "states": {
+      "BOOTING": 1,
+      "PROGRAMMING_VIDEO": 2,
+      "SCENE_READY": 3,
+      "ERROR": 4
+    }
+  },
+  "mode_setup": {
+    "int18_sequence": [
+      {"ah": "0a", "al": "00"},
+      {"ah": "42", "ch": "c0"},
+      {"ah": "0d", "description": "disable text display"},
+      {"ah": "40", "description": "enable graphics display"}
+    ],
+    "analog_16_port": "006a",
+    "analog_16_value": 1,
+    "display_page_port": "00a4",
+    "access_page_port": "00a6",
+    "page": 0
+  },
+  "palette": {
+    "encoding": "GRB-nibble-word",
+    "ports": {"index": "00a8", "green": "00aa", "red": "00ac", "blue": "00ae"},
+    "entries": [
+      "000", "007", "070", "077", "700", "707", "770", "777",
+      "444", "00f", "0f0", "0ff", "f00", "f0f", "ff0", "fff"
+    ]
+  },
+  "graphics_vram": {
+    "display_page": 0,
+    "access_page": 0,
+    "planes": {
+      "B": {"window": "a8000", "index_bit": 0},
+      "R": {"window": "b0000", "index_bit": 1},
+      "G": {"window": "b8000", "index_bit": 2},
+      "E": {"window": "e0000", "index_bit": 3}
+    },
+    "bytes_per_row": 80,
+    "pixels_per_byte": 8,
+    "bit_order": "bit7-leftmost",
+    "address": "y*80+(x>>3)",
+    "mask": "0x80>>(x&7)",
+    "clear": "all four page-0 planes, 32768 bytes each"
+  },
+  "scene": {
+    "width": 640,
+    "height": 400,
+    "pixel_format": "indexed-analog-16",
+    "graphics": true,
+    "gdc_commands": false,
+    "palette_swatches": "4x4 row-major indices 0..15, origin (96,96), cell 28x18, gap 4",
+    "outer_frame": {
+      "color": 15,
+      "top": [8, 8, 632, 9],
+      "bottom": [8, 391, 632, 392],
+      "left": [8, 8, 9, 392],
+      "right": [631, 8, 632, 392]
+    },
+    "corner_markers": {
+      "top_left": {"color": 1, "rect": [24, 24, 48, 48]},
+      "top_right": {"color": 2, "rect": [584, 24, 616, 40]},
+      "bottom_left": {"color": 4, "rect": [24, 344, 40, 376]},
+      "bottom_right": {"color": 8, "rects": [[584, 344, 616, 352], [608, 344, 616, 376]]}
+    },
+    "central_cross": {
+      "color": 15,
+      "horizontal": [256, 239, 512, 240],
+      "vertical": [319, 208, 320, 336]
+    }
+  },
+  "memory": {
+    "address_space": {"start": 0, "size_bytes": 1048576},
+    "excluded_ranges": [
+      {"name": "pc98-low-bios-data", "start": 0, "size_bytes": 4096},
+      {"name": "pc98-text-vram", "start": 655360, "size_bytes": 32768},
+      {"name": "pc98-graphics-vram-b-r-g", "start": 688128, "size_bytes": 98304},
+      {"name": "pc98-graphics-vram-e", "start": 917504, "size_bytes": 32768},
+      {"name": "pc98-bios-firmware", "start": 950272, "size_bytes": 98304}
+    ],
+    "owned_regions": [
+      {"name": "ipl", "kind": "ipl", "start": 130048, "size_bytes": 1024, "alignment": 1024},
+      {"name": "payload-reserve", "kind": "payload", "start": 131072, "size_bytes": 32768, "alignment": 1024},
+      {"name": "stack", "kind": "stack", "start": 163840, "size_bytes": 4096, "alignment": 16},
+      {"name": "video-control", "kind": "control", "start": 172032, "size_bytes": 32, "alignment": 16}
+    ]
+  }
+}

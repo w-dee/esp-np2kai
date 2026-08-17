@@ -36,6 +36,9 @@ typedef struct {
 
 np2v_control_status np2v_control_parse(
 		const uint8_t *bytes, size_t length, np2v_control *control);
+np2v_control_status np2v_control_parse_for_scene(
+		const uint8_t *bytes, size_t length, uint16_t expected_scene_id,
+		np2v_control *control);
 const char *np2v_control_status_name(np2v_control_status status);
 const char *np2v_state_name(np2v_state state);
 

@@ -24,6 +24,14 @@ static int all_zero(const uint8_t *bytes, size_t length)
 np2v_control_status np2v_control_parse(
 		const uint8_t *bytes, size_t length, np2v_control *control)
 {
+	return np2v_control_parse_for_scene(bytes, length, NP2V_CONTROL_SCENE_ID,
+			control);
+}
+
+np2v_control_status np2v_control_parse_for_scene(
+		const uint8_t *bytes, size_t length, uint16_t expected_scene_id,
+		np2v_control *control)
+{
 	uint16_t version;
 	uint16_t header_size;
 	uint16_t block_size;
@@ -55,7 +63,7 @@ np2v_control_status np2v_control_parse(
 	if (version != NP2V_CONTROL_VERSION ||
 			header_size != NP2V_CONTROL_HEADER_SIZE ||
 			block_size != NP2V_CONTROL_SIZE ||
-			scene_id != NP2V_CONTROL_SCENE_ID ||
+			scene_id != expected_scene_id ||
 			state < NP2V_STATE_BOOTING || state > NP2V_STATE_ERROR) {
 		return NP2V_CONTROL_INVALID;
 	}
