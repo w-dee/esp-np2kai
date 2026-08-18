@@ -139,6 +139,12 @@ jobs:
             test-sha256 \
             test-video-runner-cli
 
+      - name: Test portable presentation contract
+        run: make -C host test-presentation-contract
+
+      - name: Test ESP presentation log validator
+        run: python3 tools/emu/test_validate_np2presentation_log.py
+
       - name: Run approved np2video golden regression
         run: make -C host test-video-runner-golden
 
@@ -284,6 +290,19 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
 
+      - name: Test ESP presentation profile isolation
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          bash tools/emu/test-np2presentation-profile.sh
+
       - name: Test ESP video golden support infrastructure
         run: make -C host test-video-golden-header test-video-golden-log
 
@@ -325,3 +344,16 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
           bash tools/emu/test-np2video-golden.sh --fixture gdc
+
+      - name: Run ESP32-P4 esp-emu presentation contract
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          bash tools/emu/test-np2presentation.sh
