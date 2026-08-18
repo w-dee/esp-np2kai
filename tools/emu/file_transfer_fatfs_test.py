@@ -720,9 +720,11 @@ def run_matrix(emu: wire.Emulator) -> None:
     response = emu.wait_response(115)
     base.require_error(response, "INVALID_PATH")
     upload_names, _ = list_all(emu, 120, "/upload", limit=16)
-    for name in ("日本語.bin", "CaseName.txt", "multi-frame.bin", "step6a2-a.bin"):
+    for name in ("日本語.bin", "multi-frame.bin", "step6a2-a.bin"):
         if name not in upload_names:
             raise AssertionError(f"uploaded name missing from FAT listing: {name}")
+    if sum(name.casefold() == "casename.txt" for name in upload_names) != 1:
+        raise AssertionError(f"case-collision listing mismatch: {upload_names}")
 
     if require_response(emu, 130, "system.ping") != {"pong": True}:
         raise AssertionError("final ping failed")
