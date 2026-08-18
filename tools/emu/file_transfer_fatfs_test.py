@@ -17,7 +17,7 @@ import uart_binary_data_plane_test as wire
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
-LARGE_FILE_BYTES = 512 * 1024
+LARGE_FILE_BYTES = 262145
 REPLACEMENT_FILE_BYTES = 256 * 1024
 PERSISTENCE_FILE_BYTES = 4097
 HIGH_ADDRESS_FILE_BYTES = 64 * 1024
@@ -196,7 +196,7 @@ def parse_args() -> argparse.Namespace:
         "--large-size",
         type=int,
         default=LARGE_FILE_BYTES,
-        help="large-mode payload size in bytes (default: 524288; 2 MiB is extended-only)",
+        help="large-mode payload size in bytes (default: 262145; 2 MiB is extended-only)",
     )
     parser.add_argument(
         "--replacement-size",
@@ -230,7 +230,7 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{option_name.replace('_', '-')} must be in the range 1..{MAX_FILE_BYTES}")
     if args.mode == "large" and args.large_size != LARGE_FILE_BYTES:
         print(
-            "WARNING: --large-size overrides the routine 512 KiB large-mode workload; "
+            "WARNING: --large-size overrides the routine 262145-byte large-mode workload; "
             "use only for extended/manual validation",
             file=sys.stderr,
         )

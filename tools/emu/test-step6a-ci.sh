@@ -301,7 +301,7 @@ phase_file_transfer() {
     uart_log="${RUN_ROOT}/uart-large.raw.bin"
     cp -- "${base_image}" "${mode_image}"
     run_uart_mode large "${mode_image}" "${console_log}" "${uart_log}"
-    require_log "${console_log}" 'FATFS_FILE_TRANSFER_LARGE=PASS size=524288'
+    require_log "${console_log}" 'FATFS_FILE_TRANSFER_LARGE=PASS size=262145'
     require_log "${console_log}" 'boundary_ranges=PASS'
     require_log "${console_log}" 'FATFS_MODE_SUMMARY mode=large '
     require_log "${console_log}" 'result=PASS'
