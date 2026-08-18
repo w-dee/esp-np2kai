@@ -20,6 +20,8 @@ static int scrnmng_failure_height;
 static size_t scrnmng_failure_bytes;
 static uint32_t scrnmng_surface_generation;
 static uint32_t scrnmng_surface_update_sequence;
+static SCRNMNG_PUBLISH_HOOK scrnmng_publish_hook;
+static void *scrnmng_publish_context;
 
 static BOOL scrnmng_calculate_size(int width, int height, size_t *bytes)
 {
@@ -125,6 +127,8 @@ void scrnmng_shutdown(void)
 	scrnmng_failure_bytes = 0;
 	scrnmng_surface_generation = 0;
 	scrnmng_surface_update_sequence = 0;
+	scrnmng_publish_hook = NULL;
+	scrnmng_publish_context = NULL;
 }
 
 BOOL scrnmng_haserror(void)
@@ -162,14 +166,36 @@ const SCRNSURF *scrnmng_surflock(void)
 
 void scrnmng_surfunlock(const SCRNSURF *surf)
 {
+	SCRNMNG_PUBLISH_VIEW publish_view;
+
 	if (!scrnmng_locked || surf != &scrnmng_surface) {
 		return;
+	}
+	if (scrnmng_publish_hook != NULL) {
+		publish_view.ptr = scrnmng_surface.ptr;
+		publish_view.width = scrnmng_surface.width;
+		publish_view.height = scrnmng_surface.height;
+		publish_view.bpp = scrnmng_surface.bpp;
+		publish_view.pixel_format = SCRNMNG_PIXEL_FORMAT_RGB565LE;
+		publish_view.pitch = (size_t)scrnmng_surface.yalign;
+		publish_view.surface_generation = scrnmng_surface_generation;
+		/* The hook receives the logical completed value before the stored
+		 * Step 7A counter is incremented. */
+		publish_view.surface_update_sequence =
+			scrnmng_surface_update_sequence + 1U;
+		scrnmng_publish_hook(&publish_view, scrnmng_publish_context);
 	}
 	scrnmng_locked = 0;
 	++scrnmng_surface_update_sequence;
 	if (scrnmng_resize_pending && !scrnmng_failed) {
 		(void)scrnmng_resize();
 	}
+}
+
+void scrnmng_set_publish_hook(SCRNMNG_PUBLISH_HOOK hook, void *context)
+{
+	scrnmng_publish_hook = hook;
+	scrnmng_publish_context = (hook != NULL) ? context : NULL;
 }
 
 const char *scrnmng_snapshot_status_name(SCRNMNG_SNAPSHOT_STATUS status)

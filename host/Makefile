@@ -100,6 +100,11 @@ HEADLESS_SCRNMNG_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_test.c
 HEADLESS_SCRNMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_test
 HEADLESS_SCRNMNG_SNAPSHOT_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_snapshot_test.c
 HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_snapshot_test
+PRESENTATION_SOURCE := $(CURDIR)/presentation/np2_presentation.c
+PRESENTATION_TEST_SOURCE := $(CURDIR)/tests/np2_presentation_test.c
+PRESENTATION_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_presentation_test
+SCRNMNG_PRESENTATION_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_presentation_test.c
+SCRNMNG_PRESENTATION_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_presentation_test
 HEADLESS_BMP_SOURCE := $(CURDIR)/backend/headless/scrnmng_bmp.c
 HEADLESS_BMP_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_bmp_test.c
 HEADLESS_BMP_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_bmp_test
@@ -150,7 +155,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-headless-scrnmng-bmp test-headless-commng
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-headless-scrnmng-bmp test-headless-commng
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -530,6 +535,27 @@ test-headless-scrnmng-snapshot:
 		-o "$(HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT)"
 	@"$(HEADLESS_SCRNMNG_SNAPSHOT_TEST_OUTPUT)"
 	@printf '%s\n' 'Headless scrnmng snapshot test passed (CRC, metadata, sequence, resize).'
+
+test-presentation-publisher:
+	@mkdir -p "$(dir $(PRESENTATION_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/presentation" "$(PRESENTATION_SOURCE)" \
+		"$(PRESENTATION_TEST_SOURCE)" -o "$(PRESENTATION_TEST_OUTPUT)"
+	@"$(PRESENTATION_TEST_OUTPUT)"
+
+test-headless-scrnmng-presentation:
+	@mkdir -p "$(dir $(SCRNMNG_PRESENTATION_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -DBYTESEX_LITTLE \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(CURDIR)/presentation" "$(NP2_CRC32_SOURCE)" \
+		"$(PRESENTATION_SOURCE)" "$(HEADLESS_SCRNMNG_SOURCE)" \
+		"$(CURDIR)/backend/headless/scrnmng_storage.c" \
+		"$(SCRNMNG_PRESENTATION_TEST_SOURCE)" \
+		-o "$(SCRNMNG_PRESENTATION_TEST_OUTPUT)"
+	@"$(SCRNMNG_PRESENTATION_TEST_OUTPUT)"
+
+test-presentation-contract: test-presentation-publisher test-headless-scrnmng-presentation
+	@printf '%s\n' 'Portable presentation contract tests passed.'
 
 test-headless-scrnmng-bmp:
 	@mkdir -p "$(dir $(HEADLESS_BMP_TEST_OUTPUT))"

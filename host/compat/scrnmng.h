@@ -68,8 +68,31 @@ typedef struct {
 	size_t pitch;
 } SCRNMNG_SURFACE_VIEW;
 
+/*
+ * The completed view passed to a publish hook is borrowed and valid only for
+ * the synchronous callback.  The callback must not retain ptr or call
+ * scrnmng_surflock(), scrnmng_surfunlock(), scrnmng_snapshot(), or a resize
+ * operation reentrantly.  Register outside rendering and unregister before
+ * the callback context or its backing storage is destroyed.  Shutdown never
+ * invokes the hook.
+ */
+typedef struct {
+	const UINT8 *ptr;
+	int width;
+	int height;
+	UINT bpp;
+	SCRNMNG_PIXEL_FORMAT pixel_format;
+	size_t pitch;
+	uint32_t surface_generation;
+	uint32_t surface_update_sequence;
+} SCRNMNG_PUBLISH_VIEW;
+
+typedef void (*SCRNMNG_PUBLISH_HOOK)(const SCRNMNG_PUBLISH_VIEW *view,
+	void *context);
+
 const SCRNSURF *scrnmng_surflock(void);
 void scrnmng_surfunlock(const SCRNSURF *surf);
+void scrnmng_set_publish_hook(SCRNMNG_PUBLISH_HOOK hook, void *context);
 void scrnmng_setwidth(int posx, int width);
 void scrnmng_setheight(int posy, int height);
 BOOL scrnmng_initialize(void);
