@@ -14,11 +14,20 @@ readonly STORAGE_PARTITION_OFFSET=$((0x244000))
 readonly STORAGE_PARTITION_SIZE=$((0x5bc000))
 readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
 readonly RUN_ROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/esp-np2kai-step6a.XXXXXX")"
+readonly STEP6A_PROFILE_BUILD_MODE="${STEP6A_PROFILE_BUILD_MODE:-shared}"
+readonly SHARED_PROFILE_BUILD_DIR="${RUN_ROOT}/shared-profile-build"
+readonly PROFILE_SELECTOR_ENV_VARS="STORAGE_FATFS_PROBE STORAGE_FATFS_CI_BOUNDED UART_FATFS_PROFILE NP2_DOSIO_PROBE NP2_VFS_FIXTURE_PROFILE NP2_REDUCED_EXTMEM8 NP2_VIDEO_PROFILE NP2_PRESENTATION_PROFILE"
 
 declare -a APP_SIZE_SUMMARY=()
 CURRENT_PHASE="preflight"
 CURRENT_LOG="${RUN_ROOT}"
 TOTAL_START="$(date +%s)"
+STORAGE_PROFILE_STATE_CAPTURED=0
+STORAGE_PROFILE_SDKCONFIG_SHA256=""
+STORAGE_PROFILE_CMAKE_CACHE_SHA256=""
+STORAGE_PROFILE_COMPILE_COMMANDS_SHA256=""
+STORAGE_PROFILE_APP_SIZE=""
+STORAGE_PROFILE_APP_SHA256=""
 
 cleanup() {
     local status=$?
@@ -36,6 +45,29 @@ trap cleanup EXIT
 fail() {
     printf 'ERROR: %s\n' "$*" >&2
     return 1
+}
+
+validate_profile_build_mode() {
+    case "${STEP6A_PROFILE_BUILD_MODE}" in
+        shared|isolated)
+            ;;
+        *)
+            fail "invalid STEP6A_PROFILE_BUILD_MODE=${STEP6A_PROFILE_BUILD_MODE}; expected shared or isolated"
+            return 1
+            ;;
+    esac
+}
+
+selected_profile_build_dir() {
+    local isolated_build_dir="$1"
+    case "${STEP6A_PROFILE_BUILD_MODE}" in
+        shared)
+            printf '%s\n' "${SHARED_PROFILE_BUILD_DIR}"
+            ;;
+        isolated)
+            printf '%s\n' "${isolated_build_dir}"
+            ;;
+    esac
 }
 
 phase_start() {
@@ -92,28 +124,192 @@ build_profile() {
     local profile="$1"
     local build_dir="$2"
     shift 2
+    if [[ "${STEP6A_PROFILE_BUILD_MODE}" == shared ]]; then
+        build_dir="${SHARED_PROFILE_BUILD_DIR}"
+    fi
     local sdkconfig_path="${build_dir}/sdkconfig"
+    local storage_fatfs_probe=0
+    local storage_fatfs_ci_bounded=0
+    local uart_fatfs_profile=0
+    local np2_dosio_probe=0
+    local np2_vfs_fixture_profile=0
+    local np2_reduced_extmem8=0
+    local np2_video_profile=0
+    local np2_presentation_profile=0
+    local flag
+    for flag in "$@"; do
+        case "${flag}" in
+            STORAGE_FATFS_PROBE) storage_fatfs_probe=1 ;;
+            STORAGE_FATFS_CI_BOUNDED) storage_fatfs_ci_bounded=1 ;;
+            UART_FATFS_PROFILE) uart_fatfs_profile=1 ;;
+            NP2_DOSIO_PROBE) np2_dosio_probe=1 ;;
+            NP2_VFS_FIXTURE_PROFILE) np2_vfs_fixture_profile=1 ;;
+            NP2_REDUCED_EXTMEM8) np2_reduced_extmem8=1 ;;
+            NP2_VIDEO_PROFILE) np2_video_profile=1 ;;
+            NP2_PRESENTATION_PROFILE) np2_presentation_profile=1 ;;
+            *)
+                fail "unknown Step 6A profile selector: ${flag}"
+                return 1
+                ;;
+        esac
+    done
+
     local -a cmake_args=(
         -B "${build_dir}"
         -D "SDKCONFIG=${sdkconfig_path}"
+        -D CCache_ENABLE=0
+        -D IDF_TARGET=esp32p4
+        -D "STORAGE_FATFS_PROBE=${storage_fatfs_probe}"
+        -D "STORAGE_FATFS_CI_BOUNDED=${storage_fatfs_ci_bounded}"
+        -D "UART_FATFS_PROFILE=${uart_fatfs_profile}"
+        -D "NP2_DOSIO_PROBE=${np2_dosio_probe}"
+        -D "NP2_VFS_FIXTURE_PROFILE=${np2_vfs_fixture_profile}"
+        -D "NP2_REDUCED_EXTMEM8=${np2_reduced_extmem8}"
+        -D "NP2_VIDEO_PROFILE=${np2_video_profile}"
+        -D "NP2_PRESENTATION_PROFILE=${np2_presentation_profile}"
     )
-    local flag
-    for flag in "$@"; do
-        cmake_args+=( -D "${flag}=1" )
-    done
-
     mkdir -p -- "${build_dir}"
+    printf 'STEP6A_PROFILE_BUILD mode=%s profile=%s build_dir=%s\n' \
+        "${STEP6A_PROFILE_BUILD_MODE}" "${profile}" "${build_dir}"
+    printf 'STEP6A_PROFILE_STATE mode=%s profile=%s STORAGE_FATFS_PROBE=%s STORAGE_FATFS_CI_BOUNDED=%s UART_FATFS_PROFILE=%s NP2_DOSIO_PROBE=%s NP2_VFS_FIXTURE_PROFILE=%s NP2_REDUCED_EXTMEM8=%s NP2_VIDEO_PROFILE=%s NP2_PRESENTATION_PROFILE=%s\n' \
+        "${STEP6A_PROFILE_BUILD_MODE}" "${profile}" \
+        "${storage_fatfs_probe}" "${storage_fatfs_ci_bounded}" \
+        "${uart_fatfs_profile}" "${np2_dosio_probe}" \
+        "${np2_vfs_fixture_profile}" "${np2_reduced_extmem8}" \
+        "${np2_video_profile}" "${np2_presentation_profile}"
     (
         cd -- "${FIRMWARE_DIR}"
-        if [[ ! -f "${sdkconfig_path}" ]]; then
-            idf.py -B "${build_dir}" -D "SDKCONFIG=${sdkconfig_path}" set-target esp32p4
+        unset STORAGE_FATFS_PROBE STORAGE_FATFS_CI_BOUNDED UART_FATFS_PROFILE \
+            NP2_DOSIO_PROBE NP2_VFS_FIXTURE_PROFILE NP2_REDUCED_EXTMEM8 \
+            NP2_VIDEO_PROFILE NP2_PRESENTATION_PROFILE
+        local set_target_started=0
+        local set_target_finished=0
+        local reconfigure_started
+        local reconfigure_finished
+        local build_started
+        local build_finished
+        if [[ ! -f "${sdkconfig_path}" || ! -f "${build_dir}/CMakeCache.txt" ]]; then
+            set_target_started="$(date +%s%N)"
+            idf.py -B "${build_dir}" \
+                -D "SDKCONFIG=${sdkconfig_path}" \
+                -D CCache_ENABLE=0 \
+                -D IDF_TARGET=esp32p4 set-target esp32p4
+            set_target_finished="$(date +%s%N)"
         fi
         check_firmware_sdkconfig "${sdkconfig_path}"
+        reconfigure_started="$(date +%s%N)"
         idf.py "${cmake_args[@]}" reconfigure
+        reconfigure_finished="$(date +%s%N)"
         check_firmware_sdkconfig "${sdkconfig_path}"
+        build_started="$(date +%s%N)"
         idf.py "${cmake_args[@]}" build
+        build_finished="$(date +%s%N)"
+        local set_target_seconds=0
+        if (( set_target_started != 0 )); then
+            set_target_seconds="$(awk -v start="${set_target_started}" -v end="${set_target_finished}" 'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+        fi
+        local reconfigure_seconds
+        local build_seconds
+        local total_seconds
+        reconfigure_seconds="$(awk -v start="${reconfigure_started}" -v end="${reconfigure_finished}" 'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+        build_seconds="$(awk -v start="${build_started}" -v end="${build_finished}" 'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+        local total_started="${set_target_started}"
+        if (( total_started == 0 )); then
+            total_started="${reconfigure_started}"
+        fi
+        total_seconds="$(awk -v start="${total_started}" -v end="${build_finished}" 'BEGIN { printf "%.3f", (end - start) / 1000000000 }')"
+        printf 'STEP6A_PROFILE_BUILD_TIMING mode=%s profile=%s set_target_seconds=%s reconfigure_seconds=%s build_seconds=%s total_seconds=%s\n' \
+            "${STEP6A_PROFILE_BUILD_MODE}" "${profile}" \
+            "${set_target_seconds}" "${reconfigure_seconds}" \
+            "${build_seconds}" "${total_seconds}"
     )
     check_app_size "${profile}" "${build_dir}"
+    emit_profile_artifact_diagnostics "${profile}" "${build_dir}"
+}
+
+emit_profile_artifact_diagnostics() {
+    local profile="$1"
+    local build_dir="$2"
+    local app_binary="${build_dir}/esp_np2kai.bin"
+    local app_size
+    local app_sha256
+    local sdkconfig_sha256
+    local cmake_cache_sha256
+    local compile_commands_sha256
+    local partition_sha256
+    local bootloader_size
+    local profile_definitions
+    app_size="$(stat -c '%s' "${app_binary}")"
+    app_sha256="$(sha256sum "${app_binary}" | awk '{print $1}')"
+    sdkconfig_sha256="$(sha256sum "${build_dir}/sdkconfig" | awk '{print $1}')"
+    cmake_cache_sha256="$(sha256sum "${build_dir}/CMakeCache.txt" | awk '{print $1}')"
+    compile_commands_sha256="$(sha256sum "${build_dir}/compile_commands.json" | awk '{print $1}')"
+    partition_sha256="$(sha256sum "${build_dir}/partition_table/partition-table.bin" | awk '{print $1}')"
+    bootloader_size="$(stat -c '%s' "${build_dir}/bootloader/bootloader.bin")"
+    profile_definitions="$(rg -o -- '-D(STORAGE_FATFS_PROBE|STORAGE_FATFS_CI_BOUNDED|UART_FATFS_PROFILE|NP2_DOSIO_PROBE|NP2_VFS_FIXTURE_PROFILE|NP2_REDUCED_EXTMEM8|NP2_VIDEO_PROFILE|NP2_PRESENTATION_PROFILE|STORAGE_FATFS_TEST_HOOKS)(=[^ ]+)?' "${build_dir}/compile_commands.json" | sort -u | paste -sd, - || true)"
+    printf 'STEP6A_PROFILE_ARTIFACT mode=%s profile=%s app_size=%s app_sha256=%s sdkconfig_sha256=%s cmake_cache_sha256=%s compile_commands_sha256=%s partition_sha256=%s bootloader_size=%s profile_definitions=%s\n' \
+        "${STEP6A_PROFILE_BUILD_MODE}" "${profile}" "${app_size}" \
+        "${app_sha256}" "${sdkconfig_sha256}" "${cmake_cache_sha256}" \
+        "${compile_commands_sha256}" "${partition_sha256}" \
+        "${bootloader_size}" "${profile_definitions:--}"
+}
+
+capture_storage_profile_state() {
+    local build_dir="$1"
+    STORAGE_PROFILE_STATE_CAPTURED=1
+    STORAGE_PROFILE_SDKCONFIG_SHA256="$(sha256sum "${build_dir}/sdkconfig" | awk '{print $1}')"
+    STORAGE_PROFILE_CMAKE_CACHE_SHA256="$(sha256sum "${build_dir}/CMakeCache.txt" | awk '{print $1}')"
+    STORAGE_PROFILE_COMPILE_COMMANDS_SHA256="$(sha256sum "${build_dir}/compile_commands.json" | awk '{print $1}')"
+    STORAGE_PROFILE_APP_SIZE="$(stat -c '%s' "${build_dir}/esp_np2kai.bin")"
+    STORAGE_PROFILE_APP_SHA256="$(sha256sum "${build_dir}/esp_np2kai.bin" | awk '{print $1}')"
+}
+
+phase_profile_roundtrip() {
+    if [[ "${STEP6A_PROFILE_BUILD_MODE}" != shared ]]; then
+        printf 'STEP6A_PROFILE_ROUNDTRIP mode=%s result=SKIP\n' "${STEP6A_PROFILE_BUILD_MODE}"
+        return 0
+    fi
+    if (( STORAGE_PROFILE_STATE_CAPTURED != 1 )); then
+        fail 'shared profile round-trip has no captured initial storage state'
+        return 1
+    fi
+    local build_dir="${SHARED_PROFILE_BUILD_DIR}"
+    printf 'STEP6A_PROFILE_ROUNDTRIP start=storage-provider end=storage-provider\n'
+    build_profile storage-provider-roundtrip "${build_dir}" \
+        STORAGE_FATFS_PROBE STORAGE_FATFS_CI_BOUNDED
+    local sdkconfig_sha256
+    local cmake_cache_sha256
+    local compile_commands_sha256
+    local app_size
+    local app_sha256
+    sdkconfig_sha256="$(sha256sum "${build_dir}/sdkconfig" | awk '{print $1}')"
+    cmake_cache_sha256="$(sha256sum "${build_dir}/CMakeCache.txt" | awk '{print $1}')"
+    compile_commands_sha256="$(sha256sum "${build_dir}/compile_commands.json" | awk '{print $1}')"
+    app_size="$(stat -c '%s' "${build_dir}/esp_np2kai.bin")"
+    app_sha256="$(sha256sum "${build_dir}/esp_np2kai.bin" | awk '{print $1}')"
+    [[ "${sdkconfig_sha256}" == "${STORAGE_PROFILE_SDKCONFIG_SHA256}" ]] || {
+        fail 'shared profile round-trip changed sdkconfig state'
+        return 1
+    }
+    [[ "${cmake_cache_sha256}" == "${STORAGE_PROFILE_CMAKE_CACHE_SHA256}" ]] || {
+        fail 'shared profile round-trip changed CMake cache state'
+        return 1
+    }
+    [[ "${compile_commands_sha256}" == "${STORAGE_PROFILE_COMPILE_COMMANDS_SHA256}" ]] || {
+        fail 'shared profile round-trip changed compile command state'
+        return 1
+    }
+    [[ "${app_size}" == "${STORAGE_PROFILE_APP_SIZE}" ]] || {
+        fail 'shared profile round-trip changed app size'
+        return 1
+    }
+    [[ "${app_sha256}" == "${STORAGE_PROFILE_APP_SHA256}" ]] || {
+        fail 'shared profile round-trip changed app binary state'
+        return 1
+    }
+    printf 'STEP6A_PROFILE_ROUNDTRIP mode=shared result=PASS sdkconfig_sha256=%s cmake_cache_sha256=%s compile_commands_sha256=%s app_size=%s app_sha256=%s\n' \
+        "${sdkconfig_sha256}" "${cmake_cache_sha256}" \
+        "${compile_commands_sha256}" "${app_size}" "${app_sha256}"
 }
 
 build_storage_image() {
@@ -213,6 +409,8 @@ assert_vfs_result() {
 }
 
 phase_preflight() {
+    printf 'STEP6A_PROFILE_BUILD_MODE mode=%s selector_env_reset=%s\n' \
+        "${STEP6A_PROFILE_BUILD_MODE}" "${PROFILE_SELECTOR_ENV_VARS}"
     if ! command -v idf.py >/dev/null 2>&1; then
         # ESP-IDF export.sh defines idf.py as a shell function. A workflow
         # invokes this helper as a child shell, so re-source the existing
@@ -259,7 +457,8 @@ phase_raw_reduced() {
 }
 
 phase_storage_provider() {
-    local build_dir="${RUN_ROOT}/storage-provider"
+    local build_dir
+    build_dir="$(selected_profile_build_dir "${RUN_ROOT}/storage-provider")"
     local image="${RUN_ROOT}/storage-provider.bin"
     local log_path="${RUN_ROOT}/storage-provider.log"
     build_profile storage-provider "${build_dir}" STORAGE_FATFS_PROBE STORAGE_FATFS_CI_BOUNDED
@@ -278,10 +477,14 @@ phase_storage_provider() {
     require_log "${log_path}" 'STORAGEFATFS_MOUNT_CLEANUP unmount_failure=state_retained'
     require_log "${log_path}" 'STORAGEFATFS_REMOUNT persisted=1 sha256_match=1'
     require_log "${log_path}" 'STORAGEFATFS_RESULT=PASS'
+    if [[ "${STEP6A_PROFILE_BUILD_MODE}" == shared ]]; then
+        capture_storage_profile_state "${build_dir}"
+    fi
 }
 
 phase_file_transfer() {
-    local build_dir="${RUN_ROOT}/uart-fatfs"
+    local build_dir
+    build_dir="$(selected_profile_build_dir "${RUN_ROOT}/uart-fatfs")"
     local base_image="${RUN_ROOT}/uart-fatfs-base.bin"
     build_profile uart-fatfs "${build_dir}" UART_FATFS_PROFILE
     build_storage_image "${build_dir}" "${base_image}"
@@ -346,7 +549,8 @@ phase_file_transfer() {
 }
 
 phase_dosio() {
-    local build_dir="${RUN_ROOT}/dosio"
+    local build_dir
+    build_dir="$(selected_profile_build_dir "${RUN_ROOT}/dosio")"
     local image="${RUN_ROOT}/dosio.bin"
     local log_path="${RUN_ROOT}/dosio.log"
     build_profile dosio "${build_dir}" NP2_DOSIO_PROBE
@@ -366,7 +570,8 @@ phase_dosio() {
 }
 
 phase_vfs_np2() {
-    local build_dir="${RUN_ROOT}/vfs"
+    local build_dir
+    build_dir="$(selected_profile_build_dir "${RUN_ROOT}/vfs")"
     local normal_image="${RUN_ROOT}/vfs-normal.bin"
     local normal_log="${RUN_ROOT}/vfs-normal.log"
     build_profile vfs "${build_dir}" NP2_REDUCED_EXTMEM8 NP2_VFS_FIXTURE_PROFILE
@@ -412,13 +617,18 @@ phase_size_summary() {
 }
 
 cd -- "${REPOSITORY_ROOT}"
+validate_profile_build_mode
 run_phase preflight phase_preflight
 run_phase raw-reduced phase_raw_reduced
 run_phase storage-provider phase_storage_provider
 run_phase file-transfer phase_file_transfer
 run_phase dosio phase_dosio
 run_phase vfs-np2-and-poison phase_vfs_np2
+run_phase profile-roundtrip phase_profile_roundtrip
 run_phase application-size-summary phase_size_summary
+
+printf 'STEP6A_TOTAL mode=%s elapsed_seconds=%s\n' \
+    "${STEP6A_PROFILE_BUILD_MODE}" "$(( $(date +%s) - TOTAL_START ))"
 
 printf '\nSTEP6A_CI_RESULT=PASS\n'
 printf 'raw_reduced=PASS\n'
