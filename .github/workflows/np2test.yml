@@ -266,6 +266,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Restore pinned ESP-IDF source
+        id: cache-idf-source
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/esp-idf-v5.5.4
+          key: ${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04-esp-idf-source-v1-esp32p4-recursive-v5.5.4-735507283d5b2f9fb363a1901172dbd9e847945d
+
       - name: Provision NASM
         run: |
           sudo apt-get update
@@ -301,9 +308,30 @@ jobs:
           readonly emu_installer="${RUNNER_TEMP}/esp-emu-install.sh"
           readonly emu_installer_sha256="7d116867e9a54b8ab90b12fffec93eb5782b3b01f74191078be5278fa6fd5688"
 
-          git clone --depth 1 --branch "${ESP_IDF_VERSION}" --recursive \
-            https://github.com/espressif/esp-idf.git "${idf_root}"
+          printf 'ESP_IDF_SOURCE_CACHE_HIT=%s\n' \
+            "${{ steps.cache-idf-source.outputs.cache-hit }}"
+          if [[ -e "${idf_root}" ]]; then
+            [[ -d "${idf_root}/.git" ]] || {
+              printf 'ERROR: cached ESP-IDF path is not a Git checkout: %s\n' "${idf_root}" >&2
+              exit 1
+            }
+          else
+            git clone --depth 1 --branch "${ESP_IDF_VERSION}" --recursive \
+              https://github.com/espressif/esp-idf.git "${idf_root}"
+          fi
+
           test "$(git -C "${idf_root}" rev-parse HEAD)" = "${idf_commit}"
+          test -z "$(git -C "${idf_root}" status --porcelain=v1 --untracked-files=all)"
+          git -C "${idf_root}" diff --quiet
+          submodule_status="$(git -C "${idf_root}" submodule status --recursive)"
+          if grep -Eq '^[+-U]' <<<"${submodule_status}"; then
+            printf 'ERROR: cached ESP-IDF checkout has an incomplete or mismatched submodule\n' >&2
+            printf '%s\n' "${submodule_status}" >&2
+            exit 1
+          fi
+          git -C "${idf_root}" submodule foreach --quiet --recursive \
+            'git diff --quiet && test -z "$(git status --porcelain=v1 --untracked-files=all)"'
+
           "${idf_root}/install.sh" esp32p4
           source "${idf_root}/export.sh"
           test "$(idf.py --version)" = "ESP-IDF v5.5.4"
