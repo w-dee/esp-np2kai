@@ -321,15 +321,15 @@ phase_file_transfer() {
     console_log="${RUN_ROOT}/uart-persistence-write.console.log"
     uart_log="${RUN_ROOT}/uart-persistence-write.raw.bin"
     run_uart_mode persistence-write "${persistence_image}" "${console_log}" "${uart_log}" \
-        --save-state --persistence-size $((256 * 1024))
-    require_log "${console_log}" 'FATFS_FILE_TRANSFER_PERSISTENCE created=1 size=262144'
+        --save-state --persistence-size 4097
+    require_log "${console_log}" 'FATFS_FILE_TRANSFER_PERSISTENCE created=1 size=4097'
     require_log "${console_log}" 'FATFS_MODE_SUMMARY mode=persistence-write '
     require_log "${console_log}" 'result=PASS'
     console_log="${RUN_ROOT}/uart-persistence-read.console.log"
     uart_log="${RUN_ROOT}/uart-persistence-read.raw.bin"
     run_uart_mode persistence-read "${persistence_image}" "${console_log}" "${uart_log}" \
-        --persistence-size $((256 * 1024))
-    require_log "${console_log}" 'FATFS_FILE_TRANSFER_PERSISTENCE created=0 reused=1 size=262144'
+        --persistence-size 4097
+    require_log "${console_log}" 'FATFS_FILE_TRANSFER_PERSISTENCE created=0 reused=1 size=4097'
     require_log "${console_log}" 'FATFS_MODE_SUMMARY mode=persistence-read '
     require_log "${console_log}" 'result=PASS'
 

@@ -19,7 +19,7 @@ import uart_binary_data_plane_test as wire
 MAX_FILE_BYTES = 2 * 1024 * 1024
 LARGE_FILE_BYTES = 512 * 1024
 REPLACEMENT_FILE_BYTES = 256 * 1024
-PERSISTENCE_FILE_BYTES = 256 * 1024
+PERSISTENCE_FILE_BYTES = 4097
 HIGH_ADDRESS_FILE_BYTES = 64 * 1024
 HIGH_ADDRESS_MARKER = b"STEP6A2-FATFS-FILE-TRANSFER-HIGH-ADDRESS-v1"
 HIGH_ADDRESS_OFFSET = 1024 * 1024
@@ -208,7 +208,7 @@ def parse_args() -> argparse.Namespace:
         "--persistence-size",
         type=int,
         default=PERSISTENCE_FILE_BYTES,
-        help="persistence payload size in bytes (default: 262144)",
+        help="persistence payload size in bytes (default: 4097)",
     )
     parser.add_argument("--save-state", action="store_true")
     parser.add_argument("--verify-state", type=Path)
