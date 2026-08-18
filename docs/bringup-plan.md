@@ -171,41 +171,95 @@ The Step 6A SPI-NOR FATFS backend is not the final physical microSD backend.
 There is no real P4 hardware storage validation yet, including P4-NANO,
 TAB5, or ESP32-S31.
 
-## After physical hardware arrival: board features
+## Step 6C: UART File Transfer to physical media — FUTURE
 
-The following work is intentionally scheduled after Steps 4, 5, and the
-completed emulator-only Step 6A. Physical storage starts at Step 6B above.
+Step 6C is the hardware-dependent continuation of storage work. It requires
+real ESP32-P4 hardware and covers:
 
-### Step 7: UART transfer to real SD
+- upload/download through the UART control/data path to physical media; and
+- real-media durability, removal, and error handling.
 
-- upload/download through the UART control/data path
-- real-media durability and error handling
+The emulator UART and FATFS results do not validate this stage.
 
-### Step 8: Display
+## Step 7A: headless guest framebuffer and deterministic video oracles — COMPLETE
 
-The initial P4-NANO target is:
+Step 7A is implemented and verified without a physical display. The guest
+surface is RGB565LE with dynamic geometry; 640x400 is the approved tested
+geometry, and the ESP32-P4 surface is stored in external PSRAM. Ubuntu-native
+and ESP32-P4 / `esp-emu` validation covers three descriptor-selected scenes:
 
-- 640x400 guest framebuffer
-- RGB565
-- 2x scaling to 1280x800
-- 30 fps
-- one framebuffer
+- scene 1, deterministic text rendering;
+- scene 2, deterministic direct graphics-VRAM writes; and
+- scene 3, actual slave-GDC drawing commands.
 
-The 2x/1280x800 arrangement is a board bring-up target, not a global emulator
-assumption. The TAB5 physical display is 1280x720, so guest framebuffer
-dimensions and physical display policy remain separate.
+The GDC scene uses the vendor-backed command path rather than direct-VRAM
+emulation and currently covers VECTL-based primitives only. VECTR, circles,
+fills, GRCG, EGC, and GDC text drawing remain outside the approved scope. Step
+7A is not a claim of complete PC-98 graphics or complete uPD7220 behavior.
 
-### Step 9: USB HID and input
+## Step 7B: presentation boundary
 
-- USB keyboard
-- USB mouse
-- touch coordinates where board support is available
+Step 7B separates the mutable guest framebuffer from a future asynchronous
+platform consumer. The software-only presentation boundary is complete through
+Step 7B.1c; physical display output is Step 7B.2 below.
 
-### Step 10: Audio
+### Step 7B.1a: portable two-slot publisher / Ubuntu contract — COMPLETE
 
-- beep
-- SSG
-- FM
-- YM2608 rhythm
-- ADPCM
-- PCM86
+The Ubuntu-native C11 publisher provides two caller-owned slots, latest-frame-
+wins ownership, pending-frame coalescing, immutable acquired frames, bounded
+synchronization, and resize/generation lifetime independent of the guest
+framebuffer.
+
+### Step 7B.1b: ESP32-P4 FreeRTOS / esp-emu integration — COMPLETE
+
+The ESP32-P4 presentation probe validates external-PSRAM guest and presentation
+storage, a dedicated FreeRTOS producer/consumer path, lock-free 32-bit slot
+state atomics in the tested toolchain, acquired-frame immutability, coalescing,
+and the 320x200 resize/generation case. This is emulator evidence only and is
+not physical display validation.
+
+### Step 7B.1c: GitHub Actions continuous validation — COMPLETE
+
+The existing Ubuntu and ESP32-P4 video jobs now include the portable
+presentation contract, ESP log-validator self-test, profile-isolation check,
+and ESP presentation runtime contract. The CI configuration reuses the pinned
+ESP-IDF v5.5.4 and esp-emu v0.39.0 environment.
+
+### Step 7B.2: physical ESP32-P4 display output — BLOCKED / DEFERRED UNTIL REAL HARDWARE ARRIVES
+
+The next P4-NANO bring-up stage is intentionally paused until physical
+ESP32-P4 hardware is available. The first tasks are:
+
+- confirm the actual board revision;
+- verify actual PSRAM size and allocation behavior;
+- verify formal `EXTMEM=13` runtime on real 32 MiB PSRAM hardware;
+- inspect and bring up the actual LCD/panel wiring;
+- apply the planned PPA exact 640x400 -> 1280x800 2x policy;
+- choose the physical output-buffer strategy;
+- initialize MIPI-DSI and the panel;
+- verify cache/DMA coherency;
+- consume presentation slots asynchronously;
+- measure tearing behavior, timing, and bandwidth; and
+- pursue an approximately 30 displayed-fps bring-up target.
+
+The 30 fps figure is a bring-up target, not a proven result. PPA, MIPI-DSI,
+panel operation, physical timing, tearing-free output, bandwidth, and hardware
+performance have not been validated.
+
+## Hardware pause boundary
+
+The software-only portion through Step 7B.1c is complete. Further board-facing
+work is intentionally paused until physical ESP32-P4 hardware is available.
+This includes Step 6B physical storage, Step 6C physical-media transfer, Step
+7B.2 physical display, Step 8 physical input, and Step 9 physical audio. The
+portable emulator, host, and documentation work can continue independently.
+
+## Step 8: USB HID / input — FUTURE, hardware required
+
+The future input stage covers USB keyboard, USB mouse, and touch coordinates
+where board support is available. No physical input transport is validated.
+
+## Step 9: audio — FUTURE, hardware required
+
+The future audio stage covers beep, SSG, FM, YM2608 rhythm, ADPCM, and PCM86
+output policy and board integration. No physical audio path is validated.

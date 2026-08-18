@@ -34,4 +34,5 @@ The human-approved direct CPU-VRAM scene is authoritative through
 `golden.json`, which records the deterministic raw HDM SHA-256 and the
 RGB565LE framebuffer metadata and CRC32. The BMP remains diagnostic-only and
 is never part of the golden identity. The fixture covers no GDC drawing
-commands; Step 7A.3d remains future work.
+commands; the separate Step 7A.3d fixture documents the actual slave-GDC
+drawing-command path.

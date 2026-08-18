@@ -156,8 +156,58 @@ runner. NASM is required when regenerating and validating the guest fixture via
 the `tests/guest/np2test` build path.
 
 The validation order remains host native first, then ESP32-P4 firmware and
-integration through `esp-emu`, then real hardware. The host result is not an
-`esp-emu` or physical-board result.
+integration through `esp-emu`, then real hardware. The headless framebuffer and
+portable presentation contracts are now complete in the first two layers; the
+physical display, storage, input, audio, timing, and performance branches
+remain hardware work. The host result is not an `esp-emu` or physical-board
+result.
+
+## Current headless video and presentation validation
+
+These are the current representative entry points for the completed Step 7A
+and Step 7B.1 headless contracts.
+
+### Ubuntu-native
+
+```bash
+make -C host test-presentation-contract
+make -C host test-video-runner-golden
+make -C host test-video-gfx-vram-golden
+make -C host test-video-gdc-golden
+make -C host test-video-golden-checker
+```
+
+The video commands validate the text, direct-VRAM, and actual GDC
+drawing-command reference paths. They do not validate a physical display.
+
+### ESP32-P4 presentation
+
+Activate the pinned environment before running the ESP checks:
+
+```bash
+source <pinned-ESP-IDF-v5.5.4>/export.sh
+export ESP_EMU=<pinned-esp-emu-v0.39.0>
+bash tools/emu/test-np2presentation-profile.sh
+python3 tools/emu/test_validate_np2presentation_log.py
+bash tools/emu/test-np2presentation.sh
+```
+
+The profile-isolation test confirms that the dedicated
+`NP2_PRESENTATION_PROFILE` is selected independently. The log validator
+self-test is host-side; the presentation runtime test validates the
+ESP32-P4 / FreeRTOS / `esp-emu` contract.
+
+### ESP32-P4 video
+
+```bash
+bash tools/emu/test-np2video-golden.sh
+bash tools/emu/test-np2video-golden.sh --fixture gfx-vram
+bash tools/emu/test-np2video-golden.sh --fixture gdc
+```
+
+Each invocation selects its descriptor and builds its oracle independently.
+The approved descriptors remain the source of fixture identity and expected
+framebuffer metadata.
 
 ## Development targets
 
@@ -165,12 +215,14 @@ The intended progression is:
 
 1. Binary Data Plane, File Transfer Base/virtual storage, and NP2kai snapshot
    verification (completed foundations).
-2. Ubuntu native builds and tests for the bounded portable emulator core
-   (completed Step 4 milestone).
-3. `esp-emu` for the ESP32-P4 headless core, FreeRTOS, RISC-V integration, and
-   headless regression.
-4. After physical hardware arrival, ESP32-P4-NANO-KIT-D and M5Stack TAB5 board
-   features, including storage, display, input, and audio.
+2. Ubuntu-native core, framebuffer, and presentation validation (completed
+   Step 4, Step 7A, and Step 7B.1a milestones).
+3. ESP32-P4 `esp-emu` firmware, FreeRTOS, RISC-V, video, and presentation
+   validation (completed Step 5, Step 7A, Step 7B.1b, and Step 7B.1c
+   milestones).
+4. After physical hardware arrival, ESP32-P4-NANO-KIT-D and M5Stack TAB5
+   board validation for storage, display, input, and audio (future Step 6B,
+   Step 6C, Step 7B.2, Step 8, and Step 9 work).
 
 ESP32-S31 / S31 Korvo-1 is a possible future portability target only. It is not
 part of the current bring-up sequence and is not implemented, tested, or
@@ -317,3 +369,15 @@ The future firmware should remain capable of headless operation so CPU,
 memory, timer, UART, and other emulator-core tests can run without display or
 audio hardware. `esp-emu` performance is not representative of real ESP32-P4
 hardware performance.
+
+## CI structure
+
+The workflow currently has five jobs. Presentation checks are integrated into
+the existing video jobs rather than provisioned as a separate job.
+
+The Ubuntu-native video job covers deterministic fixture preparation,
+framebuffer goldens, the portable presentation contract, and the ESP
+presentation-log validator self-test. The ESP32-P4 / `esp-emu` video job covers
+presentation profile isolation, text golden, direct-VRAM golden, GDC golden,
+and the ESP presentation contract. The other headless, reduced Stage-1, and
+fixture jobs retain their separate scopes.

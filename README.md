@@ -40,6 +40,62 @@ confirmed that the VFS run used the independent FATFS fixture source. Step 6B,
 physical ESP32-P4 microSD/SDMMC integration, remains future work; formal
 `EXTMEM=13` remains native-only.
 
+### Step 7A: headless guest framebuffer and video oracles — COMPLETE
+
+Step 7A provides an implemented and verified headless RGB565LE guest
+framebuffer boundary. The guest framebuffer has dynamic geometry and the ESP32-P4
+implementation stores it in external PSRAM. The tested guest geometry is
+640x400; no physical display backend is connected yet.
+
+Three deterministic video oracles are approved and continuously checked:
+
+- scene 1: deterministic text renderer, CRC `0x0a280896`;
+- scene 2: deterministic direct graphics-VRAM scene, CRC `0x4fa8c690`; and
+- scene 3: actual slave-GDC drawing-command VECTL scene, CRC `0x10ea77dd`.
+
+All three have Ubuntu-native framebuffer goldens and are validated under
+ESP32-P4 RISC-V `esp-emu` v0.39.0 and GitHub Actions. These oracles validate
+the tested rendering paths only; they are not a claim of complete PC-98
+graphics support or complete uPD7220/GDC behavior.
+
+### Step 7B.1: portable presentation boundary — COMPLETE
+
+Step 7B.1 safely hands renderer output to a future asynchronous platform
+consumer:
+
+```text
+one mutable NP2 guest RGB565 framebuffer
+        -> synchronous publication copy at scrnmng unlock
+portable two-slot presentation publisher
+        -> immutable ACQUIRED presentation frame
+future platform/board display consumer
+```
+
+The publisher has one producer and one consumer, uses `FREE`, `WRITING`,
+`PENDING`, and `ACQUIRED` ownership states, and applies latest-frame-wins
+coalescing. It never overwrites an `ACQUIRED` frame, waits for the consumer,
+allocates per frame, or exposes the mutable guest framebuffer pointer to the
+consumer. Detailed ownership, ordering, and resize rules are documented in
+[`docs/architecture.md`](docs/architecture.md).
+
+Step 7B.1a is the Ubuntu portable publisher contract. Step 7B.1b validates
+the same contract on ESP32-P4 / FreeRTOS / `esp-emu`, including a guest
+framebuffer and exactly two external-PSRAM presentation slots in the tested
+640x400 case, lock-free 32-bit slot-state atomics in that toolchain, an
+independent consumer, immutable acquired frames, coalescing, and resize /
+generation lifetime. Step 7B.1c wires those checks into continuous CI. These
+are current Ubuntu x86_64 and ESP32-P4 RISC-V / `esp-emu` results only; the
+slot size and memory telemetry are test evidence, not universal constants.
+
+## Current hardware boundary
+
+The software-only headless video and presentation work through Step 7B.1c is
+complete. Physical-board work is paused until real ESP32-P4 hardware arrives.
+PPA, MIPI-DSI, a physical LCD panel, real display timing, tearing behavior,
+physical bandwidth, and real hardware performance have not been validated.
+Physical storage, input, and audio branches remain future hardware-dependent
+work; this pause does not make unrelated software development impossible.
+
 The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
 configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
 TAB5 revision compatibility remains unverified.
@@ -70,12 +126,13 @@ separate Step 6A result above and is not microSD or physical-media validation.
 
 ## Development model
 
-The emulator core will remain portable and separate from Espressif-common,
-SoC-specific, and board-specific code. Development targets are Ubuntu native
-builds/tests, SoC/emulator integration where supported, the P4-NANO board, and
-the TAB5. The architecture should leave room for a future ESP32-S31
-implementation without making S31 current work. The future firmware will also
-support headless operation for core and integration tests.
+The emulator core remains portable and separate from Espressif-common,
+SoC-specific, and board-specific code. Current development progresses from
+Ubuntu-native core/video/presentation validation, through ESP32-P4
+`esp-emu` firmware/video/presentation validation, to real ESP32-P4 board
+validation. The P4-NANO, TAB5, and future ESP32-S31 targets remain distinct
+platform or board scopes. The firmware remains capable of headless operation
+for core and integration tests.
 
 ## Initial toolchain baseline
 
@@ -90,7 +147,44 @@ The project does not use a PlatformIO-installed ESP-IDF environment.
 New firmware C++ is explicitly compiled as GNU C++20. C++ exceptions and RTTI
 are disabled, and the firmware does not use `iostream`.
 
-The four verified emulator checks retain separate scopes:
+## Representative current validation entry points
+
+The following commands cover the current headless video and presentation
+contracts; they are representative entry points rather than an exhaustive
+script catalog.
+
+Ubuntu-native checks:
+
+- [`tools/emu/test-step6a-ci.sh`](tools/emu/test-step6a-ci.sh) covers the
+  pinned Step 6A emulator storage regression.
+- `make -C host test-presentation-contract` checks the portable presentation
+  publisher and the synchronous headless scrnmng publication contract.
+- `make -C host test-video-runner-golden` checks the text framebuffer golden.
+- `make -C host test-video-gfx-vram-golden` checks the direct-VRAM golden.
+- `make -C host test-video-gdc-golden` checks the GDC drawing-command golden.
+- `make -C host test-video-golden-checker` checks golden descriptor/log
+  support.
+
+ESP32-P4 presentation checks use the pinned ESP-IDF v5.5.4 and esp-emu
+v0.39.0 environment:
+
+```sh
+source <pinned-ESP-IDF-v5.5.4>/export.sh
+export ESP_EMU=<pinned-esp-emu-v0.39.0>
+bash tools/emu/test-np2presentation-profile.sh
+python3 tools/emu/test_validate_np2presentation_log.py
+bash tools/emu/test-np2presentation.sh
+```
+
+ESP32-P4 video checks select and build each oracle independently:
+
+```sh
+bash tools/emu/test-np2video-golden.sh
+bash tools/emu/test-np2video-golden.sh --fixture gfx-vram
+bash tools/emu/test-np2video-golden.sh --fixture gdc
+```
+
+The earlier UART and file-transfer entry points retain their separate scopes:
 
 - [`tools/emu/test-hello-world.sh`](tools/emu/test-hello-world.sh) verifies
   basic ESP-IDF build, merge, boot, and the Hello World marker.
@@ -102,22 +196,24 @@ The four verified emulator checks retain separate scopes:
 - [`tools/emu/test-file-transfer-base.sh`](tools/emu/test-file-transfer-base.sh)
   preserves the earlier regressions and verifies the RAM-backed file service.
 
-All four checks are bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for this
-milestone.
+These ESP32-P4 checks are bound to ESP-IDF v5.5.4 and esp-emu v0.39.0 for
+this milestone.
 
 ## Validation stages
 
 Validation is organized in three layers:
 
-1. **Ubuntu-native** — fastest portable-core and reference validation. The
-   bounded Step 4 NP2kai execution belongs to this layer.
+1. **Ubuntu-native** — fastest portable-core, framebuffer, and presentation
+   reference validation. The bounded Step 4 NP2kai execution and Step 7A /
+   Step 7B.1a contracts belong to this layer.
 2. **Espressif `esp-emu`** — ESP32-P4 firmware and integration validation. The
-   current Hello World, UART/data/file checks, raw fixture check, and reduced
-   Stage-1 check are results for this layer. The reduced Stage-1 result is
-   explicitly non-formal; formal `EXTMEM=13` runtime validation remains
-   blocked by the current emulator memory model.
+   current Hello World, UART/data/file checks, raw fixture check, reduced
+   Stage-1 check, Step 7A video oracles, and Step 7B.1b presentation contract
+   are results for this layer. The reduced Stage-1 result is explicitly
+   non-formal; formal `EXTMEM=13` runtime validation remains blocked by the
+   current emulator memory model.
 3. **Real ESP32-P4 hardware** — unsupported peripherals, real timing,
-   performance, and board transport validation.
+   performance, board transport, and physical display/storage validation.
 
 Ubuntu-native success is not a substitute for `esp-emu` or hardware validation.
 The verified `esp-emu` path is specifically an ESP32-P4 result, and its

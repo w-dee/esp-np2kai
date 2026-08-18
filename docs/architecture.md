@@ -228,23 +228,135 @@ from physical USB HID, UART debug/control injection, or another board-specific
 input path. The transport and device details remain below the portable input
 boundary.
 
-## Display and audio boundaries
+## Video framebuffer and presentation boundary
 
-The emulator side exposes a guest framebuffer independently of the physical
-output backend. Upper layers must not assume MIPI-DSI, a particular LCD
-controller, 1280x800, 1280x720, ESP32-P4 PPA, or any P4-specific display handle
-type.
+Step 7A implements one mutable guest framebuffer owned by `scrnmng`. It uses
+RGB565LE data, dynamic guest geometry, and an ESP32-P4 implementation backed by
+external PSRAM. Step 7B.1 implements the portable presentation boundary below
+the renderer and above any physical display policy:
 
-P4-NANO is currently planned with a 1280x800 physical display, suitable for a
-2x display of a 640x400 guest framebuffer. TAB5 has different physical display
-geometry. These are board-specific facts, not global emulator assumptions.
-Scaling, rotation, pixel transfer, buffering, and display-driver selection
-belong below the portable display boundary.
+```text
+NP2 / NP2kai renderer
+        |
+        v
+scrnmng single mutable guest framebuffer
+  RGB565LE
+        |
+        | synchronous borrowed view during scrnmng_surfunlock()
+        v
+portable np2_presentation publisher
+  two caller-owned slots
+        |
+        v
+immutable ACQUIRED frame
+        |
+        v
+future platform / SoC presentation consumer
+        |
+        v
+future board display policy
+        |
+        v
+future physical panel
+```
 
-Similarly, emulated sound generation feeds a generic audio output boundary.
-Codec type, I2S/TDM implementation, DMA details, and board wiring belong below
-that boundary. No specific P4-NANO or TAB5 codec implementation should leak
-into the emulator architecture.
+The first four stages are implemented and verified by Ubuntu-native tests and
+ESP32-P4 / FreeRTOS / `esp-emu` probes. The last three stages are the future
+physical-output path; the ESP32-P4 consumer probe validates ownership and
+concurrency behavior, not a display driver or panel.
+
+The portable publisher has exactly two caller-owned presentation slots in the
+tested contract. It uses the states `FREE`, `WRITING`, `PENDING`, and
+`ACQUIRED`, with one producer and one consumer. The producer reclaims or
+replaces `PENDING` first, otherwise uses `FREE`, and never waits for or
+overwrites `ACQUIRED`. The consumer holds at most one `ACQUIRED` frame, acquires
+the latest pending frame, and releases it back to `FREE`. This is the
+latest-frame-wins policy: pending frames may coalesce, while an acquired frame
+remains immutable. The publisher performs no per-frame allocation, has no
+unbounded queue, and never gives the consumer the guest framebuffer pointer.
+
+### Synchronous scrnmng publication contract
+
+The implemented hook ordering is:
+
+```text
+renderer completes framebuffer writes
+        -> synchronous publish hook
+        -> scrnmng unlock state cleared
+        -> Step 7A surface_update_sequence increment
+        -> pending resize may execute
+```
+
+`SCRNMNG_PUBLISH_VIEW` contains a borrowed guest pointer. It is valid only for
+the synchronous callback and must not be retained. The callback may perform a
+bounded copy, but must not wait for the consumer, allocate, perform normal
+frame logging, or call `scrnmng` reentrantly. The publisher copies compact
+visible RGB565LE rows into its caller-owned slots; its published frame has a
+packed pitch of `width * 2`.
+
+### Framebuffer ownership and lifetime
+
+The guest framebuffer and presentation slots are separate storage domains:
+
+- the guest framebuffer is one mutable renderer-owned `SCRNSURF`, has dynamic
+  geometry, may be reallocated on resize, and is stored in ESP32-P4 PSRAM;
+- presentation storage consists of two independent caller-owned buffers with
+  disjoint backing ranges and an independent lifetime from the guest buffer.
+
+The tested 640x400 RGB565LE contract uses 512000 bytes per presentation slot.
+This is a geometry-derived test value, not a universal allocation constant.
+An already acquired frame remains valid across a guest resize because it owns
+its copied slot. A subsequent publication carries the new source generation.
+If a geometry exceeds the fixed slot capacity, publication may fail or drop
+without becoming a guest renderer failure.
+
+### Presentation sequences and concurrency
+
+The counters have distinct meanings:
+
+- `surface_update_sequence` is the existing Step 7A scrnmng completion/update
+  counter;
+- `published_sequence` advances for successful presentation publications;
+- `coalesced_count` counts pending presentation frames replaced before acquire;
+- `dropped_count` counts submissions that were not published.
+
+None of these is a physical refresh, VSYNC, or displayed-frame count. A future
+physical backend may add a separate presented/displayed sequence.
+
+The publisher is a C11 single-producer/single-consumer implementation using
+32-bit atomic slot states with acquire/release publication ordering. The
+ESP32-P4 / `esp-emu` evidence shows that these 32-bit state atomics are
+lock-free in the tested ESP-IDF v5.5.4 toolchain/runtime. That result is not an
+automatic guarantee for every future architecture. The accepted bounded
+32-bit lease-token wrap domain is an implementation safety limit, not a
+physical display guarantee.
+
+## Physical display boundary
+
+Guest framebuffer geometry must not depend on P4-NANO's planned 1280x800
+panel, TAB5's 1280x720 panel, PPA, MIPI-DSI, LCD driver type, or board pin
+assignments. PPA and MIPI-DSI/LCD APIs are available in ESP-IDF v5.5.4, but this
+project has not integrated or validated them. They belong downstream of the
+immutable presentation frame.
+
+The current P4-NANO policy is a planned exact nearest-neighbor 2x mapping:
+
+```text
+640x400 guest framebuffer -> 1280x800 physical output
+```
+
+It is not implemented or validated. TAB5 requires a separate 1280x720
+viewport/scaling decision. Neither board has physical display, panel timing,
+tearing, bandwidth, PPA, or MIPI-DSI validation. ESP32-S31 / S31 Korvo-1
+remains a future portability target; Step 7B runtime evidence is limited to
+Ubuntu x86_64 and ESP32-P4 RISC-V / `esp-emu`.
+
+## Audio boundary
+
+Emulated sound generation feeds a generic audio output boundary. Codec type,
+I2S/TDM implementation, DMA details, and board wiring belong below that
+boundary. No specific P4-NANO or TAB5 codec implementation has been integrated
+or validated.
 
 ## Storage, input, and connectivity
 
