@@ -312,3 +312,16 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
           bash tools/emu/test-np2video-golden.sh --fixture gfx-vram
+
+      - name: Run ESP32-P4 esp-emu GDC drawing-command golden
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          bash tools/emu/test-np2video-golden.sh --fixture gdc
