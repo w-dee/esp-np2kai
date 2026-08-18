@@ -46,6 +46,10 @@ typedef struct {
 	uint32_t lease;
 } np2_presentation_token;
 
+/* The 32-bit lease skips zero.  A stale-token collision is theoretically
+ * possible only after 2^32 acquisitions of the same slot if an ancient token
+ * is retained; this bounded wrap domain is accepted for Step 7B.1. */
+
 typedef enum {
 	NP2_PRESENTATION_OK = 0,
 	NP2_PRESENTATION_INVALID_ARGUMENT,
@@ -77,6 +81,12 @@ typedef struct {
 	bool initialized;
 } np2_presentation_publisher;
 
+/*
+ * The caller need not pre-zero publisher.  Successful initialization resets
+ * sequence, counters, metadata, and states.  The two supplied backing ranges
+ * must be disjoint and remain valid for the publisher lifetime.  Reinitializing
+ * while producer or consumer operations are active is unsupported.
+ */
 np2_presentation_status np2_presentation_init(
 	np2_presentation_publisher *publisher,
 	const np2_presentation_slot_storage slots[NP2_PRESENTATION_SLOT_COUNT]);

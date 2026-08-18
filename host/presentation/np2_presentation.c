@@ -48,18 +48,24 @@ static bool np2_presentation_ranges_overlap(
 {
 	uintptr_t a_start;
 	uintptr_t b_start;
+	uintptr_t a_length;
+	uintptr_t b_length;
 
 	if ((a_size == 0U) || (b_size == 0U)) {
 		return false;
 	}
 	a_start = (uintptr_t)a;
 	b_start = (uintptr_t)b;
-	if ((a_start > UINTPTR_MAX - a_size) ||
-			(b_start > UINTPTR_MAX - b_size)) {
+	a_length = (uintptr_t)a_size;
+	b_length = (uintptr_t)b_size;
+	if (((size_t)a_length != a_size) ||
+			((size_t)b_length != b_size) ||
+			(a_start > UINTPTR_MAX - a_length) ||
+			(b_start > UINTPTR_MAX - b_length)) {
 		return true;
 	}
-	return (a_start < b_start + b_size) &&
-			(b_start < a_start + a_size);
+	return (a_start < b_start + b_length) &&
+			(b_start < a_start + a_length);
 }
 
 static bool np2_presentation_source_aliases_slot(
@@ -120,6 +126,10 @@ np2_presentation_status np2_presentation_init(
 {
 	unsigned int index;
 
+	if (publisher != NULL) {
+		/* A failed reinitialization must not leave an old object usable. */
+		publisher->initialized = false;
+	}
 	if ((publisher == NULL) || (slots == NULL)) {
 		return NP2_PRESENTATION_INVALID_ARGUMENT;
 	}
@@ -128,6 +138,11 @@ np2_presentation_status np2_presentation_init(
 			return NP2_PRESENTATION_INVALID_ARGUMENT;
 		}
 	}
+	if (np2_presentation_ranges_overlap(slots[0].ptr, slots[0].capacity,
+			slots[1].ptr, slots[1].capacity)) {
+		return NP2_PRESENTATION_ALIAS;
+	}
+	publisher->published_sequence = 0U;
 	for (index = 0U; index < NP2_PRESENTATION_SLOT_COUNT; ++index) {
 		publisher->slots[index] = slots[index];
 		publisher->slot_lease[index] = 0U;

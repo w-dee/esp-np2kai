@@ -44,6 +44,79 @@ static np2_presentation_source_view source_view(const uint8_t *ptr,
 	return source;
 }
 
+static int test_initialization_and_slot_ranges(void)
+{
+	np2_presentation_publisher publisher = {0};
+	np2_presentation_slot_storage slots[NP2_PRESENTATION_SLOT_COUNT];
+	np2_presentation_source_view source;
+	np2_presentation_frame_view view;
+	np2_presentation_token token;
+	uint8_t backing[192];
+	uint8_t distinct0[64];
+	uint8_t distinct1[64];
+	uint8_t pixels[4] = {0x12, 0x34, 0x56, 0x78};
+
+	memset(backing, 0, sizeof(backing));
+	publisher.published_sequence = UINT64_MAX;
+	publisher.initialized = true;
+	if (!check_status(np2_presentation_init(&publisher, NULL),
+			NP2_PRESENTATION_INVALID_ARGUMENT, "failed init status") ||
+			!check(!publisher.initialized, "failed init clears initialized")) {
+		return 0;
+	}
+
+	slots[0].ptr = backing;
+	slots[0].capacity = 64U;
+	slots[1].ptr = backing;
+	slots[1].capacity = 64U;
+	if (!check_status(np2_presentation_init(&publisher, slots),
+			NP2_PRESENTATION_ALIAS, "exact slot alias rejected") ||
+			!check(!publisher.initialized, "alias init leaves publisher unusable")) {
+		return 0;
+	}
+	slots[1].ptr = backing + 32U;
+	if (!check_status(np2_presentation_init(&publisher, slots),
+			NP2_PRESENTATION_ALIAS, "partial slot overlap rejected")) {
+		return 0;
+	}
+	slots[0].capacity = 96U;
+	slots[1].ptr = backing + 16U;
+	slots[1].capacity = 16U;
+	if (!check_status(np2_presentation_init(&publisher, slots),
+			NP2_PRESENTATION_ALIAS, "contained slot range rejected")) {
+		return 0;
+	}
+	slots[0].ptr = backing;
+	slots[0].capacity = 64U;
+	slots[1].ptr = backing + 64U;
+	slots[1].capacity = 64U;
+	if (!check_status(np2_presentation_init(&publisher, slots),
+			NP2_PRESENTATION_OK, "adjacent slot ranges accepted")) {
+		return 0;
+	}
+	slots[0].ptr = distinct0;
+	slots[0].capacity = sizeof(distinct0);
+	slots[1].ptr = distinct1;
+	slots[1].capacity = sizeof(distinct1);
+	if (!check_status(np2_presentation_init(&publisher, slots),
+			NP2_PRESENTATION_OK, "distinct slot ranges accepted")) {
+		return 0;
+	}
+	source = source_view(pixels, 2U, 1U, 4U, 3U, 1U);
+	if (!check_status(np2_presentation_submit(&publisher, &source),
+			NP2_PRESENTATION_OK, "first submit after reset")) {
+		return 0;
+	}
+	if (!check_status(np2_presentation_acquire(&publisher, &view, &token),
+			NP2_PRESENTATION_OK, "first acquire after reset") ||
+			!check(view.published_sequence == 1U,
+				"first publication sequence resets to one")) {
+		return 0;
+	}
+	return check_status(np2_presentation_release(&publisher, &token),
+		NP2_PRESENTATION_OK, "release reset test frame");
+}
+
 static int test_invalid_api(void)
 {
 	np2_presentation_publisher publisher;
@@ -223,7 +296,9 @@ static int test_copy_and_coalescing(void)
 			&latest_token), NP2_PRESENTATION_OK, "acquire latest pending")) {
 		return 0;
 	}
-	if (!check(latest_view.published_sequence == 4U &&
+	if (!check(old_view.ptr != latest_view.ptr,
+			"coalescing uses a distinct non-acquired slot") ||
+			!check(latest_view.published_sequence == 4U &&
 			latest_view.source_generation == 10U &&
 			memcmp(latest_view.ptr, newest_pixels, sizeof(newest_pixels)) == 0,
 			"latest pending frame")) {
@@ -355,7 +430,8 @@ static int test_capacity_and_timing(void)
 
 int main(void)
 {
-	if (!test_invalid_api() || !test_copy_and_coalescing() ||
+	if (!test_initialization_and_slot_ranges() || !test_invalid_api() ||
+			!test_copy_and_coalescing() ||
 			!test_capacity_and_timing()) {
 		return 1;
 	}
