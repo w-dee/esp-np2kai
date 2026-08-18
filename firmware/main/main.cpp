@@ -4,7 +4,9 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
-#if defined(NP2_VIDEO_PROFILE)
+#if defined(NP2_PRESENTATION_PROFILE)
+#include "np2presentation_probe.h"
+#elif defined(NP2_VIDEO_PROFILE)
 #include "np2video_runner/np2video_runner.h"
 #else
 #include "np2_fixture_probe.h"
@@ -14,7 +16,10 @@
 #endif
 #include "np2test_runner/np2test_runner.h"
 #endif
+#if !defined(NP2_PRESENTATION_PROFILE)
 #include "uart_control_transport/uart_control_transport.h"
+#endif
+#if !defined(NP2_PRESENTATION_PROFILE)
 #if !defined(NP2_VIDEO_PROFILE)
 #if defined(NP2_VFS_FIXTURE_PROFILE) && defined(UART_FATFS_PROFILE)
 #error "NP2_VFS_FIXTURE_PROFILE and UART_FATFS_PROFILE are mutually exclusive"
@@ -31,15 +36,19 @@
 #include "storage_fatfs_probe/storage_fatfs_probe.h"
 #endif
 #endif
+#endif
 
 namespace {
 
+#if !defined(NP2_PRESENTATION_PROFILE)
 bool write_np2_runner_output(void *, const char *data, std::size_t length)
 {
     return uart_control_transport_write(data, length);
 }
+#endif
 
-#if defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE)
+#if !defined(NP2_PRESENTATION_PROFILE) && \
+    (defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE))
 storage_fatfs::MountProvider s_fatfs_provider;
 storage_fatfs::StorageFatfs s_fatfs_storage(s_fatfs_provider);
 #endif
@@ -51,7 +60,10 @@ extern "C" void app_main(void)
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
 
-#if defined(NP2_VIDEO_PROFILE)
+#if defined(NP2_PRESENTATION_PROFILE)
+    (void)np2presentation_probe_run();
+    return;
+#elif defined(NP2_VIDEO_PROFILE)
     const esp_app_desc_t *video_app = esp_app_get_description();
     const uart_control_metadata_t video_metadata{
         video_app->project_name,
