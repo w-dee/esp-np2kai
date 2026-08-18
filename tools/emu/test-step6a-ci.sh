@@ -251,10 +251,11 @@ phase_preflight() {
 
 phase_raw_reduced() {
     local build_dir="${RUN_ROOT}/raw-reduced"
-    CURRENT_LOG="${build_dir}/esp-emu-np2-stage1-reduced.log"
+    local reduced_build_dir="${NP2_REDUCED_PREBUILT_BUILD_DIR:-${build_dir}}"
+    CURRENT_LOG="${reduced_build_dir}/esp-emu-np2-stage1-reduced.log"
     NP2_REDUCED_BUILD_DIR="${build_dir}" \
         bash "${REPOSITORY_ROOT}/tools/emu/test-np2-stage1-reduced.sh"
-    check_app_size raw-reduced "${build_dir}"
+    check_app_size raw-reduced "${reduced_build_dir}"
 }
 
 phase_storage_provider() {

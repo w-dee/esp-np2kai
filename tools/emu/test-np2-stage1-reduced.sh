@@ -4,7 +4,8 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
-readonly BUILD_DIR="${NP2_REDUCED_BUILD_DIR:-${FIRMWARE_DIR}/build-reduced-extmem8}"
+readonly PREBUILT_BUILD_DIR="${NP2_REDUCED_PREBUILT_BUILD_DIR:-}"
+readonly BUILD_DIR="${PREBUILT_BUILD_DIR:-${NP2_REDUCED_BUILD_DIR:-${FIRMWARE_DIR}/build-reduced-extmem8}}"
 readonly SDKCONFIG_PATH="${BUILD_DIR}/sdkconfig"
 readonly MERGED_IMAGE="${BUILD_DIR}/np2fixture-reduced-merged.bin"
 readonly EMULATOR_LOG="${BUILD_DIR}/esp-emu-np2-stage1-reduced.log"
@@ -20,6 +21,38 @@ fail() {
 if [[ ! -x "${ESP_EMU}" ]]; then
     fail "esp-emu executable not found: ${ESP_EMU}"
 fi
+
+validate_prebuilt_build() {
+    [[ -d "${BUILD_DIR}" ]] ||
+        fail "prebuilt reduced build directory not found: ${BUILD_DIR}"
+
+    local required_path
+    for required_path in \
+        "${SDKCONFIG_PATH}" \
+        "${BUILD_DIR}/CMakeCache.txt" \
+        "${BUILD_DIR}/bootloader/bootloader.bin" \
+        "${BUILD_DIR}/partition_table/partition-table.bin" \
+        "${BUILD_DIR}/esp_np2kai.bin" \
+        "${BUILD_DIR}/flash_args"; do
+        [[ -f "${required_path}" ]] ||
+            fail "prebuilt reduced artifact is missing: ${required_path}"
+    done
+
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+    grep -Eq '^CONFIG_IDF_TARGET="esp32p4"$' "${SDKCONFIG_PATH}" ||
+        fail "prebuilt reduced build is not configured for ESP32-P4: ${SDKCONFIG_PATH}"
+
+    local cache_value
+    cache_value="$(sed -n 's/^IDF_TARGET:[^=]*=//p' "${BUILD_DIR}/CMakeCache.txt")"
+    [[ "${cache_value}" == 'esp32p4' ]] ||
+        fail "prebuilt reduced CMake target is not esp32p4: ${cache_value}"
+    cache_value="$(sed -n 's/^NP2_REDUCED_EXTMEM8:[^=]*=//p' "${BUILD_DIR}/CMakeCache.txt")"
+    [[ "${cache_value}" == '1' ]] ||
+        fail "prebuilt reduced build is not configured with NP2_REDUCED_EXTMEM8=1: ${cache_value}"
+    cache_value="$(sed -n 's/^SDKCONFIG:[^=]*=//p' "${BUILD_DIR}/CMakeCache.txt")"
+    [[ "${cache_value}" == "${SDKCONFIG_PATH}" ]] ||
+        fail "prebuilt reduced CMake SDKCONFIG does not match: ${cache_value}"
+}
 
 source "${SCRIPT_DIR}/activate-idf.sh"
 source "${SCRIPT_DIR}/check-firmware-sdkconfig.sh"
@@ -38,24 +71,29 @@ python3 "${REPOSITORY_ROOT}/tools/guest/verify_np2test.py" \
     --image "${REPOSITORY_ROOT}/tests/guest/np2test/golden/np2test-fd1232.image" \
     --expected-sha256 "${EXPECTED_SHA256}"
 
-mkdir -p "${BUILD_DIR}"
-cd -- "${FIRMWARE_DIR}"
+if [[ -n "${PREBUILT_BUILD_DIR}" ]]; then
+    printf 'NP2_REDUCED_BUILD reuse=1 path=%s\n' "${BUILD_DIR}"
+    validate_prebuilt_build
+else
+    mkdir -p "${BUILD_DIR}"
+    cd -- "${FIRMWARE_DIR}"
 
-# This cache entry is the only machine deviation. The ordinary firmware build
-# and firmware/sdkconfig.defaults continue to describe formal EXTMEM=13.
-# Keep the reduced profile's generated Kconfig file inside its dedicated build
-# directory. SDKCONFIG is an idf.py/CMake definition; exporting it is ignored by
-# this IDF version and would silently reuse firmware/sdkconfig.
-if [[ ! -f "${SDKCONFIG_PATH}" ]]; then
-    idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" set-target esp32p4
+    # This cache entry is the only machine deviation. The ordinary firmware build
+    # and firmware/sdkconfig.defaults continue to describe formal EXTMEM=13.
+    # Keep the reduced profile's generated Kconfig file inside its dedicated build
+    # directory. SDKCONFIG is an idf.py/CMake definition; exporting it is ignored by
+    # this IDF version and would silently reuse firmware/sdkconfig.
+    if [[ ! -f "${SDKCONFIG_PATH}" ]]; then
+        idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" set-target esp32p4
+    fi
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+    idf.py -B "${BUILD_DIR}" \
+        -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+        -D "NP2_REDUCED_EXTMEM8=1" \
+        reconfigure
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+    idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" build
 fi
-check_firmware_sdkconfig "${SDKCONFIG_PATH}"
-idf.py -B "${BUILD_DIR}" \
-    -D "SDKCONFIG=${SDKCONFIG_PATH}" \
-    -D "NP2_REDUCED_EXTMEM8=1" \
-    reconfigure
-check_firmware_sdkconfig "${SDKCONFIG_PATH}"
-idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" build
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2_fixture_flash.py" \
     --repository-root "${REPOSITORY_ROOT}" \

@@ -224,7 +224,8 @@ jobs:
           test "$(idf.py --version)" = "ESP-IDF v5.5.4"
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
-          bash tools/emu/test-step6a-ci.sh
+          NP2_REDUCED_PREBUILT_BUILD_DIR="${GITHUB_WORKSPACE}/firmware/build-reduced-extmem8" \
+            bash tools/emu/test-step6a-ci.sh
 
   esp32p4-esp-emu-video-golden:
     name: ESP32-P4 esp-emu video golden
