@@ -15,7 +15,6 @@ readonly FIXTURE_IMAGE="${FIXTURE_DIR}/np2video-fd1232.image"
 readonly MERGED_IMAGE="${VIDEO_RUN_ROOT}/np2video-merged.bin"
 readonly EMULATOR_LOG="${VIDEO_RUN_ROOT}/esp-emu-np2video-golden.log"
 readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
-readonly APP_LIMIT=$((0x100000))
 
 export NP2_VIDEO_PROFILE=1
 
@@ -23,6 +22,21 @@ fail() {
     printf 'ERROR: %s\n' "$*" >&2
     printf 'NP2VIDEO_RUN_ROOT=%s\n' "${VIDEO_RUN_ROOT}" >&2
     exit 1
+}
+
+load_factory_geometry() {
+    local geometry_output
+    geometry_output="$(python3 "${REPOSITORY_ROOT}/tools/emu/partition_geometry.py" \
+        --idf-path "${IDF_PATH}" \
+        --partition-table "${BUILD_DIR}/partition_table/partition-table.bin")" ||
+        fail 'cannot extract generated partition geometry'
+
+    FACTORY_OFFSET="$(printf '%s\n' "${geometry_output}" |
+        sed -n 's/^FACTORY_OFFSET=//p')"
+    FACTORY_SIZE="$(printf '%s\n' "${geometry_output}" |
+        sed -n 's/^FACTORY_SIZE=//p')"
+    [[ -n "${FACTORY_OFFSET}" && -n "${FACTORY_SIZE}" ]] ||
+        fail 'generated partition geometry has no factory size'
 }
 
 usage() {
@@ -134,10 +148,12 @@ idf.py -B "${BUILD_DIR}" \
 
 app_bin="${BUILD_DIR}/esp_np2kai.bin"
 app_size="$(stat -c '%s' "${app_bin}")"
-app_headroom=$((APP_LIMIT - app_size))
-printf 'NP2VIDEO_APP size=%s limit=%s headroom=%s\n' \
-    "${app_size}" "${APP_LIMIT}" "${app_headroom}"
-(( app_size <= APP_LIMIT )) || fail "video app exceeds factory partition"
+load_factory_geometry
+app_headroom=$((FACTORY_SIZE - app_size))
+printf 'NP2VIDEO_APP size=%s limit=%s headroom=%s factory_offset=0x%x factory_size=0x%x\n' \
+    "${app_size}" "${FACTORY_SIZE}" "${app_headroom}" \
+    "${FACTORY_OFFSET}" "${FACTORY_SIZE}"
+(( app_size < FACTORY_SIZE )) || fail "video app does not fit factory partition"
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2video_fixture_flash.py" \
     --repository-root "${REPOSITORY_ROOT}" \

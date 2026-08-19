@@ -13,13 +13,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import partition_geometry
 
-PARTITION_TYPE = 0x40
-PARTITION_SUBTYPE = 0x01
-FACTORY_OFFSET = 0x10000
-FACTORY_SIZE = 0x200000
-FIXTURE_SIZE = 0x134000
-FLASH_SIZE_BYTES = 0x800000
+PARTITION_TYPE = partition_geometry.EXPECTED_NP2TEST_TYPE
+PARTITION_SUBTYPE = partition_geometry.EXPECTED_NP2TEST_SUBTYPE
+FIXTURE_SIZE = partition_geometry.EXPECTED_NP2TEST_SIZE
+FLASH_SIZE_BYTES = partition_geometry.EXPECTED_FLASH_SIZE
 
 
 def fail(message: str) -> "NoReturn":
@@ -40,16 +39,6 @@ def load_golden(path: Path) -> tuple[int, str]:
             any(character not in "0123456789abcdef" for character in digest)):
         fail("golden.json fixture identity is invalid for the np2test slot")
     return size, digest
-
-
-def load_partition_table(idf_path: Path, table_path: Path):
-    sys.path.insert(0, str(idf_path / "components" / "partition_table"))
-    import gen_esp32part  # type: ignore
-
-    try:
-        return gen_esp32part.PartitionTable.from_binary(table_path.read_bytes())
-    except (OSError, ValueError) as exc:
-        fail(f"cannot parse partition table {table_path}: {exc}")
 
 
 def read_flash_args(build_dir: Path) -> tuple[list[str], list[tuple[int, Path]]]:
@@ -98,13 +87,6 @@ def validate_flash_ranges(
             )
 
 
-def require_partition(partitions, name: str):
-    matches = [partition for partition in partitions if partition.name == name]
-    if len(matches) != 1:
-        fail(f"expected exactly one {name} partition, found {len(matches)}")
-    return matches[0]
-
-
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -144,19 +126,20 @@ def main() -> int:
     if not idf_path_value:
         fail("IDF_PATH is not set")
     idf_path = Path(idf_path_value).resolve()
-    table = load_partition_table(
-        idf_path, build_dir / "partition_table" / "partition-table.bin")
-    fixture = require_partition(table, "np2test")
-    factory = require_partition(table, "factory")
-    storage = require_partition(table, "storage")
-    if (factory.offset != FACTORY_OFFSET or factory.size != FACTORY_SIZE or
-            fixture.offset != factory.offset + factory.size or
-            fixture.size != FIXTURE_SIZE or
+    try:
+        table = partition_geometry.load_partition_table(
+            idf_path, build_dir / "partition_table" / "partition-table.bin")
+        geometry = partition_geometry.extract_geometry(table)
+    except (OSError, ValueError, ImportError) as exc:
+        fail(f"video profile partition table is not the approved geometry: {exc}")
+    fixture = geometry.np2test
+    factory = geometry.factory
+    storage = geometry.storage
+    if (fixture.size != FIXTURE_SIZE or
             (fixture.type, fixture.subtype) != (PARTITION_TYPE, PARTITION_SUBTYPE) or
             not fixture.readonly or
-            storage.offset != fixture.offset + fixture.size or
-            (storage.type, storage.subtype) != (1, 0x81) or
-            storage.offset + storage.size != FLASH_SIZE_BYTES):
+            fixture.offset != factory.offset + factory.size or
+            storage.offset != fixture.offset + fixture.size):
         fail("video profile partition table does not preserve the approved raw slot")
 
     options, images = read_flash_args(build_dir)

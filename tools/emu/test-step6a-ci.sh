@@ -116,9 +116,9 @@ check_app_size() {
     fi
     local app_size
     app_size="$(stat -c '%s' "${app_binary}")"
-    if (( app_size > FACTORY_PARTITION_SIZE )); then
-        fail "${profile} app exceeds factory partition: " \
-            "${app_size} > ${FACTORY_PARTITION_SIZE}"
+    if (( app_size >= FACTORY_PARTITION_SIZE )); then
+        fail "${profile} app does not fit strictly below factory partition: " \
+            "${app_size} >= ${FACTORY_PARTITION_SIZE}"
         return 1
     fi
     local remaining=$((FACTORY_PARTITION_SIZE - app_size))
