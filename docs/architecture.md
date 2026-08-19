@@ -645,13 +645,17 @@ result-v1 parser/controller. The raw source remains a permanent deterministic
 independent oracle.
 
 Step 6A File Transfer service capacity is 2 MiB. Routine CI uses a bounded
-512 KiB upload/download workload; development evidence also covered 2 MiB
-transfers, replacement, persistence, and abort preservation. Validated persistent behavior
-includes metadata/stat, listing/pagination, ranged reads, UTF-8, FAT
-case-insensitive collision handling, FAT-invalid names, staged replacement,
-abort preservation, actual FAT NoSpace mapping, cross-process persistence, and
-high-address physical flash persistence. These File Transfer writes do not make
-the NP2 guest disk writable: the NP2 disk path remains read-only through DOSIO.
+262145-byte upload/download workload that exercises multiple frames, a partial
+final frame, and boundary/ranged reads. The routine persistence case uses
+4097 bytes to cross the 4 KiB FAT cluster boundary while retaining the
+cross-process write/read lifecycle. Development evidence also covered 2 MiB
+transfers, replacement, persistence, and abort preservation. Validated
+persistent behavior includes metadata/stat, listing/pagination, ranged reads,
+UTF-8, FAT case-insensitive collision handling, FAT-invalid names, staged
+replacement, abort preservation, actual FAT NoSpace mapping, cross-process
+persistence, and high-address physical flash persistence. These File Transfer
+writes do not make the NP2 guest disk writable: the NP2 disk path remains
+read-only through DOSIO.
 
 During Step 6A.1 development, `StorageFatfs` direct underlying POSIX
 `pread`/`pwrite` operations of 4096 bytes were observed to hang under the

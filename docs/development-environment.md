@@ -294,28 +294,45 @@ bash tools/emu/test-step6a-ci.sh
 ```
 
 Use ESP-IDF v5.5.4 and esp-emu v0.39.0. The helper checks both versions and
-also verifies the tracked NP2 fixture before running. It uses independent
-temporary build directories and does not depend on a developer-local
-`firmware/sdkconfig`; it does not modify the checked-in partition table.
+also verifies the tracked NP2 fixture before running. By default, it uses one
+shared incremental build tree for the non-reduced storage-provider, UART
+FATFS, DOSIO, and VFS profiles; the raw reduced Stage-1 build remains
+separate. The resulting application binaries remain profile-specific. Set
+`STEP6A_PROFILE_BUILD_MODE=isolated` to use separate per-profile build trees
+for fallback or diagnosis. Build reuse does not reuse emulator runtime state:
+the profile images and their emulator processes remain independent. The
+helper does not depend on a developer-local `firmware/sdkconfig`; it does not
+modify the checked-in partition table.
 
 The bounded routine covers:
 
 - raw reduced Stage-1;
 - bounded StorageFatfs provider hooks, replacement/rollback, cleanup, and
   remount persistence;
-- FATFS File Transfer basic and routine 512 KiB upload/download;
+- FATFS File Transfer basic and routine 262145-byte upload/download;
 - preloaded NoSpace mapping;
-- 256 KiB cross-process persistence;
+- 4097-byte cross-process persistence;
 - high-address physical-flash persistence;
 - DOSIO VFS access;
 - normal VFS NP2 execution; and
 - raw-poisoned VFS source-independence.
 
 The File Transfer service limit in the Step 6A FATFS profile is 2 MiB. The
-512 KiB transfer is only the routine CI workload. Extended/manual development
-evidence also covers 2 MiB transfer, replacement, persistence, and abort
-preservation; the old full matrix, natural-fill NoSpace, and other extended
-experiments are not part of routine CI.
+262145-byte routine transfer exercises multiple protocol frames, a partial
+final frame, and boundary/ranged reads. The 4097-byte persistence case crosses
+the 4 KiB FAT cluster boundary, uses multiple frames and a partial final frame,
+and remains a separate write/read emulator-process lifecycle. Extended/manual
+development evidence also covers 2 MiB transfer, replacement, persistence,
+and abort preservation; the old full matrix, natural-fill NoSpace, and other
+extended experiments are not part of routine CI.
+
+Each profile explicitly supplies the complete selector set and clears the
+corresponding selector environment variables before CMake configuration, so
+state cannot leak between profiles. Shared mode reconfigures the reused tree
+for each profile and performs a storage-provider round-trip check to detect
+stale profile state. This build reuse does not merge runtime lifecycles:
+persistence write/read and normal/poisoned VFS checks still run in separate
+emulator processes.
 
 UART-intensive File Transfer tests under esp-emu are dominated by stop-and-
 wait frame/ACK scheduling. Observed transfer time was approximately linear,

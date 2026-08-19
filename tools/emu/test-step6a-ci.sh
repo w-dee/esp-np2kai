@@ -124,6 +124,11 @@ build_profile() {
     local profile="$1"
     local build_dir="$2"
     shift 2
+    # Shared mode reuses only the incremental build tree; binaries and
+    # emulator/test lifecycles remain profile-specific. The selector values
+    # are reset on every call, environment variables are cleared before
+    # CMake, and the round-trip phase guards against stale profile state.
+    # Isolated mode remains the fallback for diagnosis.
     if [[ "${STEP6A_PROFILE_BUILD_MODE}" == shared ]]; then
         build_dir="${SHARED_PROFILE_BUILD_DIR}"
     fi

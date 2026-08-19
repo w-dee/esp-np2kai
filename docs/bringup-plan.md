@@ -135,10 +135,15 @@ The authoritative local routine is
 [`tools/emu/test-step6a-ci.sh`](../tools/emu/test-step6a-ci.sh). With the
 pinned ESP-IDF v5.5.4 and esp-emu v0.39.0 environment active, it covers raw
 reduced Stage-1, bounded StorageFatfs provider checks, File Transfer basic,
-512 KiB transfer, preloaded NoSpace, 256 KiB persistence, high-address proof,
-VFS DOSIO, normal VFS NP2, and raw-poisoned VFS source independence. Extended
-2 MiB transfer/replacement/persistence, the old matrix, natural-fill NoSpace,
-and other development experiments remain outside routine CI because UART
+262145-byte transfer, preloaded NoSpace, 4097-byte persistence, high-address
+proof, VFS DOSIO, normal VFS NP2, and raw-poisoned VFS source independence.
+The default build uses one shared incremental tree across the four non-reduced
+profiles (storage-provider, UART FATFS, DOSIO, and VFS); raw/reduced remains
+separate and each profile still produces its own application binary.
+`STEP6A_PROFILE_BUILD_MODE=isolated` provides a separate-tree fallback for
+diagnosis. Emulator process lifecycles remain independent. Extended 2 MiB
+transfer/replacement/persistence, the old matrix, natural-fill NoSpace, and
+other development experiments remain outside routine CI because UART
 stop-and-wait execution under esp-emu is slow.
 
 The formal machine configuration remains `EXTMEM=13` and its authoritative
