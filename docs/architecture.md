@@ -474,6 +474,23 @@ The binary envelope is exactly:
 00 00 COBS(decoded-frame) 00
 ```
 
+The byte-stream layer also reserves exactly four consecutive NUL bytes as
+`TRANSPORT_SYNC` (`00 00 00 00`). This token is detected by `control_stream`,
+below the JSON/control framing parser. On completion it discards partial text
+and COBS candidates and returns the stream to Text/seeking state. A longer NUL
+run remains in that synchronization interval until a non-NUL byte arrives.
+`TRANSPORT_SYNC` has no storage, reset, UART-configuration, or
+TransferManager-session side effects; recovery of a higher-level binary or
+file-transfer session is separate.
+
+The host handshake is `TRANSPORT_SYNC`, then a uniquely identified
+`protocol.hello`, then validation of its matching response. The READY line is
+diagnostic only, so a host may attach after boot and need not have observed it.
+The reserved token is collision-free for the current binary envelope because
+COBS emits no NUL in the encoded body: one frame has at most two leading and
+one trailing NUL, and directly adjacent frames have at most three at their
+boundary. Valid JSON control frames contain no raw NUL.
+
 The decoded Binary Data Plane v1 frame layout is:
 
 | Offset | Size | Field |

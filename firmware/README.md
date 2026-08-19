@@ -106,6 +106,41 @@ JSON-lines framing and the separate readiness marker
 `protocol.hello`, `system.ping`, and `system.info`. This path is verified under
 esp-emu; physical P4-NANO and TAB5 UART paths remain unverified.
 
+The byte-stream transport reserves four consecutive NUL bytes as the literal
+`TRANSPORT_SYNC` token:
+
+```text
+00 00 00 00
+```
+
+`control_stream` recognizes this token below the JSON/control framing layer.
+It discards partial text and binary framing state, resets the byte-stream
+parser to Text, and then accepts a normal text frame. Longer consecutive NUL
+runs are treated as the same synchronization interval. The token does not
+erase storage, reset the MCU, change UART configuration, start or abort a
+transfer, or otherwise recover higher-level binary/file-transfer sessions.
+Those session semantics remain a separate concern.
+
+A host connection establishes or re-establishes synchronization by sending
+`TRANSPORT_SYNC` followed by a uniquely identified `protocol.hello` and
+validating the matching response. `ESP-NP2KAI UART CONTROL READY` is a
+diagnostic marker only; a host may attach after boot and does not need to have
+captured it. Startup UART garbage is tolerated by the transport protocol.
+
+The reusable physical-UART smoke tool is
+[`tools/uart_control_smoke.py`](../tools/uart_control_smoke.py). It does not
+flush the UART input as a correctness requirement and ignores non-protocol
+console output while waiting for matching responses.
+
+The earlier real-hardware P4-NANO investigation recorded one startup `0xff`
+in the UART0 receive path before driver installation. That is a measured
+condition of this particular board, not a generic ESP32-P4 property. The
+transport regression keeps it covered by the bounded garbage test.
+
+The host/unit coverage for the detector and the real `control_stream.cpp`
+implementation is
+[`tools/test-control-stream-sync.sh`](../tools/test-control-stream-sync.sh).
+
 The Hello World build-and-emulation check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
 build the firmware, create a merged image, boot it under esp-emu, detect

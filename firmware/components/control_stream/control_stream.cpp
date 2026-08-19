@@ -11,6 +11,12 @@ void reset_binary(ControlStream *stream)
     stream->state = State::Text;
 }
 
+void reset_framing(ControlStream *stream)
+{
+    reset_binary(stream);
+    control_plane::reset_input(stream->control);
+}
+
 void process_text_byte(ControlStream *stream, std::uint8_t byte)
 {
     if (byte == 0) {
@@ -71,6 +77,21 @@ void feed_byte(ControlStream *stream, std::uint8_t byte, std::uint32_t now_ms)
     }
 }
 
+void feed_transport_byte(ControlStream *stream,
+                         std::uint8_t byte,
+                         std::uint32_t now_ms)
+{
+    const bool sync_complete = stream->transport_sync.feed(byte);
+    if (sync_complete) {
+        reset_framing(stream);
+        return;
+    }
+    if (stream->transport_sync.active()) {
+        return;
+    }
+    feed_byte(stream, byte, now_ms);
+}
+
 } // namespace
 
 void init(ControlStream *stream,
@@ -94,7 +115,7 @@ void feed(ControlStream *stream,
         return;
     }
     for (std::size_t index = 0; index < length; ++index) {
-        feed_byte(stream, data[index], now_ms);
+        feed_transport_byte(stream, data[index], now_ms);
     }
 }
 
