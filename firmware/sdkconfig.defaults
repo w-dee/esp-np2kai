@@ -15,7 +15,7 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
 # Step 6A.1: the approved common validation envelope is 8 MiB.  The raw
 # NP2TEST fixture remains at its reviewed offset and the application remains
-# in the existing 1 MiB factory partition.
+# in the expanded 2 MiB factory partition.
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

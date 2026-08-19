@@ -16,9 +16,10 @@ from typing import Any
 
 PARTITION_TYPE = 0x40
 PARTITION_SUBTYPE = 0x01
-FACTORY_SIZE = 0x100000
-FIXTURE_OFFSET = 0x110000
+FACTORY_OFFSET = 0x10000
+FACTORY_SIZE = 0x200000
 FIXTURE_SIZE = 0x134000
+FLASH_SIZE_BYTES = 0x800000
 
 
 def fail(message: str) -> "NoReturn":
@@ -72,6 +73,38 @@ def read_flash_args(build_dir: Path) -> tuple[list[str], list[tuple[int, Path]]]
     return options, images
 
 
+def validate_flash_ranges(
+    images: list[tuple[int, Path]],
+    overlays: list[tuple[int, int, str]],
+    flash_size: int,
+) -> None:
+    ranges: list[tuple[int, int, str]] = []
+    for offset, image in images:
+        size = image.stat().st_size
+        ranges.append((offset, offset + size, image.name))
+    ranges.extend((offset, offset + size, label) for offset, size, label in overlays)
+    for start, end, label in ranges:
+        if start < 0 or end > flash_size:
+            fail(
+                f"flash segment outside envelope: {label} "
+                f"[0x{start:x},0x{end:x}) flash=0x{flash_size:x}"
+            )
+    for previous, current in zip(sorted(ranges), sorted(ranges)[1:]):
+        if previous[1] > current[0]:
+            fail(
+                f"flash segment overlap: {previous[2]} "
+                f"[0x{previous[0]:x},0x{previous[1]:x}) and {current[2]} "
+                f"[0x{current[0]:x},0x{current[1]:x})"
+            )
+
+
+def require_partition(partitions, name: str):
+    matches = [partition for partition in partitions if partition.name == name]
+    if len(matches) != 1:
+        fail(f"expected exactly one {name} partition, found {len(matches)}")
+    return matches[0]
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -113,14 +146,17 @@ def main() -> int:
     idf_path = Path(idf_path_value).resolve()
     table = load_partition_table(
         idf_path, build_dir / "partition_table" / "partition-table.bin")
-    fixture = table.find_by_name("np2test")
-    factory = table.find_by_name("factory")
-    if fixture is None or factory is None:
-        fail("required factory/np2test partitions are missing")
-    if (factory.size != FACTORY_SIZE or fixture.offset != FIXTURE_OFFSET or
+    fixture = require_partition(table, "np2test")
+    factory = require_partition(table, "factory")
+    storage = require_partition(table, "storage")
+    if (factory.offset != FACTORY_OFFSET or factory.size != FACTORY_SIZE or
+            fixture.offset != factory.offset + factory.size or
             fixture.size != FIXTURE_SIZE or
             (fixture.type, fixture.subtype) != (PARTITION_TYPE, PARTITION_SUBTYPE) or
-            not fixture.readonly):
+            not fixture.readonly or
+            storage.offset != fixture.offset + fixture.size or
+            (storage.type, storage.subtype) != (1, 0x81) or
+            storage.offset + storage.size != FLASH_SIZE_BYTES):
         fail("video profile partition table does not preserve the approved raw slot")
 
     options, images = read_flash_args(build_dir)
@@ -132,6 +168,11 @@ def main() -> int:
     for _, image in images:
         if not image.is_file():
             fail(f"flash image is missing: {image}")
+    validate_flash_ranges(
+        images,
+        [(fixture.offset, fixture.size, "np2test partition")],
+        FLASH_SIZE_BYTES,
+    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     esptool = idf_path / "components/esptool_py/esptool/esptool.py"
@@ -153,8 +194,8 @@ def main() -> int:
         merged = output.read_bytes()
     except OSError as exc:
         fail(f"cannot read merged image: {exc}")
-    if len(merged) != 8 * 1024 * 1024:
-        fail(f"merged image size is {len(merged)}, expected 8388608")
+    if len(merged) != FLASH_SIZE_BYTES:
+        fail(f"merged image size is {len(merged)}, expected {FLASH_SIZE_BYTES}")
     extracted = merged[fixture.offset:fixture.offset + image_size]
     merged_digest = hashlib.sha256(extracted).hexdigest()
     print(f"NP2VIDEO_MERGED_SLOT offset=0x{fixture.offset:08x} size={image_size} "

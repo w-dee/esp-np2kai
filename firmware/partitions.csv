@@ -4,6 +4,6 @@
 # subtype 0x01 is the NP2TEST fixture subtype.
 nvs,      data, nvs,      ,         0x6000,
 phy_init, data, phy,      ,         0x1000,
-factory,  app,  factory,  ,         1M,
+factory,  app,  factory,  ,         2M,
 np2test,  0x40, 0x01,     ,         0x134000, readonly
-storage,  data, fat,      ,         0x5BC000,
+storage,  data, fat,      ,         0x4BC000,
