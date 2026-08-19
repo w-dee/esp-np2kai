@@ -515,11 +515,16 @@ phase_file_transfer() {
     require_log "${console_log}" 'result=PASS'
 
     local nospace_image="${RUN_ROOT}/uart-nospace-preloaded.bin"
+    local nospace_metadata="${RUN_ROOT}/uart-nospace-preloaded.geometry.json"
     console_log="${RUN_ROOT}/uart-nospace-preloaded.console.log"
     uart_log="${RUN_ROOT}/uart-nospace-preloaded.raw.bin"
-    build_storage_image "${build_dir}" "${nospace_image}" --nospace-prefill-bytes $((4 * 1024 * 1024))
-    run_uart_mode nospace-preloaded "${nospace_image}" "${console_log}" "${uart_log}"
+    build_storage_image "${build_dir}" "${nospace_image}" \
+        --nospace-derived --metadata-output "${nospace_metadata}"
+    require_file "${nospace_metadata}"
+    run_uart_mode nospace-preloaded "${nospace_image}" "${console_log}" "${uart_log}" \
+        --nospace-metadata "${nospace_metadata}"
     require_log "${console_log}" 'FATFS_FILE_TRANSFER_NOSPACE=PASS'
+    require_log "${console_log}" 'failure_phase=begin payload_frames=0'
     require_log "${console_log}" 'preexisting_intact=1 endpoint_idle=1 endpoint_recoverable=1'
     require_log "${console_log}" 'FATFS_MODE_SUMMARY mode=nospace-preloaded '
     require_log "${console_log}" 'result=PASS'

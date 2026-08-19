@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
 import struct
 import subprocess
@@ -21,6 +22,9 @@ HIGH_ADDRESS_SCAN_START = 0x400000
 HIGH_ADDRESS_MARKER = b"STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1"
 HIGH_ADDRESS_PREFILL_PATH = "high-address-prefill/filler.bin"
 NOSPACE_PREFILL_PATH = "files/upload/prefill.bin"
+NOSPACE_PREFILL_BYTE = 0x5A
+NOSPACE_REQUEST_BYTES = 1024 * 1024
+NOSPACE_METADATA_SCHEMA_VERSION = 1
 
 
 def fail(message: str) -> "NoReturn":
@@ -159,7 +163,42 @@ def populate_source(source: Path, fixture: Path,
         # cannot contain either Step-6A high-address marker.
         prefill.write_bytes(b"\xa5" * high_address_prefill_bytes)
     if nospace_prefill_bytes:
-        (source / NOSPACE_PREFILL_PATH).write_bytes(b"\x5a" * nospace_prefill_bytes)
+        (source / NOSPACE_PREFILL_PATH).write_bytes(
+            bytes([NOSPACE_PREFILL_BYTE]) * nospace_prefill_bytes
+        )
+
+
+def generate_storage_image(generator: Path, source: Path, output: Path,
+                           partition_size: int) -> None:
+    generator_command = [
+        sys.executable,
+        str(generator),
+        str(source),
+        "--output_file",
+        str(output),
+        "--partition_size",
+        hex(partition_size),
+        "--sector_size",
+        "4096",
+        "--long_name_support",
+        "--use_default_datetime",
+        "--fat_count",
+        "2",
+    ]
+    completed = subprocess.run(generator_command, check=False)
+    if completed.returncode != 0:
+        fail(f"wl_fatfsgen failed with status {completed.returncode}")
+
+
+def write_nospace_metadata(path: Path, metadata: dict[str, int]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(metadata, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        fail(f"cannot write NoSpace metadata {path}: {exc}")
 
 
 def measure_fat_image(image: Path, partition_size: int) -> dict[str, int | str]:
@@ -260,7 +299,17 @@ def main() -> int:
         "--nospace-prefill-bytes",
         type=int,
         default=0,
-        help="temporary /upload/prefill.bin size for bounded NoSpace tests",
+        help="explicit /upload/prefill.bin size for manual NoSpace tests",
+    )
+    parser.add_argument(
+        "--nospace-derived",
+        action="store_true",
+        help="derive /upload/prefill.bin from the measured clean filesystem",
+    )
+    parser.add_argument(
+        "--metadata-output",
+        type=Path,
+        help="write derived NoSpace geometry metadata to this JSON path",
     )
     parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
     parser.add_argument(
@@ -274,7 +323,13 @@ def main() -> int:
         parser.error("--high-address-prefill-bytes must be non-negative")
     if args.nospace_prefill_bytes < 0:
         parser.error("--nospace-prefill-bytes must be non-negative")
-    if args.high_address_prefill_bytes and args.nospace_prefill_bytes:
+    if args.nospace_derived and args.nospace_prefill_bytes:
+        parser.error("--nospace-derived and --nospace-prefill-bytes are mutually exclusive")
+    if args.nospace_derived and args.metadata_output is None:
+        parser.error("--metadata-output is required with --nospace-derived")
+    if args.metadata_output is not None and not args.nospace_derived:
+        parser.error("--metadata-output requires --nospace-derived")
+    if args.high_address_prefill_bytes and (args.nospace_prefill_bytes or args.nospace_derived):
         parser.error("high-address and NoSpace prefills are mutually exclusive")
 
     repository_root = args.repository_root.resolve()
@@ -303,13 +358,63 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="step6a1-fatfs-") as temporary:
         temporary_path = Path(temporary)
+        generator = idf_path / "components/fatfs/wl_fatfsgen.py"
+        base_measurement: dict[str, int | str] | None = None
+        nospace_prefill_bytes = args.nospace_prefill_bytes
+        nospace_metadata: dict[str, int] | None = None
+        if args.nospace_derived:
+            base_source = temporary_path / "base-source"
+            base_source.mkdir()
+            populate_source(base_source, fixture)
+            base_image = temporary_path / "base-storage.bin"
+            generate_storage_image(generator, base_source, base_image, storage.size)
+            base_measurement = measure_fat_image(base_image, storage.size)
+            cluster_size = int(base_measurement["cluster_size"])
+            required_clusters = (
+                NOSPACE_REQUEST_BYTES + cluster_size - 1
+            ) // cluster_size
+            target_free_clusters = required_clusters - 1
+            if required_clusters <= 0 or target_free_clusters < 0:
+                fail(
+                    "invalid NoSpace geometry: "
+                    f"request={NOSPACE_REQUEST_BYTES} cluster_size={cluster_size}"
+                )
+            prefill_clusters = int(base_measurement["free_clusters"]) - target_free_clusters
+            if prefill_clusters <= 0:
+                fail(
+                    "clean filesystem does not have enough free clusters for NoSpace target: "
+                    f"base_free={base_measurement['free_clusters']} "
+                    f"target_free={target_free_clusters}"
+                )
+            nospace_prefill_bytes = prefill_clusters * cluster_size
+            nospace_metadata = {
+                "schema_version": NOSPACE_METADATA_SCHEMA_VERSION,
+                "storage_offset": storage.offset,
+                "storage_size": storage.size,
+                "storage_end": storage.offset + storage.size,
+                "cluster_size": cluster_size,
+                "usable_clusters": int(base_measurement["total_data_clusters"]),
+                "base_allocated_clusters": int(base_measurement["allocated_clusters"]),
+                "base_free_clusters": int(base_measurement["free_clusters"]),
+                "nospace_request_bytes": NOSPACE_REQUEST_BYTES,
+                "nospace_required_clusters": required_clusters,
+                "nospace_target_free_clusters": target_free_clusters,
+                "nospace_prefill_clusters": prefill_clusters,
+                "nospace_prefill_bytes": nospace_prefill_bytes,
+                "nospace_prefill_byte": NOSPACE_PREFILL_BYTE,
+            }
+            print(
+                "STORAGEFATFS_NOSPACE_GEOMETRY "
+                + " ".join(f"{key}={value}" for key, value in nospace_metadata.items())
+            )
+
         source = temporary_path / "source"
         source.mkdir()
         populate_source(
             source,
             fixture,
             args.high_address_prefill_bytes,
-            args.nospace_prefill_bytes,
+            nospace_prefill_bytes,
         )
         if args.high_address_prefill_bytes:
             print(
@@ -317,32 +422,40 @@ def main() -> int:
                 f"bytes={args.high_address_prefill_bytes} "
                 f"path={HIGH_ADDRESS_PREFILL_PATH}"
             )
-        if args.nospace_prefill_bytes:
+        if nospace_prefill_bytes:
             print(
                 "STORAGEFATFS_NOSPACE_PREFILL "
-                f"bytes={args.nospace_prefill_bytes} path={NOSPACE_PREFILL_PATH}"
+                f"bytes={nospace_prefill_bytes} path={NOSPACE_PREFILL_PATH}"
             )
         storage_image = temporary_path / "storage.bin"
-        generator = idf_path / "components/fatfs/wl_fatfsgen.py"
-        generator_command = [
-            sys.executable,
-            str(generator),
-            str(source),
-            "--output_file",
-            str(storage_image),
-            "--partition_size",
-            hex(storage.size),
-            "--sector_size",
-            "4096",
-            "--long_name_support",
-            "--use_default_datetime",
-            "--fat_count",
-            "2",
-        ]
-        completed = subprocess.run(generator_command, check=False)
-        if completed.returncode != 0:
-            fail(f"wl_fatfsgen failed with status {completed.returncode}")
+        generate_storage_image(generator, source, storage_image, storage.size)
         measurement = measure_fat_image(storage_image, storage.size)
+        if args.nospace_derived:
+            assert nospace_metadata is not None
+            if (int(measurement["cluster_size"]) != nospace_metadata["cluster_size"] or
+                    int(measurement["total_data_clusters"]) != nospace_metadata["usable_clusters"]):
+                fail(
+                    "NoSpace image changed measured FAT geometry: "
+                    f"final_cluster_size={measurement['cluster_size']} "
+                    f"base_cluster_size={nospace_metadata['cluster_size']} "
+                    f"final_usable_clusters={measurement['total_data_clusters']} "
+                    f"base_usable_clusters={nospace_metadata['usable_clusters']}"
+                )
+            final_free_clusters = int(measurement["free_clusters"])
+            target_free_clusters = nospace_metadata["nospace_target_free_clusters"]
+            if final_free_clusters != target_free_clusters:
+                fail(
+                    "NoSpace image did not reach target free clusters: "
+                    f"actual={final_free_clusters} expected={target_free_clusters}"
+                )
+            nospace_metadata["final_allocated_clusters"] = int(measurement["allocated_clusters"])
+            nospace_metadata["final_free_clusters"] = final_free_clusters
+            write_nospace_metadata(args.metadata_output.resolve(), nospace_metadata)
+            print(
+                "STORAGEFATFS_NOSPACE_METADATA "
+                f"path={args.metadata_output.resolve()} "
+                f"final_free_clusters={final_free_clusters}"
+            )
         print("STORAGEFATFS_IMAGE " + " ".join(f"{key}={value}" for key, value in measurement.items()))
 
         output = args.output.resolve()

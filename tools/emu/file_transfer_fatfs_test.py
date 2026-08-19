@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -30,6 +31,8 @@ PROGRESS_WATCHDOG_TIMEOUT = 30.0
 PROGRESS_INTERVAL_BYTES = 64 * 1024
 WATCHDOG_POLL_INTERVAL = 0.25
 UART_TEST_BATCH_SIZE = 5000
+NOSPACE_REQUEST_BYTES = 1024 * 1024
+NOSPACE_PREFIX_BYTES = 4096
 
 
 @dataclass
@@ -210,6 +213,11 @@ def parse_args() -> argparse.Namespace:
         default=PERSISTENCE_FILE_BYTES,
         help="persistence payload size in bytes (default: 4097)",
     )
+    parser.add_argument(
+        "--nospace-metadata",
+        type=Path,
+        help="geometry metadata generated for the nospace-preloaded fixture",
+    )
     parser.add_argument("--save-state", action="store_true")
     parser.add_argument("--verify-state", type=Path)
     parser.add_argument("--marker", default=HIGH_ADDRESS_MARKER.decode("ascii"))
@@ -238,6 +246,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--save-state is required for persistence-write")
     if args.mode == "persistence-read" and args.save_state:
         parser.error("--save-state is only valid for persistence-write")
+    if args.mode == "nospace-preloaded" and args.nospace_metadata is None:
+        parser.error("--nospace-metadata is required for nospace-preloaded")
+    if args.mode != "nospace-preloaded" and args.nospace_metadata is not None:
+        parser.error("--nospace-metadata is only valid for nospace-preloaded")
     if args.mode == "high-address-write":
         if not args.save_state:
             parser.error("--save-state is required for high-address-write")
@@ -252,6 +264,57 @@ def parse_args() -> argparse.Namespace:
     if args.save_state:
         args.extra_emu_args.append("--save-state")
     return args
+
+
+def load_nospace_metadata(path: Path) -> dict[str, int]:
+    try:
+        root = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AssertionError(f"cannot read NoSpace metadata {path}: {exc}") from exc
+    if not isinstance(root, dict) or root.get("schema_version") != 1:
+        raise AssertionError(f"invalid NoSpace metadata schema: {path}")
+    names = (
+        "storage_offset", "storage_size", "storage_end", "cluster_size",
+        "usable_clusters", "base_allocated_clusters", "base_free_clusters",
+        "nospace_request_bytes", "nospace_required_clusters",
+        "nospace_target_free_clusters", "nospace_prefill_clusters",
+        "nospace_prefill_bytes", "nospace_prefill_byte",
+        "final_allocated_clusters", "final_free_clusters",
+    )
+    values: dict[str, int] = {}
+    for name in names:
+        value = root.get(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise AssertionError(f"NoSpace metadata field is not an integer: {name}")
+        values[name] = value
+    if values["storage_end"] != values["storage_offset"] + values["storage_size"]:
+        raise AssertionError(f"NoSpace storage geometry is inconsistent: {values}")
+    request_bytes = values["nospace_request_bytes"]
+    cluster_size = values["cluster_size"]
+    if request_bytes != NOSPACE_REQUEST_BYTES:
+        raise AssertionError(
+            f"NoSpace request changed: {request_bytes} != {NOSPACE_REQUEST_BYTES}"
+        )
+    if cluster_size <= 0:
+        raise AssertionError(f"invalid NoSpace cluster size: {cluster_size}")
+    required_clusters = (request_bytes + cluster_size - 1) // cluster_size
+    target_free_clusters = required_clusters - 1
+    if values["nospace_required_clusters"] != required_clusters:
+        raise AssertionError(f"NoSpace required-cluster metadata is inconsistent: {values}")
+    if values["nospace_target_free_clusters"] != target_free_clusters:
+        raise AssertionError(f"NoSpace target-free metadata is inconsistent: {values}")
+    if values["base_free_clusters"] - target_free_clusters != values["nospace_prefill_clusters"]:
+        raise AssertionError(f"NoSpace prefill-cluster metadata is inconsistent: {values}")
+    if values["nospace_prefill_clusters"] <= 0:
+        raise AssertionError(f"NoSpace prefill must be positive: {values}")
+    if values["nospace_prefill_bytes"] != (
+            values["nospace_prefill_clusters"] * cluster_size):
+        raise AssertionError(f"NoSpace prefill-byte metadata is inconsistent: {values}")
+    if values["final_free_clusters"] != target_free_clusters:
+        raise AssertionError(f"NoSpace final-free metadata is inconsistent: {values}")
+    if not 0 <= values["nospace_prefill_byte"] <= 0xFF:
+        raise AssertionError(f"invalid NoSpace prefill byte: {values}")
+    return values
 
 
 def payload(size: int, salt: int = 0, high_address_marker: bool = False,
@@ -800,22 +863,31 @@ def run_nospace(emu: wire.Emulator) -> None:
     )
 
 
-def run_nospace_preloaded(emu: wire.Emulator) -> None:
-    failed_size = 1024 * 1024
+def run_nospace_preloaded(emu: wire.Emulator, metadata: dict[str, int]) -> None:
+    failed_size = NOSPACE_REQUEST_BYTES
+    prefill_size = metadata["nospace_prefill_bytes"]
+    prefill_prefix = bytes([metadata["nospace_prefill_byte"]]) * min(
+        NOSPACE_PREFIX_BYTES, prefill_size
+    )
     prefilled = require_response(emu, 199, "file.stat", {
         "path": "/upload/prefill.bin",
     })
     if (prefilled.get("type") != "file" or
-            prefilled.get("size_bytes") != 4 * 1024 * 1024):
+            prefilled.get("size_bytes") != prefill_size):
         raise AssertionError(f"prefilled capacity fixture is missing: {prefilled}")
     require_staging_namespace_hidden(emu, 198)
     prefilled_before = bytearray()
-    check_download(emu, 205, "/upload/prefill.bin", None, 0, 4096, prefilled_before)
+    check_download(
+        emu, 205, "/upload/prefill.bin", prefill_prefix, 0,
+        len(prefill_prefix), prefilled_before
+    )
     response = send_request(emu, 200, "file.write.begin", {
         "path": "/upload/nospace-preloaded.bin",
         "size_bytes": failed_size,
     })
     base.require_error(response, "NO_SPACE")
+    if response.get("result", {}).get("transfer_id") is not None:
+        raise AssertionError(f"NoSpace begin unexpectedly returned a transfer: {response}")
     probe = send_request(emu, 201, "file.write.begin", {
         "path": "/upload/post-nospace-preloaded-probe.bin", "size_bytes": 0,
     })
@@ -825,10 +897,13 @@ def run_nospace_preloaded(emu: wire.Emulator) -> None:
         "path": "/upload/prefill.bin",
     })
     if (intact.get("type") != "file" or
-            intact.get("size_bytes") != 4 * 1024 * 1024):
+            intact.get("size_bytes") != prefill_size):
         raise AssertionError(f"prefilled file changed after NO_SPACE: {intact}")
     prefilled_after = bytearray()
-    check_download(emu, 207, "/upload/prefill.bin", None, 0, 4096, prefilled_after)
+    check_download(
+        emu, 207, "/upload/prefill.bin", prefill_prefix, 0,
+        len(prefill_prefix), prefilled_after
+    )
     if prefilled_before != prefilled_after:
         raise AssertionError("prefilled file bytes changed after NO_SPACE")
     require_staging_namespace_hidden(emu, 206)
@@ -836,7 +911,10 @@ def run_nospace_preloaded(emu: wire.Emulator) -> None:
         raise AssertionError("post-NO_SPACE preloaded ping failed")
     print(
         "FATFS_FILE_TRANSFER_NOSPACE=PASS "
-        f"failed_size={failed_size} error=NO_SPACE committed=preloaded "
+        f"failed_size={failed_size} error=NO_SPACE failure_phase=begin "
+        f"payload_frames=0 prefill_bytes={prefill_size} "
+        f"target_free_clusters={metadata['nospace_target_free_clusters']} "
+        f"final_free_clusters={metadata['final_free_clusters']} committed=preloaded "
         "preexisting_intact=1 endpoint_idle=1 endpoint_recoverable=1 "
         "staging_namespace_hidden=1"
     )
@@ -910,6 +988,10 @@ def run_high_address_write(emu: wire.Emulator) -> None:
 def main() -> int:
     global ACTIVE_OBSERVER
     args = parse_args()
+    nospace_metadata = (
+        load_nospace_metadata(args.nospace_metadata.resolve())
+        if args.mode == "nospace-preloaded" else None
+    )
     emu = wire.Emulator(args)
     observer = ProgressObserver(args.mode)
     ACTIVE_OBSERVER = observer
@@ -935,7 +1017,8 @@ def main() -> int:
         elif args.mode == "nospace":
             run_nospace(emu)
         elif args.mode == "nospace-preloaded":
-            run_nospace_preloaded(emu)
+            assert nospace_metadata is not None
+            run_nospace_preloaded(emu, nospace_metadata)
         elif args.mode == "high-address-write":
             run_high_address_write(emu)
         elif args.mode == "replacement":
