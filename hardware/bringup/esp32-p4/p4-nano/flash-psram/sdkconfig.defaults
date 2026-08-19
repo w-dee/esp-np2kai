@@ -1,0 +1,28 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The measured board is ESP32-P4 v1.3. Keep this diagnostic on the v1.x path.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# The measured board has a physical 16 MiB NOR flash device.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Use the ordinary single-app partition table for this standalone diagnostic.
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+
+# Use the default UART0 console and no secondary console.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# ESP32-P4 v1.x PSRAM configuration verified against ESP-IDF v5.5.4.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_SPIRAM_MEMTEST=y
+
+# Keep PSRAM out of ordinary malloc/BSS/noinit paths for this diagnostic.
+# CONFIG_SPIRAM_USE_MALLOC is not set
+# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is not set
+# CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY is not set
