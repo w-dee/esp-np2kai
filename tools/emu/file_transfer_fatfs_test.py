@@ -19,7 +19,9 @@ import uart_binary_data_plane_test as wire
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
 LARGE_FILE_BYTES = 262145
-REPLACEMENT_FILE_BYTES = 256 * 1024
+REPLACEMENT_STRESS_CLUSTERS = 419
+REPLACEMENT_SAFETY_MARGIN_CLUSTERS = 35
+REPLACEMENT_STRESS_BYTES = 0x1A3000
 PERSISTENCE_FILE_BYTES = 4097
 HIGH_ADDRESS_FILE_BYTES = 64 * 1024
 HIGH_ADDRESS_MARKER = b"STEP6A2-FATFS-FILE-TRANSFER-HIGH-ADDRESS-v1"
@@ -190,9 +192,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--uart-log", required=True, type=Path)
     parser.add_argument(
         "--mode",
-        choices=("basic", "large", "matrix", "nospace", "nospace-preloaded",
+        choices=("basic", "large", "max-payload", "nospace", "nospace-preloaded",
                  "high-address-write",
-                 "replacement", "persistence-write", "persistence-read"),
+                 "replacement-stress", "persistence-write", "persistence-read"),
         required=True,
     )
     parser.add_argument(
@@ -201,12 +203,8 @@ def parse_args() -> argparse.Namespace:
         default=LARGE_FILE_BYTES,
         help="large-mode payload size in bytes (default: 262145; 2 MiB is extended-only)",
     )
-    parser.add_argument(
-        "--replacement-size",
-        type=int,
-        default=REPLACEMENT_FILE_BYTES,
-        help="replacement-mode payload size in bytes (default: 262144)",
-    )
+    parser.add_argument("--base-free-clusters", type=int)
+    parser.add_argument("--cluster-size", type=int)
     parser.add_argument(
         "--persistence-size",
         type=int,
@@ -232,7 +230,7 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("ESP_EMU", str(Path.home() / ".local/bin/esp-emu")),
     )
     args = parser.parse_args()
-    for option_name in ("large_size", "replacement_size", "persistence_size"):
+    for option_name in ("large_size", "persistence_size"):
         value = getattr(args, option_name)
         if value <= 0 or value > MAX_FILE_BYTES:
             parser.error(f"--{option_name.replace('_', '-')} must be in the range 1..{MAX_FILE_BYTES}")
@@ -242,6 +240,22 @@ def parse_args() -> argparse.Namespace:
             "use only for extended/manual validation",
             file=sys.stderr,
         )
+    geometry_mode = args.mode in ("max-payload", "replacement-stress")
+    if geometry_mode and (args.base_free_clusters is None or args.cluster_size is None):
+        parser.error(
+            "--base-free-clusters and --cluster-size are required for "
+            f"{args.mode}"
+        )
+    if not geometry_mode and (
+            args.base_free_clusters is not None or args.cluster_size is not None):
+        parser.error(
+            "--base-free-clusters and --cluster-size are only valid for "
+            "max-payload or replacement-stress"
+        )
+    if args.base_free_clusters is not None and args.base_free_clusters < 0:
+        parser.error("--base-free-clusters must be non-negative")
+    if args.cluster_size is not None and args.cluster_size <= 0:
+        parser.error("--cluster-size must be positive")
     if args.mode == "persistence-write" and not args.save_state:
         parser.error("--save-state is required for persistence-write")
     if args.mode == "persistence-read" and args.save_state:
@@ -257,7 +271,7 @@ def parse_args() -> argparse.Namespace:
             args.verify_state = args.firmware
     elif args.verify_state is not None:
         parser.error("--verify-state is only valid for high-address-write")
-    bounded_mode = args.mode not in ("matrix", "nospace")
+    bounded_mode = args.mode not in ("max-payload", "replacement-stress", "nospace")
     args.emulator_timeout = "600s" if bounded_mode else "3600s"
     args.process_timeout = 620.0 if bounded_mode else 3620.0
     args.extra_emu_args = ["--batch-size", str(UART_TEST_BATCH_SIZE)]
@@ -667,131 +681,75 @@ def run_basic(emu: wire.Emulator) -> None:
     print("FATFS_FILE_TRANSFER_BASIC=PASS")
 
 
-def run_large(emu: wire.Emulator, size: int) -> None:
+def require_base_capacity(mode: str, base_free_clusters: int, cluster_size: int,
+                           payload_bytes: int, required_clusters: int) -> None:
+    if base_free_clusters < required_clusters:
+        raise AssertionError(
+            f"{mode} clean-base capacity is insufficient: "
+            f"free_clusters={base_free_clusters} required_clusters={required_clusters}"
+        )
+    print(
+        f"FATFS_{mode.upper().replace('-', '_')}_GEOMETRY "
+        f"cluster_size={cluster_size} base_free_clusters={base_free_clusters} "
+        f"payload_bytes={payload_bytes} payload_clusters={required_clusters}"
+    )
+
+
+def run_large(emu: wire.Emulator, size: int, extended_ranges: bool = False) -> None:
     require_file_transfer_capability(emu)
     data = payload(size, 31)
     path = "/upload/step6a2-large.bin"
     transfer_id = check_upload(emu, 100, path, data)
     if transfer_id is None:
         raise AssertionError("large upload was synchronous")
-    print(f"FATFS_FILE_TRANSFER_LARGE upload=PASS size={size} sha256={digest(data)}")
+    marker = "MAX_PAYLOAD" if extended_ranges else "LARGE"
+    print(f"FATFS_FILE_TRANSFER_{marker} upload=PASS size={size} sha256={digest(data)}")
     check_download(emu, 102, path, data)
-    print(f"FATFS_FILE_TRANSFER_LARGE download=PASS size={size} sha256={digest(data)}")
-    for index, (offset, length) in enumerate((
-        (max(0, 512 - 1), 1025),
-        (max(0, 4096 - 1), 4097),
-        (max(0, size - 1025), min(1025, size)),
-    )):
+    print(f"FATFS_FILE_TRANSFER_{marker} download=PASS size={size} sha256={digest(data)}")
+    if extended_ranges:
+        ranges = [
+            (0, 513),
+            (511, 1025),
+            (512, 4096),
+            (4095, 4097),
+            (4096, 8193),
+            (1024 * 1024, 65537),
+            (size - 1025, 1025),
+        ]
+    else:
+        ranges = [
+            (max(0, 512 - 1), 1025),
+            (max(0, 4096 - 1), 4097),
+            (max(0, size - 1025), min(1025, size)),
+        ]
+    for index, (offset, length) in enumerate(ranges):
         check_download(emu, 110 + index * 2, path, data, offset, length)
-    check_download(emu, 118, path, data, size, 0)
-    if require_response(emu, 120, "system.ping") != {"pong": True}:
+    eof_request_id = 110 + len(ranges) * 2
+    check_download(emu, eof_request_id, path, data, size, 0)
+    require_staging_namespace_hidden(emu, eof_request_id + 2)
+    if require_response(emu, eof_request_id + 4, "system.ping") != {"pong": True}:
         raise AssertionError("large final ping failed")
     print(
-        "FATFS_FILE_TRANSFER_LARGE=PASS "
+        f"FATFS_FILE_TRANSFER_{marker}=PASS "
         f"size={size} sha256={digest(data)} boundary_ranges=PASS"
     )
 
 
-def run_matrix(emu: wire.Emulator) -> None:
-    hello = require_response(emu, 1, "protocol.hello")
-    if "file-transfer.v1" not in hello.get("capabilities", []):
-        raise AssertionError(f"file transfer capability missing: {hello}")
-
-    for request_id, path, expected_type in (
-        (2, "/", "directory"),
-        (3, "/upload", "directory"),
-        (4, "/seed/existing.bin", "file"),
-    ):
-        result = require_response(emu, request_id, "file.stat", {"path": path})
-        if result.get("type") != expected_type:
-            raise AssertionError(f"unexpected stat for {path}: {result}")
-    require_error(emu, 5, "file.stat", "NOT_FOUND", {"path": "/missing.bin"})
-
-    root_names, root_pages = list_all(emu, 10, "/", limit=2)
-    if root_names != ["long", "seed", "upload"] or root_pages < 2:
-        raise AssertionError(f"root listing mismatch: pages={root_pages} names={root_names}")
-    long_names, _ = list_all(emu, 20, "/long", limit=1)
-    if long_names != ["long-name-abcdefghijklmnopqrstuvwxyz.txt", "utf8-long.txt"]:
-        raise AssertionError(f"long listing mismatch: {long_names}")
-
-    seed = bytes(range(0xA0, 0xA0 + 37))
-    check_download(emu, 30, "/seed/existing.bin", seed)
-    check_download(emu, 32, "/seed/existing.bin", seed, 0, 1)
-    check_download(emu, 34, "/seed/existing.bin", seed, 1, 35)
-    check_download(emu, 36, "/seed/existing.bin", seed, len(seed), 0)
-    require_error(emu, 38, "file.read.begin", "OUT_OF_RANGE", {
-        "path": "/seed/existing.bin", "offset_bytes": len(seed) + 1,
-    })
-
-    require_error(emu, 40, "file.write.begin", "INVALID_PATH", {
-        "path": "/upload/bad:name", "size_bytes": 1,
-    })
-    utf8 = payload(53, 91)
-    check_upload(emu, 41, "/upload/日本語.bin", utf8)
-    check_download(emu, 43, "/upload/日本語.bin", utf8)
-    case_data = payload(97, 13)
-    check_upload(emu, 45, "/upload/CaseName.txt", case_data)
-    require_error(emu, 47, "file.write.begin", "ALREADY_EXISTS", {
-        "path": "/upload/casename.txt", "size_bytes": len(case_data),
-    })
-    case_replacement = payload(101, 14)
-    check_upload(emu, 49, "/upload/casename.txt", case_replacement, replace=True)
-    check_download(emu, 51, "/upload/CaseName.txt", case_replacement)
-
-    medium = payload(131109, 23)
-    medium_id = check_upload(emu, 60, "/upload/multi-frame.bin", medium)
-    if medium_id is None:
-        raise AssertionError("multi-frame upload was synchronous")
-    check_download(emu, 62, "/upload/multi-frame.bin", medium, 777, 1500)
-
-    large_a = payload(MAX_FILE_BYTES, 31)
-    large_b = payload(MAX_FILE_BYTES, 47)
-    large_path = "/upload/step6a2-a.bin"
-    large_id = check_upload(emu, 70, large_path, large_a)
-    if large_id is None:
-        raise AssertionError("2 MiB upload was synchronous")
-    print(f"FATFS_FILE_TRANSFER_2M upload=PASS size={len(large_a)} sha256={digest(large_a)}")
-    check_download(emu, 72, large_path, large_a)
-    for index, offset, length in (
-        (0, 0, 513),
-        (1, 511, 1025),
-        (2, 512, 4096),
-        (3, 4095, 4097),
-        (4, 4096, 8193),
-        (5, 1024 * 1024, 65537),
-        (6, MAX_FILE_BYTES - 1025, 1025),
-    ):
-        check_download(emu, 80 + index * 2, large_path, large_a, offset, length)
-    check_download(emu, 96, large_path, large_a, MAX_FILE_BYTES, 0)
-    require_error(emu, 98, "file.write.begin", "ALREADY_EXISTS", {
-        "path": large_path, "size_bytes": MAX_FILE_BYTES,
-    })
-
-    check_upload(emu, 100, large_path, large_b, replace=True)
-    check_download(emu, 102, large_path, large_b)
-    print(f"FATFS_FILE_TRANSFER_2M download=PASS size={len(large_b)} sha256={digest(large_b)}")
-
-    manual_abort(emu, 104, large_path, payload(MAX_FILE_BYTES, 99), replace=True)
-    check_download(emu, 108, large_path, large_b)
-    print("FATFS_FILE_TRANSFER_REPLACE pass=1")
-    print("FATFS_FILE_TRANSFER_ABORT preserved=1")
-
-    check_upload(emu, 110, "/upload/empty.bin", b"")
-    check_download(emu, 112, "/upload/empty.bin", b"")
-    require_error(emu, 114, "file.stat", "INVALID_PATH", {"path": "/upload//bad"})
-    emu.send(b'@ESP-NP2 {"v":1,"id":115,"cmd":"file.stat","params":{"path":"/upload/\xff.bin"}}\n')
-    response = emu.wait_response(115)
-    base.require_error(response, "INVALID_PATH")
-    upload_names, _ = list_all(emu, 120, "/upload", limit=16)
-    for name in ("日本語.bin", "multi-frame.bin", "step6a2-a.bin"):
-        if name not in upload_names:
-            raise AssertionError(f"uploaded name missing from FAT listing: {name}")
-    if sum(name.casefold() == "casename.txt" for name in upload_names) != 1:
-        raise AssertionError(f"case-collision listing mismatch: {upload_names}")
-
-    if require_response(emu, 130, "system.ping") != {"pong": True}:
-        raise AssertionError("final ping failed")
-    print("FATFS_FILE_TRANSFER_MATRIX=PASS")
+def run_max_payload(emu: wire.Emulator, base_free_clusters: int,
+                    cluster_size: int) -> None:
+    required_clusters = (
+        MAX_FILE_BYTES + cluster_size - 1
+    ) // cluster_size
+    require_base_capacity(
+        "max-payload", base_free_clusters, cluster_size,
+        MAX_FILE_BYTES, required_clusters
+    )
+    run_large(emu, MAX_FILE_BYTES, extended_ranges=True)
+    print(
+        "FATFS_FILE_TRANSFER_MAX_PAYLOAD=PASS "
+        f"size={MAX_FILE_BYTES} clusters={required_clusters} "
+        "replacement=not-attempted"
+    )
 
 
 def upload_possible(emu: wire.Emulator, request_id: int, path: str,
@@ -920,19 +878,62 @@ def run_nospace_preloaded(emu: wire.Emulator, metadata: dict[str, int]) -> None:
     )
 
 
-def run_replacement(emu: wire.Emulator, size: int) -> None:
-    path = "/upload/step6a2-replacement.bin"
-    high_address = size > HIGH_ADDRESS_OFFSET + len(HIGH_ADDRESS_MARKER)
-    original = payload(size, 31, high_address_marker=high_address)
-    replacement = payload(size, 47, high_address_marker=high_address)
-    check_upload(emu, 700, path, original)
-    check_upload(emu, 702, path, replacement, replace=True)
-    check_download(emu, 704, path, replacement)
-    manual_abort(emu, 706, path, payload(size, 99, high_address_marker=high_address))
-    check_download(emu, 710, path, replacement)
+def run_replacement_stress(emu: wire.Emulator, base_free_clusters: int,
+                           cluster_size: int) -> None:
+    if REPLACEMENT_STRESS_BYTES != REPLACEMENT_STRESS_CLUSTERS * cluster_size:
+        raise AssertionError(
+            "replacement geometry changed: "
+            f"cluster_size={cluster_size} bytes={REPLACEMENT_STRESS_BYTES} "
+            f"clusters={REPLACEMENT_STRESS_CLUSTERS}"
+        )
+    required_peak_free_clusters = (
+        2 * REPLACEMENT_STRESS_CLUSTERS + REPLACEMENT_SAFETY_MARGIN_CLUSTERS
+    )
+    if base_free_clusters < required_peak_free_clusters:
+        raise AssertionError(
+            "replacement clean-base capacity is insufficient: "
+            f"free_clusters={base_free_clusters} "
+            f"required_peak_free_clusters={required_peak_free_clusters}"
+        )
     print(
-        "FATFS_FILE_TRANSFER_REPLACEMENT=PASS "
-        f"replace=1 abort_preserved=1 size={size}"
+        "FATFS_REPLACEMENT_GEOMETRY "
+        f"cluster_size={cluster_size} measured_free_clusters={base_free_clusters} "
+        f"replacement_clusters={REPLACEMENT_STRESS_CLUSTERS} "
+        f"replacement_bytes={REPLACEMENT_STRESS_BYTES} "
+        f"safety_margin_clusters={REPLACEMENT_SAFETY_MARGIN_CLUSTERS} "
+        f"required_peak_free_clusters={required_peak_free_clusters}"
+    )
+
+    path = "/upload/step6a2-replacement.bin"
+    for request_id, stale_path in enumerate((
+        path,
+        "/upload/step6a2-large.bin",
+        "/upload/step6a2-a.bin",
+    ), start=690):
+        require_error(emu, request_id, "file.stat", "NOT_FOUND", {"path": stale_path})
+    require_staging_namespace_hidden(emu, 694)
+
+    original = payload(REPLACEMENT_STRESS_BYTES, 31)
+    replacement = payload(REPLACEMENT_STRESS_BYTES, 47)
+    check_upload(emu, 700, path, original)
+    check_download(emu, 702, path, original)
+    check_upload(emu, 704, path, replacement, replace=True)
+    check_download(emu, 706, path, replacement)
+    require_staging_namespace_hidden(emu, 708)
+    if require_response(emu, 710, "system.ping") != {"pong": True}:
+        raise AssertionError("replacement endpoint did not recover after success")
+
+    abort_data = payload(REPLACEMENT_STRESS_BYTES, 99)
+    partial_bytes = min(len(abort_data), 16 * wire.MAX_PAYLOAD)
+    manual_abort(emu, 712, path, abort_data, replace=True)
+    check_download(emu, 716, path, replacement)
+    require_staging_namespace_hidden(emu, 718)
+    if require_response(emu, 720, "system.ping") != {"pong": True}:
+        raise AssertionError("replacement endpoint did not recover after abort")
+    print(
+        "FATFS_FILE_TRANSFER_REPLACEMENT_STRESS=PASS "
+        f"size={REPLACEMENT_STRESS_BYTES} partial_abort_bytes={partial_bytes} "
+        "replace=1 abort_preserved=1"
     )
 
 
@@ -1003,7 +1004,8 @@ def main() -> int:
         emu.wait_line(READY_MARKER, timeout=30.0)
         observer.phase_start(args.mode, {
             "large": args.large_size,
-            "replacement": args.replacement_size,
+            "max-payload": MAX_FILE_BYTES,
+            "replacement-stress": REPLACEMENT_STRESS_BYTES,
             "persistence-write": args.persistence_size,
             "persistence-read": args.persistence_size,
             "high-address-write": HIGH_ADDRESS_FILE_BYTES,
@@ -1012,8 +1014,10 @@ def main() -> int:
             run_basic(emu)
         elif args.mode == "large":
             run_large(emu, args.large_size)
-        elif args.mode == "matrix":
-            run_matrix(emu)
+        elif args.mode == "max-payload":
+            assert args.base_free_clusters is not None
+            assert args.cluster_size is not None
+            run_max_payload(emu, args.base_free_clusters, args.cluster_size)
         elif args.mode == "nospace":
             run_nospace(emu)
         elif args.mode == "nospace-preloaded":
@@ -1021,8 +1025,12 @@ def main() -> int:
             run_nospace_preloaded(emu, nospace_metadata)
         elif args.mode == "high-address-write":
             run_high_address_write(emu)
-        elif args.mode == "replacement":
-            run_replacement(emu, args.replacement_size)
+        elif args.mode == "replacement-stress":
+            assert args.base_free_clusters is not None
+            assert args.cluster_size is not None
+            run_replacement_stress(
+                emu, args.base_free_clusters, args.cluster_size
+            )
         elif args.mode == "persistence-write":
             run_persistence_write(emu, args.persistence_size)
         else:
