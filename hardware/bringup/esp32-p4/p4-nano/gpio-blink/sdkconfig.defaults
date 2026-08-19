@@ -1,0 +1,16 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The real board is ESP32-P4 v1.3. Keep the binary on the v1.x-compatible
+# hardware path and require only v1.0 or newer.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# The identified board has a physical 16 MiB flash device.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Use ordinary ESP-IDF logging on the default UART0/pin mapping.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# This diagnostic intentionally has no PSRAM dependency.
+# CONFIG_SPIRAM is not set
