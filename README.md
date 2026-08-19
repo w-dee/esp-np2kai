@@ -105,9 +105,13 @@ physical bandwidth, and real hardware performance have not been validated.
 Physical storage, input, and audio branches remain future hardware-dependent
 work; this pause does not make unrelated software development impossible.
 
-The esp-emu test environment reports ESP32-P4 revision v3.1, so the test
-configuration requires `CONFIG_ESP32P4_REV_MIN_301=y`. Physical P4-NANO and
-TAB5 revision compatibility remains unverified.
+Production firmware now has explicit `p4-v1x` and `p4-v3x` build variants.
+Use `tools/emu/build-production.sh --variant p4-v3x` for the existing
+esp-emu v0.39.0 regressions and `--variant p4-v1x` for the compile-only v1.x
+production check. Revision selection is kept out of common defaults, and the
+variant-specific build trees and preflight checks prevent the two image
+families from being confused. Real P4-NANO diagnostic results do not yet
+constitute a production-firmware v1.x validation result.
 
 The currently verified executable milestone is ESP32-P4-only. S31 Korvo-1 is
 not implemented, tested, or validated.

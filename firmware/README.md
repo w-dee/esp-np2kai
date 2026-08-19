@@ -27,10 +27,31 @@ exceptions and RTTI are disabled. The `sdkconfig.defaults` file contains the
 small set of project-owned defaults, while generated `sdkconfig` remains a
 local file.
 
-The esp-emu v0.39.0 test environment reports ESP32-P4 revision v3.1, so the
-defaults select `CONFIG_ESP32P4_REV_MIN_301=y`. This requirement is verified
-for the emulator environment only; physical P4-NANO and TAB5 revision
-compatibility remains unverified.
+Production firmware builds must select a silicon-family variant explicitly:
+
+```bash
+tools/emu/build-production.sh --variant p4-v3x
+tools/emu/build-production.sh --variant p4-v1x
+```
+
+Both variants use the same application, partition geometry, 8 MiB validation
+envelope, and production PSRAM settings. The revision selector is kept in the
+variant overlay rather than in the common defaults. `p4-v3x` is the variant
+used by esp-emu v0.39.0, which reports ESP32-P4 revision v3.1. `p4-v1x` is
+compile-only production evidence at this stage; the separate P4-NANO
+diagnostics are not a production-firmware validation result. The wrapper
+names the build directory and checks the generated revision bounds before
+emulator or image use. The two binaries must not be treated as interchangeable.
+
+The first production v1.x hardware smoke image is the three-image set from
+`firmware/build-p4-v1x`: `bootloader/bootloader.bin`,
+`partition_table/partition-table.bin`, and `esp_np2kai.bin`. It intentionally
+does not include the raw `np2test` fixture. Without that fixture, the expected
+headless log still includes `ESP-NP2KAI HELLO WORLD OK`, PSRAM/memory-probe
+evidence, and `ESP-NP2KAI UART CONTROL READY`; the formal runner is expected to
+report `NP2TEST_RUNNER_BLOCKED ... reason=fixture_unavailable`. A future real
+hardware run must determine `NP2MEM_RESULT=PASS` and stability separately; no
+production v1.x runtime result is claimed here.
 
 ## Step 5 headless core integration
 
@@ -89,8 +110,9 @@ The Hello World build-and-emulation check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh). It will
 build the firmware, create a merged image, boot it under esp-emu, detect
 `ESP-NP2KAI HELLO WORLD OK`, and preserve combined emulator/UART output in
-`firmware/build/esp-emu-hello-world.log`. It will not silently change the
-configured target.
+`firmware/build-p4-v3x/esp-emu-hello-world.log`. It uses the explicit `p4-v3x`
+production build path and will not silently change the configured target or
+silicon family.
 
 The verified UART Control Plane integration check is
 [`tools/emu/test-uart-control-plane.sh`](../tools/emu/test-uart-control-plane.sh).

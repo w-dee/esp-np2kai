@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
+readonly PRODUCTION_DEFAULTS="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.p4-v3x"
 readonly PREBUILT_BUILD_DIR="${NP2_REDUCED_PREBUILT_BUILD_DIR:-}"
 readonly BUILD_DIR="${PREBUILT_BUILD_DIR:-${NP2_REDUCED_BUILD_DIR:-${FIRMWARE_DIR}/build-reduced-extmem8}}"
 readonly SDKCONFIG_PATH="${BUILD_DIR}/sdkconfig"
@@ -38,7 +39,7 @@ validate_prebuilt_build() {
             fail "prebuilt reduced artifact is missing: ${required_path}"
     done
 
-    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}" p4-v3x
     grep -Eq '^CONFIG_IDF_TARGET="esp32p4"$' "${SDKCONFIG_PATH}" ||
         fail "prebuilt reduced build is not configured for ESP32-P4: ${SDKCONFIG_PATH}"
 
@@ -84,15 +85,22 @@ else
     # directory. SDKCONFIG is an idf.py/CMake definition; exporting it is ignored by
     # this IDF version and would silently reuse firmware/sdkconfig.
     if [[ ! -f "${SDKCONFIG_PATH}" ]]; then
-        idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" set-target esp32p4
+        idf.py -B "${BUILD_DIR}" \
+            -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+            -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
+            set-target esp32p4
     fi
-    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}" p4-v3x
     idf.py -B "${BUILD_DIR}" \
         -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+        -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
         -D "NP2_REDUCED_EXTMEM8=1" \
         reconfigure
-    check_firmware_sdkconfig "${SDKCONFIG_PATH}"
-    idf.py -B "${BUILD_DIR}" -D "SDKCONFIG=${SDKCONFIG_PATH}" build
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}" p4-v3x
+    idf.py -B "${BUILD_DIR}" \
+        -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+        -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
+        build
 fi
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2_fixture_flash.py" \

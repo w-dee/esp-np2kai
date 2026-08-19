@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
+readonly PRODUCTION_DEFAULTS="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.p4-v3x"
 readonly RUN_ROOT="${NP2_PRESENTATION_RUN_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/np2presentation.XXXXXX")}"
 readonly BUILD_DIR="${RUN_ROOT}/build"
 readonly SDKCONFIG_PATH="${BUILD_DIR}/sdkconfig"
@@ -56,18 +57,21 @@ printf '%s\n' "${emu_version_line}"
 cd -- "${FIRMWARE_DIR}"
 idf.py -B "${BUILD_DIR}" \
     -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+    -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
     -D "NP2_PRESENTATION_PROFILE=1" \
     -D "NP2_VIDEO_PROFILE=0" \
     set-target esp32p4
-check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+check_firmware_sdkconfig "${SDKCONFIG_PATH}" p4-v3x
 idf.py -B "${BUILD_DIR}" \
     -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+    -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
     -D "NP2_PRESENTATION_PROFILE=1" \
     -D "NP2_VIDEO_PROFILE=0" \
     reconfigure
-check_firmware_sdkconfig "${SDKCONFIG_PATH}"
+check_firmware_sdkconfig "${SDKCONFIG_PATH}" p4-v3x
 idf.py -B "${BUILD_DIR}" \
     -D "SDKCONFIG=${SDKCONFIG_PATH}" \
+    -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
     -D "NP2_PRESENTATION_PROFILE=1" \
     -D "NP2_VIDEO_PROFILE=0" \
     build

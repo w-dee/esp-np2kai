@@ -17,11 +17,12 @@ the merged image, boots it, reaches `app_main()`, detects the UART marker
 `ESP-NP2KAI HELLO WORLD OK`, and reports PASS with exit status 0. The check is
 [`tools/emu/test-hello-world.sh`](../tools/emu/test-hello-world.sh).
 
-The firmware uses GNU C++20 with C++ exceptions and RTTI disabled. For
-`esp-emu` v0.39.0, the emulator reports ESP32-P4 revision v3.1 and the
-configuration therefore requires `CONFIG_ESP32P4_REV_MIN_301=y`. This is an
-emulator verification result, not a final physical-board configuration
-decision. P4-NANO and TAB5 revision compatibility remains unverified.
+The firmware uses GNU C++20 with C++ exceptions and RTTI disabled. Production
+firmware selects `p4-v1x` or `p4-v3x` explicitly through the build wrapper;
+revision selection is not placed in common defaults. The existing
+`esp-emu` v0.39.0 regressions use `p4-v3x`, while `p4-v1x` is compile-only
+evidence until the production image is validated on real hardware. The
+separate P4-NANO hardware diagnostics do not change that status.
 
 The current roadmap reaches the portable and headless core milestones before
 physical-board feature work. ESP32-S31 / S31 Korvo-1 remains a future

@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
+readonly PRODUCTION_DEFAULTS="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.p4-v3x"
 readonly RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/np2presentation-profile.XXXXXX")"
 
 source "${SCRIPT_DIR}/activate-idf.sh"
@@ -12,6 +13,7 @@ cd -- "${FIRMWARE_DIR}"
 set +e
 conflict_output="$(idf.py -B "${RUN_ROOT}/video-build" \
     -D "SDKCONFIG=${RUN_ROOT}/video-build/sdkconfig" \
+    -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
     -D "NP2_PRESENTATION_PROFILE=1" \
     -D "NP2_VIDEO_PROFILE=1" set-target esp32p4 2>&1)"
 conflict_status=$?
@@ -26,6 +28,7 @@ fi
 set +e
 storage_output="$(idf.py -B "${RUN_ROOT}/storage-build" \
     -D "SDKCONFIG=${RUN_ROOT}/storage-build/sdkconfig" \
+    -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
     -D "NP2_PRESENTATION_PROFILE=1" \
     -D "STORAGE_FATFS_PROBE=1" set-target esp32p4 2>&1)"
 storage_status=$?

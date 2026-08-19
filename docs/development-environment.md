@@ -28,16 +28,18 @@ been built and executed successfully under ESP-IDF v5.5.4 and esp-emu v0.39.0.
 The UART Control Plane Base uses only ESP-IDF-provided `json` and UART
 components; no external component dependency has been added.
 
-The firmware targets `esp32p4` through `firmware/sdkconfig.defaults`. New
+The firmware targets `esp32p4` through the common project defaults. New
 firmware C++ is explicitly compiled as GNU C++20 in the `main` component.
 C++ exceptions and RTTI are disabled through ESP-IDF configuration, and no
 `iostream` is used.
 
-The `esp-emu` v0.39.0 test environment reports ESP32-P4 revision v3.1. The
-current defaults therefore select `CONFIG_ESP32P4_REV_MIN_301=y`. This setting
-is verified for the emulator environment; physical P4-NANO and TAB5 revision
-compatibility remains unverified and must be reviewed during physical-board
-bring-up.
+Production builds select the silicon family explicitly with
+`tools/emu/build-production.sh --variant p4-v1x` or `--variant p4-v3x`.
+Revision selectors are intentionally absent from the common defaults. The
+wrapper uses separate `firmware/build-p4-v1x` and `firmware/build-p4-v3x`
+trees, verifies generated revision bounds, and emits variant-labelled
+artifacts. The existing esp-emu v0.39.0 regressions use `p4-v3x`; the v1.x
+path is compile-only until production firmware is validated on real hardware.
 
 This is the current ESP32-P4 baseline, not a universal future baseline for
 every Espressif SoC target. No ESP32-S31 toolchain, target, or emulator
@@ -273,8 +275,8 @@ and bounded path/storage errors.
 
 Its additional artifacts are:
 
-- `firmware/build/esp-emu-file-transfer-base.log`
-- `firmware/build/esp-emu-file-transfer-base.uart.bin`
+- `firmware/build-p4-v3x/esp-emu-file-transfer-base.log`
+- `firmware/build-p4-v3x/esp-emu-file-transfer-base.uart.bin`
 
 This paragraph documents the completed RAM-backed File Transfer Base. It
 remains an emulator result and does not validate FATFS, microSD hardware,
@@ -385,8 +387,8 @@ After the final JSON response, the helper performs controlled esp-emu cleanup;
 the binary phase does not use `--exit-on` for arbitrary binary UART data. It
 preserves these artifacts:
 
-- `firmware/build/esp-emu-uart-binary-data-plane.log`
-- `firmware/build/esp-emu-uart-binary-data-plane.uart.bin`
+- `firmware/build-p4-v3x/esp-emu-uart-binary-data-plane.log`
+- `firmware/build-p4-v3x/esp-emu-uart-binary-data-plane.uart.bin`
 
 This verifies the emulator test bridge only. Physical P4-NANO-KIT-D, CH343P,
 and TAB5 UART transport, throughput, and timing remain unverified.

@@ -1,5 +1,7 @@
 # Build products
 build/
+firmware/build-p4-v1x/
+firmware/build-p4-v3x/
 firmware/build-reduced-extmem8/
 
 # ESP-IDF generated configuration

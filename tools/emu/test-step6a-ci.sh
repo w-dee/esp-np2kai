@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
+readonly PRODUCTION_DEFAULTS="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.p4-v3x"
 readonly EXPECTED_IDF_VERSION="ESP-IDF v5.5.4"
 readonly EXPECTED_EMU_VERSION="esp-emu 0.39.0"
 readonly EXPECTED_FIXTURE_SHA256="3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3"
@@ -173,6 +174,7 @@ build_profile() {
     local -a cmake_args=(
         -B "${build_dir}"
         -D "SDKCONFIG=${sdkconfig_path}"
+        -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}"
         -D CCache_ENABLE=0
         -D IDF_TARGET=esp32p4
         -D "STORAGE_FATFS_PROBE=${storage_fatfs_probe}"
@@ -208,15 +210,16 @@ build_profile() {
             set_target_started="$(date +%s%N)"
             idf.py -B "${build_dir}" \
                 -D "SDKCONFIG=${sdkconfig_path}" \
+                -D "SDKCONFIG_DEFAULTS=${PRODUCTION_DEFAULTS}" \
                 -D CCache_ENABLE=0 \
                 -D IDF_TARGET=esp32p4 set-target esp32p4
             set_target_finished="$(date +%s%N)"
         fi
-        check_firmware_sdkconfig "${sdkconfig_path}"
+        check_firmware_sdkconfig "${sdkconfig_path}" p4-v3x
         reconfigure_started="$(date +%s%N)"
         idf.py "${cmake_args[@]}" reconfigure
         reconfigure_finished="$(date +%s%N)"
-        check_firmware_sdkconfig "${sdkconfig_path}"
+        check_firmware_sdkconfig "${sdkconfig_path}" p4-v3x
         build_started="$(date +%s%N)"
         idf.py "${cmake_args[@]}" build
         build_finished="$(date +%s%N)"

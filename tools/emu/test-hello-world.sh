@@ -4,7 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
-readonly BUILD_DIR="${FIRMWARE_DIR}/build"
+readonly BUILD_DIR="${P4_V3X_BUILD_DIR:-${FIRMWARE_DIR}/build-p4-v3x}"
 readonly MERGED_IMAGE="${BUILD_DIR}/merged-binary.bin"
 readonly EMULATOR_LOG="${BUILD_DIR}/esp-emu-hello-world.log"
 readonly SUCCESS_MARKER="ESP-NP2KAI HELLO WORLD OK"
@@ -56,26 +56,12 @@ if [[ "${emu_version_line}" != 'esp-emu 0.39.0' ]]; then
     fail "esp-emu v0.39.0 is required; detected: ${emu_version_line:-version unavailable}"
 fi
 
-if [[ -f "${FIRMWARE_DIR}/sdkconfig" ]]; then
-    if ! grep -qx 'CONFIG_IDF_TARGET="esp32p4"' "${FIRMWARE_DIR}/sdkconfig"; then
-        configured_target="$(grep -E '^CONFIG_IDF_TARGET=' "${FIRMWARE_DIR}/sdkconfig" || true)"
-        fail "firmware/sdkconfig is not configured for esp32p4: ${configured_target:-target is unset}. Run 'idf.py set-target esp32p4' once explicitly."
-    fi
-else
-    printf '%s\n' 'firmware/sdkconfig is absent; the build will use sdkconfig.defaults.'
-fi
-check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
+bash "${SCRIPT_DIR}/build-production.sh" \
+    --variant p4-v3x \
+    --build-dir "${BUILD_DIR}"
 
 cd -- "${FIRMWARE_DIR}"
-idf.py build
-
-if ! grep -qx 'CONFIG_IDF_TARGET="esp32p4"' sdkconfig; then
-    configured_target="$(grep -E '^CONFIG_IDF_TARGET=' sdkconfig || true)"
-    fail "generated firmware/sdkconfig is not configured for esp32p4: ${configured_target:-target is unset}"
-fi
-check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
-
-idf.py merge-bin -f raw -o merged-binary.bin
+idf.py -B "${BUILD_DIR}" merge-bin -f raw -o "${MERGED_IMAGE}"
 
 if [[ ! -f "${MERGED_IMAGE}" ]]; then
     fail "merged image was not created: ${MERGED_IMAGE}"

@@ -4,7 +4,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
-readonly BUILD_DIR="${FIRMWARE_DIR}/build"
+readonly BUILD_DIR="${P4_V3X_BUILD_DIR:-${FIRMWARE_DIR}/build-p4-v3x}"
 readonly MERGED_IMAGE="${BUILD_DIR}/np2fixture-merged.bin"
 readonly EMULATOR_LOG="${BUILD_DIR}/esp-emu-np2-fixture.log"
 readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
@@ -28,19 +28,14 @@ emu_version_line="$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')"
 printf '%s\n' "${emu_version_line}"
 [[ "${emu_version_line}" == 'esp-emu 0.39.0' ]] || fail "esp-emu v0.39.0 is required: ${emu_version_line}"
 
-if [[ -f "${FIRMWARE_DIR}/sdkconfig" ]]; then
-    grep -qx 'CONFIG_IDF_TARGET="esp32p4"' "${FIRMWARE_DIR}/sdkconfig" ||
-        fail 'firmware/sdkconfig is not configured for esp32p4'
-fi
-check_firmware_sdkconfig "${FIRMWARE_DIR}/sdkconfig"
-
 python3 "${REPOSITORY_ROOT}/tools/guest/verify_np2test.py" \
     --layout "${REPOSITORY_ROOT}/tests/guest/np2test/layout.json" \
     --image "${REPOSITORY_ROOT}/tests/guest/np2test/golden/np2test-fd1232.image" \
     --expected-sha256 "${EXPECTED_SHA256}"
 
-cd -- "${FIRMWARE_DIR}"
-idf.py build
+bash "${SCRIPT_DIR}/build-production.sh" \
+    --variant p4-v3x \
+    --build-dir "${BUILD_DIR}"
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2_fixture_flash.py" \
     --repository-root "${REPOSITORY_ROOT}" \

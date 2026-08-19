@@ -228,6 +228,16 @@ jobs:
           test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
             "esp-emu 0.39.0"
 
+      - name: Compile production firmware for ESP32-P4 v1.x
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          bash tools/emu/build-production.sh --variant p4-v1x
+          printf '%s\n' 'BUILT FOR P4 v1.x (compile-only; no hardware claim)'
+
       - name: Run NON-FORMAL reduced firmware validation
         run: |
           set -euo pipefail

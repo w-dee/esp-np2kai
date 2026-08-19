@@ -1,0 +1,5 @@
+# ESP32-P4 v1.x production-build overlay.
+# Keep revision selection out of the common defaults so v1.x and v3.x builds
+# cannot inherit one another's silicon assumptions.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
