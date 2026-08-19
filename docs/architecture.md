@@ -670,7 +670,8 @@ independent oracle.
 Step 6A File Transfer service capacity remains 2 MiB. Routine CI uses a
 bounded 262145-byte upload/download workload, while the routine persistence
 case uses 4097 bytes to cross the 4 KiB FAT cluster boundary. A clean
-Candidate-A image accepts a new 2 MiB file upload, readback, and ranged reads.
+A clean image using the approved 2 MiB-app / 8 MiB validation geometry accepts
+a new 2 MiB file upload, readback, and ranged reads.
 That protocol maximum does not guarantee same-size replacement of a full 2 MiB
 file on the internal FATFS fixture: replacement temporarily needs both the
 existing target and a staging file. The extended replacement/rollback path is
@@ -681,7 +682,8 @@ guest disk writable: the NP2 disk path remains read-only through DOSIO.
 
 The NoSpace contract is geometry-derived rather than a fixed 4 MiB prefill:
 the 1 MiB request needs 256 clusters, the target is left with 255 free
-clusters, and the current Candidate-A measurement derives a 618-cluster
+clusters, and under the current approved geometry, the measured result derives
+a 618-cluster
 (`0x26A000` / 2,531,328-byte) prefill. Begin/preallocation fails with
 `NO_SPACE` before any payload frame (`payload_frames=0`); the pre-existing file
 remains intact, staging cleanup succeeds, and the endpoint recovers. The

@@ -155,8 +155,9 @@ transfer/replacement/persistence, the old matrix, natural-fill NoSpace, and
 other development experiments remain outside routine CI because UART
 stop-and-wait execution under esp-emu is slow.
 
-The File Transfer service limit remains 2 MiB. A clean Candidate-A image
-accepts a new 2 MiB file upload/readback/ranged-read workload, but the protocol
+The File Transfer service limit remains 2 MiB. A clean image using the approved
+2 MiB-app / 8 MiB validation geometry accepts a new 2 MiB
+file upload/readback/ranged-read workload, but the protocol
 maximum does not guarantee same-size replacement of a full 2 MiB file because
 the old target and staging file temporarily coexist. The extended
 replacement/rollback validation uses 419 clusters (`0x1A3000`) and a
@@ -164,8 +165,9 @@ replacement/rollback validation uses 419 clusters (`0x1A3000`) and a
 protocol maximum.
 
 NoSpace validation is geometry-derived: a 1 MiB request needs 256 clusters,
-the target is left with 255 free clusters, and the current Candidate-A result
-uses a 618-cluster (`0x26A000`) prefill. Begin/preallocation fails with
+the target is left with 255 free clusters, and under the current approved
+geometry, the measured result uses a 618-cluster (`0x26A000`) prefill.
+Begin/preallocation fails with
 `NO_SPACE` before payload transfer (`payload_frames=0`), while the existing
 file remains intact and staging cleanup/endpoint recovery pass. The storage
 fixture currently measures 1193 usable clusters, with 320 clean allocated and
