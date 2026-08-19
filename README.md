@@ -40,6 +40,15 @@ confirmed that the VFS run used the independent FATFS fixture source. Step 6B,
 physical ESP32-P4 microSD/SDMMC integration, remains future work; formal
 `EXTMEM=13` remains native-only.
 
+The current approved ESP32-P4 validation image uses an 8 MiB flash envelope:
+the 2 MiB factory application partition is at `0x010000`, read-only `np2test`
+is at `0x210000` with size `0x134000`, and FATFS/WL storage is at `0x344000`
+with size `0x4BC000`, ending at `0x800000`. Phase 6 validated all relevant
+firmware profiles, video oracles, and presentation against the generated
+geometry; the largest measured profile was `storage-provider` at
+`0xFC2D0`, leaving `0x103D30` of factory headroom. This is measured current
+evidence, not a permanent firmware-size limit.
+
 ### Step 7A: headless guest framebuffer and video oracles — COMPLETE
 
 Step 7A provides an implemented and verified headless RGB565LE guest

@@ -317,14 +317,28 @@ The bounded routine covers:
 - normal VFS NP2 execution; and
 - raw-poisoned VFS source-independence.
 
-The File Transfer service limit in the Step 6A FATFS profile is 2 MiB. The
-262145-byte routine transfer exercises multiple protocol frames, a partial
+The File Transfer service limit in the Step 6A FATFS profile remains 2 MiB.
+The 262145-byte routine transfer exercises multiple protocol frames, a partial
 final frame, and boundary/ranged reads. The 4097-byte persistence case crosses
-the 4 KiB FAT cluster boundary, uses multiple frames and a partial final frame,
-and remains a separate write/read emulator-process lifecycle. Extended/manual
-development evidence also covers 2 MiB transfer, replacement, persistence,
-and abort preservation; the old full matrix, natural-fill NoSpace, and other
-extended experiments are not part of routine CI.
+the 4 KiB FAT cluster boundary and remains a separate write/read emulator-
+process lifecycle. A clean Candidate-A image also passes a new 2 MiB file
+upload/readback/ranged-read workload. This does not guarantee same-size
+replacement of a full 2 MiB file on the internal FATFS fixture, because the
+old target and staging file temporarily coexist; the extended replacement path
+uses 419 clusters (`0x1A3000`) with a 35-cluster safety margin. The protocol
+maximum remains 2 MiB.
+
+NoSpace is validated from the generated storage geometry: the 1 MiB request
+needs 256 clusters, the target is intentionally left with 255 free clusters,
+and the current Candidate-A result derives a 618-cluster (`0x26A000`) prefill.
+Failure occurs during begin/preallocation with `payload_frames=0`; the
+pre-existing file remains intact, staging cleanup succeeds, and the endpoint
+recovers. This measured prefill is not a permanent source-of-truth constant.
+
+High-address validation requires a marker at physical offset `>= 0x400000`
+inside the storage partition, rather than an exact address. Normal and
+raw-poisoned VFS runs pass; poisoning changes the raw `np2test` range while
+the storage hash remains unchanged, demonstrating source independence.
 
 Each profile explicitly supplies the complete selector set and clears the
 corresponding selector environment variables before CMake configuration, so

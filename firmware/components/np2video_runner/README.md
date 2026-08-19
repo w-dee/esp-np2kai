@@ -8,8 +8,10 @@ RGB565 snapshot against a generated header selected from `golden.json`.
 The generated header is build output only. Both it and the flash-preparation
 tool read `golden.json` directly; Python tooling never parses the generated C
 header. The video image substitutes for the existing read-only `np2test` raw
-partition at `0x110000`/`0x134000` only in the dedicated local test path. No
-second fixture partition, BMP support, or physical display support is added.
+partition at the generated current slot `0x210000`/`0x134000` under the
+approved 2 MiB factory geometry, and only in the dedicated local test path.
+No second fixture partition, BMP support, or physical display support is
+added.
 
 Run the local validation from the repository root:
 

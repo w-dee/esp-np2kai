@@ -578,31 +578,54 @@ Step 6A is the completed, hardware-independent persistent storage integration
 using emulator-supported SPI-NOR plus ESP-IDF FATFS/Wear Levelling (WL). It is
 not the physical microSD implementation planned for Step 6B.
 
-The common validation image uses an 8 MiB flash envelope. This is an
-intentional esp-emu validation envelope, not the physical maximum of the
-P4-NANO hardware:
+The common validation image uses the current approved 8 MiB flash envelope.
+This is the common esp-emu validation envelope, not a claim that every future
+board has only 8 MiB of flash or that it is the physical maximum of P4-NANO:
 
 ```text
-factory       offset 0x010000  size 0x100000
-raw np2test   offset 0x110000  size 0x134000  read-only
-FATFS storage offset 0x244000  size 0x5BC000
-total common flash envelope: 8 MiB
+nvs           [0x009000, 0x00F000)  size 0x006000
+phy_init      [0x00F000, 0x010000)  size 0x001000
+factory       [0x010000, 0x210000)  size 0x200000
+np2test       [0x210000, 0x344000)  size 0x134000  type/subtype 0x40/0x01  read-only
+storage       [0x344000, 0x800000)  size 0x4BC000
+total common flash envelope: 0x800000 / 8 MiB
 ```
 
-The factory application partition remains `0x100000` (1 MiB). Representative
-Step 6A build measurements fit within it, but the remaining headroom is a
-capacity risk rather than an ABI guarantee:
+The factory application partition is now 2 MiB. It was expanded to provide
+headroom for future production growth, especially OSD/UI and display-side
+functionality, while preserving the common 8 MiB validation envelope. The
+additional 1 MiB was taken from the internal FATFS test/storage partition;
+the read-only `np2test` fixture size was deliberately preserved. This FATFS
+partition is primarily a development and validation fixture, not the intended
+final large user-media store. Future real user disk/image storage is expected
+to use removable or external storage such as microSD/SDMMC where appropriate.
+
+The offsets and sizes originate from `firmware/partitions.csv`. Operational
+tooling validates the generated ESP-IDF partition table through the shared
+geometry helper rather than treating duplicated offsets as authoritative.
+
+The measured storage fixture under this geometry is:
 
 ```text
-raw-reduced       0xec540  remaining 0x13ac0
-storage-provider  0xfadc0  remaining 0x5240
-uart-fatfs        0xb5ce0  remaining 0x4a320
-dosio             0x4bb30  remaining 0xb44d0
-vfs               0xf66a0  remaining 0x9960
+storage partition  0x4BC000 / 4,964,352 bytes
+WL sectors         1212
+WL metadata        0xC000
+plain FAT volume   0x4B0000
+FAT type           FAT12
+sector size        4096
+sectors/cluster    1
+cluster size       4096
+usable data        1193 clusters
+clean allocated    320 clusters
+clean free         873 clusters
 ```
 
-Future actual overflow remains a human-review partition-layout gate; Step 6A
-did not resize the partition.
+These are measured current test-fixture values, not product API guarantees.
+Phase 6 freshly measured all relevant profiles below the generated 2 MiB
+factory size; the largest was `storage-provider` at `0xFC2D0` (1,032,912
+bytes), leaving `0x103D30` (1,064,240 bytes). This is evidence from the
+current codebase, not a stable ABI limit or a promise that future firmware
+will remain below 1 MiB.
 
 The mounted namespace is:
 
@@ -644,18 +667,34 @@ logical NP2 path. Both use the same FDD/XDF, NP2 CPU, Stage-1 guest, and
 result-v1 parser/controller. The raw source remains a permanent deterministic
 independent oracle.
 
-Step 6A File Transfer service capacity is 2 MiB. Routine CI uses a bounded
-262145-byte upload/download workload that exercises multiple frames, a partial
-final frame, and boundary/ranged reads. The routine persistence case uses
-4097 bytes to cross the 4 KiB FAT cluster boundary while retaining the
-cross-process write/read lifecycle. Development evidence also covered 2 MiB
-transfers, replacement, persistence, and abort preservation. Validated
-persistent behavior includes metadata/stat, listing/pagination, ranged reads,
-UTF-8, FAT case-insensitive collision handling, FAT-invalid names, staged
-replacement, abort preservation, actual FAT NoSpace mapping, cross-process
-persistence, and high-address physical flash persistence. These File Transfer
-writes do not make the NP2 guest disk writable: the NP2 disk path remains
-read-only through DOSIO.
+Step 6A File Transfer service capacity remains 2 MiB. Routine CI uses a
+bounded 262145-byte upload/download workload, while the routine persistence
+case uses 4097 bytes to cross the 4 KiB FAT cluster boundary. A clean
+Candidate-A image accepts a new 2 MiB file upload, readback, and ranged reads.
+That protocol maximum does not guarantee same-size replacement of a full 2 MiB
+file on the internal FATFS fixture: replacement temporarily needs both the
+existing target and a staging file. The extended replacement/rollback path is
+therefore validated with a 419-cluster (`0x1A3000`) payload and a 35-cluster
+safety margin. This capacity distinction is not a firmware bug and does not
+lower the 2 MiB protocol limit. These File Transfer writes do not make the NP2
+guest disk writable: the NP2 disk path remains read-only through DOSIO.
+
+The NoSpace contract is geometry-derived rather than a fixed 4 MiB prefill:
+the 1 MiB request needs 256 clusters, the target is left with 255 free
+clusters, and the current Candidate-A measurement derives a 618-cluster
+(`0x26A000` / 2,531,328-byte) prefill. Begin/preallocation fails with
+`NO_SPACE` before any payload frame (`payload_frames=0`); the pre-existing file
+remains intact, staging cleanup succeeds, and the endpoint recovers. The
+`0x26A000` value is this measured result, not a permanent source-of-truth
+constant.
+
+Validated persistent behavior also includes metadata/stat, listing/pagination,
+ranged reads, UTF-8, FAT case-insensitive collision handling, FAT-invalid
+names, staged replacement, abort preservation, actual FAT NoSpace mapping,
+cross-process persistence, and high-address physical flash persistence. The
+high-address invariant is semantic: the marker must be at physical offset
+`>= 0x400000` and inside the storage partition. Phase 6 observed `0x68D000` as
+evidence, not as a permanent required address.
 
 During Step 6A.1 development, `StorageFatfs` direct underlying POSIX
 `pread`/`pwrite` operations of 4096 bytes were observed to hang under the
@@ -667,7 +706,7 @@ DOSIO VFS reads can perform 4096-byte POSIX reads successfully; hardware
 validation remains future work.
 
 The strongest Step 6A.4 source-independence proof used a temporary 8 MiB image
-copy. Only the raw partition's first `0x1000` bytes at offset `0x110000` were
+copy. Only the raw partition's first `0x1000` bytes at offset `0x210000` were
 poisoned. Its SHA changed from
 `3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3` to
 `92ecf3e62e8ea67a2e618b58cf57e6a8db0f7a4ca5891507d53854285fe108f`, while

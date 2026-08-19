@@ -119,11 +119,20 @@ and performance or multicore work.
 
 ## Step 6A: emulator SPI-NOR FATFS persistent storage — COMPLETED
 
-Step 6A provides hardware-independent persistent storage using the common
-8 MiB esp-emu flash envelope: factory at `0x010000`/`0x100000`, the
-read-only raw `np2test` oracle at `0x110000`/`0x134000`, and FATFS/WL storage
-at `0x244000`/`0x5BC000`. The 8 MiB envelope is not a statement about the
-physical P4-NANO flash maximum.
+Step 6A provides hardware-independent persistent storage using the approved
+8 MiB esp-emu flash envelope: factory at `0x010000`/`0x200000`, the
+read-only raw `np2test` oracle at `0x210000`/`0x134000`, and FATFS/WL storage
+at `0x344000`/`0x4BC000`, ending at `0x800000`. The 8 MiB envelope is not a
+statement that every future board has only 8 MiB of flash or that it is the
+physical P4-NANO flash maximum. The offsets are generated from
+`firmware/partitions.csv` and checked from the generated ESP-IDF table.
+
+The factory partition was expanded to 2 MiB to provide future production
+headroom, especially for OSD/UI and display-side functionality. The additional
+1 MiB was taken from the internal FATFS development/validation fixture while
+the `np2test` fixture remained unchanged. Real large user disk/image storage is
+expected to use removable or external media such as microSD/SDMMC where
+appropriate; this 8 MiB envelope is the current common validation baseline.
 
 The mounted `/persist` namespace isolates File Transfer's `/persist/files`
 from private `/persist/fixtures` and `/persist/.np2-staging` state. File
@@ -145,6 +154,29 @@ diagnosis. Emulator process lifecycles remain independent. Extended 2 MiB
 transfer/replacement/persistence, the old matrix, natural-fill NoSpace, and
 other development experiments remain outside routine CI because UART
 stop-and-wait execution under esp-emu is slow.
+
+The File Transfer service limit remains 2 MiB. A clean Candidate-A image
+accepts a new 2 MiB file upload/readback/ranged-read workload, but the protocol
+maximum does not guarantee same-size replacement of a full 2 MiB file because
+the old target and staging file temporarily coexist. The extended
+replacement/rollback validation uses 419 clusters (`0x1A3000`) and a
+35-cluster safety margin; this capacity distinction does not reduce the
+protocol maximum.
+
+NoSpace validation is geometry-derived: a 1 MiB request needs 256 clusters,
+the target is left with 255 free clusters, and the current Candidate-A result
+uses a 618-cluster (`0x26A000`) prefill. Begin/preallocation fails with
+`NO_SPACE` before payload transfer (`payload_frames=0`), while the existing
+file remains intact and staging cleanup/endpoint recovery pass. The storage
+fixture currently measures 1193 usable clusters, with 320 clean allocated and
+873 clean free at a 4096-byte cluster size. These are validation measurements,
+not product capacity guarantees.
+
+High-address validation requires a marker at physical offset `>= 0x400000`
+inside storage; the observed `0x68D000` is evidence only. Normal and
+raw-poisoned VFS runs pass: poisoning changes only the raw `np2test` range,
+while storage remains unchanged, demonstrating source independence without
+claiming a general security boundary.
 
 The formal machine configuration remains `EXTMEM=13` and its authoritative
 Ubuntu-native result is 13/13 with CRC `0x58f5b827`. Pinned esp-emu v0.39.0
