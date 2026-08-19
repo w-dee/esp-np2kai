@@ -14,7 +14,9 @@ The Binary Data Plane v1 integration test verifies deterministic 64 KiB
 transfers in both directions, per-frame and whole-transfer CRC, duplicate DATA
 idempotency, host-generated NACK retransmission, corrupted-frame recovery, and
 text/binary stream resynchronization over esp-emu UART-TCP. These are emulator
-results; physical P4-NANO-KIT-D, CH343P, and TAB5 UART paths remain unverified.
+results for the data-plane integration. Separately, the P4-NANO-KIT-D CH343P
+UART Control Plane path is verified on real hardware; the TAB5 UART path is not
+yet verified.
 
 The entry point prints the stable UART marker:
 
@@ -104,7 +106,8 @@ changing its number, pins, or baud rate. It provides bounded `@ESP-NP2 `
 JSON-lines framing and the separate readiness marker
 `ESP-NP2KAI UART CONTROL READY`. The initial read-only commands are
 `protocol.hello`, `system.ping`, and `system.info`. This path is verified under
-esp-emu; physical P4-NANO and TAB5 UART paths remain unverified.
+esp-emu and on real P4-NANO-KIT-D hardware; the TAB5 UART path is not yet
+verified.
 
 The byte-stream transport reserves four consecutive NUL bytes as the literal
 `TRANSPORT_SYNC` token:

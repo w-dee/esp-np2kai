@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 
@@ -23,15 +22,21 @@ except ImportError as exc:  # pragma: no cover - depends on the host environment
 
 FRAME_PREFIX = b"@ESP-NP2 "
 TRANSPORT_SYNC = b"\x00\x00\x00\x00"
-DEFAULT_PORT = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61041224-if00"
+EXPECTED_PROJECT = "esp_np2kai"
+EXPECTED_TARGET = "esp32p4"
+REQUIRED_CONTROL_CAPABILITIES = {
+    "protocol.hello",
+    "system.ping",
+    "system.info",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--port",
-        default=os.environ.get("ESP32_P4_NANO_PORT", DEFAULT_PORT),
-        help="serial device (default: %(default)s)",
+        required=True,
+        help="serial device (required; do not rely on a device-specific default)",
     )
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--trials", type=int, default=1,
@@ -170,6 +175,20 @@ def main() -> int:
             hello = require_result(hello_response, request_id, "protocol.hello")
             if hello.get("protocol_version") != 1:
                 raise AssertionError(f"unexpected protocol.hello result: {hello!r}")
+            if hello.get("project") != EXPECTED_PROJECT:
+                raise AssertionError(f"unexpected protocol.hello project: {hello!r}")
+            if hello.get("target") != EXPECTED_TARGET:
+                raise AssertionError(f"unexpected protocol.hello target: {hello!r}")
+            capabilities = hello.get("capabilities")
+            if (not isinstance(capabilities, list) or
+                    not all(isinstance(capability, str) for capability in capabilities)):
+                raise AssertionError(f"protocol.hello capabilities are invalid: {hello!r}")
+            missing_capabilities = REQUIRED_CONTROL_CAPABILITIES.difference(capabilities)
+            if missing_capabilities:
+                raise AssertionError(
+                    f"protocol.hello lacks required capabilities "
+                    f"{sorted(missing_capabilities)}: {hello!r}"
+                )
 
             ping_id = (request_seed + 100_000 + trial) % 2_000_000_000
             protocol.send(request(ping_id, "system.ping"))
@@ -183,6 +202,10 @@ def main() -> int:
             for key in ("project", "idf_version", "target"):
                 if not isinstance(info.get(key), str) or not info[key]:
                     raise AssertionError(f"system.info lacks {key}: {info!r}")
+            if info.get("project") != hello.get("project"):
+                raise AssertionError(f"system.info project disagrees with protocol.hello: {info!r}")
+            if info.get("target") != hello.get("target"):
+                raise AssertionError(f"system.info target disagrees with protocol.hello: {info!r}")
             print(f"PASS: trial {trial + 1}/{args.trials} TRANSPORT_SYNC + hello + ping + info")
         print(f"SUMMARY: first-attempt sync/hello success = "
               f"{first_attempt_successes} / {args.trials}")

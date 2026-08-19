@@ -51,6 +51,23 @@ void feed(control_stream::ControlStream *stream, const std::vector<std::uint8_t>
     control_stream::feed(stream, data.data(), data.size(), 1234);
 }
 
+void feed_chunks(control_stream::ControlStream *stream,
+                 const std::vector<std::uint8_t> &data,
+                 const std::vector<std::size_t> &chunk_lengths)
+{
+    std::size_t offset = 0;
+    for (const std::size_t chunk_length : chunk_lengths) {
+        assert(chunk_length > 0);
+        assert(offset + chunk_length <= data.size());
+        control_stream::feed(stream,
+                             data.data() + offset,
+                             chunk_length,
+                             1234);
+        offset += chunk_length;
+    }
+    assert(offset == data.size());
+}
+
 void expect_one_ping_after_sync(const std::vector<std::uint8_t> &prefix)
 {
     control_plane::ControlPlane control{};
@@ -184,6 +201,46 @@ void test_three_zeros_and_adjacent_binary()
     assert(stream.state == control_stream::State::Text);
 }
 
+void expect_one_ping_after_chunks(const std::vector<std::size_t> &chunk_lengths)
+{
+    reset_observations();
+    control_plane::ControlPlane control{};
+    binary_data_plane::TransferManager binary{};
+    control_stream::ControlStream stream{};
+    control_stream::init(&stream, &control, &binary);
+
+    std::vector<std::uint8_t> input(control_stream::kTransportSyncLength, 0);
+    append(&input, ping_frame());
+    feed_chunks(&stream, input, chunk_lengths);
+
+    assert(g_ping_count == 1);
+    assert(stream.state == control_stream::State::Text);
+    assert(stream.encoded_length == 0);
+    assert(control.frame_length == 0);
+}
+
+void test_sync_chunk_boundaries()
+{
+    const std::size_t ping_length = ping_frame().size();
+
+    // The token must be recognized when one control_stream::feed() call
+    // contains 1+3, 2+2, or 3+1 of its four NUL bytes.
+    expect_one_ping_after_chunks({1, 3, ping_length});
+    expect_one_ping_after_chunks({2, 2, 1, ping_length - 1});
+    expect_one_ping_after_chunks({3, 1, 2, ping_length - 2});
+
+    // A split token followed by a valid protocol frame split at an arbitrary
+    // boundary must recover the frame without requiring a single large feed.
+    expect_one_ping_after_chunks({1, 3, 5, ping_length - 5});
+
+    // The complete synchronization token and frame must also work one byte at
+    // a time, matching the smallest possible UART read chunk.
+    std::vector<std::size_t> one_byte_chunks(
+        control_stream::kTransportSyncLength + ping_length,
+        1);
+    expect_one_ping_after_chunks(one_byte_chunks);
+}
+
 void test_long_sync_run()
 {
     reset_observations();
@@ -308,6 +365,7 @@ int main()
     test_detector_boundaries();
     test_text_recovery_cases();
     test_three_zeros_and_adjacent_binary();
+    test_sync_chunk_boundaries();
     test_long_sync_run();
     test_randomized_recovery();
     return 0;

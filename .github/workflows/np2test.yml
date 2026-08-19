@@ -70,6 +70,9 @@ jobs:
               raise SystemExit(f"expected CPython 3.12, got {platform.python_implementation()} {sys.version}")
           PY
 
+      - name: Test control-stream TRANSPORT_SYNC
+        run: bash tools/test-control-stream-sync.sh
+
       - name: Test result-v1 parser
         run: make -C host test-result-v1-parser
 
