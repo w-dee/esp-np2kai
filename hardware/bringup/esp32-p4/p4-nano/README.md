@@ -110,6 +110,55 @@ REAL HARDWARE PSRAM INIT: PASS
 REAL HARDWARE PSRAM DATA TEST: PASS
 ```
 
+## Production headless bring-up
+
+The first production headless bring-up was also **MEASURED ON REAL HARDWARE**.
+The production `p4-v1x` image booted on the physical board with the
+production PSRAM and external-BSS configuration enabled. Its configured
+8 MiB Flash envelope was used on the board's physical 16 MiB NOR Flash; this
+does not change the independently measured physical Flash capacity above.
+
+```text
+Board:                              Waveshare ESP32-P4-NANO
+ESP32-P4 silicon revision:          v1.3
+ESP-IDF:                            v5.5.4
+Production image:                   p4-v1x booted successfully
+Configured production Flash envelope: 8 MiB
+Physical NOR Flash:                 16 MiB
+Production PSRAM/external-BSS:      booted successfully
+PSRAM initialized:                  32 MiB
+NP2MEM_RESULT=PASS
+UART Control Plane TX/RX:           PASS through CH343P USB-UART
+TRANSPORT_SYNC:                     four consecutive NUL bytes (00 00 00 00)
+Startup sync + first protocol.hello: 20/20 PASS
+system.ping / system.info:           PASS
+Late attach after approximately 20 seconds: PASS
+Bounded garbage recovery:            PASS
+uart_flush_input() correctness dependency: none
+Runtime faults:                     no panic/watchdog/reset loop during validated runs
+```
+
+The production headless validation covered boot, PSRAM initialization and
+external-BSS placement, the memory probe, and the UART Control Plane. It did
+not provision the raw NP2 fixture or run the formal NP2TEST:
+
+```text
+RAW NP2 FIXTURE: NOT PROVISIONED
+FORMAL NP2TEST: NOT RUN
+```
+
+These results must not be read as a formal NP2 emulation pass on real hardware.
+The three PSRAM/memory evidence sources remain distinct:
+
+1. The original factory firmware independently reported 32 MiB PSRAM during
+   the initial read-only hardware identification.
+2. The independent `flash-psram` diagnostic verified Flash, PSRAM startup,
+   capability-allocator behavior, an explicitly tested 32,768,000-byte region,
+   data integrity, and heap integrity using our ESP-IDF v5.5.4 diagnostic
+   firmware.
+3. The production `p4-v1x` firmware independently booted with its production
+   PSRAM/external-BSS configuration and reported `NP2MEM_RESULT=PASS`.
+
 ## Confirmed wiring
 
 GPIO20 and the physical P1 pin were checked against the board silkscreen and
@@ -144,6 +193,8 @@ artifacts are local to this project. The diagnostic was flashed only after
 the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
-The GPIO20 and Flash/PSRAM real-hardware bring-up diagnostics are complete.
-Further diagnostics, such as SD/MMC, MIPI-DSI, USB host, audio, and production
-firmware tests, remain out of scope for this milestone.
+The GPIO20, Flash/PSRAM, and production headless real-hardware bring-up
+milestones are complete. Further peripheral diagnostics, such as SD/MMC,
+MIPI-DSI, USB host, and audio, remain out of scope for this milestone. Formal
+NP2 emulation on real hardware remains unvalidated because the raw fixture was
+not provisioned and formal NP2TEST was not run.
