@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import struct
 import subprocess
@@ -13,11 +14,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-EXPECTED_FIXTURE_SIZE = 0x134000
+import partition_geometry
+
+
+EXPECTED_FIXTURE_SIZE = partition_geometry.EXPECTED_NP2TEST_SIZE
 EXPECTED_FIXTURE_SHA256 = "3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3"
-EXPECTED_FACTORY_OFFSET = 0x10000
-EXPECTED_FACTORY_SIZE = 0x200000
-EXPECTED_FLASH_SIZE = 0x800000
+EXPECTED_FLASH_SIZE = partition_geometry.EXPECTED_FLASH_SIZE
 HIGH_ADDRESS_SCAN_START = 0x400000
 HIGH_ADDRESS_MARKER = b"STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1"
 HIGH_ADDRESS_PREFILL_PATH = "high-address-prefill/filler.bin"
@@ -32,12 +34,9 @@ def fail(message: str) -> "NoReturn":
 
 
 def load_partitions(idf_path: Path, table_path: Path):
-    sys.path.insert(0, str(idf_path / "components" / "partition_table"))
-    import gen_esp32part  # type: ignore
-
     try:
-        return gen_esp32part.PartitionTable.from_binary(table_path.read_bytes())
-    except (OSError, ValueError) as exc:
+        return partition_geometry.load_partition_table(idf_path, table_path)
+    except (OSError, ValueError, ImportError) as exc:
         fail(f"cannot parse partition table {table_path}: {exc}")
 
 
@@ -91,46 +90,14 @@ def verify_fixture(repository_root: Path) -> Path:
     return fixture
 
 
-def require_partition(partitions, name: str):
-    matches = [partition for partition in partitions if partition.name == name]
-    if len(matches) != 1:
-        fail(f"expected exactly one {name} partition, found {len(matches)}")
-    return matches[0]
-
-
 def verify_partition_table(partitions) -> tuple[object, object]:
-    factory = require_partition(partitions, "factory")
-    fixture = require_partition(partitions, "np2test")
-    storage = require_partition(partitions, "storage")
-    if (factory.offset, factory.size) != (EXPECTED_FACTORY_OFFSET, EXPECTED_FACTORY_SIZE):
-        fail(f"factory changed: offset=0x{factory.offset:x} size=0x{factory.size:x}")
-    if (fixture.offset, fixture.size, fixture.type, fixture.subtype, fixture.readonly) != (
-        factory.offset + factory.size, EXPECTED_FIXTURE_SIZE, 0x40, 0x01, True
-    ):
-        fail("np2test partition changed")
-    if (storage.offset, storage.type, storage.subtype) != (
-        fixture.offset + fixture.size, 1, 0x81
-    ):
-        fail(
-            "storage partition mismatch: "
-            f"offset=0x{storage.offset:x} size=0x{storage.size:x} "
-            f"type=0x{storage.type:x} subtype=0x{storage.subtype:x}"
-        )
-    if (storage.offset + storage.size) != EXPECTED_FLASH_SIZE:
-        fail(
-            "storage partition does not end at flash envelope: "
-            f"end=0x{storage.offset + storage.size:x} expected=0x{EXPECTED_FLASH_SIZE:x}"
-        )
-    if storage.offset % 0x1000 or storage.size % 0x1000:
-        fail("storage partition is not 0x1000 aligned")
-    ranges = sorted(
-        (partition.offset, partition.offset + partition.size, partition.name)
-        for partition in partitions
-        if partition.offset is not None
-    )
-    for previous, current in zip(ranges, ranges[1:]):
-        if previous[1] > current[0]:
-            fail(f"partition overlap: {previous} and {current}")
+    try:
+        geometry = partition_geometry.extract_geometry(partitions)
+    except ValueError as exc:
+        fail(str(exc))
+    factory = geometry.factory
+    fixture = geometry.np2test
+    storage = geometry.storage
     print(
         "STORAGEFATFS_PARTITIONS "
         f"factory=0x{factory.offset:x}:0x{factory.size:x} "
@@ -270,16 +237,56 @@ def verify_high_address_state(state_image: Path, marker_text: str,
         fail(f"high-address marker must be ASCII: {exc}")
     if not marker:
         fail("high-address marker must not be empty")
-    data = state_image.read_bytes()
-    offset = data.find(marker, minimum_offset)
-    if offset < 0:
+    try:
+        data = state_image.read_bytes()
+    except OSError as exc:
+        fail(f"cannot read high-address state image {state_image}: {exc}")
+    if len(data) != EXPECTED_FLASH_SIZE:
         fail(
-            "high-address marker not found: "
-            f"marker={marker_text!r} minimum_offset=0x{minimum_offset:x}"
+            "high-address state image has the wrong flash envelope: "
+            f"size=0x{len(data):x} expected=0x{EXPECTED_FLASH_SIZE:x}"
+        )
+    idf_path_value = os.environ.get("IDF_PATH")
+    if not idf_path_value:
+        fail("IDF_PATH is not set for high-address geometry verification")
+    try:
+        partitions = partition_geometry.load_partition_table_from_image(
+            Path(idf_path_value).resolve(), data
+        )
+        geometry = partition_geometry.extract_geometry(partitions)
+    except (OSError, ValueError, ImportError) as exc:
+        fail(f"cannot derive high-address geometry from merged image: {exc}")
+    offsets: list[int] = []
+    search_offset = 0
+    while True:
+        offset = data.find(marker, search_offset)
+        if offset < 0:
+            break
+        offsets.append(offset)
+        search_offset = offset + 1
+    if len(offsets) != 1:
+        fail(
+            "high-address marker occurrence count is not exactly one: "
+            f"marker={marker_text!r} occurrences={len(offsets)}"
+        )
+    offset = offsets[0]
+    if offset < minimum_offset:
+        fail(
+            "high-address marker is below the required threshold: "
+            f"offset=0x{offset:x} minimum_offset=0x{minimum_offset:x}"
+        )
+    if not (geometry.storage.offset <= offset and
+            offset + len(marker) <= geometry.storage_end):
+        fail(
+            "high-address marker is outside the storage partition: "
+            f"offset=0x{offset:x} marker_end=0x{offset + len(marker):x} "
+            f"storage=[0x{geometry.storage.offset:x},0x{geometry.storage_end:x})"
         )
     print(
         "STORAGEFATFS_HIGH_ADDRESS_RAW=PASS "
-        f"marker={marker_text} offset=0x{offset:x} minimum_offset=0x{minimum_offset:x}"
+        f"marker={marker_text} offset=0x{offset:x} minimum_offset=0x{minimum_offset:x} "
+        f"storage=[0x{geometry.storage.offset:x},0x{geometry.storage_end:x}) "
+        "occurrences=1"
     )
 
 

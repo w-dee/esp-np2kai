@@ -7,11 +7,6 @@ readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 readonly EXPECTED_IDF_VERSION="ESP-IDF v5.5.4"
 readonly EXPECTED_EMU_VERSION="esp-emu 0.39.0"
 readonly EXPECTED_FIXTURE_SHA256="3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3"
-readonly APP_PARTITION_SIZE=$((0x100000))
-readonly RAW_FIXTURE_OFFSET=$((0x110000))
-readonly RAW_FIXTURE_SIZE=$((0x134000))
-readonly STORAGE_PARTITION_OFFSET=$((0x244000))
-readonly STORAGE_PARTITION_SIZE=$((0x5bc000))
 readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
 readonly RUN_ROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/esp-np2kai-step6a.XXXXXX")"
 readonly STEP6A_PROFILE_BUILD_MODE="${STEP6A_PROFILE_BUILD_MODE:-shared}"
@@ -28,6 +23,15 @@ STORAGE_PROFILE_CMAKE_CACHE_SHA256=""
 STORAGE_PROFILE_COMPILE_COMMANDS_SHA256=""
 STORAGE_PROFILE_APP_SIZE=""
 STORAGE_PROFILE_APP_SHA256=""
+FACTORY_PARTITION_OFFSET=""
+FACTORY_PARTITION_SIZE=""
+RAW_FIXTURE_OFFSET=""
+RAW_FIXTURE_SIZE=""
+RAW_FIXTURE_END=""
+STORAGE_PARTITION_OFFSET=""
+STORAGE_PARTITION_SIZE=""
+STORAGE_PARTITION_END=""
+FLASH_SIZE=""
 
 cleanup() {
     local status=$?
@@ -107,15 +111,22 @@ check_app_size() {
     local build_dir="$2"
     local app_binary="${build_dir}/esp_np2kai.bin"
     require_file "${app_binary}"
+    if [[ -z "${FACTORY_PARTITION_SIZE}" ]]; then
+        load_partition_geometry "${build_dir}"
+    fi
     local app_size
     app_size="$(stat -c '%s' "${app_binary}")"
-    if (( app_size > APP_PARTITION_SIZE )); then
-        fail "${profile} app exceeds factory partition: ${app_size} > ${APP_PARTITION_SIZE}"
+    if (( app_size > FACTORY_PARTITION_SIZE )); then
+        fail "${profile} app exceeds factory partition: " \
+            "${app_size} > ${FACTORY_PARTITION_SIZE}"
         return 1
     fi
-    local remaining=$((APP_PARTITION_SIZE - app_size))
+    local remaining=$((FACTORY_PARTITION_SIZE - app_size))
     local summary
-    summary="profile=${profile} app_size_hex=$(printf '0x%x' "${app_size}") partition_size=0x100000 remaining_hex=$(printf '0x%x' "${remaining}")"
+    summary="profile=${profile} "
+    summary+="app_size_hex=$(printf '0x%x' "${app_size}") "
+    summary+="partition_size=$(printf '0x%x' "${FACTORY_PARTITION_SIZE}") "
+    summary+="remaining_hex=$(printf '0x%x' "${remaining}")"
     APP_SIZE_SUMMARY+=("${summary}")
     printf 'STEP6A_APP_SIZE %s\n' "${summary}"
 }
@@ -390,8 +401,63 @@ partition_sha256() {
     local image="$1"
     local offset="$2"
     local size="$3"
+    local image_size
+    image_size="$(stat -c '%s' -- "${image}")" || {
+        fail "cannot stat image for hashing: ${image}"
+        return 1
+    }
+    if (( offset < 0 || size <= 0 || offset > image_size ||
+          size > image_size - offset )); then
+        fail "hash range is outside image: image=${image} size=${image_size} offset=${offset} range=${size}"
+        return 1
+    fi
     dd if="${image}" bs=1 skip="${offset}" count="${size}" status=none |
         sha256sum | awk '{print $1}'
+}
+
+load_partition_geometry() {
+    local build_dir="$1"
+    local geometry_output
+    geometry_output="$(python3 "${REPOSITORY_ROOT}/tools/emu/partition_geometry.py" \
+        --idf-path "${IDF_PATH}" \
+        --partition-table "${build_dir}/partition_table/partition-table.bin")" || {
+        fail "cannot extract generated partition geometry from ${build_dir}"
+        return 1
+    }
+    local key value
+    while IFS='=' read -r key value; do
+        case "${key}" in
+            FACTORY_OFFSET) FACTORY_PARTITION_OFFSET="${value}" ;;
+            FACTORY_SIZE) FACTORY_PARTITION_SIZE="${value}" ;;
+            NP2TEST_OFFSET) RAW_FIXTURE_OFFSET="${value}" ;;
+            NP2TEST_SIZE) RAW_FIXTURE_SIZE="${value}" ;;
+            NP2TEST_END) RAW_FIXTURE_END="${value}" ;;
+            STORAGE_OFFSET) STORAGE_PARTITION_OFFSET="${value}" ;;
+            STORAGE_SIZE) STORAGE_PARTITION_SIZE="${value}" ;;
+            STORAGE_END) STORAGE_PARTITION_END="${value}" ;;
+            FLASH_SIZE) FLASH_SIZE="${value}" ;;
+            *)
+                fail "unexpected partition geometry field: ${key}"
+                return 1
+                ;;
+        esac
+    done <<< "${geometry_output}"
+    local variable
+    for variable in FACTORY_PARTITION_OFFSET FACTORY_PARTITION_SIZE \
+        RAW_FIXTURE_OFFSET RAW_FIXTURE_SIZE RAW_FIXTURE_END \
+        STORAGE_PARTITION_OFFSET STORAGE_PARTITION_SIZE STORAGE_PARTITION_END \
+        FLASH_SIZE; do
+        if [[ -z "${!variable}" ]]; then
+            fail "partition geometry field is missing: ${variable}"
+            return 1
+        fi
+    done
+    printf 'STEP6A_PARTITION_GEOMETRY factory=[0x%x,0x%x) np2test=[0x%x,0x%x) storage=[0x%x,0x%x) flash_size=0x%x\n' \
+        "${FACTORY_PARTITION_OFFSET}" \
+        "$((FACTORY_PARTITION_OFFSET + FACTORY_PARTITION_SIZE))" \
+        "${RAW_FIXTURE_OFFSET}" "${RAW_FIXTURE_END}" \
+        "${STORAGE_PARTITION_OFFSET}" "${STORAGE_PARTITION_END}" \
+        "${FLASH_SIZE}"
 }
 
 assert_vfs_result() {
@@ -553,6 +619,7 @@ phase_file_transfer() {
     run_uart_mode high-address-write "${high_image}" "${console_log}" "${uart_log}" \
         --save-state --verify-state "${high_image}" --minimum-offset 0x400000
     require_log "${console_log}" 'FATFS_FILE_TRANSFER_HIGH_ADDRESS upload_size=65536'
+    require_log "${console_log}" 'STORAGEFATFS_HIGH_ADDRESS_RAW=PASS marker='
     require_log "${console_log}" 'FATFS_FILE_TRANSFER_HIGH_ADDRESS=PASS save_state=PASS marker='
     require_log "${console_log}" 'FATFS_MODE_SUMMARY mode=high-address-write '
     require_log "${console_log}" 'result=PASS'
@@ -585,6 +652,7 @@ phase_vfs_np2() {
     local normal_image="${RUN_ROOT}/vfs-normal.bin"
     local normal_log="${RUN_ROOT}/vfs-normal.log"
     build_profile vfs "${build_dir}" NP2_REDUCED_EXTMEM8 NP2_VFS_FIXTURE_PROFILE
+    load_partition_geometry "${build_dir}"
     build_storage_image "${build_dir}" "${normal_image}"
     run_esp_emu "${normal_image}" "${normal_log}" 'NP2REDUCED_RESULT=' 20s 30s
     assert_vfs_result "${normal_log}"
@@ -592,27 +660,47 @@ phase_vfs_np2() {
     local poison_image="${RUN_ROOT}/vfs-poisoned.bin"
     local poison_log="${RUN_ROOT}/vfs-poisoned.log"
     local raw_before raw_after storage_before storage_after
+    local factory_before factory_after
+    local poison_offset="${RAW_FIXTURE_OFFSET}"
+    local poison_size=$((0x1000))
+    if (( poison_offset < RAW_FIXTURE_OFFSET ||
+          poison_offset + poison_size > RAW_FIXTURE_END ||
+          poison_offset + poison_size > FLASH_SIZE )); then
+        fail "VFS poison range is outside NP2TEST: offset=${poison_offset} size=${poison_size}"
+        return 1
+    fi
     raw_before="$(partition_sha256 "${normal_image}" "${RAW_FIXTURE_OFFSET}" "${RAW_FIXTURE_SIZE}")"
     storage_before="$(partition_sha256 "${normal_image}" "${STORAGE_PARTITION_OFFSET}" "${STORAGE_PARTITION_SIZE}")"
+    factory_before="$(partition_sha256 "${normal_image}" "${FACTORY_PARTITION_OFFSET}" "${FACTORY_PARTITION_SIZE}")"
     [[ "${raw_before}" == "${EXPECTED_FIXTURE_SHA256}" ]] || {
         fail "normal VFS raw partition is not golden: ${raw_before}"
         return 1
     }
     cp -- "${normal_image}" "${poison_image}"
-    dd if=/dev/zero of="${poison_image}" bs=4096 seek=$((RAW_FIXTURE_OFFSET / 4096)) \
-        count=$((0x1000 / 4096)) conv=notrunc status=none
+    dd if=/dev/zero of="${poison_image}" bs=4096 \
+        seek=$((poison_offset / 4096)) count=$((poison_size / 4096)) \
+        conv=notrunc status=none
     raw_after="$(partition_sha256 "${poison_image}" "${RAW_FIXTURE_OFFSET}" "${RAW_FIXTURE_SIZE}")"
     storage_after="$(partition_sha256 "${poison_image}" "${STORAGE_PARTITION_OFFSET}" "${STORAGE_PARTITION_SIZE}")"
+    factory_after="$(partition_sha256 "${poison_image}" "${FACTORY_PARTITION_OFFSET}" "${FACTORY_PARTITION_SIZE}")"
+    printf 'STEP6A_POISON_GEOMETRY np2test=[0x%x,0x%x) poison=[0x%x,0x%x) storage=[0x%x,0x%x) flash_size=0x%x\n' \
+        "${RAW_FIXTURE_OFFSET}" "${RAW_FIXTURE_END}" \
+        "${poison_offset}" "$((poison_offset + poison_size))" \
+        "${STORAGE_PARTITION_OFFSET}" "${STORAGE_PARTITION_END}" "${FLASH_SIZE}"
     printf 'STEP6A_POISON_RAW before=%s after=%s golden=%s\n' \
         "${raw_before}" "${raw_after}" "${EXPECTED_FIXTURE_SHA256}"
     printf 'STEP6A_POISON_STORAGE before=%s after=%s\n' \
         "${storage_before}" "${storage_after}"
-    [[ "${raw_after}" != "${EXPECTED_FIXTURE_SHA256}" ]] || {
+    [[ "${raw_after}" != "${raw_before}" ]] || {
         fail 'raw poison did not change the raw fixture partition'
         return 1
     }
     [[ "${storage_after}" == "${storage_before}" ]] || {
         fail 'raw poison changed the FATFS storage partition'
+        return 1
+    }
+    [[ "${factory_after}" == "${factory_before}" ]] || {
+        fail 'raw poison changed the factory application partition'
         return 1
     }
     run_esp_emu "${poison_image}" "${poison_log}" 'NP2REDUCED_RESULT=' 20s 30s
