@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -204,6 +204,63 @@ production audio integration
 simultaneous audio with other heavy peripherals
 ```
 
+## MIPI-DSI display output
+
+The first MIPI-DSI display output bring-up was **MEASURED ON REAL HARDWARE**.
+This is a narrowly scoped display-output result and does not imply touch or a
+complete display subsystem result.
+
+```text
+Panel:                 Waveshare 10.1-DSI-TOUCH-A
+LCD controller:        JD9365
+Native resolution:     800 x 1280, native portrait
+Pixel format:          RGB565
+DSI:                   2 lanes, 1500 Mbps/lane
+DPI clock:             80 MHz
+Display-side control:  I2C controller 1, GPIO7/GPIO8, address 0x45
+P4:                    ESP32-P4 rev v1.3
+ESP-IDF:               v5.5.4
+Physical result:       MIPI-DSI DISPLAY OUTPUT PASS
+```
+
+The project-owned safe JD9365 adapter was used. The physical test displayed
+the native-size red, green, and blue patterns, color bars, checkerboard, and
+the border/corner-marker pattern. The full intended display geometry was
+visually verified. The hardware test was restored to the gate-off state after
+the single physical run.
+
+The deterministic digital result was:
+
+```text
+P4-NANO DISPLAY HARDWARE RESULT: PASS
+JD9365 ID: 93 65 04
+```
+
+The following remain explicitly untested:
+
+```text
+GT9271 touch input
+touch coordinate mapping
+touch reset/interrupt behavior
+LVGL
+UI framework
+1280x800 logical landscape rendering
+runtime rotation
+RGB888
+measured refresh rate
+long-duration DSI stability
+DSI lane-rate margin
+color calibration
+brightness calibration
+concurrent display + SD
+concurrent display + audio
+concurrent display + wireless
+concurrent display + camera
+production framebuffer integration
+NP2 rendering
+scaling/PPA path
+```
+
 ## Wireless companion transport
 
 The wireless companion bring-up validated the P4 host reset/control path,
@@ -378,8 +435,8 @@ the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
 The GPIO20, Flash/PSRAM, production headless, SD/MMC, wireless companion
-transport, and speaker-output real-hardware bring-up milestones are complete.
-MIPI-DSI and USB host remain outside the current bring-up scope; broader audio
-functions remain unvalidated as listed above. Formal NP2 emulation on real
-hardware remains unvalidated because the raw fixture was not provisioned and
-formal NP2TEST was not run.
+transport, speaker-output, and narrowly scoped MIPI-DSI display-output
+real-hardware bring-up milestones are complete. USB host and the display/touch
+and broader audio functions remain unvalidated as listed above. Formal NP2
+emulation on real hardware remains unvalidated because the raw fixture was not
+provisioned and formal NP2TEST was not run.

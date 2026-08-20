@@ -15,7 +15,7 @@ Therefore, the earlier claims of UART GPIO37/38, SD GPIO39/40, or Ethernet
 GPIO34--36 conflicts with DSI were incorrect and are retracted. UART0 GPIO37/38
 and the existing SD GPIO39--44 mapping remain separate board-level signals.
 
-## Hardware configuration encoded for a future test
+## Hardware configuration
 
 | Item | Value |
 |---|---|
@@ -92,15 +92,13 @@ level of `0x40` (approximately 25% only if the device mapping is linear; this
 is not a calibrated brightness value). No automatic brightness ramp or
 `0x96 = 0xff` write is used.
 
-The compiled physical path now includes DSI PHY LDO enable, DSI bus and DBI
+The compiled physical path includes DSI PHY LDO enable, DSI bus and DBI
 creation, safe JD9365 initialization, DPI framebuffer acquisition, black-frame
 priming, conservative backlight enable, all seven deterministic patterns with
-CRC checks, and final backlight-off cleanup. It remains a future path only;
-the hardware gate is still disabled by default and no physical display PASS is
-claimed here. If the physical path fails after I2C initialization, cleanup only
+CRC checks, and final backlight-off cleanup. The hardware gate remains disabled
+by default. If the physical path fails after I2C initialization, cleanup only
 attempts `0x96 = 0x00` before releasing resources. No undocumented `0x95`
-power-off value is invented; the first test may stop with backlight off and
-resources released.
+power-off value is invented.
 
 ## Offline software stage
 
@@ -191,6 +189,102 @@ transaction to display-side I2C address `0x45`, or any write to registers
 `0x95`/`0x96`. This is an offline software/PSRAM result, not a physical
 display result; the LCD has not yet been connected or validated.
 
+## Measured on real hardware: physical display stage
+
+The first physical display test was completed once with the LCD FPC and
+separate display power connected. The test used the project-owned safe JD9365
+adapter rather than the upstream constructor-side backlight behavior. The
+hardware gate was enabled only in the temporary generated test configuration;
+the tracked default remained disabled.
+
+```text
+Board:                 Waveshare ESP32-P4-NANO
+SoC:                   ESP32-P4 rev v1.3
+Panel:                 Waveshare 10.1-DSI-TOUCH-A
+LCD controller:        JD9365, ID 93 65 04
+Native resolution:     800 x 1280
+Orientation tested:    native portrait, no rotation
+Pixel format:          RGB565
+DSI:                   2 lanes, 1500 Mbps/lane
+DPI clock:             80 MHz
+ESP-IDF:               v5.5.4
+Component:             waveshare/esp_lcd_jd9365_10_1 1.0.4
+```
+
+The successful control and display-side sequence was:
+
+```text
+I2C controller init
+    -> 0x95 = 0x11
+    -> 0x95 = 0x17
+    -> 0x96 = 0x00
+    -> 100 ms wait
+    -> DSI PHY LDO enable
+    -> DSI bus
+    -> DBI IO
+    -> safe JD9365 panel construction
+    -> DPI framebuffer
+    -> BLACK framebuffer + cache sync
+    -> panel reset/init/display-on
+    -> 200 ms wait
+    -> 0x96 = 0x40
+    -> pattern sequence
+    -> 0x96 = 0x00
+```
+
+The project-owned path does not write `0x96 = 0xff`. The `0x40` value is only
+the conservative test level that worked on this board; it is not a calibrated
+backlight percentage.
+
+The deterministic digital results were:
+
+```text
+BLACK   0xb483d8cc
+RED     0x67196861
+GREEN   0x43d010a4
+BLUE    0x7743f398
+BARS    0x22b23526
+CHECKER 0xfd8b8a01
+BORDER  0x446766bc
+
+P4-NANO DISPLAY HARDWARE RESULT: PASS
+panic: none
+watchdog: none
+reset loop: none
+```
+
+These CRCs validate deterministic framebuffer generation and transfer-side
+checks; they do not by themselves prove physical display correctness.
+
+Human visual confirmation was recorded separately:
+
+```text
+P4-NANO DISPLAY VISIBLE: PASS
+P4-NANO DISPLAY COLORS: PASS
+P4-NANO DISPLAY GEOMETRY: PASS
+P4-NANO DISPLAY PHYSICAL RESULT: PASS
+```
+
+The native-size image was visible. Red, green, and blue were displayed
+correctly; the color-bar, checkerboard, and border/corner-marker patterns were
+visually correct. The border covered the full intended display area exactly.
+No quantitative refresh-rate, color-accuracy, luminance, flicker, or signal-
+margin claim is made.
+
+After this single physical test, the safe gate-off firmware was flashed
+successfully. The restored boot reported:
+
+```text
+CONFIG_P4_NANO_DISPLAY_RUN_HARDWARE_TEST=n
+P4-NANO DISPLAY HW GATE: DISABLED
+P4-NANO DISPLAY HW ACCESS: NOT RUN
+P4-NANO DISPLAY OFFLINE RESULT: PASS
+P4-NANO DISPLAY HARDWARE TEST: NOT RUN
+```
+
+Subsequent normal resets and power cycles therefore do not automatically
+repeat the physical display test.
+
 ## Native regression
 
 The pure pattern generator has a standalone host test that does not depend on
@@ -222,11 +316,29 @@ off. The dependency is pinned exactly to
 `waveshare/esp_lcd_jd9365_10_1` version `1.0.4`; BSP, LVGL, touch, SD, camera,
 Wi-Fi, BLE, and image-decoder dependencies are intentionally absent.
 
-## Future physical acceptance boundary
+## Remaining untested scope
 
-Only after the mechanical FPC-protection bracket is complete and the panel is
-connected with board and panel power off may the gate be reviewed for enabling.
-The later physical test must separately establish DSI/control initialization,
-framebuffer scanout, backlight safety, visible colors, geometry, orientation,
-and stable final display. Touch, UI, production integration, simultaneous
-heavy-peripheral use, and 60-Hz accuracy remain untested.
+The following remain untested:
+
+```text
+GT9271 touch input
+touch coordinate mapping
+touch reset/interrupt behavior
+LVGL
+UI framework
+1280x800 logical landscape rendering
+runtime rotation
+RGB888
+measured refresh rate
+long-duration DSI stability
+DSI lane-rate margin
+color calibration
+brightness calibration
+concurrent display + SD
+concurrent display + audio
+concurrent display + wireless
+concurrent display + camera
+production framebuffer integration
+NP2 rendering
+scaling/PPA path
+```
