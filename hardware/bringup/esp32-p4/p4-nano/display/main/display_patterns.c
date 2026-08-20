@@ -134,6 +134,20 @@ uint32_t display_pattern_crc32(const uint8_t *data, size_t length)
     return crc ^ UINT32_MAX;
 }
 
+uint32_t display_pattern_expected_crc32(display_pattern_kind_t pattern)
+{
+    static const uint32_t expected_crc[DISPLAY_PATTERN_COUNT] = {
+        0xb483d8ccU,
+        0x67196861U,
+        0x43d010a4U,
+        0x7743f398U,
+        0x22b23526U,
+        0xfd8b8a01U,
+        0x446766bcU,
+    };
+    return pattern < DISPLAY_PATTERN_COUNT ? expected_crc[pattern] : 0U;
+}
+
 const char *display_pattern_name(display_pattern_kind_t pattern)
 {
     static const char *const names[DISPLAY_PATTERN_COUNT] = {

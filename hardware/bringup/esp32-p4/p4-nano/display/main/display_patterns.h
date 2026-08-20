@@ -26,4 +26,5 @@ bool display_pattern_fill(display_pattern_kind_t pattern, uint16_t *pixels, size
 bool display_pattern_verify_representative(display_pattern_kind_t pattern, const uint16_t *pixels,
                                            size_t pixel_count);
 uint32_t display_pattern_crc32(const uint8_t *data, size_t length);
+uint32_t display_pattern_expected_crc32(display_pattern_kind_t pattern);
 const char *display_pattern_name(display_pattern_kind_t pattern);

@@ -16,16 +16,6 @@ enum {
     RGB565_WHITE = 0xffff,
 };
 
-static const uint32_t expected_crc[DISPLAY_PATTERN_COUNT] = {
-    0xb483d8ccU,
-    0x67196861U,
-    0x43d010a4U,
-    0x7743f398U,
-    0x22b23526U,
-    0xfd8b8a01U,
-    0x446766bcU,
-};
-
 static uint16_t pixel(const uint16_t *fb, uint32_t x, uint32_t y)
 {
     return fb[(size_t)y * DISPLAY_PATTERN_WIDTH + x];
@@ -50,8 +40,8 @@ int main(void)
         const uint32_t crc = display_pattern_crc32(
             (const uint8_t *)fb, DISPLAY_PATTERN_FRAMEBUFFER_BYTES);
         printf("%s crc32=0x%08x\n", display_pattern_name(pattern), crc);
-        assert(expected_crc[pattern] != 0U);
-        assert(crc == expected_crc[pattern]);
+        assert(display_pattern_expected_crc32(pattern) != 0U);
+        assert(crc == display_pattern_expected_crc32(pattern));
 
         if (pattern <= DISPLAY_PATTERN_BLUE) {
             assert(pixel(fb, 0U, 0U) == solid_colors[pattern]);
