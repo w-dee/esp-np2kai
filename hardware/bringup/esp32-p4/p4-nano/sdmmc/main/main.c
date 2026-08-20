@@ -276,6 +276,7 @@ static void make_scratch_payload(void)
 
 static bool delete_scratch_file(void)
 {
+    ESP_LOGI(TAG, "P4-NANO SD FILE DELETE: BEGIN");
     if (unlink(SCRATCH_PATH) != 0) {
         ESP_LOGE(TAG, "scratch delete failed: errno=%d (%s)", errno, strerror(errno));
         report_write_failure("P4-NANO SD FILE DELETE", "unlink failed");
@@ -298,8 +299,10 @@ static bool delete_scratch_file(void)
 
 static bool run_write_test(void)
 {
+    ESP_LOGI(TAG, "P4-NANO SD WRITE TEST BEGIN");
     make_scratch_payload();
 
+    ESP_LOGI(TAG, "P4-NANO SD FILE CREATE: BEGIN");
     const int fd = open(SCRATCH_PATH, O_WRONLY | O_CREAT | O_EXCL, 0644);
     if (fd < 0) {
         if (errno == EEXIST) {
@@ -330,6 +333,7 @@ static bool run_write_test(void)
         return false;
     }
 
+    ESP_LOGI(TAG, "P4-NANO SD FILE WRITE: BEGIN");
     size_t written = 0;
     while (written < SCRATCH_BYTES) {
         const size_t count = fwrite(s_scratch_payload + written, 1,
@@ -359,6 +363,7 @@ static bool run_write_test(void)
     }
     ESP_LOGI(TAG, "P4-NANO SD FILE WRITE: PASS bytes=%u", SCRATCH_BYTES);
 
+    ESP_LOGI(TAG, "P4-NANO SD FILE READ: BEGIN");
     file = fopen(SCRATCH_PATH, "rb");
     if (file == NULL) {
         ESP_LOGE(TAG, "scratch reopen failed: errno=%d (%s)", errno, strerror(errno));
@@ -504,11 +509,34 @@ static void command_parser_log_ignored(const command_parser_t *parser, const cha
     }
 }
 
+static void command_parser_log_ascii(const command_parser_t *parser)
+{
+    static const char hex_digits[] = "0123456789abcdef";
+    char hex[COMMAND_LINE_BUFFER_SIZE * 3] = {0};
+    size_t hex_length = 0;
+
+    for (size_t i = 0; i < parser->length; ++i) {
+        if (i > 0) {
+            hex[hex_length++] = ' ';
+        }
+        const uint8_t byte = (uint8_t)parser->line[i];
+        hex[hex_length++] = hex_digits[byte >> 4];
+        hex[hex_length++] = hex_digits[byte & 0x0f];
+    }
+    hex[hex_length] = '\0';
+
+    ESP_LOGI(TAG, "UART command line length=%u", (unsigned)parser->length);
+    ESP_LOGI(TAG, "UART command line hex=%s", hex);
+}
+
 static bool command_parser_finish_line(command_parser_t *parser)
 {
     const bool accepted = !parser->invalid && !parser->overflow &&
                           parser->length == sizeof(WRITE_COMMAND) - 1 &&
                           memcmp(parser->line, WRITE_COMMAND, sizeof(WRITE_COMMAND) - 1) == 0;
+    if (!parser->invalid && !parser->overflow) {
+        command_parser_log_ascii(parser);
+    }
     if (!accepted) {
         command_parser_log_ignored(parser, NULL);
     }
@@ -581,6 +609,7 @@ static void wait_for_host_command(void)
             continue;
         }
         if (command_parser_feed(&parser, byte)) {
+            ESP_LOGI(TAG, "P4-NANO SD WRITE COMMAND ACCEPTED");
             (void)run_write_test();
         }
     }
