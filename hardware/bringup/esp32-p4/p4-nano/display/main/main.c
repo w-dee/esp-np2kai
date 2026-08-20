@@ -31,10 +31,14 @@
 #define DISPLAY_I2C_SDA GPIO_NUM_7
 #define DISPLAY_I2C_SCL GPIO_NUM_8
 #define DISPLAY_I2C_ADDRESS 0x45
+#define DISPLAY_LCD_CONTROL_REGISTER 0x95
+#define DISPLAY_LCD_POWER_STAGE1 0x11
+#define DISPLAY_LCD_POWER_STAGE2 0x17
 #define DISPLAY_BACKLIGHT_REGISTER 0x96
 #define DISPLAY_BACKLIGHT_OFF_LEVEL 0x00
 #define DISPLAY_BACKLIGHT_INITIAL_LEVEL 0x40
 #define DISPLAY_I2C_TIMEOUT_MS 100
+#define DISPLAY_LCD_CONTROL_DELAY_MS 100
 #define DISPLAY_DSI_PHY_LDO_CHANNEL 3
 #define DISPLAY_DSI_PHY_LDO_MV 2500
 #define DISPLAY_PATTERN_HOLD_MS 1000
@@ -51,7 +55,7 @@ static bool display_hardware_test_enabled(void)
 #endif
 }
 
-static esp_err_t display_i2c_init(void)
+static esp_err_t display_control_init(void)
 {
     const i2c_config_t config = {
         .mode = I2C_MODE_MASTER,
@@ -70,17 +74,37 @@ static esp_err_t display_i2c_init(void)
     return ret;
 }
 
-static esp_err_t display_backlight_set(uint8_t level)
+static esp_err_t display_control_write(uint8_t reg, uint8_t value)
 {
-    const uint8_t payload[] = {DISPLAY_BACKLIGHT_REGISTER, level};
+    const uint8_t payload[] = {reg, value};
     esp_err_t ret = i2c_master_write_to_device(
         DISPLAY_I2C_PORT, DISPLAY_I2C_ADDRESS, payload, sizeof(payload),
         pdMS_TO_TICKS(DISPLAY_I2C_TIMEOUT_MS));
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "P4-NANO DISPLAY BACKLIGHT: PASS register=0x%02x level=0x%02x",
-                 DISPLAY_BACKLIGHT_REGISTER, level);
+        ESP_LOGI(TAG, "P4-NANO DISPLAY CONTROL: PASS register=0x%02x value=0x%02x",
+                 reg, value);
     }
     return ret;
+}
+
+static esp_err_t display_backlight_set(uint8_t level)
+{
+    return display_control_write(DISPLAY_BACKLIGHT_REGISTER, level);
+}
+
+static esp_err_t display_control_panel_power_on(void)
+{
+    ESP_RETURN_ON_ERROR(
+        display_control_write(DISPLAY_LCD_CONTROL_REGISTER, DISPLAY_LCD_POWER_STAGE1),
+        TAG, "LCD power/control stage 1 failed");
+    ESP_RETURN_ON_ERROR(
+        display_control_write(DISPLAY_LCD_CONTROL_REGISTER, DISPLAY_LCD_POWER_STAGE2),
+        TAG, "LCD power/control stage 2 failed");
+    ESP_RETURN_ON_ERROR(display_backlight_set(DISPLAY_BACKLIGHT_OFF_LEVEL), TAG,
+                        "backlight safe-off failed");
+    vTaskDelay(pdMS_TO_TICKS(DISPLAY_LCD_CONTROL_DELAY_MS));
+    ESP_LOGI(TAG, "P4-NANO DISPLAY LCD CONTROL: PASS 0x11->0x17, backlight=0x00");
+    return ESP_OK;
 }
 
 static esp_err_t display_framebuffer_sync(void *framebuffer)
@@ -98,12 +122,12 @@ static esp_err_t run_physical_display_test(void)
     esp_lcd_panel_handle_t panel = NULL;
     void *panel_framebuffer = NULL;
 
-    ret = display_i2c_init();
+    ret = display_control_init();
     ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "display I2C initialization failed");
-    ESP_LOGI(TAG, "P4-NANO DISPLAY BACKLIGHT SAFE-OFF: BEGIN address=0x%02x register=0x%02x",
-             DISPLAY_I2C_ADDRESS, DISPLAY_BACKLIGHT_REGISTER);
-    ret = display_backlight_set(DISPLAY_BACKLIGHT_OFF_LEVEL);
-    ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "display backlight safe-off failed");
+    ESP_LOGI(TAG, "P4-NANO DISPLAY LCD CONTROL: BEGIN address=0x%02x register=0x%02x",
+             DISPLAY_I2C_ADDRESS, DISPLAY_LCD_CONTROL_REGISTER);
+    ret = display_control_panel_power_on();
+    ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "LCD power/control initialization failed");
 
     const esp_ldo_channel_config_t ldo_config = {
         .chan_id = DISPLAY_DSI_PHY_LDO_CHANNEL,
@@ -193,10 +217,10 @@ static esp_err_t run_physical_display_test(void)
     ESP_GOTO_ON_ERROR(ret, cleanup, TAG, "display backlight safe-off failed");
 
 cleanup:
+    if (s_display_i2c_installed) {
+        (void)display_backlight_set(DISPLAY_BACKLIGHT_OFF_LEVEL);
+    }
     if (panel != NULL) {
-        if (s_display_i2c_installed) {
-            (void)display_backlight_set(DISPLAY_BACKLIGHT_OFF_LEVEL);
-        }
         esp_lcd_panel_del(panel);
     }
     if (dbi_io != NULL) {

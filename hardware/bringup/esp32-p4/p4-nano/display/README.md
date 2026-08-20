@@ -57,9 +57,22 @@ has an implicit display-side I2C operation inside
 `esp_lcd_new_panel_jd9365()`. Its constructor creates `I2C_NUM_1` on GPIO7
 (SDA) and GPIO8 (SCL), addresses `0x45`, writes register `0x95` twice with
 the vendor values `0x11` and `0x17`, writes register `0x96` with `0x00`,
-delays, and then writes register `0x96` with `0xff`. Therefore panel-object
-creation itself performs display-side I2C/backlight activity and raises the
-backlight to full scale.
+delays, and then writes register `0x96` with `0xff`. This constructor combines
+panel power/control initialization with backlight policy; the final `0xff`
+write is the unsafe automatic full-brightness behavior.
+
+The register roles are supported by a near-authoritative Waveshare panel
+regulator implementation: `0x95` is identified as `REG_LCD` and `0x96` as
+`REG_PWM`. Its power-state mapping assigns LCD AVDD, panel reset, backlight
+enable, and IOVCC control bits to the low byte of `0x95`; consequently,
+`0x11` (bits 0 and 4) followed by `0x17` (bits 0, 1, 2, and 4) enables the
+additional panel-control lines. The exact controller-MCU bit names are not
+published in a Waveshare panel datasheet, so this bit-level interpretation is
+source-based rather than a claim of undocumented vendor register definitions.
+The same `0x11` -> `0x17` sequence is present in known-working
+10.1-DSI-TOUCH-A implementations and is treated as required for cold-start
+panel wake/power initialization until the first physical test proves it on
+this board. See the [Waveshare panel regulator source](https://www.spinics.net/lists/kernel/msg5921548.html).
 
 The reviewed `2.0.0` source retains the same constructor-side I2C/backlight
 behavior and does not provide a suitable disable/override hook. Its API and
@@ -68,20 +81,26 @@ the diagnostic remains pinned to `1.0.4`.
 
 The project therefore owns a minimal adapter in
 `main/p4_nano_jd9365_safe.c`. It preserves the JD9365 DSI initialization table
-and panel operations while removing the constructor-side I2C/backlight block.
-`main.c` owns the explicit policy: initialize the display-side I2C, write
-`0x96 = 0x00` before DSI/panel initialization, obtain the DPI framebuffer,
-prime and synchronize a black RGB565 frame, wait for stable panel state, then
-write a conservative initial level of `0x40` (approximately 25% only if the
-device mapping is linear; this is not a calibrated brightness value). No
-automatic brightness ramp is used, and the final state writes `0x96 = 0x00`.
+and panel operations while removing all constructor-side I2C traffic.
+Project-owned `main.c` separates `display_control_init()`,
+`display_control_panel_power_on()`, and `display_backlight_set()`. The future
+physical sequence explicitly writes `0x95 = 0x11`, `0x95 = 0x17`, then
+`0x96 = 0x00`, waits 100 ms, enables DSI, obtains the DPI framebuffer, primes
+and synchronizes a black RGB565 frame, initializes and enables the panel,
+waits for stable black scanout, and only then writes a conservative initial
+level of `0x40` (approximately 25% only if the device mapping is linear; this
+is not a calibrated brightness value). No automatic brightness ramp or
+`0x96 = 0xff` write is used.
 
 The compiled physical path now includes DSI PHY LDO enable, DSI bus and DBI
 creation, safe JD9365 initialization, DPI framebuffer acquisition, black-frame
 priming, conservative backlight enable, all seven deterministic patterns with
 CRC checks, and final backlight-off cleanup. It remains a future path only;
 the hardware gate is still disabled by default and no physical display PASS is
-claimed here.
+claimed here. If the physical path fails after I2C initialization, cleanup only
+attempts `0x96 = 0x00` before releasing resources. No undocumented `0x95`
+power-off value is invented; the first test may stop with backlight off and
+resources released.
 
 ## Offline software stage
 
