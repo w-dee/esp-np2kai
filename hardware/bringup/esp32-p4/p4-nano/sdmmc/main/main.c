@@ -4,16 +4,21 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "driver/sdmmc_default_configs.h"
 #include "driver/sdmmc_host.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "ff.h"
+#include "freertos/FreeRTOS.h"
 #include "diskio_sdmmc.h"
+#include "sdkconfig.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "sdmmc_cmd.h"
 
@@ -23,6 +28,10 @@
 #define SCRATCH_PATH MOUNT_POINT "/P4NANO_SCRATCH.BIN"
 #define SCRATCH_BYTES 4096U
 #define SD_LDO_CHANNEL 4
+#define COMMAND_LINE_BUFFER_SIZE 32U
+#define COMMAND_RX_BUFFER_SIZE 256
+#define COMMAND_RX_TIMEOUT_MS 100
+#define WRITE_COMMAND "WRITE_TEST"
 
 static const char *TAG = "p4_nano_sdmmc";
 static const uint8_t EXPECTED_README[] = "ESP32-P4 SD TEST CARD\n";
@@ -34,6 +43,14 @@ static sd_pwr_ctrl_handle_t s_pwr_ctrl;
 static FATFS *s_fs;
 static uint8_t s_scratch_payload[SCRATCH_BYTES];
 static uint8_t s_scratch_readback[SCRATCH_BYTES];
+
+typedef struct {
+    char line[COMMAND_LINE_BUFFER_SIZE];
+    size_t length;
+    bool invalid;
+    bool overflow;
+    bool pending_cr;
+} command_parser_t;
 
 static void report_esp_marker(const char *marker, esp_err_t err)
 {
@@ -443,17 +460,128 @@ static bool run_read_only_diagnostic(void)
     return ok;
 }
 
+static esp_err_t initialize_command_uart(void)
+{
+    const uart_port_t uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
+    if (!uart_is_driver_installed(uart_num)) {
+        esp_err_t err = uart_driver_install(uart_num, COMMAND_RX_BUFFER_SIZE, 0, 0, NULL, 0);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "UART driver install failed: %s (0x%x)", esp_err_to_name(err), err);
+            return err;
+        }
+        ESP_LOGI(TAG, "UART RX driver installed on console UART %d", uart_num);
+    } else {
+        ESP_LOGI(TAG, "UART RX driver already installed on console UART %d", uart_num);
+    }
+
+    /* Keep console output and the explicit RX reader on the same driver-backed UART. */
+    uart_vfs_dev_use_driver(uart_num);
+    return ESP_OK;
+}
+
+static void command_parser_reset(command_parser_t *parser)
+{
+    parser->length = 0;
+    parser->invalid = false;
+    parser->overflow = false;
+    parser->pending_cr = false;
+    parser->line[0] = '\0';
+}
+
+static void command_parser_log_ignored(const command_parser_t *parser, const char *reason)
+{
+    if (parser->length == 0 && !parser->invalid && !parser->overflow) {
+        return;
+    }
+    if (parser->overflow) {
+        ESP_LOGW(TAG, "ignored overlong UART command line");
+    } else if (parser->invalid) {
+        ESP_LOGW(TAG, "ignored UART command line containing non-ASCII data");
+    } else if (reason != NULL) {
+        ESP_LOGW(TAG, "ignored UART command line (%s)", reason);
+    } else {
+        ESP_LOGW(TAG, "ignored ASCII UART command line: \"%s\"", parser->line);
+    }
+}
+
+static bool command_parser_finish_line(command_parser_t *parser)
+{
+    const bool accepted = !parser->invalid && !parser->overflow &&
+                          parser->length == sizeof(WRITE_COMMAND) - 1 &&
+                          memcmp(parser->line, WRITE_COMMAND, sizeof(WRITE_COMMAND) - 1) == 0;
+    if (!accepted) {
+        command_parser_log_ignored(parser, NULL);
+    }
+    command_parser_reset(parser);
+    return accepted;
+}
+
+static bool command_parser_feed(command_parser_t *parser, uint8_t byte)
+{
+    if (byte == '\n') {
+        return command_parser_finish_line(parser);
+    }
+
+    if (byte == '\r') {
+        if (parser->pending_cr) {
+            command_parser_log_ignored(parser, "bare CR");
+            command_parser_reset(parser);
+        }
+        parser->pending_cr = true;
+        return false;
+    }
+
+    if (parser->pending_cr) {
+        command_parser_log_ignored(parser, "bare CR");
+        command_parser_reset(parser);
+    }
+
+    /* A non-ASCII byte without an active line is treated as startup garbage. */
+    if (byte < 0x20 || byte > 0x7e) {
+        if (parser->length == 0 && !parser->invalid && !parser->overflow) {
+            ESP_LOGW(TAG, "ignored non-ASCII UART byte: 0x%02x", byte);
+        } else {
+            parser->invalid = true;
+        }
+        return false;
+    }
+
+    if (parser->invalid || parser->overflow) {
+        return false;
+    }
+    if (parser->length >= sizeof(parser->line) - 1) {
+        parser->overflow = true;
+        return false;
+    }
+
+    parser->line[parser->length++] = (char)byte;
+    parser->line[parser->length] = '\0';
+    return false;
+}
+
 static void wait_for_host_command(void)
 {
-    char command[64];
-    ESP_LOGI(TAG, "SD read-only validation passed; type WRITE_TEST followed by newline for one bounded transaction");
+    command_parser_t parser;
+    command_parser_reset(&parser);
 
-    while (fgets(command, sizeof(command), stdin) != NULL) {
-        command[strcspn(command, "\r\n")] = '\0';
-        if (strcmp(command, "WRITE_TEST") == 0) {
+    const uart_port_t uart_num = CONFIG_ESP_CONSOLE_UART_NUM;
+    if (initialize_command_uart() != ESP_OK) {
+        ESP_LOGE(TAG, "P4-NANO SD UART RX INIT: FAIL");
+        return;
+    }
+
+    ESP_LOGI(TAG, "P4-NANO SD UART RX INIT: PASS");
+    ESP_LOGI(TAG, "P4-NANO SD WRITE COMMAND READY");
+
+    while (true) {
+        uint8_t byte = 0;
+        const int received = uart_read_bytes(uart_num, &byte, 1,
+                                             pdMS_TO_TICKS(COMMAND_RX_TIMEOUT_MS));
+        if (received <= 0) {
+            continue;
+        }
+        if (command_parser_feed(&parser, byte)) {
             (void)run_write_test();
-        } else if (command[0] != '\0') {
-            ESP_LOGW(TAG, "ignored command: %s", command);
         }
     }
 }
