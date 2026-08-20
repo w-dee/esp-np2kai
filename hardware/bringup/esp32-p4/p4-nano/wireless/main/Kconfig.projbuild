@@ -1,0 +1,12 @@
+# ESP-Hosted 3.0.6 declares OTA as a hidden, default-y system subfeature.
+# Make the diagnostic policy explicit and user-configurable so the defaults
+# file can keep this transport-only project at OTA=n.
+config ESP_HOSTED_HOST_FEAT_OTA
+	bool "Enable ESP-Hosted OTA support"
+	default n
+
+# This companion option is hidden and default-y in ESP-Hosted 3.0.6 as well.
+# Keep the transport-only diagnostic from registering OTA initialization.
+config ESP_HOSTED_HOST_FEAT_OTA_AUTO_INIT
+	bool "Enable ESP-Hosted OTA auto-initialization"
+	default n
