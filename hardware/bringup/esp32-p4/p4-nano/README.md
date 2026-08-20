@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -158,6 +158,89 @@ The three PSRAM/memory evidence sources remain distinct:
    firmware.
 3. The production `p4-v1x` firmware independently booted with its production
    PSRAM/external-BSS configuration and reported `NP2MEM_RESULT=PASS`.
+
+## Wireless companion transport
+
+The wireless companion bring-up validated the P4 host reset/control path,
+ESP-Hosted connection, and Layer-1 SDIO transport to the factory C6. It did
+not validate Wi-Fi network operation, BLE operation, or production wireless
+integration. Advertised WLAN/BLE capabilities below are coprocessor
+capability observations, not data-plane feature tests.
+
+The following was **MEASURED ON REAL HARDWARE**:
+
+```text
+Board:                         Waveshare ESP32-P4-NANO
+P4:                            ESP32-P4 v1.3
+Companion:                     ESP32-C6-MINI-1-N4
+Factory C6 firmware:           network_adapter
+                               release/ng-v1.0.2-330-g83efce6
+                               ESP-Hosted-MCU Slave FW 0.0.6
+Host:                          ESP-IDF v5.5.4, espressif/esp_hosted 3.0.6
+Transport:                     SDIO Slot 1, 4-bit, 20 MHz
+Pins:                          CLK GPIO18, CMD GPIO19, D0-D3 GPIO14-17
+                               reset GPIO54 active-low
+Observed C6 chip ID:           0x0d
+Observed capabilities:          0x0d
+Observed advertisements:        WLAN over SDIO, HCI over SDIO, BLE only
+CP INIT:                        received
+Connect:                        PASS
+Transport:                      PASS
+Formal cold-boot repeatability: 5 / 5 PASS
+```
+
+All five counted cycles contained one ESP32-P4 POWERON ROM boot, one
+`rst:0x1 (POWERON)`, a complete UART capture, CP INIT, C6 identity and
+capabilities, and transport PASS. The normal diagnostic keeps the modern
+firmware-version query disabled:
+
+```ini
+CONFIG_P4_NANO_WIRELESS_RUN_FW_VERSION_QUERY=n
+```
+
+The historical protocol-version finding is:
+
+```text
+factory protocol:  Req_Max = 350
+modern host:      Req_GetCoprocessorFwVersion = 350
+```
+
+One historical version-query attempt timed out after five seconds because the
+factory CP protocol has no request ID 350. This was not an SDIO transport
+failure; the normal acceptance path does not issue that request.
+
+Formal cold-boot capture used a power-only and receive-only configuration:
+
+```text
+P4 power:          USB power-only cable
+UART capture:      external CH341 RX-only
+                   P4 GPIO37 / UART0_TX -> CH341 RX
+                   P4 GND -> CH341 GND
+CH341 TX/VCC:      not connected
+Onboard CH343P:    USB data path disconnected from host
+```
+
+An earlier duplicate-ROM observation was strongly associated with the onboard
+CH343P USB data/control path or host enumeration/control-line behavior. The
+power-only configuration eliminated that observation in the repeated formal
+runs. The exact DTR/RTS mechanism is not proven.
+
+The following remain explicitly untested:
+
+```text
+Wi-Fi scan
+AP association
+DHCP / Internet connectivity
+Wi-Fi throughput
+BLE advertising
+BLE pairing
+Bluetooth HCI operation
+concurrent SD card + C6 SDIO operation
+production wireless integration
+NP2 networking
+RAW NP2 FIXTURE: NOT PROVISIONED
+FORMAL NP2TEST: NOT RUN
+```
 
 ## SDMMC diagnostic
 
