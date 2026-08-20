@@ -1,0 +1,5 @@
+dependencies:
+  waveshare/esp_lcd_jd9365_10_1:
+    version: "1.0.4"
+  idf:
+    version: ">=5.5.4,<5.6"

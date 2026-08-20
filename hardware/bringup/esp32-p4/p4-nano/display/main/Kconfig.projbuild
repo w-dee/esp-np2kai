@@ -1,0 +1,12 @@
+menu "P4-NANO display diagnostic"
+
+config P4_NANO_DISPLAY_RUN_HARDWARE_TEST
+    bool "Run the physical MIPI-DSI display test"
+    default n
+    help
+        Enable only after the LCD FPC, separate display power, and the
+        mechanical protection bracket have been checked with power off.
+        When disabled, the application performs only the offline framebuffer
+        self-test and does not access DSI, JD9365, or the display I2C bus.
+
+endmenu
