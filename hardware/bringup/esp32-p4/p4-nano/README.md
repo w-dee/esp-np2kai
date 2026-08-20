@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -158,6 +158,51 @@ The three PSRAM/memory evidence sources remain distinct:
    firmware.
 3. The production `p4-v1x` firmware independently booted with its production
    PSRAM/external-BSS configuration and reported `NP2MEM_RESULT=PASS`.
+
+## Speaker audio diagnostic
+
+The independent audio diagnostic validated the P4-NANO speaker-output path;
+it does not claim microphone, recording, or full audio-subsystem validation.
+The following was **MEASURED ON REAL HARDWARE**:
+
+```text
+Board:                 Waveshare ESP32-P4-NANO
+Codec:                 ES8311 at I2C address 0x18
+Amplifier:             NS4150B
+Speaker:               small speaker supplied with ESP32-P4-NANO-KIT-D
+                       exact impedance/power rating not independently measured
+I2C:                   SDA GPIO7, SCL GPIO8
+I2S:                   DOUT GPIO9, WS GPIO10, BCLK GPIO12, MCLK GPIO13
+                       48 kHz, signed 16-bit stereo
+PA:                    GPIO53, active-high, final state LOW
+Generated stimulus:    1 kHz tone, three audible bursts
+Digital result:        PASS
+Physical speaker output: PASS
+```
+
+The diagnostic uses ESP-IDF v5.5.4, `espressif/es8311` 1.0.0~1, codec volume
+parameter 55, and PCM peak 4096. Human observation confirmed three audible
+tone bursts separated by silence, final silence, and the same sequence after a
+P4 reset. An external spectrum analyzer observed the generated tone at
+nominally 1.000 kHz. This does not claim calibrated frequency accuracy, THD,
+SPL, or output power.
+
+The following audio areas remain explicitly untested:
+
+```text
+microphone input
+ADC path
+recording
+echo
+stereo acoustic separation
+output power
+SPL
+THD
+frequency sweep
+WAV/music playback
+production audio integration
+simultaneous audio with other heavy peripherals
+```
 
 ## Wireless companion transport
 
@@ -332,8 +377,9 @@ artifacts are local to this project. The diagnostic was flashed only after
 the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
-The GPIO20, Flash/PSRAM, production headless, and SD/MMC real-hardware
-bring-up milestones are complete. MIPI-DSI, USB host, and audio remain outside
-the current bring-up scope. Formal NP2 emulation on real hardware remains
-unvalidated because the raw fixture was not provisioned and formal NP2TEST was
-not run.
+The GPIO20, Flash/PSRAM, production headless, SD/MMC, wireless companion
+transport, and speaker-output real-hardware bring-up milestones are complete.
+MIPI-DSI and USB host remain outside the current bring-up scope; broader audio
+functions remain unvalidated as listed above. Formal NP2 emulation on real
+hardware remains unvalidated because the raw fixture was not provisioned and
+formal NP2TEST was not run.

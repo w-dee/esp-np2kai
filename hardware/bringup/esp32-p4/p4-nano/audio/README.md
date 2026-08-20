@@ -75,6 +75,57 @@ The ES8311 component volume API uses a 0..100 parameter, not dB. The first
 physical test requests exactly `55`; the driver-returned value is logged.
 The diagnostic never increases the volume automatically.
 
+## Measured on real hardware
+
+The first speaker-output bring-up was **MEASURED ON REAL HARDWARE** on the
+Waveshare ESP32-P4-NANO with the small speaker supplied with the
+ESP32-P4-NANO-KIT-D. The speaker's exact impedance and power rating were not
+independently measured.
+
+```text
+Board:                 Waveshare ESP32-P4-NANO
+ESP32-P4 revision:     v1.3
+ESP-IDF:               v5.5.4
+ES8311:                address 0x18, espressif/es8311 1.0.0~1
+I2S:                   48 kHz, Philips, signed 16-bit stereo
+MCLK:                  12.288 MHz
+Generated tone:        1 kHz
+PA:                    NS4150B, GPIO53 active-high, final state LOW
+```
+
+The captured digital result was:
+
+```text
+P4-NANO AUDIO ES8311 DETECT: PASS address=0x18
+P4-NANO AUDIO CODEC INIT: PASS
+P4-NANO AUDIO CODEC VOLUME: PASS requested=55 actual=55
+P4-NANO AUDIO I2S INIT: PASS
+P4-NANO AUDIO SILENCE PRIME: PASS
+P4-NANO AUDIO PA ENABLE: PASS
+P4-NANO AUDIO TONE #1: PASS frames=48000 bytes=192000
+P4-NANO AUDIO TONE #2: PASS frames=48000 bytes=192000
+P4-NANO AUDIO TONE #3: PASS frames=48000 bytes=192000
+P4-NANO AUDIO PCM CRC32: 0x025d0870
+P4-NANO AUDIO PCM WRITE: PASS
+P4-NANO AUDIO PA DISABLE: PASS
+P4-NANO AUDIO DIGITAL RESULT: PASS
+```
+
+Human observation separately confirmed:
+
+```text
+P4-NANO AUDIO SPEAKER AUDIBLE: PASS
+P4-NANO AUDIO THREE-TONE CADENCE: PASS
+P4-NANO AUDIO FINAL SILENCE: PASS
+P4-NANO AUDIO PHYSICAL RESULT: PASS
+```
+
+The supplied speaker produced three clearly audible tone bursts with the
+specified tone/silence cadence. Resetting the P4 reproduced the same sequence.
+An external audio spectrum analyzer observed the generated tone at nominally
+1.000 kHz. This is not a calibrated frequency, THD, SPL, or output-power
+measurement.
+
 ## UART markers and acceptance boundary
 
 Layer A/B firmware markers include:
@@ -117,5 +168,7 @@ idf.py build
 
 The first hardware run is intentionally one sequence only. Do not flash the
 C6, erase the full Flash, use `--force`, change eFuses, raise volume, or retry
-automatically. Audio production integration, microphone/echo, recording,
-frequency sweeps, output power, THD, and concurrent SD use remain untested.
+automatically. Microphone input, the ADC path, recording, echo, stereo
+acoustic separation, frequency sweeps, output power, SPL, THD, WAV/music
+playback, production audio integration, and simultaneous audio with other
+heavy peripherals remain untested.
