@@ -34,7 +34,7 @@ static void report_result_failure(const char *stage, int rc)
 {
     ESP_LOGE(TAG, "P4-NANO WIRELESS %s: FAIL rc=%d (%s)",
              stage, rc, esp_err_to_name((esp_err_t)rc));
-    ESP_LOGE(TAG, "P4-NANO WIRELESS RESULT: FAIL");
+    ESP_LOGE(TAG, "P4-NANO WIRELESS TRANSPORT RESULT: FAIL");
 }
 
 void app_main(void)
@@ -49,8 +49,10 @@ void app_main(void)
     esp_err_t event_rc = esp_event_handler_register(
         EH_HOST_EVENT, ESP_EVENT_ANY_ID, host_event_handler, NULL);
     if (event_rc != ESP_OK) {
-        ESP_LOGW(TAG, "P4-NANO WIRELESS CP INIT EVENT: NOT OBSERVABLE rc=%s",
+        ESP_LOGE(TAG, "P4-NANO WIRELESS CP INIT EVENT: FAIL rc=%s",
                  esp_err_to_name(event_rc));
+        ESP_LOGE(TAG, "P4-NANO WIRELESS TRANSPORT RESULT: FAIL");
+        return;
     }
 
     rc = eh_host_connect_to_slave();
@@ -62,12 +64,16 @@ void app_main(void)
     ESP_LOGI(TAG, "P4-NANO WIRELESS CONNECT: PASS");
     ESP_LOGI(TAG, "P4-NANO WIRELESS TRANSPORT: PASS");
 
-    /* Allow the public event loop to deliver the optional CP init event. */
+    /* The CP INIT event is part of the Layer-1 acceptance boundary. */
     vTaskDelay(pdMS_TO_TICKS(200));
     if (!s_cp_init_seen) {
-        ESP_LOGI(TAG, "P4-NANO WIRELESS CP INIT EVENT: NOT OBSERVED");
+        ESP_LOGE(TAG, "P4-NANO WIRELESS CP INIT EVENT: FAIL");
+        ESP_LOGE(TAG, "P4-NANO WIRELESS TRANSPORT RESULT: FAIL");
+        return;
     }
+    ESP_LOGI(TAG, "P4-NANO WIRELESS TRANSPORT RESULT: PASS");
 
+#if CONFIG_P4_NANO_WIRELESS_RUN_FW_VERSION_QUERY
     /* This is the only control-plane RPC issued by this diagnostic. */
     eh_host_coprocessor_fwver_t fw_version = {0};
     esp_err_t fw_rc = eh_host_sys_get_cp_fw_version(&fw_version);
@@ -77,16 +83,19 @@ void app_main(void)
                  (unsigned)fw_version.major1, (unsigned)fw_version.minor1,
                  (unsigned)fw_version.patch1, (long)fw_version.revision,
                  (long)fw_version.prerelease, (long)fw_version.build);
-        ESP_LOGI(TAG, "P4-NANO WIRELESS RESULT: PASS");
     } else if (fw_rc == ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "P4-NANO WIRELESS FW QUERY: UNSUPPORTED rc=%s",
                  esp_err_to_name(fw_rc));
-        ESP_LOGW(TAG, "P4-NANO WIRELESS RESULT: TRANSPORT PASS / FW QUERY UNSUPPORTED");
     } else {
         ESP_LOGE(TAG, "P4-NANO WIRELESS FW QUERY: FAIL rc=%d (%s)",
                  (int)fw_rc, esp_err_to_name(fw_rc));
-        ESP_LOGE(TAG, "P4-NANO WIRELESS RESULT: FAIL");
+        ESP_LOGE(TAG,
+                 "P4-NANO WIRELESS FW QUERY: NO RESPONSE - FACTORY CP PROTOCOL HAS NO MSG_ID 350 REQUEST");
     }
+#else
+    ESP_LOGI(TAG,
+             "P4-NANO WIRELESS FW QUERY: NOT RUN (factory CP has no MSG_ID 350 request)");
+#endif
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));

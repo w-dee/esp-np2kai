@@ -10,3 +10,11 @@ config ESP_HOSTED_HOST_FEAT_OTA
 config ESP_HOSTED_HOST_FEAT_OTA_AUTO_INIT
 	bool "Enable ESP-Hosted OTA auto-initialization"
 	default n
+
+config P4_NANO_WIRELESS_RUN_FW_VERSION_QUERY
+	bool "Run the optional CP firmware-version RPC"
+	default n
+	help
+	  The factory P4-NANO CP firmware predates Req_GetCoprocessorFwVersion
+	  and will not answer modern request ID 350. Keep this disabled for the
+	  normal Layer-1 transport acceptance run.
