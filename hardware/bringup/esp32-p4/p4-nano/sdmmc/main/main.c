@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "driver/gpio.h"
 #include "driver/sdmmc_default_configs.h"
 #include "driver/sdmmc_host.h"
 #include "driver/uart.h"
@@ -17,6 +18,7 @@
 #include "esp_vfs_fat.h"
 #include "ff.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "diskio_sdmmc.h"
 #include "sdkconfig.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
@@ -32,6 +34,12 @@
 #define COMMAND_RX_BUFFER_SIZE 256
 #define COMMAND_RX_TIMEOUT_MS 100
 #define WRITE_COMMAND "WRITE_TEST"
+#define SAFE_OFF_LED_GPIO GPIO_NUM_20
+#define SAFE_OFF_LED_ON_MS 250
+#define SAFE_OFF_LED_OFF_MS 250
+#define SAFE_OFF_LED_TASK_STACK 2048
+#define SAFE_OFF_LED_TASK_PRIORITY 5
+#define SAFE_OFF_LED_TRANSITION_LOG_LIMIT 6U
 
 static const char *TAG = "p4_nano_sdmmc";
 static const uint8_t EXPECTED_README[] = "ESP32-P4 SD TEST CARD\n";
@@ -43,6 +51,14 @@ static sd_pwr_ctrl_handle_t s_pwr_ctrl;
 static FATFS *s_fs;
 static uint8_t s_scratch_payload[SCRATCH_BYTES];
 static uint8_t s_scratch_readback[SCRATCH_BYTES];
+static volatile bool s_safe_off_led_enabled;
+static bool s_safe_off_led_ready;
+static TaskHandle_t s_safe_off_led_task_handle;
+static uint32_t s_safe_off_led_transition_logs;
+static bool s_safe_off_led_last_level;
+static bool s_safe_off_led_last_level_valid;
+static bool s_safe_off_led_gpio_error_logged;
+static portMUX_TYPE s_safe_off_led_lock = portMUX_INITIALIZER_UNLOCKED;
 
 typedef struct {
     char line[COMMAND_LINE_BUFFER_SIZE];
@@ -51,6 +67,122 @@ typedef struct {
     bool overflow;
     bool pending_cr;
 } command_parser_t;
+
+static esp_err_t safe_off_led_drive(int level, bool log_transition)
+{
+    bool log_error = false;
+    bool log_level = false;
+
+    portENTER_CRITICAL(&s_safe_off_led_lock);
+    const esp_err_t err = gpio_set_level(SAFE_OFF_LED_GPIO, level);
+    if (err != ESP_OK) {
+        if (!s_safe_off_led_gpio_error_logged) {
+            s_safe_off_led_gpio_error_logged = true;
+            log_error = true;
+        }
+    } else {
+        const bool changed = !s_safe_off_led_last_level_valid ||
+                             s_safe_off_led_last_level != (level != 0);
+        s_safe_off_led_last_level = level != 0;
+        s_safe_off_led_last_level_valid = true;
+        if (log_transition && changed &&
+            s_safe_off_led_transition_logs < SAFE_OFF_LED_TRANSITION_LOG_LIMIT) {
+            s_safe_off_led_transition_logs++;
+            log_level = true;
+        }
+    }
+    portEXIT_CRITICAL(&s_safe_off_led_lock);
+
+    if (log_error) {
+        ESP_LOGE(TAG, "P4-NANO SAFE-OFF LED gpio_set_level(%d): FAIL (%s, 0x%x)",
+                 level, esp_err_to_name(err), err);
+    }
+    if (log_level) {
+        ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED GPIO20=%d", level != 0 ? 1 : 0);
+    }
+    return err;
+}
+
+static bool safe_off_led_is_enabled(void)
+{
+    bool enabled;
+    portENTER_CRITICAL(&s_safe_off_led_lock);
+    enabled = s_safe_off_led_enabled;
+    portEXIT_CRITICAL(&s_safe_off_led_lock);
+    return enabled;
+}
+
+static void safe_off_led_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        if (!safe_off_led_is_enabled()) {
+            (void)safe_off_led_drive(0, false);
+            vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_OFF_MS));
+            continue;
+        }
+
+        (void)safe_off_led_drive(1, true);
+        vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_ON_MS));
+
+        if (safe_off_led_is_enabled()) {
+            (void)safe_off_led_drive(0, true);
+        }
+        vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_OFF_MS));
+    }
+}
+
+static esp_err_t safe_off_led_init(void)
+{
+    const gpio_config_t config = {
+        .pin_bit_mask = 1ULL << SAFE_OFF_LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&config);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_safe_off_led_enabled = false;
+    const esp_err_t initial_level_err = safe_off_led_drive(0, false);
+    if (initial_level_err != ESP_OK) {
+        return initial_level_err;
+    }
+    if (xTaskCreate(safe_off_led_task, "safe_off_led", SAFE_OFF_LED_TASK_STACK,
+                    NULL, SAFE_OFF_LED_TASK_PRIORITY, &s_safe_off_led_task_handle) != pdPASS ||
+        s_safe_off_led_task_handle == NULL) {
+        (void)safe_off_led_drive(0, false);
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_safe_off_led_ready = true;
+    return ESP_OK;
+}
+
+static bool safe_off_led_set(bool enabled)
+{
+    if (!s_safe_off_led_ready) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_safe_off_led_lock);
+    s_safe_off_led_enabled = enabled;
+    portEXIT_CRITICAL(&s_safe_off_led_lock);
+
+    const esp_err_t err = safe_off_led_drive(0, false);
+    if (enabled) {
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED ENABLED");
+        }
+    } else {
+        ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED DISABLED");
+    }
+    return err == ESP_OK;
+}
 
 static void report_esp_marker(const char *marker, esp_err_t err)
 {
@@ -600,6 +732,11 @@ static void wait_for_host_command(void)
 
     ESP_LOGI(TAG, "P4-NANO SD UART RX INIT: PASS");
     ESP_LOGI(TAG, "P4-NANO SD WRITE COMMAND READY");
+    if (safe_off_led_set(true)) {
+        ESP_LOGI(TAG, "P4-NANO SAFE TO POWER OFF: YES");
+    } else {
+        ESP_LOGE(TAG, "P4-NANO SAFE TO POWER OFF: NO");
+    }
 
     while (true) {
         uint8_t byte = 0;
@@ -609,14 +746,30 @@ static void wait_for_host_command(void)
             continue;
         }
         if (command_parser_feed(&parser, byte)) {
+            (void)safe_off_led_set(false);
+            ESP_LOGI(TAG, "P4-NANO SAFE TO POWER OFF: NO");
             ESP_LOGI(TAG, "P4-NANO SD WRITE COMMAND ACCEPTED");
-            (void)run_write_test();
+            const bool write_ok = run_write_test();
+            if (write_ok && safe_off_led_set(true)) {
+                ESP_LOGI(TAG, "P4-NANO SAFE TO POWER OFF: YES");
+            } else {
+                (void)safe_off_led_set(false);
+                ESP_LOGE(TAG, "P4-NANO SAFE TO POWER OFF: NO");
+            }
         }
     }
 }
 
 void app_main(void)
 {
+    const esp_err_t led_err = safe_off_led_init();
+    if (led_err != ESP_OK) {
+        ESP_LOGE(TAG, "P4-NANO SAFE-OFF LED INIT: FAIL (%s, 0x%x)",
+                 esp_err_to_name(led_err), led_err);
+    } else {
+        ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED INIT: PASS GPIO20");
+    }
+
     ESP_LOGI(TAG, "P4-NANO SDMMC START");
     ESP_LOGI(TAG, "prepared card requirement: /README.TXT exact bytes: ESP32-P4 SD TEST CARD\\n");
 
