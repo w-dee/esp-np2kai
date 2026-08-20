@@ -121,6 +121,11 @@ static esp_err_t initialize_sd_host(void)
 
     s_slot_config = (sdmmc_slot_config_t)SDMMC_SLOT_CONFIG_DEFAULT();
     s_slot_config.width = 4;
+    /* GPIO45 is part of the board power-control path, not this 4-bit bus. */
+    s_slot_config.d4 = GPIO_NUM_NC;
+    s_slot_config.d5 = GPIO_NUM_NC;
+    s_slot_config.d6 = GPIO_NUM_NC;
+    s_slot_config.d7 = GPIO_NUM_NC;
     s_slot_config.cd = SDMMC_SLOT_NO_CD;
     s_slot_config.wp = SDMMC_SLOT_NO_WP;
     s_slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;

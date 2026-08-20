@@ -22,6 +22,7 @@ D0:                    GPIO39
 D1:                    GPIO40
 D2:                    GPIO41
 D3:                    GPIO42
+D4-D7:                 GPIO_NUM_NC (not connected; never configured)
 Card detect:           unused
 Write protect:         unused
 SD power:              ESP32-P4 on-chip LDO channel 4 / ESP_LDO_VO4
