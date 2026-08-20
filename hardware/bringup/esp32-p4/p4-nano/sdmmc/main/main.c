@@ -68,17 +68,14 @@ typedef struct {
     bool pending_cr;
 } command_parser_t;
 
-static esp_err_t safe_off_led_drive(int level, bool log_transition)
+static esp_err_t safe_off_led_drive_locked(int level, bool log_transition,
+                                            bool *log_error, bool *log_level)
 {
-    bool log_error = false;
-    bool log_level = false;
-
-    portENTER_CRITICAL(&s_safe_off_led_lock);
     const esp_err_t err = gpio_set_level(SAFE_OFF_LED_GPIO, level);
     if (err != ESP_OK) {
         if (!s_safe_off_led_gpio_error_logged) {
             s_safe_off_led_gpio_error_logged = true;
-            log_error = true;
+            *log_error = true;
         }
     } else {
         const bool changed = !s_safe_off_led_last_level_valid ||
@@ -88,11 +85,15 @@ static esp_err_t safe_off_led_drive(int level, bool log_transition)
         if (log_transition && changed &&
             s_safe_off_led_transition_logs < SAFE_OFF_LED_TRANSITION_LOG_LIMIT) {
             s_safe_off_led_transition_logs++;
-            log_level = true;
+            *log_level = true;
         }
     }
-    portEXIT_CRITICAL(&s_safe_off_led_lock);
+    return err;
+}
 
+static void safe_off_led_report_drive(int level, esp_err_t err,
+                                      bool log_error, bool log_level)
+{
     if (log_error) {
         ESP_LOGE(TAG, "P4-NANO SAFE-OFF LED gpio_set_level(%d): FAIL (%s, 0x%x)",
                  level, esp_err_to_name(err), err);
@@ -100,16 +101,37 @@ static esp_err_t safe_off_led_drive(int level, bool log_transition)
     if (log_level) {
         ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED GPIO20=%d", level != 0 ? 1 : 0);
     }
+}
+
+static esp_err_t safe_off_led_drive(int level, bool log_transition)
+{
+    bool log_error = false;
+    bool log_level = false;
+
+    portENTER_CRITICAL(&s_safe_off_led_lock);
+    const esp_err_t err = safe_off_led_drive_locked(level, log_transition,
+                                                     &log_error, &log_level);
+    portEXIT_CRITICAL(&s_safe_off_led_lock);
+
+    safe_off_led_report_drive(level, err, log_error, log_level);
     return err;
 }
 
-static bool safe_off_led_is_enabled(void)
+static esp_err_t safe_off_led_drive_high_if_enabled(void)
 {
-    bool enabled;
+    bool log_error = false;
+    bool log_level = false;
+
     portENTER_CRITICAL(&s_safe_off_led_lock);
-    enabled = s_safe_off_led_enabled;
+    if (!s_safe_off_led_enabled) {
+        portEXIT_CRITICAL(&s_safe_off_led_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = safe_off_led_drive_locked(1, true, &log_error, &log_level);
     portEXIT_CRITICAL(&s_safe_off_led_lock);
-    return enabled;
+
+    safe_off_led_report_drive(1, err, log_error, log_level);
+    return err;
 }
 
 static void safe_off_led_task(void *arg)
@@ -117,18 +139,13 @@ static void safe_off_led_task(void *arg)
     (void)arg;
 
     while (true) {
-        if (!safe_off_led_is_enabled()) {
-            (void)safe_off_led_drive(0, false);
+        if (safe_off_led_drive_high_if_enabled() != ESP_OK) {
             vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_OFF_MS));
             continue;
         }
 
-        (void)safe_off_led_drive(1, true);
         vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_ON_MS));
-
-        if (safe_off_led_is_enabled()) {
-            (void)safe_off_led_drive(0, true);
-        }
+        (void)safe_off_led_drive(0, true);
         vTaskDelay(pdMS_TO_TICKS(SAFE_OFF_LED_OFF_MS));
     }
 }
@@ -169,11 +186,14 @@ static bool safe_off_led_set(bool enabled)
         return false;
     }
 
+    bool log_error = false;
+    bool log_level = false;
     portENTER_CRITICAL(&s_safe_off_led_lock);
     s_safe_off_led_enabled = enabled;
+    const esp_err_t err = safe_off_led_drive_locked(0, false,
+                                                     &log_error, &log_level);
     portEXIT_CRITICAL(&s_safe_off_led_lock);
-
-    const esp_err_t err = safe_off_led_drive(0, false);
+    safe_off_led_report_drive(0, err, log_error, log_level);
     if (enabled) {
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "P4-NANO SAFE-OFF LED ENABLED");

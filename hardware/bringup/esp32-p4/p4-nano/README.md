@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -177,13 +177,40 @@ At boot it performs only host/card initialization, card information, FAT mount,
 root listing, and exact read-only verification of `/README.TXT` containing
 `ESP32-P4 SD TEST CARD\n`. A host-triggered `WRITE_TEST` is accepted only after
 the read-only result passes and performs one bounded exclusive-create,
-write/read/verify/delete transaction on `P4NANO_SCRATCH.BIN`. It never formats,
-repartitions, overwrites an existing scratch file, or modifies `README.TXT`.
+write/read/verify/delete transaction on `/sdcard/P4SDTEST.BIN`. It never
+formats, repartitions, overwrites an existing scratch file, or modifies
+`README.TXT`.
 
-The SDMMC diagnostic source is implemented, but its real-hardware result is
-not yet measured. The physical acceptance record will distinguish the
-read-only result, the bounded scratch-file result, and repeated cold-boot
-checks. This does not claim production File Transfer or storage integration.
+The SDMMC diagnostic is **MEASURED ON REAL HARDWARE** and remains separate from
+production storage and File Transfer. It uses native SDMMC slot 1 in 4-bit
+mode at 20 MHz: CLK GPIO43, CMD GPIO44, D0-D3 GPIO39-GPIO42, with D4-D7 set to
+`GPIO_NUM_NC`. It uses on-chip LDO channel 4 / `ESP_LDO_VO4` and does not
+explicitly drive GPIO45.
+
+```text
+Board:                         Waveshare ESP32-P4-NANO
+ESP32-P4 silicon revision:     v1.3
+ESP-IDF:                       v5.5.4
+Card:                          SDHC, 8,068,792,320 bytes, 7695 MB reported
+Sector size:                   512 bytes
+Initial read-only validation:  PASS
+Ubuntu post-write inspection:  PASS
+Fully captured WRITE_TEST:     3 / 3 PASS
+Formal cold-boot read-only:    5 / 5 PASS
+GPIO20 safe-off blink:         PASS
+SAFE-OFF write transition:     PASS
+```
+
+`README.TXT` was verified byte-for-byte as `ESP32-P4 SD TEST CARD\n` with an
+exact size of 22 bytes. The focused LED synchronization validation performed
+one additional bounded WRITE_TEST and confirmed LOW/NO during the filesystem
+transaction and blinking/YES afterward; it does not change the established
+3/3 tally.
+
+The known LDO voltage-0 warning was non-functional, and startup `0xff` UART
+garbage was safely ignored. The diagnostic does not claim 40 MHz, hot-plug,
+endurance, LFN, arbitrary filesystem operations, production storage
+integration, or production UART File Transfer-to-SD support.
 
 See [sdmmc/README.md](sdmmc/README.md) for the complete procedure and safety
 constraints.
@@ -222,9 +249,8 @@ artifacts are local to this project. The diagnostic was flashed only after
 the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
-The GPIO20, Flash/PSRAM, and production headless real-hardware bring-up
-milestones are complete. SD/MMC is now tracked as a separate independent
-bring-up diagnostic; its physical acceptance is pending. MIPI-DSI, USB host,
-and audio remain outside the current bring-up scope. Formal NP2 emulation on
-real hardware remains unvalidated because the raw fixture was not provisioned
-and formal NP2TEST was not run.
+The GPIO20, Flash/PSRAM, production headless, and SD/MMC real-hardware
+bring-up milestones are complete. MIPI-DSI, USB host, and audio remain outside
+the current bring-up scope. Formal NP2 emulation on real hardware remains
+unvalidated because the raw fixture was not provisioned and formal NP2TEST was
+not run.
