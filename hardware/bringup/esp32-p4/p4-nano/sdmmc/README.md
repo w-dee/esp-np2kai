@@ -71,7 +71,7 @@ WRITE_TEST
 ```
 
 One command performs one fixed transaction against
-`/sdcard/P4NANO_SCRATCH.BIN`: exclusive create, deterministic 4096-byte write,
+`/sdcard/P4SDTEST.BIN`: exclusive create, deterministic 4096-byte write,
 flush and close, read-only reopen, byte-for-byte verification, unlink, and an
 absence check. If the scratch file already exists, the diagnostic reports
 `SCRATCH_EXISTS` and does not overwrite or delete it. `README.TXT` is never
