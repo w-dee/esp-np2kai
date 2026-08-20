@@ -159,6 +159,35 @@ The three PSRAM/memory evidence sources remain distinct:
 3. The production `p4-v1x` firmware independently booted with its production
    PSRAM/external-BSS configuration and reported `NP2MEM_RESULT=PASS`.
 
+## SDMMC diagnostic
+
+An independent `sdmmc/` diagnostic has now been added for the next physical
+bring-up stage. It is intentionally separate from the production firmware and
+does not implement or exercise the production File Transfer/storage
+abstraction.
+
+The initial board configuration is 4-bit SDMMC at 20 MHz using the Waveshare
+SD1 wiring: CLK GPIO43, CMD GPIO44, D0 GPIO39, D1 GPIO40, D2 GPIO41, and D3
+GPIO42. The diagnostic uses ESP-IDF's on-chip SD power-control driver with
+LDO channel 4, which is routed to the board's `ESP_LDO_VO4` SD power network.
+It leaves GPIO45 untouched rather than assuming an undocumented active
+polarity. Card detect and write-protect inputs are unused.
+
+At boot it performs only host/card initialization, card information, FAT mount,
+root listing, and exact read-only verification of `/README.TXT` containing
+`ESP32-P4 SD TEST CARD\n`. A host-triggered `WRITE_TEST` is accepted only after
+the read-only result passes and performs one bounded exclusive-create,
+write/read/verify/delete transaction on `P4NANO_SCRATCH.BIN`. It never formats,
+repartitions, overwrites an existing scratch file, or modifies `README.TXT`.
+
+The SDMMC diagnostic source is implemented, but its real-hardware result is
+not yet measured. The physical acceptance record will distinguish the
+read-only result, the bounded scratch-file result, and repeated cold-boot
+checks. This does not claim production File Transfer or storage integration.
+
+See [sdmmc/README.md](sdmmc/README.md) for the complete procedure and safety
+constraints.
+
 ## Confirmed wiring
 
 GPIO20 and the physical P1 pin were checked against the board silkscreen and
@@ -194,7 +223,8 @@ the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
 The GPIO20, Flash/PSRAM, and production headless real-hardware bring-up
-milestones are complete. Further peripheral diagnostics, such as SD/MMC,
-MIPI-DSI, USB host, and audio, remain out of scope for this milestone. Formal
-NP2 emulation on real hardware remains unvalidated because the raw fixture was
-not provisioned and formal NP2TEST was not run.
+milestones are complete. SD/MMC is now tracked as a separate independent
+bring-up diagnostic; its physical acceptance is pending. MIPI-DSI, USB host,
+and audio remain outside the current bring-up scope. Formal NP2 emulation on
+real hardware remains unvalidated because the raw fixture was not provisioned
+and formal NP2TEST was not run.
