@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS; USB HOST DIRECT HID PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS; USB HOST DIRECT HID PASS; USB HOST HUB STAGE 2 PARTIAL_BLOCKED_TT**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -344,7 +344,7 @@ RAW NP2 FIXTURE: NOT PROVISIONED
 FORMAL NP2TEST: NOT RUN
 ```
 
-## USB Host direct HID Stage 1
+## USB Host direct HID Stage 1 and Hub Stage 2
 
 The direct USB Host/HID Stage 1 is **MEASURED ON REAL HARDWARE**. A direct
 FS keyboard (`VID/PID 0853:0103`) enumerated on the P4-NANO Type-A port and
@@ -354,8 +354,28 @@ connected, including HID stop/close/uninstall, Host `NO_CLIENTS`, device free,
 and Host uninstall. The independent diagnostic uses ESP-IDF v5.5.4 and
 `espressif/usb_host_hid` 1.0.3.
 
-USB Host Hub/Stage 2, hub TT behavior, mouse, storage, and production USB
-integration remain unvalidated.
+The separate Hub Stage 2 was also **MEASURED ON REAL HARDWARE** on the same
+Waveshare ESP32-P4-NANO rev v1.3 using ESP-IDF v5.5.4 and
+`espressif/usb_host_hid` 1.0.3. With the previously validated FS keyboard
+behind an external hub, the stock ESP-IDF Hub Driver emitted:
+
+```text
+Connected device is FS, transaction translator (TT) is not supported
+[1:4] Port disabled, reset attempts=1
+```
+
+The accepted classification is `Root Host: PASS`, `External Hub: PASS`,
+`Downstream child: BLOCKED_TT`, `HID via Hub: BLOCKED_TT`, `Input via Hub:
+NOT_RUN`, and `Overall Stage 2: PARTIAL_BLOCKED_TT`. This is evidence of an HS
+external hub with an FS downstream child under the stock ESP-IDF v5.5.4 Host
+stack. Stage 2 did not obtain the downstream VID/PID; `0853:0103` remains the
+direct Stage 1 keyboard result only. The outcome is not USB HOST FAIL, HUB
+FAIL, or KEYBOARD FAIL. Cleanup reached Host uninstall and `P4-NANO USB HOST
+SAFE IDLE` with no invalid-state error, panic, watchdog, or reset loop.
+
+TinyUSB, true Split Transaction/TT support, FS-forced HS-root mode, mouse,
+storage, production USB keyboard integration, and PC-98 key mapping remain
+deferred. TinyUSB was not tested.
 
 ## SDMMC diagnostic
 
@@ -448,8 +468,8 @@ the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
 The GPIO20, Flash/PSRAM, production headless, SD/MMC, wireless companion,
-direct USB HID Stage 1, speaker-output, and narrowly scoped MIPI-DSI
-display-output real-hardware bring-up milestones are complete. USB Host Hub/
-Stage 2, display/touch, and broader audio functions remain unvalidated as
-listed above. Formal NP2 emulation on real hardware remains unvalidated
+direct USB HID Stage 1, accepted USB Host Hub/Stage 2 partial result,
+speaker-output, and narrowly scoped MIPI-DSI display-output real-hardware
+bring-up milestones are complete. Display/touch and broader audio functions
+remain unvalidated as listed above. Formal NP2 emulation on real hardware remains unvalidated
 because the raw fixture was not provisioned and formal NP2TEST was not run.

@@ -1,11 +1,12 @@
-# ESP32-P4-NANO USB Host Stage 1
+# ESP32-P4-NANO USB Host Stage 1 and Stage 2
 
-独立したESP-IDF USB Host/HIDキーボード診断です。現在の範囲は、
-Waveshare ESP32-P4-NANO Type-AへUSB HIDキーボードを直接接続する
-Stage 1だけです。外部ハブ、Hub Driver、TT、マウス、ストレージ、
-製品ファームウェア統合はこの診断に含めません。
+独立したESP-IDF USB Host/HIDキーボード診断です。Stage 1は
+Waveshare ESP32-P4-NANO Type-AへFS HIDキーボードを直接接続し、Stage 2は
+同じキーボードを外部USBハブ経由で接続します。Stage 1の直接HID PASSと、
+Stage 2の実機測定結果を別々に記録します。外部ハブのTT実装、マウス、
+ストレージ、製品ファームウェア統合はこの診断の未実装・未検証範囲です。
 
-## Build boundary
+## Stage 1 build boundary
 
 - Board: Waveshare ESP32-P4-NANO
 - Target: ESP32-P4 rev v1.3 (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`)
@@ -187,10 +188,81 @@ If Boot Protocol HID becomes active through the hub, the firmware prints
 pressing keys. The input timeout starts only after the first expected raw
 usage event, so waiting before human readiness cannot create an input failure.
 
-Stage 2 does not claim Hub PASS, via-hub HID PASS, or physical input PASS
-until the corresponding real-hardware run establishes them. It does not use
-TinyUSB, a patched Host stack, FS-forced-host mode, private HCD/HAL APIs,
-mouse/storage support, or production firmware integration.
+Before a physical run, Stage 2 does not claim Hub PASS, via-hub HID PASS, or
+physical input PASS until the corresponding evidence is established. It does
+not use TinyUSB, a patched Host stack, FS-forced-host mode, private HCD/HAL
+APIs, mouse/storage support, or production firmware integration.
+
+## Stage 2 measured on real hardware
+
+Stage 2 was **MEASURED ON REAL HARDWARE** and human-reviewed as an expected,
+valid partial acceptance outcome:
+
+```text
+Board:                         Waveshare ESP32-P4-NANO
+ESP32-P4 silicon revision:     v1.3
+ESP-IDF:                       v5.5.4
+HID component:                 espressif/usb_host_hid 1.0.3
+Topology:                      P4-NANO Type-A -> external USB hub -> FS HID keyboard
+Root Host:                     PASS
+External Hub:                  PASS
+Downstream child:              BLOCKED_TT
+HID via Hub:                   BLOCKED_TT
+Input via Hub:                 NOT_RUN
+Overall Stage 2:               PARTIAL_BLOCKED_TT
+```
+
+The stock ESP-IDF v5.5.4 Hub Driver emitted the following evidence:
+
+```text
+Connected device is FS, transaction translator (TT) is not supported
+[1:4] Port disabled, reset attempts=1
+```
+
+This is strong evidence of an HS external hub with an FS downstream child:
+the stock v5.5.4 Hub Driver emits this TT rejection when the parent hub is HS
+and the downstream device is not HS. The child was rejected before ordinary
+downstream enumeration completed. Stage 2 therefore did **not** obtain the
+downstream VID/PID. The intended child was the previously validated direct
+Stage 1 keyboard `0853:0103` at FS; that direct result must not be confused
+with a Stage 2 VID/PID observation.
+
+The accepted classification is not USB HOST FAIL, HUB FAIL, or KEYBOARD FAIL.
+The failure boundary is the stock ESP-IDF v5.5.4 external Hub Driver/Host
+stack TT limitation. No workaround was attempted.
+
+The same physical run reached complete cleanup and safe idle:
+
+```text
+P4-NANO USB HID STOP: PASS
+P4-NANO USB HID CLOSE: PASS
+P4-NANO USB HID UNINSTALL: PASS
+P4-NANO USB HOST NO CLIENTS: PASS
+P4-NANO USB HOST DEVICES FREE: PASS
+P4-NANO USB HOST UNINSTALL: PASS
+P4-NANO USB CLEANUP RESULT: PASS
+P4-NANO USB HOST SAFE IDLE
+```
+
+No `ESP_ERR_INVALID_STATE`, panic, watchdog, or reset loop was observed.
+
+## Deferred future work
+
+The following are explicitly deferred to separate work and were not tested or
+implemented here:
+
+```text
+TinyUSB Host validation
+true Split Transaction / TT support
+FS-forced mode on the HS root port
+mouse
+USB storage
+production USB keyboard integration
+PC-98 key mapping
+```
+
+TinyUSB was not tested in this bring-up. Stage 2 remains a stock ESP-IDF
+v5.5.4 Host-stack measurement.
 
 ## Native parser test
 
