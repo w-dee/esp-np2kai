@@ -133,6 +133,10 @@ struct TransferManager {
     std::uint32_t previous_data_crc = 0;
 
     std::uint32_t last_activity_ms = 0;
+    // A valid frame may be processed synchronously during control_stream::feed().
+    // Anchor its activity timestamp when the following poll runs, after that
+    // processing has completed.
+    bool activity_pending = false;
     bool terminal_valid = false;
     TransferInfo terminal{};
     bool endpoint_started = false;

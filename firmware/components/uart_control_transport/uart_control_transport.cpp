@@ -91,7 +91,9 @@ void control_task(void *)
                                  read_buffer,
                                  static_cast<std::size_t>(bytes_read),
                                  now_ms);
-            binary_data_plane::poll(&s_binary_manager, now_ms);
+            binary_data_plane::poll(
+                &s_binary_manager,
+                static_cast<std::uint32_t>(esp_timer_get_time() / 1000));
         } else {
             binary_data_plane::poll(
                 &s_binary_manager,

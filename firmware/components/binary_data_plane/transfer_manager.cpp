@@ -190,8 +190,7 @@ void retry_current_tx(TransferManager *manager, std::uint32_t now_ms)
     send_current_tx(manager, now_ms);
 }
 
-void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame,
-                    std::uint32_t now_ms)
+void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
 {
     if (frame.transfer_id != manager->transfer_id) return;
     if (!frame.crc_valid) {
@@ -209,7 +208,6 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame,
         frame.payload_length == manager->previous_data_length &&
         frame.wire_crc == manager->previous_data_crc) {
         send_ack(manager);
-        manager->last_activity_ms = now_ms;
         return;
     }
     if (frame.sequence != manager->expected_sequence) {
@@ -237,7 +235,6 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame,
     manager->transferred_bytes += frame.payload_length;
     ++manager->expected_sequence;
     manager->expected_offset += frame.payload_length;
-    manager->last_activity_ms = now_ms;
 
     const bool final = manager->transferred_bytes == manager->total_bytes;
     if (!final) {
@@ -297,7 +294,6 @@ void handle_tx_ack(TransferManager *manager, const codec::ParsedFrame &frame,
     manager->expected_offset = expected_offset;
     manager->tx_waiting_ack = false;
     manager->tx_frame_ready = false;
-    manager->last_activity_ms = now_ms;
     if (manager->transferred_bytes == manager->total_bytes) {
         if (manager->endpoint.finish == nullptr ||
             manager->endpoint.finish(manager->endpoint.context) != EndpointResult::Ok) {
@@ -435,13 +431,13 @@ void handle_decoded_frame(TransferManager *manager, const std::uint8_t *decoded,
         }
         return;
     }
-    manager->last_activity_ms = now_ms;
+    manager->activity_pending = true;
     if (manager->direction == Direction::HostToDevice) {
         if (frame.type != FrameType::Data) {
             send_nack(manager, NackReason::WrongDirection);
             return;
         }
-        handle_rx_data(manager, frame, now_ms);
+        handle_rx_data(manager, frame);
     } else {
         if (frame.type != FrameType::Ack && frame.type != FrameType::Nack) {
             send_nack(manager, NackReason::WrongDirection);
@@ -454,6 +450,10 @@ void handle_decoded_frame(TransferManager *manager, const std::uint8_t *decoded,
 void poll(TransferManager *manager, std::uint32_t now_ms)
 {
     if (manager == nullptr || !manager->active) return;
+    if (manager->activity_pending) {
+        manager->last_activity_ms = now_ms;
+        manager->activity_pending = false;
+    }
     if (manager->last_activity_ms == 0) manager->last_activity_ms = now_ms;
     if (elapsed(now_ms, manager->last_activity_ms, kReceiverTimeoutMs)) {
         finish_active(manager, TransferState::Aborted, TerminalReason::ReceiverTimeout);
