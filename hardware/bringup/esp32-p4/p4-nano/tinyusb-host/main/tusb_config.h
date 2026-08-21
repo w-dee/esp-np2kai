@@ -1,5 +1,7 @@
 #pragma once
 
+#include "diagnostic_profile.h"
+
 // TinyUSB 0.21.0 configuration for the ESP32-P4 HS controller used as an
 // explicitly full-speed root bus. The HS/UTMI PHY remains selected in the
 // DWC2 configuration; the root speed is intentionally full speed.
@@ -9,7 +11,11 @@
 #define CFG_TUSB_DEBUG 2
 
 #define CFG_TUH_ENABLED 1
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HS_ROOT_DIRECT_FS
+#define CFG_TUH_MAX_SPEED OPT_MODE_HIGH_SPEED
+#else
 #define CFG_TUH_MAX_SPEED OPT_MODE_FULL_SPEED
+#endif
 #define CFG_TUH_DEVICE_MAX 2
 #define CFG_TUH_ENUMERATION_BUFSIZE 256
 #define CFG_TUH_HUB 1

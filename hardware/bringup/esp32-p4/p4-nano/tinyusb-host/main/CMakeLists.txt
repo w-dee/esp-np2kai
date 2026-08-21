@@ -20,5 +20,11 @@ idf_component_register(
         ${TINYUSB_HOST_SRCS}
     INCLUDE_DIRS "."
     PRIV_INCLUDE_DIRS "${TINYUSB_SRC}" "${STOCK_USB_HOST_MAIN}"
-    PRIV_REQUIRES usb
+    PRIV_REQUIRES usb esp_timer
+)
+
+set(TINYUSB_DIAG_PROFILE "0" CACHE STRING
+    "TinyUSB diagnostic profile: 0=legacy, 1=cold, 2=keyboard hotplug, 3=hub hotplug, 4=reinit, 5=HS-root direct-FS")
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    TINYUSB_DIAG_PROFILE=${TINYUSB_DIAG_PROFILE}
 )
