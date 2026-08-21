@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -195,6 +196,11 @@ def run(emu: wire.Emulator) -> None:
         emu, 33, "file.stat", {"path": "/upload/roundtrip.bin"}), 33)
     if stat.get("size_bytes") != len(original):
         raise AssertionError(f"uploaded stat size mismatch: {stat}")
+    hashed = wire.require_response(send_request(
+        emu, 35, "file.sha256", {"path": "/upload/roundtrip.bin"}), 35)
+    if (hashed.get("size_bytes") != len(original) or
+            hashed.get("sha256") != hashlib.sha256(original).hexdigest()):
+        raise AssertionError(f"uploaded file.sha256 mismatch: {hashed}")
     require_error(send_request(emu, 34, "file.write.begin", {
         "path": "/upload/roundtrip.bin", "size_bytes": 1,
     }), "ALREADY_EXISTS")
@@ -219,6 +225,7 @@ def run(emu: wire.Emulator) -> None:
     first = payload(1024, 7)
     emu.send(wire.build_frame(wire.DATA, abort_id, 0, 0, payload=first))
     wire.require_ack(emu.wait_frame(), abort_id, 1, 1024)
+    require_error(send_request(emu, 519, "file.sha256", {"path": "/seed/existing.bin"}), "BUSY")
     require_error(send_request(emu, 520, "file.list", {"path": "/seed"}), "BUSY")
     require_error(send_request(emu, 521, "file.read.begin", {
         "path": "/seed/existing.bin", "length_bytes": 0,
@@ -249,6 +256,11 @@ def run(emu: wire.Emulator) -> None:
         emu, 601, "file.stat", {"path": "/upload/empty.bin"}), 601)
     if empty_stat.get("size_bytes") != 0:
         raise AssertionError(f"zero-length stat mismatch: {empty_stat}")
+    empty_hash = wire.require_response(send_request(
+        emu, 602, "file.sha256", {"path": "/upload/empty.bin"}), 602)
+    if (empty_hash.get("size_bytes") != 0 or
+            empty_hash.get("sha256") != hashlib.sha256(b"").hexdigest()):
+        raise AssertionError(f"zero-length file.sha256 mismatch: {empty_hash}")
     _, empty = download(emu, 61, "/upload/empty.bin")
     if empty:
         raise AssertionError("zero-length file produced bytes")
@@ -259,7 +271,9 @@ def run(emu: wire.Emulator) -> None:
     require_error(send_request(emu, 70, "file.stat", {"path": "../../escape"}), "INVALID_PATH")
     require_error(send_request(emu, 71, "file.stat", {"path": "/upload/../escape"}), "INVALID_PATH")
     require_error(send_request(emu, 72, "file.stat", {"path": "/missing.bin"}), "NOT_FOUND")
+    require_error(send_request(emu, 730, "file.sha256", {"path": "/missing.bin"}), "NOT_FOUND")
     require_error(send_request(emu, 73, "file.stat", {"path": "/" + "a" * 193}), "INVALID_PATH")
+    require_error(send_request(emu, 7301, "file.sha256", {"path": "/upload/../escape"}), "INVALID_PATH")
     require_error(send_request(emu, 731, "file.stat", {"path": "/upload//bad"}), "INVALID_PATH")
     require_error(send_request(emu, 732, "file.stat", {"path": "/upload/bad/"}), "INVALID_PATH")
     require_error(send_request(emu, 733, "file.stat", {"path": "/upload/" + "b" * 65}),

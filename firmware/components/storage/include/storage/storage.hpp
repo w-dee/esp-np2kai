@@ -7,7 +7,7 @@
 namespace storage {
 
 inline constexpr std::size_t kMaxPathBytes = 192;
-inline constexpr std::size_t kMaxComponentBytes = 64;
+inline constexpr std::size_t kMaxComponentBytes = 128;
 
 enum class Error : std::uint8_t {
     Ok,

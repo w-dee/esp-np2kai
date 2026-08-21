@@ -16,10 +16,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# Step 6A.1 FATFS/WL contract.  The 64-byte neutral component limit is
-# sufficient for the UTF-8 LFN contract used by storage_fatfs.
+# Storage/FATFS contract.  The neutral component limit also accommodates
+# content-addressed fixture names containing a full SHA-256 digest.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_API_ENCODING_UTF_8=y
-CONFIG_FATFS_MAX_LFN=64
+CONFIG_FATFS_MAX_LFN=128
 CONFIG_FATFS_SECTOR_4096=y
 CONFIG_WL_SECTOR_SIZE_4096=y

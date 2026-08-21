@@ -41,6 +41,11 @@ struct BeginResult {
     std::uint64_t file_offset = 0;
 };
 
+struct Sha256Result {
+    std::uint64_t size_bytes = 0;
+    char sha256[65]{};
+};
+
 struct Summary {
     bool valid = false;
     std::uint32_t transfer_id = 0;
@@ -78,6 +83,7 @@ struct Service {
     void init(storage::Storage backend, binary_data_plane::TransferManager *manager,
               Limits configured_limits = {});
     Error stat(std::string_view path, storage::Metadata *metadata) const;
+    Error sha256(std::string_view path, Sha256Result *result);
     Error list(std::string_view path, std::string_view cursor, std::size_t limit,
                ListPage *page) const;
     Error begin_read(std::string_view path, std::uint64_t offset,

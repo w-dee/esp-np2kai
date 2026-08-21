@@ -282,6 +282,26 @@ Result file_stat_dispatch(const Request &request)
     return Result{true, result, nullptr, nullptr};
 }
 
+Result file_sha256_dispatch(const Request &request)
+{
+    file_transfer::Service *service = file_service(request);
+    std::string_view path;
+    if (service == nullptr) return failure("INTERNAL_ERROR", "file transfer service is unavailable");
+    if (!read_string(request.params, "path", &path)) return failure("INVALID_PARAMS", "path must be a string");
+    file_transfer::Sha256Result digest{};
+    const file_transfer::Error error = service->sha256(path, &digest);
+    if (error != file_transfer::Error::Ok) return failure(file_transfer::error_code(error), "file.sha256 failed");
+    cJSON *result = cJSON_CreateObject();
+    if (result == nullptr ||
+        cJSON_AddStringToObject(result, "path", path.data()) == nullptr ||
+        cJSON_AddNumberToObject(result, "size_bytes", static_cast<double>(digest.size_bytes)) == nullptr ||
+        cJSON_AddStringToObject(result, "sha256", digest.sha256) == nullptr) {
+        cJSON_Delete(result);
+        return failure("INTERNAL_ERROR", "unable to allocate sha256 result");
+    }
+    return Result{true, result, nullptr, nullptr};
+}
+
 Result file_list_dispatch(const Request &request)
 {
     file_transfer::Service *service = file_service(request);
@@ -474,6 +494,7 @@ Result dispatch(const Request &request)
         return abort_dispatch(request);
     }
     if (request.command == "file.stat") return file_stat_dispatch(request);
+    if (request.command == "file.sha256") return file_sha256_dispatch(request);
     if (request.command == "file.list") return file_list_dispatch(request);
     if (request.command == "file.read.begin") return file_begin_dispatch(request, false);
     if (request.command == "file.write.begin") return file_begin_dispatch(request, true);

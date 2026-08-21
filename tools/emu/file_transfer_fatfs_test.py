@@ -607,6 +607,18 @@ def require_file_transfer_capability(emu: wire.Emulator) -> None:
         raise AssertionError(f"file transfer capability missing: {hello}")
 
 
+def require_sha256(emu: wire.Emulator, request_id: int, path: str,
+                   expected: bytes) -> None:
+    result = require_response(emu, request_id, "file.sha256", {"path": path})
+    expected_hash = digest(expected)
+    if (result.get("path") != path or result.get("size_bytes") != len(expected) or
+            result.get("sha256") != expected_hash):
+        raise AssertionError(
+            f"file.sha256 mismatch path={path} expected_size={len(expected)} "
+            f"expected_sha256={expected_hash} result={result}"
+        )
+
+
 def run_basic(emu: wire.Emulator) -> None:
     require_file_transfer_capability(emu)
     for request_id, path, expected_type in (
@@ -628,6 +640,7 @@ def run_basic(emu: wire.Emulator) -> None:
 
     seed = bytes(range(0xA0, 0xA0 + 37))
     check_download(emu, 30, "/seed/existing.bin", seed)
+    require_sha256(emu, 31, "/seed/existing.bin", seed)
     check_download(emu, 32, "/seed/existing.bin", seed, 0, 1)
     check_download(emu, 34, "/seed/existing.bin", seed, 1, 35)
     check_download(emu, 36, "/seed/existing.bin", seed, len(seed), 0)
@@ -657,9 +670,11 @@ def run_basic(emu: wire.Emulator) -> None:
     small_id = check_upload(emu, 60, "/upload/small-multi-frame.bin", small)
     if small_id is None:
         raise AssertionError("small multi-frame upload was synchronous")
+    require_sha256(emu, 61, "/upload/small-multi-frame.bin", small)
     check_download(emu, 62, "/upload/small-multi-frame.bin", small, 511, 1025)
     check_download(emu, 64, "/upload/small-multi-frame.bin", small, 4095, 4097)
     check_upload(emu, 66, "/upload/empty.bin", b"")
+    require_sha256(emu, 67, "/upload/empty.bin", b"")
     check_download(emu, 68, "/upload/empty.bin", b"")
 
     require_error(emu, 70, "file.stat", "INVALID_PATH", {"path": "../../escape"})
@@ -667,6 +682,8 @@ def run_basic(emu: wire.Emulator) -> None:
     require_error(emu, 72, "file.stat", "INVALID_PATH", {"path": "/upload//bad"})
     require_error(emu, 73, "file.stat", "INVALID_PATH", {"path": "/upload/bad/"})
     require_error(emu, 74, "file.stat", "NOT_FOUND", {"path": "/missing.bin"})
+    require_error(emu, 76, "file.sha256", "NOT_FOUND", {"path": "/missing.bin"})
+    require_error(emu, 77, "file.sha256", "INVALID_PATH", {"path": "/upload/../escape"})
     emu.send(b'@ESP-NP2 {"v":1,"id":75,"cmd":"file.stat","params":{"path":"/upload/\xff.bin"}}\n')
     base.require_error(emu.wait_response(75), "INVALID_PATH")
 

@@ -1,8 +1,26 @@
 #include "file_transfer/file_transfer.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 #include "file_transfer/path.hpp"
+#include "mbedtls/sha256.h"
+
+namespace {
+
+constexpr std::size_t kSha256ChunkBytes = 4096;
+constexpr char kHex[] = "0123456789abcdef";
+
+void format_sha256(const std::uint8_t digest[32], char out[65])
+{
+    for (std::size_t index = 0; index < 32; ++index) {
+        out[index * 2] = kHex[digest[index] >> 4];
+        out[index * 2 + 1] = kHex[digest[index] & 0x0f];
+    }
+    out[64] = '\0';
+}
+
+} // namespace
 
 namespace file_transfer {
 
@@ -113,6 +131,69 @@ Error Service::stat(std::string_view path_value, storage::Metadata *metadata) co
     if (!path::validate(path_value, true)) return Error::InvalidPath;
     if (storage.stat == nullptr) return Error::InternalError;
     return map_storage(storage.stat(storage.context, path_value, metadata));
+}
+
+Error Service::sha256(std::string_view path_value, Sha256Result *result)
+{
+    if (result == nullptr) return Error::InternalError;
+    *result = Sha256Result{};
+    if (!path::validate(path_value, false)) return Error::InvalidPath;
+    if (active()) return Error::Busy;
+    if (storage.stat == nullptr || storage.begin_read == nullptr) {
+        return Error::InternalError;
+    }
+
+    storage::Metadata metadata{};
+    const Error stat_error = stat(path_value, &metadata);
+    if (stat_error != Error::Ok) return stat_error;
+    if (metadata.type != storage::EntryType::File) return Error::NotAFile;
+
+    storage::ReadSession session{};
+    const storage::Error open_error = storage.begin_read(
+        storage.context, path_value, &session);
+    if (open_error != storage::Error::Ok) return map_storage(open_error);
+
+    Error operation = Error::Ok;
+    mbedtls_sha256_context context;
+    std::uint8_t digest[32]{};
+    std::uint8_t buffer[kSha256ChunkBytes];
+
+    mbedtls_sha256_init(&context);
+    if (session.read == nullptr || session.close == nullptr) {
+        operation = Error::ReadFailed;
+    } else if (mbedtls_sha256_starts(&context, 0) != 0) {
+        operation = Error::ReadFailed;
+    } else {
+        std::uint64_t offset = 0;
+        while (offset < metadata.size_bytes) {
+            const std::size_t requested = static_cast<std::size_t>(std::min<std::uint64_t>(
+                metadata.size_bytes - offset, sizeof(buffer)));
+            std::size_t produced = 0;
+            const storage::Error read_error = session.read(
+                session.context, offset, buffer, requested, &produced);
+            if (read_error != storage::Error::Ok) {
+                operation = map_storage(read_error);
+                break;
+            }
+            if (produced != requested ||
+                mbedtls_sha256_update(&context, buffer, produced) != 0) {
+                operation = Error::ReadFailed;
+                break;
+            }
+            offset += produced;
+        }
+        if (operation == Error::Ok && mbedtls_sha256_finish(&context, digest) != 0) {
+            operation = Error::ReadFailed;
+        }
+    }
+
+    mbedtls_sha256_free(&context);
+    if (session.close != nullptr) session.close(session.context);
+    if (operation != Error::Ok) return operation;
+
+    result->size_bytes = metadata.size_bytes;
+    format_sha256(digest, result->sha256);
+    return Error::Ok;
 }
 
 Error Service::list(std::string_view path_value, std::string_view cursor,

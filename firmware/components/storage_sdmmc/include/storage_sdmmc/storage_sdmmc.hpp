@@ -9,11 +9,12 @@ namespace storage_sdmmc {
 inline constexpr char kMountPath[] = "/sdcard";
 inline constexpr char kFileTransferRoot[] = "/sdcard/files";
 inline constexpr char kStagingRoot[] = "/sdcard/.np2-staging";
+inline constexpr char kFixtureCacheRoot[] = "/sdcard/files/np2-fixtures";
 
 inline constexpr storage_fatfs::RootConfig kSdmmcRootConfig{
     kFileTransferRoot,
     kStagingRoot,
-    nullptr,
+    kFixtureCacheRoot,
 };
 
 class SdmmcMountProvider final : public storage_fatfs::FatfsMountBackend {
