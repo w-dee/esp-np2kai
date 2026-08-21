@@ -17,6 +17,18 @@ inline constexpr char kStagingRoot[] = "/persist/.np2-staging";
 inline constexpr char kFixturePath[] = "/persist/fixtures/np2test-fd1232.hdm";
 inline constexpr std::size_t kPhysicalPathBytes = storage::kMaxPathBytes + 32;
 
+struct RootConfig {
+    const char *file_transfer_root;
+    const char *staging_root;
+    const char *fixture_root;
+};
+
+inline constexpr RootConfig kSpiNorRootConfig{
+    kFileTransferRoot,
+    kStagingRoot,
+    kFixtureRoot,
+};
+
 #if defined(STORAGE_FATFS_TEST_HOOKS)
 struct TestHooks {
     bool fail_mount_initialization = false;
@@ -28,12 +40,21 @@ struct TestHooks {
 };
 #endif
 
-class MountProvider {
+class FatfsMountBackend {
 public:
-    esp_err_t mount();
-    esp_err_t unmount();
+    virtual ~FatfsMountBackend() = default;
 
-    bool mounted() const { return mounted_; }
+    virtual esp_err_t mount() = 0;
+    virtual esp_err_t unmount() = 0;
+    virtual bool mounted() const = 0;
+};
+
+class MountProvider final : public FatfsMountBackend {
+public:
+    esp_err_t mount() override;
+    esp_err_t unmount() override;
+
+    bool mounted() const override { return mounted_; }
     wl_handle_t wl_handle() const { return wl_handle_; }
 
 #if defined(STORAGE_FATFS_TEST_HOOKS)
@@ -50,7 +71,9 @@ private:
 
 class StorageFatfs {
 public:
-    explicit StorageFatfs(MountProvider &provider) : provider_(provider) {}
+    explicit StorageFatfs(FatfsMountBackend &provider,
+                          RootConfig roots = kSpiNorRootConfig)
+        : provider_(provider), roots_(roots) {}
 
     esp_err_t mount();
     esp_err_t unmount();
@@ -83,7 +106,8 @@ private:
         char backup_path[kPhysicalPathBytes]{};
     };
 
-    MountProvider &provider_;
+    FatfsMountBackend &provider_;
+    const RootConfig roots_;
     std::uint32_t sequence_ = 1;
     ReadContext read_context_{};
     WriteContext write_context_{};
@@ -122,7 +146,7 @@ private:
     static bool valid_utf8(std::string_view);
     static bool valid_component(std::string_view);
     static bool validate_path(std::string_view, bool allow_root);
-    static bool make_physical_path(std::string_view, char *, std::size_t);
+    bool make_physical_path(std::string_view, char *, std::size_t);
     static storage::Error map_errno(int, bool write_operation);
     static bool copy_component(char *, std::string_view);
     bool ensure_directory(const char *path);

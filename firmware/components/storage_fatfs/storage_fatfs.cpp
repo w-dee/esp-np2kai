@@ -107,13 +107,15 @@ esp_err_t StorageFatfs::mount()
     }
 #endif
 
-    if (!ensure_directory(kFileTransferRoot) ||
-        !ensure_directory(kFixtureRoot) ||
-        !ensure_directory(kStagingRoot)) {
+    if (roots_.file_transfer_root == nullptr ||
+        !ensure_directory(roots_.file_transfer_root) ||
+        (roots_.fixture_root != nullptr && !ensure_directory(roots_.fixture_root)) ||
+        roots_.staging_root == nullptr ||
+        !ensure_directory(roots_.staging_root)) {
         return cleanup_mount_failure(ESP_FAIL);
     }
 
-    DIR *directory = ::opendir(kStagingRoot);
+    DIR *directory = ::opendir(roots_.staging_root);
     if (directory == nullptr) {
         return cleanup_mount_failure(ESP_FAIL);
     }
@@ -123,7 +125,7 @@ esp_err_t StorageFatfs::mount()
         const std::string_view name(entry->d_name);
         if (name.size() < 5 || name.substr(name.size() - 4) != ".tmp") continue;
         static char orphan[kPhysicalPathBytes]{};
-        if (std::snprintf(orphan, sizeof(orphan), "%s/%s", kStagingRoot,
+        if (std::snprintf(orphan, sizeof(orphan), "%s/%s", roots_.staging_root,
                           entry->d_name) >= static_cast<int>(sizeof(orphan)) ||
             unlink_path(orphan) != 0) {
             ::closedir(directory);
@@ -597,13 +599,13 @@ bool StorageFatfs::validate_path(std::string_view path, bool allow_root)
 
 bool StorageFatfs::make_physical_path(std::string_view path, char *out, std::size_t capacity)
 {
-    if (out == nullptr || capacity == 0) return false;
+    if (out == nullptr || capacity == 0 || roots_.file_transfer_root == nullptr) return false;
     if (path == "/") {
-        return copy_string(out, capacity, kFileTransferRoot);
+        return copy_string(out, capacity, roots_.file_transfer_root);
     }
-    const std::size_t prefix_size = std::strlen(kFileTransferRoot);
+    const std::size_t prefix_size = std::strlen(roots_.file_transfer_root);
     if (prefix_size + path.size() >= capacity) return false;
-    std::memcpy(out, kFileTransferRoot, prefix_size);
+    std::memcpy(out, roots_.file_transfer_root, prefix_size);
     std::memcpy(out + prefix_size, path.data(), path.size());
     out[prefix_size + path.size()] = '\0';
     return true;
@@ -647,8 +649,9 @@ bool StorageFatfs::ensure_directory(const char *path)
 bool StorageFatfs::make_staging_path(char *out, std::size_t capacity,
                                      const char *prefix, const char *suffix)
 {
-    if (out == nullptr || prefix == nullptr || suffix == nullptr) return false;
-    const int written = std::snprintf(out, capacity, "%s/%s%08lx%s", kStagingRoot,
+    if (out == nullptr || prefix == nullptr || suffix == nullptr ||
+        roots_.staging_root == nullptr) return false;
+    const int written = std::snprintf(out, capacity, "%s/%s%08lx%s", roots_.staging_root,
                                       prefix, static_cast<unsigned long>(sequence_++), suffix);
     return written >= 0 && static_cast<std::size_t>(written) < capacity;
 }
