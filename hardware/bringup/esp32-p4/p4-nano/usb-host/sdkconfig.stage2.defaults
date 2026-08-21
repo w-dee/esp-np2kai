@@ -1,0 +1,6 @@
+# Stage 2 is layered on top of the accepted Stage 1 defaults.
+# Build with:
+#   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.stage2.defaults"
+
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=n

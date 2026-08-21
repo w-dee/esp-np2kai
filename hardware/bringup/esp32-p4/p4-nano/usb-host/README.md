@@ -140,11 +140,57 @@ order stops the active interface, requests the root-port disconnect, lets the
 1.0.3 event path close and release the interface and parent device, and only
 then uninstalls HID.
 
-## Stage 2 deferred
+## Stage 2: external hub plus FS keyboard
 
-外部ハブの試験は、直接キーボードのStage 1がPASSした後に別タスクで扱います。
-HSハブ配下のFS/LS子機はESP-IDF v5.5.4のTT制限対象です。FS-onlyハブの
-実挙動も未検証です。このREADMEではHub PASSやUSB via Hub PASSを主張しません。
+Stage 2 is a separate, hub-enabled build of this diagnostic. The accepted
+Stage 1 defaults remain unchanged:
+
+```text
+sdkconfig.defaults              CONFIG_USB_HOST_HUBS_SUPPORTED=n
+sdkconfig.stage2.defaults       CONFIG_USB_HOST_HUBS_SUPPORTED=y
+                                CONFIG_USB_HOST_HUB_MULTI_LEVEL=n
+```
+
+Build Stage 2 in a separate build directory so the generated `sdkconfig` is
+not confused with the historical Stage 1 configuration:
+
+```bash
+idf.py -B build-stage2 \
+  -DIDF_TARGET=esp32p4 \
+  -DSDKCONFIG=build-stage2/sdkconfig \
+  -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.stage2.defaults" \
+  build
+```
+
+The Stage 2 application is selected only when
+`CONFIG_USB_HOST_HUBS_SUPPORTED=y`; the Stage 1 application source and
+defaults remain the direct-device baseline. Stage 2 uses the same public
+`usb_device_info_t` fields for speed, parent handle, and parent port, parses
+the cached configuration descriptor for Hub/HID interface evidence, and uses
+the public control-transfer API to request the Hub Class descriptor when
+available. It does not use private Host structures.
+
+The expected physical topology is:
+
+```text
+P4-NANO Type-A -> external USB hub -> keyboard 0853:0103
+```
+
+The stock ESP-IDF v5.5.4 Hub Driver explicitly rejects an FS/LS child behind
+an HS hub when no TT implementation is available. The application captures
+the stock log text and reports `BLOCKED_TT` only when that evidence is seen;
+absence of a child alone is reported as a child failure, not as TT blocking.
+An FS-only hub is a real-hardware question and is not assumed to work.
+
+If Boot Protocol HID becomes active through the hub, the firmware prints
+`HUB + HID READY FOR KEY TEST`. The human should confirm readiness before
+pressing keys. The input timeout starts only after the first expected raw
+usage event, so waiting before human readiness cannot create an input failure.
+
+Stage 2 does not claim Hub PASS, via-hub HID PASS, or physical input PASS
+until the corresponding real-hardware run establishes them. It does not use
+TinyUSB, a patched Host stack, FS-forced-host mode, private HCD/HAL APIs,
+mouse/storage support, or production firmware integration.
 
 ## Native parser test
 
