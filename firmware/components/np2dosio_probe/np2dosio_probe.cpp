@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <compiler.h>
@@ -34,6 +36,9 @@ constexpr char kPhysicalPath[] = "/persist/fixtures/np2test-fd1232.hdm";
 constexpr char kMissingPhysicalPath[] = "/persist/fixtures/missing.hdm";
 constexpr char kWrongSizePhysicalPath[] =
     "/persist/fixtures/.np2-a1-wrong-size.hdm";
+constexpr char kCorruptedPhysicalPath[] =
+    "/persist/fixtures/.np2-a1-corrupted.hdm";
+constexpr std::size_t kCorruptionOffset = 123456;
 constexpr std::array<std::uint8_t, 16> kAtZero = {
     0xfa, 0xfc, 0x31, 0xc0, 0x8e, 0xd8, 0xb8, 0x00,
     0x28, 0x8e, 0xd0, 0xbc, 0x00, 0x10, 0xb8, 0x00,
@@ -89,9 +94,86 @@ bool create_verification_file(const char *path, std::size_t size)
     return close(fd) == 0;
 }
 
+bool write_all(int fd, const std::uint8_t *data, std::size_t size)
+{
+    while (size != 0U) {
+        ssize_t amount;
+
+        do {
+            amount = write(fd, data, size);
+        } while ((amount < 0) && (errno == EINTR));
+        if (amount <= 0) return false;
+        data += amount;
+        size -= static_cast<std::size_t>(amount);
+    }
+    return true;
+}
+
+bool remove_verification_file(const char *path)
+{
+    return (unlink(path) == 0) || (errno == ENOENT);
+}
+
+bool create_corrupted_verification_file(const char *source_path,
+                                        const char *target_path,
+                                        std::size_t size,
+                                        std::size_t corruption_offset,
+                                        std::uint8_t *original_byte,
+                                        std::uint8_t *modified_byte)
+{
+    static std::array<std::uint8_t, 4096> buffer{};
+    const int source_fd = open(source_path, O_RDONLY);
+    const int target_fd = open(target_path, O_CREAT | O_TRUNC | O_WRONLY, 0666);
+    std::size_t copied = 0;
+    bool success = (source_fd >= 0) && (target_fd >= 0) &&
+                   (corruption_offset < size) &&
+                   (original_byte != nullptr) && (modified_byte != nullptr);
+
+    while (success && copied < size) {
+        const std::size_t request =
+            (size - copied < buffer.size()) ? size - copied : buffer.size();
+        ssize_t amount;
+
+        do {
+            amount = read(source_fd, buffer.data(), request);
+        } while ((amount < 0) && (errno == EINTR));
+        if (amount <= 0 || static_cast<std::size_t>(amount) > request) {
+            success = false;
+            break;
+        }
+        if ((corruption_offset >= copied) &&
+            (corruption_offset < copied + static_cast<std::size_t>(amount))) {
+            const std::size_t index = corruption_offset - copied;
+            *original_byte = buffer[index];
+            buffer[index] ^= 0x01U;
+            *modified_byte = buffer[index];
+        }
+        if (!write_all(target_fd, buffer.data(), static_cast<std::size_t>(amount))) {
+            success = false;
+            break;
+        }
+        copied += static_cast<std::size_t>(amount);
+    }
+    success = success && (copied == size);
+    if ((source_fd >= 0) && (close(source_fd) != 0)) success = false;
+    if ((target_fd >= 0) && (close(target_fd) != 0)) success = false;
+    if (!success) unlink(target_path);
+    return success;
+}
+
+bool has_exact_file_size(const char *path, std::size_t size)
+{
+    struct stat status{};
+
+    return (stat(path, &status) == 0) && S_ISREG(status.st_mode) &&
+           (status.st_size >= 0) &&
+           (status.st_size == static_cast<off_t>(size));
+}
+
 bool expect_vfs_verification_failure(const np2_fixture_descriptor *descriptor,
                                     const char *path, esp_err_t expected,
-                                    const char *marker)
+                                    const char *marker,
+                                    const char *details = nullptr)
 {
     std::array<std::uint8_t, NP2_FIXTURE_SHA256_SIZE> digest{};
     const esp_err_t error = np2_fixture_verify_vfs_file(
@@ -99,8 +181,13 @@ bool expect_vfs_verification_failure(const np2_fixture_descriptor *descriptor,
     const bool no_dosio_attachment = file_open_rb(kLogicalPath) == FILEH_INVALID;
 
     if (error != expected || !no_dosio_attachment) return false;
-    std::printf("%s=PASS reason=%s\n", marker,
-                np2_fixture_vfs_error_name(error));
+    if (details != nullptr) {
+        std::printf("%s=PASS reason=%s %s\n", marker,
+                    np2_fixture_vfs_error_name(error), details);
+    } else {
+        std::printf("%s=PASS reason=%s\n", marker,
+                    np2_fixture_vfs_error_name(error));
+    }
     return true;
 }
 
@@ -132,12 +219,28 @@ bool run_fixture_verification_tests()
         unlink(kWrongSizePhysicalPath);
         return false;
     }
-    std::array<std::uint8_t, NP2_FIXTURE_SHA256_SIZE> wrong_sha{};
-    np2_fixture_descriptor wrong_sha_descriptor = *descriptor;
-    wrong_sha_descriptor.expected_sha256 = wrong_sha.data();
-    if (!expect_vfs_verification_failure(
-            &wrong_sha_descriptor, kPhysicalPath, ESP_ERR_INVALID_CRC,
-            "NP2FIXTURE_VFS_WRONG_SHA")) {
+    unlink(kCorruptedPhysicalPath);
+    std::uint8_t original_byte = 0;
+    std::uint8_t modified_byte = 0;
+    char corrupted_details[160]{};
+    if (!create_corrupted_verification_file(
+            kPhysicalPath, kCorruptedPhysicalPath, descriptor->image_size,
+            kCorruptionOffset, &original_byte, &modified_byte) ||
+        !has_exact_file_size(kCorruptedPhysicalPath, descriptor->image_size) ||
+        std::snprintf(corrupted_details, sizeof(corrupted_details),
+                      "size=%u offset=%u original=0x%02x modified=0x%02x "
+                      "dosio_attached=0",
+                      (unsigned)descriptor->image_size,
+                      (unsigned)kCorruptionOffset, (unsigned)original_byte,
+                      (unsigned)modified_byte) < 0 ||
+        !expect_vfs_verification_failure(
+            descriptor, kCorruptedPhysicalPath, ESP_ERR_INVALID_CRC,
+            "NP2FIXTURE_VFS_WRONG_SHA", corrupted_details)) {
+        remove_verification_file(kCorruptedPhysicalPath);
+        unlink(kWrongSizePhysicalPath);
+        return false;
+    }
+    if (!remove_verification_file(kCorruptedPhysicalPath)) {
         unlink(kWrongSizePhysicalPath);
         return false;
     }
