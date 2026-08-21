@@ -20,6 +20,7 @@
 #define INVALID_HID_INDEX 0xffU
 #define INITIAL_TIMEOUT_MS 20000U
 #define HOTPLUG_TIMEOUT_MS 30000U
+#define HOTPLUG_HEARTBEAT_MS 1000U
 #define STABLE_TIMEOUT_MS 2000U
 #define REINIT_ROUNDS 3U
 
@@ -115,6 +116,14 @@ static test_stage_t s_test_stage;
 static uint64_t s_stage_deadline_us;
 static uint8_t s_reinit_round;
 
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+static uint64_t s_last_task_before_log_us;
+static uint64_t s_last_task_after_log_us;
+static uint32_t s_tuh_task_calls;
+static uint32_t s_tuh_task_returns;
+#endif
+
 static const char *speed_name(tusb_speed_t speed)
 {
     switch (speed) {
@@ -180,6 +189,47 @@ static void set_stage(test_stage_t stage, uint32_t timeout_ms)
     ESP_LOGI(TAG, "ROBUST STAGE: %s timeout_ms=%u", stage_name(stage), timeout_ms);
 }
 
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+static void hotplug_task_heartbeat_before(void)
+{
+    ++s_tuh_task_calls;
+    if (s_test_stage != TEST_STAGE_WAIT_UNMOUNT) {
+        return;
+    }
+
+    const uint64_t now = (uint64_t)esp_timer_get_time();
+    if (s_last_task_before_log_us == 0 ||
+        now - s_last_task_before_log_us >= ((uint64_t)HOTPLUG_HEARTBEAT_MS * 1000ULL)) {
+        s_last_task_before_log_us = now;
+        ESP_LOGI(TAG,
+                 "P4-NANO TINYUSB HOTPLUG TASK ALIVE: before tuh_task_ext calls=%u hid_ready=%s",
+                 (unsigned)s_tuh_task_calls, s_hid_ready ? "yes" : "no");
+    }
+}
+
+static void hotplug_task_heartbeat_after(void)
+{
+    ++s_tuh_task_returns;
+    if (s_test_stage != TEST_STAGE_WAIT_UNMOUNT) {
+        return;
+    }
+
+    const uint64_t now = (uint64_t)esp_timer_get_time();
+    if (s_last_task_after_log_us == 0 ||
+        now - s_last_task_after_log_us >= ((uint64_t)HOTPLUG_HEARTBEAT_MS * 1000ULL)) {
+        s_last_task_after_log_us = now;
+        ESP_LOGI(TAG,
+                 "P4-NANO TINYUSB HOTPLUG TASK ALIVE: after tuh_task_ext returns=%u calls=%u hid_ready=%s",
+                 (unsigned)s_tuh_task_returns, (unsigned)s_tuh_task_calls,
+                 s_hid_ready ? "yes" : "no");
+    }
+}
+#else
+static void hotplug_task_heartbeat_before(void) {}
+static void hotplug_task_heartbeat_after(void) {}
+#endif
+
 static void request_cleanup(bool failed, const char *reason)
 {
     if (failed) {
@@ -236,6 +286,12 @@ static void clear_hid_state(uint8_t daddr)
     s_expected_sequence_index = 0;
     s_sequence_pass_reported = false;
     hid_boot_keyboard_init(&s_keyboard_state);
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    ESP_LOGI(TAG,
+             "P4-NANO TINYUSB HOTPLUG APP CHILD STATE CLEARED: addr=%u instance=%u generation=%u",
+             s_last_umount_daddr, s_last_umount_idx, s_last_umount_generation);
+#endif
     ESP_LOGI(TAG, "ROBUST HID STATE CLEAR PASS addr=%u generation=%u",
              s_last_umount_daddr, s_last_umount_generation);
 }
@@ -298,6 +354,11 @@ void tuh_mount_cb(uint8_t daddr)
 void tuh_umount_cb(uint8_t daddr)
 {
     ESP_LOGI(TAG, "P4-NANO TINYUSB DEVICE UMOUNT addr=%u", daddr);
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    ESP_LOGI(TAG, "P4-NANO TINYUSB HOTPLUG DEVICE UMOUNT: addr=%u stage=%s hid_ready=%s",
+             daddr, stage_name(s_test_stage), s_hid_ready ? "yes" : "no");
+#endif
 
     if (s_hid_ready && daddr == s_active_hid_daddr) {
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_LEGACY
@@ -435,6 +496,12 @@ void tuh_hid_umount_cb(uint8_t daddr, uint8_t idx)
     ESP_LOGI(TAG, "P4-NANO TINYUSB HID UMOUNT addr=%u idx=%u", daddr, idx);
 
     const bool matched = daddr == s_last_umount_daddr && idx == s_last_umount_idx;
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    ESP_LOGI(TAG,
+             "P4-NANO TINYUSB HOTPLUG HID UMOUNT: addr=%u instance=%u stage=%s matched=%s",
+             daddr, idx, stage_name(s_test_stage), matched ? "yes" : "no");
+#endif
     if (robustness_profile() && !matched) {
         s_stale_callback = true;
         request_cleanup(true, "HID unmount identity mismatch");
@@ -606,6 +673,13 @@ static void tinyusb_host_task(void *arg)
     s_hid_generation = 0;
     s_hid_mount_count = 0;
     s_reinit_round = 0;
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    s_last_task_before_log_us = 0;
+    s_last_task_after_log_us = 0;
+    s_tuh_task_calls = 0;
+    s_tuh_task_returns = 0;
+#endif
 
     if (!tinyusb_host_init()) {
         vTaskDelete(NULL);
@@ -618,7 +692,9 @@ static void tinyusb_host_task(void *arg)
 
     for (;;) {
         if (robustness_profile()) {
+            hotplug_task_heartbeat_before();
             tuh_task_ext(20, false);
+            hotplug_task_heartbeat_after();
             robustness_tick();
         } else {
             tuh_task();
