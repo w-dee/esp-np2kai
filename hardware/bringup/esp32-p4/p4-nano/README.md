@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS; USB HOST DIRECT HID PASS; USB HOST HUB STAGE 2 PARTIAL_BLOCKED_TT**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS; TINYUSB HOST FUNCTIONAL/ROBUSTNESS PASS; USB HOST HUB STAGE 2 PARTIAL_BLOCKED_TT**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -344,38 +344,70 @@ RAW NP2 FIXTURE: NOT PROVISIONED
 FORMAL NP2TEST: NOT RUN
 ```
 
-## USB Host direct HID Stage 1 and Hub Stage 2
+## USB Host measured results
 
-The direct USB Host/HID Stage 1 is **MEASURED ON REAL HARDWARE**. A direct
-FS keyboard (`VID/PID 0853:0103`) enumerated on the P4-NANO Type-A port and
-passed HID Boot Protocol and the complete required make/break sequence. The
-separate cleanup regression passed while the keyboard remained physically
-connected, including HID stop/close/uninstall, Host `NO_CLIENTS`, device free,
-and Host uninstall. The independent diagnostic uses ESP-IDF v5.5.4 and
-`espressif/usb_host_hid` 1.0.3.
+TinyUSB Host physical bring-up and robustness validation is **MEASURED ON REAL
+HARDWARE** on the Waveshare ESP32-P4-NANO rev v1.3 with TinyUSB 0.21.0,
+ESP-IDF v5.5.4, and the P4 `rhport=1` HS/UTMI PHY. It is an independent
+diagnostic and does not modify production firmware or use the stock ESP-IDF
+Host stack.
 
-The separate Hub Stage 2 was also **MEASURED ON REAL HARDWARE** on the same
-Waveshare ESP32-P4-NANO rev v1.3 using ESP-IDF v5.5.4 and
-`espressif/usb_host_hid` 1.0.3. With the previously validated FS keyboard
-behind an external hub, the stock ESP-IDF Hub Driver emitted:
+The accepted TinyUSB matrix is:
 
 ```text
-Connected device is FS, transaction translator (TT) is not supported
-[1:4] Port disabled, reset attempts=1
+FS root over HS/UTMI PHY + direct FS keyboard:                 PASS
+FS root over HS/UTMI PHY + FS Hub + FS keyboard:              PASS
+10/10 cold boots with Hub + keyboard preconnected:             PASS
+keyboard hotplug behind Hub:                                  PASS
+direct-root FS keyboard hotplug:                              PASS
+Hub hotplug with keyboard attached:                           PASS
+Host/PHY teardown + re-init:                                  3/3 PASS
+HID generations:                                              1 -> 2 -> 3 -> 4
+normal HS-capable root + direct FS keyboard:                   PASS
 ```
 
-The accepted classification is `Root Host: PASS`, `External Hub: PASS`,
-`Downstream child: BLOCKED_TT`, `HID via Hub: BLOCKED_TT`, `Input via Hub:
-NOT_RUN`, and `Overall Stage 2: PARTIAL_BLOCKED_TT`. This is evidence of an HS
-external hub with an FS downstream child under the stock ESP-IDF v5.5.4 Host
-stack. Stage 2 did not obtain the downstream VID/PID; `0853:0103` remains the
-direct Stage 1 keyboard result only. The outcome is not USB HOST FAIL, HUB
-FAIL, or KEYBOARD FAIL. Cleanup reached Host uninstall and `P4-NANO USB HOST
-SAFE IDLE` with no invalid-state error, panic, watchdog, or reset loop.
+The known keyboard was VID/PID `0853:0103`, Boot HID. Functional and hotplug
+profiles passed the required raw key/modifier sequences and human key
+correlation. The normal HS-capable root profile requested HIGH, kept
+`HCFG_FSLS_ONLY` clear, and enumerated the directly attached keyboard at its
+negotiated FS speed with parent root `0:0`. This must not be described as the
+keyboard operating at 480 Mbps.
 
-TinyUSB, true Split Transaction/TT support, FS-forced HS-root mode, mouse,
-storage, production USB keyboard integration, and PC-98 key mapping remain
-deferred. TinyUSB was not tested.
+Cleanup across the accepted TinyUSB runs was:
+
+```text
+host=PASS
+phy=PASS
+inactive=PASS
+stale=PASS
+```
+
+No panic, watchdog, reset loop, stale callback, use-after-unmount symptom, or
+device/HID state leakage was observed. Profile 4 final post-reinit raw-A and
+Profile 5 HS-root direct-FS raw-A were `NOT RUN (diagnostic unsupported)`;
+these are not failures.
+
+The retained diagnostic operator timeout is `HOTPLUG_TIMEOUT_MS=180000U`.
+This is a 180-second human/operator interaction timeout, not USB enumeration
+latency. The earlier Hub replug result at 30 seconds was invalidated and was
+not reproduced at 180 seconds.
+
+The stock ESP-IDF v5.5.4 Host result remains an independent historical/control
+result:
+
+```text
+P4 HS root -> external HS Hub -> FS keyboard: PARTIAL_BLOCKED_TT
+```
+
+TinyUSB's accepted workaround uses an FS-forced root over the HS PHY and an FS
+Hub. It does not implement or prove P4 Transaction Translator support. True P4
+TT/HCSPLT split behavior remains `BLOCKED_BY_HARDWARE`.
+
+Production USB input integration is not complete. PC-98 keyboard mapping,
+production input-path integration, mouse, USB storage, and concurrent
+production peripheral operation remain deferred. See
+[tinyusb-host/README.md](tinyusb-host/README.md) for the complete diagnostic
+matrix and procedures.
 
 ## SDMMC diagnostic
 

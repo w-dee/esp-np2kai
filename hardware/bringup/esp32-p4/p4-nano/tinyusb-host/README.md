@@ -1,14 +1,19 @@
-# P4-NANO TinyUSB FS-over-HS-PHY host diagnostic
+# P4-NANO TinyUSB Host diagnostic
 
 This is an independent diagnostic for the ESP32-P4 P4-NANO. It uses the
-TinyUSB `0.21.0` snapshot under `third_party/tinyusb/` and the P4 HS DWC2
-controller (rhport 1) with its HS/UTMI PHY while deliberately running the root
-bus at full speed.
+TinyUSB `0.21.0` snapshot under `third_party/tinyusb/`, the P4 HS DWC2
+controller (rhport 1), and its HS/UTMI PHY. It validates both supported
+diagnostic root modes:
 
-The purpose is to validate a real full-speed root bus, a full-speed hub child,
-and a full-speed Boot HID keyboard without using the IDF USB Host stack. The
-existing stock diagnostic at `../usb-host/` is a control and is intentionally
-unchanged.
+```text
+normal HS-capable root + direct FS keyboard
+FS root over HS/UTMI PHY + FS Hub + FS keyboard
+```
+
+The purpose is to validate a real full-speed Boot HID keyboard, Hub and device
+lifecycle behavior, and normal P4 HS-capable root configuration without using
+the stock IDF USB Host stack. The existing stock diagnostic at `../usb-host/`
+is a control and is intentionally unchanged.
 
 ## Why FS-over-HS-PHY
 
@@ -25,9 +30,14 @@ P4 HS DWC2 + HS/UTMI PHY, root speed forced to FS
 ```
 
 With the root bus speed set to FS, TinyUSB's DWC2 HCD does not enable
-HCSPLT/Start-Split/Complete-Split. This is expected and is not a missing TT
-feature. A true TT-dependent P4 path remains blocked and is not implemented by
-this diagnostic.
+HCSPLT/Start-Split/Complete-Split. This is the measured workaround path and is
+not P4 TT support.
+
+The separate normal HS-capable root profile requests `TUSB_SPEED_HIGH` and
+leaves `HCFG_FSLS_ONLY` clear. A directly attached FS keyboard then negotiates
+FS on that HS-capable root. There is no external Hub, so no TT or split
+transaction is involved. The keyboard must not be described as operating at
+480 Mbps.
 
 ## Build
 
@@ -46,9 +56,21 @@ stock IDF USB Host Hub/TT path. The keyboard parser is the existing parser at
 `../usb-host/main/hid_boot_keyboard.c`, compiled directly from that location;
 it is not copied or modified here.
 
+Diagnostic profiles are selected with `-D TINYUSB_DIAG_PROFILE=N`:
+
+```text
+0  LEGACY
+1  COLD_BOOT
+2  KEYBOARD_HOTPLUG
+3  HUB_HOTPLUG
+4  REINIT
+5  HS_ROOT_DIRECT_FS
+6  DIRECT_FS_HOTPLUG
+```
+
 ## Expected log markers
 
-Startup must identify the fixed experiment:
+Startup identifies the selected root mode. The FS-root profiles emit:
 
 ```text
 P4-NANO TINYUSB HOST START
@@ -62,10 +84,10 @@ P4-NANO TINYUSB HOST INIT: PASS
 
 Device logs include VID/PID, negotiated speed, root-hub port, and hub parent
 address/port. A recognized `0853:0103` keyboard must report FS, Boot keyboard,
-and produce raw press/release/modifier markers. The diagnostic emits a
-software-sequence result and then deinitializes TinyUSB and the PHY in the same
-FreeRTOS task/context. It never emits `PHYSICAL RESULT: PASS`; physical
-acceptance remains a human decision.
+and, where the selected profile supports it, produce raw press/release/modifier
+markers. The diagnostic emits bounded software results and deinitializes
+TinyUSB and the PHY in the same FreeRTOS task/context. It never emits
+`PHYSICAL RESULT: PASS`; physical acceptance remains a human decision.
 
 TinyUSB's logical root-port/HPRT power state during teardown must not be
 interpreted as removal of the board's Type-A 5 V. The P4-NANO VBUS path is
@@ -98,10 +120,16 @@ this TinyUSB diagnostic.
 Tab5, S31, eFuse, forced flashing, USB PHY routing changes, PSRAM, and any
 automatic physical topology change are out of scope.
 
-## Measured results
+## Accepted measured results
 
 The following results were measured on the Waveshare ESP32-P4-NANO rev v1.3
 with ESP-IDF v5.5.4 and the same TinyUSB `0.21.0` firmware/configuration.
+
+### Initial functional bring-up
+
+The initial functional bring-up established direct FS HID operation and the
+FS-root-over-HS-PHY Hub topology before lifecycle testing. Both configurations
+used the known `0853:0103` Boot HID keyboard.
 
 ### Direct FS keyboard
 
@@ -135,3 +163,128 @@ with an FS hub and FS HID child. It is not P4 TT support, split-transaction
 support, or a 480 Mbps host result. No panic, watchdog, or reset loop was
 observed during either run. The firmware did not emit a physical PASS marker;
 the physical acceptance above includes the human key confirmation.
+
+### Cold-boot robustness
+
+With the Hub and keyboard preconnected:
+
+```text
+10/10 cold boots: PASS
+Hub enumeration: PASS on every run
+keyboard 0853:0103 enumeration: PASS on every run
+HID ready: PASS on every run
+clean shutdown: PASS on every run
+```
+
+### Keyboard hotplug
+
+The keyboard hot-unplug/replug lifecycle was measured both behind the FS Hub
+and directly on the root port. Each accepted lifecycle included clean device
+unmount, HID unmount, application state clearing, re-enumeration, HID ready,
+and raw-A press/release after reconnect where that profile provided the input
+stage. Both topologies passed:
+
+```text
+Hub + keyboard hotplug lifecycle: PASS
+direct-root FS keyboard hotplug lifecycle: PASS
+```
+
+### Hub hotplug
+
+With the keyboard attached to the external Hub, Hub unplug/replug was accepted
+with clean Hub and child unmount, no stale device or instance state, Hub and
+child re-enumeration, HID ready, and resumed input:
+
+```text
+Hub hotplug lifecycle: PASS
+```
+
+### TinyUSB Host/PHY teardown and re-init
+
+Profile 4 performed three bounded Host/PHY teardown and re-init rounds in one
+firmware lifetime. Every round passed Host deinit, PHY deinit, inactive-state
+verification, Host/PHY re-init, keyboard re-enumeration, HID ready, and stale
+state cleanup:
+
+```text
+TINYUSB HOST REINIT ROUND 1: PASS
+TINYUSB HOST REINIT ROUND 2: PASS
+TINYUSB HOST REINIT ROUND 3: PASS
+TINYUSB HOST REINIT LIFECYCLE: PASS
+HID generations: 1 -> 2 -> 3 -> 4
+```
+
+### Normal HS-capable root plus direct FS device
+
+Profile 5 requested a normal HS-capable root with `TUSB_SPEED_HIGH`,
+`use_hs_phy=true`, and `HCFG_FSLS_ONLY` clear. The directly connected known
+keyboard enumerated as FS at root `0:0`:
+
+```text
+TINYUSB NORMAL HS ROOT: PASS
+DIRECT FS DEVICE NEGOTIATION: PASS
+HS-ROOT DIRECT FS HID: PASS
+root requested speed: HIGH
+keyboard VID/PID: 0853:0103
+keyboard negotiated speed: FS
+parent: root 0:0
+HID ready: PASS
+```
+
+This proves HS-capable root configuration plus direct FS-device negotiation;
+it does not claim that the keyboard operated at HS or 480 Mbps.
+
+### Cleanup and stability
+
+Across the accepted robustness and root-mode runs:
+
+```text
+host=PASS
+phy=PASS
+inactive=PASS
+stale=PASS
+```
+
+No panic, watchdog, reset loop, stale callback, use-after-unmount symptom, or
+device/HID state leakage was observed.
+
+Profile 4 final post-reinit raw-A and Profile 5 HS-root direct-FS raw-A were
+not run because those diagnostic state machines auto-clean after their stable
+stage and do not provide a bounded post-final-reinit input stage:
+
+```text
+Profile 4 raw-A: NOT RUN (diagnostic unsupported)
+Profile 5 raw-A: NOT RUN (diagnostic unsupported)
+```
+
+These are not failures. Raw input was independently validated in the direct
+FS and Hub functional/hotplug profiles.
+
+### Historical timeout result
+
+An earlier Hub replug failure with `HOTPLUG_TIMEOUT_MS=30000U` was invalidated
+as a USB failure. It was not reproduced after changing the diagnostic operator
+timeout to `HOTPLUG_TIMEOUT_MS=180000U`. The 180-second value is an
+operator/human interaction timeout, not USB enumeration latency. Physical
+cable-operation timestamps were not independently recorded, so UART intervals
+containing human interaction must not be presented as pure USB latency.
+
+### Known limitations
+
+The stock ESP-IDF v5.5.4 result for:
+
+```text
+P4 HS root -> external HS Hub -> FS keyboard
+```
+
+remains `PARTIAL_BLOCKED_TT`. TinyUSB's accepted workaround is:
+
+```text
+P4 HS DWC2 + HS/UTMI PHY, root forced FS
+    -> FS Hub -> FS keyboard
+```
+
+This diagnostic does not implement or prove P4 Transaction Translator support.
+True P4 TT / HCSPLT split behavior remains `BLOCKED_BY_HARDWARE`. Mouse,
+storage, concurrent production peripherals, PC-98 keyboard mapping, and
+production USB input-path integration remain out of scope.
