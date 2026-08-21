@@ -1,6 +1,6 @@
 # ESP32-P4-NANO hardware bring-up
 
-Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS**
+Status: **MEASURED ON REAL HARDWARE: SOFTWARE/UART PASS; LED BLINK PASS; FLASH/PSRAM PASS; SDMMC PASS; WIRELESS COMPANION TRANSPORT PASS; AUDIO SPEAKER OUTPUT PASS; MIPI-DSI DISPLAY OUTPUT PASS; USB HOST DIRECT HID PASS**
 
 This directory contains an independent, retained hardware diagnostic for the
 Waveshare ESP32-P4-NANO. It is intentionally separate from the production
@@ -344,6 +344,19 @@ RAW NP2 FIXTURE: NOT PROVISIONED
 FORMAL NP2TEST: NOT RUN
 ```
 
+## USB Host direct HID Stage 1
+
+The direct USB Host/HID Stage 1 is **MEASURED ON REAL HARDWARE**. A direct
+FS keyboard (`VID/PID 0853:0103`) enumerated on the P4-NANO Type-A port and
+passed HID Boot Protocol and the complete required make/break sequence. The
+separate cleanup regression passed while the keyboard remained physically
+connected, including HID stop/close/uninstall, Host `NO_CLIENTS`, device free,
+and Host uninstall. The independent diagnostic uses ESP-IDF v5.5.4 and
+`espressif/usb_host_hid` 1.0.3.
+
+USB Host Hub/Stage 2, hub TT behavior, mouse, storage, and production USB
+integration remain unvalidated.
+
 ## SDMMC diagnostic
 
 An independent `sdmmc/` diagnostic has now been added for the next physical
@@ -434,9 +447,9 @@ artifacts are local to this project. The diagnostic was flashed only after
 the wiring review, using the stable serial path recorded above. No production
 firmware files were modified.
 
-The GPIO20, Flash/PSRAM, production headless, SD/MMC, wireless companion
-transport, speaker-output, and narrowly scoped MIPI-DSI display-output
-real-hardware bring-up milestones are complete. USB host and the display/touch
-and broader audio functions remain unvalidated as listed above. Formal NP2
-emulation on real hardware remains unvalidated because the raw fixture was not
-provisioned and formal NP2TEST was not run.
+The GPIO20, Flash/PSRAM, production headless, SD/MMC, wireless companion,
+direct USB HID Stage 1, speaker-output, and narrowly scoped MIPI-DSI
+display-output real-hardware bring-up milestones are complete. USB Host Hub/
+Stage 2, display/touch, and broader audio functions remain unvalidated as
+listed above. Formal NP2 emulation on real hardware remains unvalidated
+because the raw fixture was not provisioned and formal NP2TEST was not run.

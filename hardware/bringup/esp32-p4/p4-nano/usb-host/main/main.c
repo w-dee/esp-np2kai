@@ -79,11 +79,26 @@ static QueueHandle_t s_app_event_queue;
 static usb_host_client_handle_t s_usb_client;
 static SemaphoreHandle_t s_usb_client_done;
 static SemaphoreHandle_t s_usb_lib_done;
+static SemaphoreHandle_t s_hid_disconnect_done;
+static SemaphoreHandle_t s_direct_device_gone_done;
 static volatile bool s_shutdown_requested;
 static bool s_hid_installed;
 static volatile bool s_usb_host_installed;
 static volatile bool s_keyboard_active;
 static volatile hid_host_device_handle_t s_keyboard_handle;
+static volatile bool s_keyboard_opened;
+static volatile bool s_hid_device_seen;
+static volatile bool s_hid_device_gone;
+static volatile bool s_hid_disconnect_callback_done;
+static volatile bool s_hid_force_disconnect_requested;
+static usb_device_handle_t s_direct_device;
+static volatile bool s_direct_device_gone;
+static bool s_hid_stop_pass;
+static bool s_hid_close_pass;
+static bool s_hid_uninstall_pass;
+static bool s_usb_no_clients_pass;
+static bool s_usb_devices_free_pass;
+static bool s_usb_uninstall_pass;
 static bool s_root_device_seen;
 static bool s_root_device_failed;
 static bool s_hid_failed;
@@ -91,6 +106,15 @@ static bool s_result_printed;
 static size_t s_sequence_index;
 static bool s_sequence_started;
 static bool s_sequence_failed;
+
+typedef enum {
+    HID_IFACE_STATE_CLOSED,
+    HID_IFACE_STATE_OPEN,
+    HID_IFACE_STATE_ACTIVE,
+    HID_IFACE_STATE_STOPPED,
+} hid_iface_lifecycle_state_t;
+
+static volatile hid_iface_lifecycle_state_t s_keyboard_state;
 
 static const char *usb_speed_name(usb_speed_t speed)
 {
@@ -123,6 +147,20 @@ static void usb_client_event_callback(const usb_host_client_event_msg_t *event_m
     (void)arg;
     if (event_msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
         ESP_LOGI(TAG, "USB device gone");
+        if (s_direct_device == event_msg->dev_gone.dev_hdl) {
+            const esp_err_t close_ret = usb_host_device_close(
+                s_usb_client, event_msg->dev_gone.dev_hdl);
+            if (close_ret != ESP_OK) {
+                log_usb_error("USB direct device close after disconnect failed", close_ret);
+                s_root_device_failed = true;
+            } else {
+                s_direct_device = NULL;
+                s_direct_device_gone = true;
+                if (s_direct_device_gone_done != NULL) {
+                    xSemaphoreGive(s_direct_device_gone_done);
+                }
+            }
+        }
         return;
     }
 
@@ -148,6 +186,7 @@ static void usb_client_event_callback(const usb_host_client_event_msg_t *event_m
     }
     if (ret == ESP_OK && descriptor != NULL) {
         s_root_device_seen = true;
+        s_direct_device = device;
         ESP_LOGI(TAG, "P4-NANO USB DIRECT DEVICE: PASS address=%u parent_port=%u",
                  info.dev_addr, info.parent.port_num);
         ESP_LOGI(TAG, "P4-NANO USB DIRECT VIDPID: %04x:%04x",
@@ -158,9 +197,11 @@ static void usb_client_event_callback(const usb_host_client_event_msg_t *event_m
         log_usb_error("USB direct device information failed", ret);
         ESP_LOGE(TAG, "P4-NANO USB DIRECT DEVICE: FAIL");
     }
-    const esp_err_t close_ret = usb_host_device_close(s_usb_client, device);
-    if (close_ret != ESP_OK) {
-        log_usb_error("USB direct device close failed", close_ret);
+    if (s_direct_device != device) {
+        const esp_err_t close_ret = usb_host_device_close(s_usb_client, device);
+        if (close_ret != ESP_OK) {
+            log_usb_error("USB direct device close failed", close_ret);
+        }
     }
 }
 
@@ -234,27 +275,37 @@ static void usb_lib_task(void *arg)
     }
 
     ESP_LOGI(TAG, "P4-NANO USB ROOT PERIPHERAL: HS");
+    esp_err_t ret;
     while (true) {
         uint32_t event_flags = 0;
-        const esp_err_t ret = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        ret = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
         if (ret != ESP_OK) {
             log_usb_error("USB host library event handling failed", ret);
             break;
         }
         if ((event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) != 0U) {
+            s_usb_no_clients_pass = true;
+            ESP_LOGI(TAG, "P4-NANO USB HOST NO CLIENTS: PASS");
             const esp_err_t free_ret = usb_host_device_free_all();
             if (free_ret == ESP_ERR_NOT_FINISHED) {
                 while (true) {
                     uint32_t free_flags = 0;
-                    if (usb_host_lib_handle_events(portMAX_DELAY, &free_flags) != ESP_OK) {
+                    ret = usb_host_lib_handle_events(portMAX_DELAY, &free_flags);
+                    if (ret != ESP_OK) {
+                        log_usb_error("USB host device free event handling failed", ret);
                         break;
                     }
                     if ((free_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) != 0U) {
+                        s_usb_devices_free_pass = true;
+                        ESP_LOGI(TAG, "P4-NANO USB HOST DEVICES FREE: PASS");
                         break;
                     }
                 }
             } else if (free_ret != ESP_OK) {
                 log_usb_error("USB host device free failed", free_ret);
+            } else {
+                s_usb_devices_free_pass = true;
+                ESP_LOGI(TAG, "P4-NANO USB HOST DEVICES FREE: PASS");
             }
             break;
         }
@@ -263,6 +314,9 @@ static void usb_lib_task(void *arg)
     const esp_err_t uninstall_ret = usb_host_uninstall();
     if (uninstall_ret != ESP_OK) {
         log_usb_error("USB host uninstall failed", uninstall_ret);
+    } else {
+        s_usb_uninstall_pass = true;
+        ESP_LOGI(TAG, "P4-NANO USB HOST UNINSTALL: PASS");
     }
     xSemaphoreGive(s_usb_lib_done);
     vTaskDelete(NULL);
@@ -298,10 +352,18 @@ static void hid_host_interface_callback(hid_host_device_handle_t handle,
         const esp_err_t ret = hid_host_device_close(handle);
         if (ret != ESP_OK) {
             log_usb_error("HID device close after disconnect failed", ret);
+        } else {
+            s_hid_close_pass = true;
+            if (s_hid_force_disconnect_requested) {
+                s_hid_disconnect_callback_done = true;
+            }
+            s_keyboard_state = HID_IFACE_STATE_CLOSED;
+            ESP_LOGI(TAG, "P4-NANO USB HID CLOSE: PASS");
         }
         if (handle == s_keyboard_handle) {
             s_keyboard_active = false;
             s_keyboard_handle = NULL;
+            s_keyboard_opened = false;
         }
     }
 
@@ -310,11 +372,28 @@ static void hid_host_interface_callback(hid_host_device_handle_t handle,
     }
 }
 
+static void hid_event_task(void *arg)
+{
+    (void)arg;
+    while (hid_host_handle_events(portMAX_DELAY) == ESP_OK) {
+        if (s_hid_disconnect_callback_done && !s_hid_device_gone) {
+            s_hid_device_gone = true;
+            if (s_hid_disconnect_done != NULL) {
+                xSemaphoreGive(s_hid_disconnect_done);
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 static void hid_host_device_callback(hid_host_device_handle_t handle,
                                       const hid_host_driver_event_t event,
                                       void *arg)
 {
     (void)arg;
+    if (event == HID_HOST_DRIVER_EVENT_CONNECTED) {
+        s_hid_device_seen = true;
+    }
     const app_event_t app_event = {
         .kind = APP_EVENT_HID_DRIVER,
         .handle = handle,
@@ -416,19 +495,29 @@ static void process_hid_driver_event(hid_host_device_handle_t handle,
     };
     ret = hid_host_device_open(handle, &device_config);
     if (ret == ESP_OK) {
+        s_keyboard_handle = handle;
+        s_keyboard_opened = true;
+        s_keyboard_state = HID_IFACE_STATE_OPEN;
+    }
+    if (ret == ESP_OK) {
         ret = hid_class_request_set_protocol(handle, HID_REPORT_PROTOCOL_BOOT);
     }
     if (ret == ESP_OK) {
         ret = hid_class_request_set_idle(handle, 0, 0);
     }
     if (ret == ESP_OK) {
-        s_keyboard_handle = handle;
         ret = hid_host_device_start(handle);
+        if (ret == ESP_OK) {
+            s_keyboard_state = HID_IFACE_STATE_ACTIVE;
+        }
     }
     if (ret != ESP_OK) {
         s_hid_failed = true;
         log_usb_error("HID keyboard setup failed", ret);
-        (void)hid_host_device_close(handle);
+        const esp_err_t close_ret = hid_host_device_close(handle);
+        if (close_ret != ESP_OK) {
+            log_usb_error("HID keyboard setup cleanup failed", close_ret);
+        }
         ESP_LOGE(TAG, "P4-NANO USB DIRECT HID: FAIL");
         return;
     }
@@ -440,20 +529,87 @@ static void process_hid_driver_event(hid_host_device_handle_t handle,
     ESP_LOGI(TAG, "P4-NANO USB DIRECT HID PROTOCOL: KEYBOARD");
 }
 
-static void request_host_shutdown(void)
+static bool stop_hid_interface(void)
 {
-    if (s_hid_installed) {
-        if (s_keyboard_active && s_keyboard_handle != NULL) {
-            const esp_err_t close_ret = hid_host_device_close(s_keyboard_handle);
-            if (close_ret != ESP_OK) {
-                log_usb_error("HID keyboard close failed", close_ret);
-            }
-            s_keyboard_active = false;
-            s_keyboard_handle = NULL;
+    bool pass = true;
+    if (s_keyboard_state == HID_IFACE_STATE_ACTIVE && s_keyboard_handle != NULL) {
+        const esp_err_t ret = hid_host_device_stop(s_keyboard_handle);
+        if (ret != ESP_OK) {
+            log_usb_error("HID keyboard stop failed", ret);
+            pass = false;
+        } else {
+            s_keyboard_state = HID_IFACE_STATE_STOPPED;
         }
+    } else if (s_keyboard_state == HID_IFACE_STATE_OPEN) {
+        s_keyboard_state = HID_IFACE_STATE_STOPPED;
+    }
+    s_hid_stop_pass = pass;
+    if (pass) {
+        ESP_LOGI(TAG, "P4-NANO USB HID STOP: PASS");
+    } else {
+        ESP_LOGE(TAG, "P4-NANO USB HID STOP: FAIL");
+    }
+    return pass;
+}
+
+static bool force_host_disconnect(void)
+{
+    if (!s_hid_device_seen && s_direct_device == NULL) {
+        return true;
+    }
+
+    s_hid_force_disconnect_requested = true;
+    const esp_err_t ret = usb_host_lib_set_root_port_power(false);
+    if (ret != ESP_OK) {
+        s_hid_force_disconnect_requested = false;
+        log_usb_error("USB host forced disconnect failed", ret);
+        return false;
+    }
+
+    if (s_direct_device != NULL && !s_direct_device_gone) {
+        if (xSemaphoreTake(s_direct_device_gone_done, pdMS_TO_TICKS(5000)) != pdTRUE) {
+            ESP_LOGE(TAG, "USB direct device gone event timed out");
+            return false;
+        }
+    }
+
+    if (s_keyboard_opened && !s_hid_device_gone) {
+        if (xSemaphoreTake(s_hid_disconnect_done, pdMS_TO_TICKS(5000)) != pdTRUE) {
+            ESP_LOGE(TAG, "HID disconnect callback timed out");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool request_host_shutdown(void)
+{
+    bool cleanup_pass = true;
+    if (s_hid_installed) {
+        cleanup_pass = stop_hid_interface() && cleanup_pass;
+
+        if (s_hid_device_seen || s_direct_device != NULL) {
+            cleanup_pass = force_host_disconnect() && cleanup_pass;
+        }
+
+        if (!s_keyboard_opened && !s_hid_close_pass) {
+            s_hid_close_pass = true;
+            ESP_LOGI(TAG, "P4-NANO USB HID CLOSE: PASS state=closed");
+        }
+        if (!s_hid_close_pass) {
+            cleanup_pass = false;
+            ESP_LOGE(TAG, "P4-NANO USB HID CLOSE: FAIL");
+        }
+
         const esp_err_t ret = hid_host_uninstall();
         if (ret != ESP_OK) {
             log_usb_error("HID host uninstall failed", ret);
+            ESP_LOGE(TAG, "P4-NANO USB HID UNINSTALL: FAIL");
+            cleanup_pass = false;
+        } else {
+            s_hid_uninstall_pass = true;
+            ESP_LOGI(TAG, "P4-NANO USB HID UNINSTALL: PASS");
         }
         s_hid_installed = false;
     }
@@ -467,6 +623,25 @@ static void request_host_shutdown(void)
     }
     (void)xSemaphoreTake(s_usb_client_done, pdMS_TO_TICKS(3000));
     (void)xSemaphoreTake(s_usb_lib_done, pdMS_TO_TICKS(5000));
+
+    if (!s_usb_no_clients_pass) {
+        ESP_LOGE(TAG, "P4-NANO USB HOST NO CLIENTS: FAIL");
+        cleanup_pass = false;
+    }
+    if (!s_usb_devices_free_pass) {
+        ESP_LOGE(TAG, "P4-NANO USB HOST DEVICES FREE: FAIL");
+        cleanup_pass = false;
+    }
+    if (!s_usb_uninstall_pass) {
+        ESP_LOGE(TAG, "P4-NANO USB HOST UNINSTALL: FAIL");
+        cleanup_pass = false;
+    }
+    if (cleanup_pass) {
+        ESP_LOGI(TAG, "P4-NANO USB CLEANUP RESULT: PASS");
+    } else {
+        ESP_LOGE(TAG, "P4-NANO USB CLEANUP RESULT: FAIL");
+    }
+    return cleanup_pass;
 }
 
 static void finish_result(bool pass)
@@ -478,14 +653,17 @@ static void finish_result(bool pass)
     if (pass) {
         ESP_LOGI(TAG, "P4-NANO USB DIRECT INPUT: PASS");
         ESP_LOGI(TAG, "P4-NANO USB DIRECT DIGITAL RESULT: PASS");
+    } else {
+        ESP_LOGE(TAG, "P4-NANO USB DIRECT INPUT: FAIL");
+    }
+    const bool cleanup_pass = request_host_shutdown();
+    if (pass && cleanup_pass) {
         ESP_LOGI(TAG, "P4-NANO USB DIRECT RESULT: PASS");
         ESP_LOGI(TAG, "P4-NANO USB HOST RESULT: PASS");
     } else {
-        ESP_LOGE(TAG, "P4-NANO USB DIRECT INPUT: FAIL");
         ESP_LOGE(TAG, "P4-NANO USB DIRECT RESULT: FAIL");
         ESP_LOGE(TAG, "P4-NANO USB HOST RESULT: FAIL");
     }
-    request_host_shutdown();
 }
 
 static void fail_for_timeout(void)
@@ -512,7 +690,10 @@ void app_main(void)
     s_app_event_queue = xQueueCreate(USB_EVENT_QUEUE_LENGTH, sizeof(app_event_t));
     s_usb_client_done = xSemaphoreCreateBinary();
     s_usb_lib_done = xSemaphoreCreateBinary();
-    if (s_app_event_queue == NULL || s_usb_client_done == NULL || s_usb_lib_done == NULL) {
+    s_hid_disconnect_done = xSemaphoreCreateBinary();
+    s_direct_device_gone_done = xSemaphoreCreateBinary();
+    if (s_app_event_queue == NULL || s_usb_client_done == NULL || s_usb_lib_done == NULL ||
+        s_hid_disconnect_done == NULL || s_direct_device_gone_done == NULL) {
         ESP_LOGE(TAG, "P4-NANO USB HOST LIB INIT: FAIL allocation");
         return;
     }
@@ -537,7 +718,7 @@ void app_main(void)
     }
 
     const hid_host_driver_config_t hid_config = {
-        .create_background_task = true,
+        .create_background_task = false,
         .task_priority = 5,
         .stack_size = 4096,
         .core_id = 0,
@@ -553,6 +734,12 @@ void app_main(void)
         return;
     }
     s_hid_installed = true;
+    if (xTaskCreate(hid_event_task, "hid_events", 4096, NULL, 5, NULL) != pdPASS) {
+        s_hid_failed = true;
+        ESP_LOGE(TAG, "P4-NANO USB DIRECT HID: FAIL task-create");
+        finish_result(false);
+        return;
+    }
 
     TickType_t enumeration_deadline = xTaskGetTickCount() +
                                        pdMS_TO_TICKS(USB_ENUMERATION_TIMEOUT_MS);
