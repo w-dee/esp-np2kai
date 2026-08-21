@@ -6,10 +6,10 @@ set(NP2FIXTURE_VENDOR_SRC "${NP2FIXTURE_REPO_ROOT}/third_party/np2kai/src")
 set(NP2FIXTURE_HOST_COMPAT "${NP2FIXTURE_REPO_ROOT}/host/compat")
 
 idf_component_register(
-    SRCS "np2_fixture.c"
+    SRCS "np2_fixture.c" "np2_fixture_vfs.c"
     INCLUDE_DIRS "include"
     REQUIRES esp_partition
-    PRIV_REQUIRES np2host)
+    PRIV_REQUIRES mbedtls np2host)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SUPPORT_KAI_IMAGES

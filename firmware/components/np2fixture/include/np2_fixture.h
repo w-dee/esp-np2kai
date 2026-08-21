@@ -53,7 +53,13 @@ esp_err_t np2_fixture_attach_fdd(np2_fixture *fixture);
 void np2_fixture_detach_fdd(np2_fixture *fixture);
 void np2_fixture_release(np2_fixture *fixture);
 
+const np2_fixture_descriptor *np2_fixture_default_descriptor(void);
+esp_err_t np2_fixture_verify_vfs_file(
+    const np2_fixture_descriptor *descriptor,
+    const char *physical_path,
+    uint8_t digest[NP2_FIXTURE_SHA256_SIZE]);
 const char *np2_fixture_error_name(esp_err_t error);
+const char *np2_fixture_vfs_error_name(esp_err_t error);
 
 #ifdef __cplusplus
 }

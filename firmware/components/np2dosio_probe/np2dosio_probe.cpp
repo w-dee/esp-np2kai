@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <compiler.h>
 #include <common.h>
@@ -14,6 +16,7 @@ extern "C" {
 #include <dosio.h>
 }
 #include <mbedtls/sha256.h>
+#include "np2_fixture.h"
 #include <np2host/dosio_esp.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -29,6 +32,8 @@ constexpr char kFixtureSha256[] =
 constexpr char kLogicalPath[] = "./np2test-fd1232.hdm";
 constexpr char kPhysicalPath[] = "/persist/fixtures/np2test-fd1232.hdm";
 constexpr char kMissingPhysicalPath[] = "/persist/fixtures/missing.hdm";
+constexpr char kWrongSizePhysicalPath[] =
+    "/persist/fixtures/.np2-a1-wrong-size.hdm";
 constexpr std::array<std::uint8_t, 16> kAtZero = {
     0xfa, 0xfc, 0x31, 0xc0, 0x8e, 0xd8, 0xb8, 0x00,
     0x28, 0x8e, 0xd0, 0xbc, 0x00, 0x10, 0xb8, 0x00,
@@ -72,6 +77,77 @@ void diag_stack(const char *point)
 bool attach_valid_mapping()
 {
     return np2_dosio_attach_vfs_file(kLogicalPath, kPhysicalPath) != 0;
+}
+
+bool create_verification_file(const char *path, std::size_t size)
+{
+    const int fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0666);
+    if (fd < 0 || ftruncate(fd, static_cast<off_t>(size)) != 0) {
+        if (fd >= 0) close(fd);
+        return false;
+    }
+    return close(fd) == 0;
+}
+
+bool expect_vfs_verification_failure(const np2_fixture_descriptor *descriptor,
+                                    const char *path, esp_err_t expected,
+                                    const char *marker)
+{
+    std::array<std::uint8_t, NP2_FIXTURE_SHA256_SIZE> digest{};
+    const esp_err_t error = np2_fixture_verify_vfs_file(
+        descriptor, path, digest.data());
+    const bool no_dosio_attachment = file_open_rb(kLogicalPath) == FILEH_INVALID;
+
+    if (error != expected || !no_dosio_attachment) return false;
+    std::printf("%s=PASS reason=%s\n", marker,
+                np2_fixture_vfs_error_name(error));
+    return true;
+}
+
+bool run_fixture_verification_tests()
+{
+    const np2_fixture_descriptor *descriptor;
+    std::array<std::uint8_t, NP2_FIXTURE_SHA256_SIZE> digest_bytes{};
+    char digest[65]{};
+    esp_err_t error;
+
+    descriptor = np2_fixture_default_descriptor();
+    error = np2_fixture_verify_vfs_file(
+        descriptor, kPhysicalPath, digest_bytes.data());
+    if (error != ESP_OK || descriptor->image_size != kFixtureSize ||
+        !digest_hex(digest_bytes.data(), digest) ||
+        std::strcmp(digest, kFixtureSha256) != 0) {
+        return false;
+    }
+    std::printf("NP2FIXTURE_VFS_VERIFY=PASS logical=%s physical=%s size=%u "
+                "sha256=%s read_only=1\n",
+                descriptor->logical_path, kPhysicalPath,
+                (unsigned)descriptor->image_size, digest);
+
+    unlink(kWrongSizePhysicalPath);
+    if (!create_verification_file(kWrongSizePhysicalPath, 1U) ||
+        !expect_vfs_verification_failure(
+            descriptor, kWrongSizePhysicalPath, ESP_ERR_INVALID_SIZE,
+            "NP2FIXTURE_VFS_WRONG_SIZE")) {
+        unlink(kWrongSizePhysicalPath);
+        return false;
+    }
+    std::array<std::uint8_t, NP2_FIXTURE_SHA256_SIZE> wrong_sha{};
+    np2_fixture_descriptor wrong_sha_descriptor = *descriptor;
+    wrong_sha_descriptor.expected_sha256 = wrong_sha.data();
+    if (!expect_vfs_verification_failure(
+            &wrong_sha_descriptor, kPhysicalPath, ESP_ERR_INVALID_CRC,
+            "NP2FIXTURE_VFS_WRONG_SHA")) {
+        unlink(kWrongSizePhysicalPath);
+        return false;
+    }
+    unlink(kWrongSizePhysicalPath);
+    if (!expect_vfs_verification_failure(
+            descriptor, kMissingPhysicalPath, ESP_ERR_NOT_FOUND,
+            "NP2FIXTURE_VFS_MISSING")) {
+        return false;
+    }
+    return true;
 }
 
 bool run_attach_tests()
@@ -276,7 +352,7 @@ bool run_all_tests()
 {
     char actual_sha256[65]{};
 
-    if (!run_attach_tests()) return false;
+    if (!run_fixture_verification_tests() || !run_attach_tests()) return false;
     diag_stack("post_attach_matrix");
     if (!run_attr_tests() || !run_open_size_tests() || !run_read_tests() ||
         !run_seek_eof_tests() || !run_close_detach_tests()) {

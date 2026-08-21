@@ -469,6 +469,8 @@ assert_vfs_result() {
     require_log "${log_path}" \
         'NP2REDUCED profile=reduced-extmem8 formal_extmem=13 effective_extmem=8'
     require_log "${log_path}" \
+        'NP2REDUCED_VFS_FIXTURE_VERIFY result=PASS logical=./np2test-fd1232.hdm physical=/persist/fixtures/np2test-fd1232.hdm size=1261568 sha256=3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3 read_only=1'
+    require_log "${log_path}" \
         'NP2REDUCED_DISK_SOURCE kind=vfs logical=./np2test-fd1232.hdm physical=/persist/fixtures/np2test-fd1232.hdm'
     require_log "${log_path}" \
         'NP2REDUCED_MEMORY extmem_mb=8 actual_bytes=8388608 ptr_external=1'

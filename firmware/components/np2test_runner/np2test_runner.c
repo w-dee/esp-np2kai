@@ -67,6 +67,19 @@ static const char *np2test_disk_source_name(np2test_disk_source source)
     return (source == NP2TEST_DISK_SOURCE_VFS_FILE) ? "vfs" : "raw";
 }
 
+static void np2test_digest_hex(const uint8_t digest[NP2_FIXTURE_SHA256_SIZE],
+                               char output[NP2_FIXTURE_SHA256_SIZE * 2U + 1U])
+{
+    static const char digits[] = "0123456789abcdef";
+    size_t index;
+
+    for (index = 0; index < NP2_FIXTURE_SHA256_SIZE; ++index) {
+        output[index * 2U] = digits[digest[index] >> 4U];
+        output[index * 2U + 1U] = digits[digest[index] & 0x0fU];
+    }
+    output[NP2_FIXTURE_SHA256_SIZE * 2U] = '\0';
+}
+
 static bool np2test_emit(np2test_runner_task_config *state,
                          const char *format,
                          ...)
@@ -340,11 +353,29 @@ static void np2test_task(void *argument)
     } else if (state->config.disk_source == NP2TEST_DISK_SOURCE_VFS_FILE) {
         fixture_error = np2_fixture_attach_vfs_dosio(&fixture, state->vfs_path);
         if (fixture_error != ESP_OK) {
+            np2test_emit(state,
+                         "%s_VFS_FIXTURE_VERIFY result=FAIL reason=%s "
+                         "physical=%s\n",
+                         np2test_namespace(state->config.profile),
+                         np2_fixture_vfs_error_name(fixture_error),
+                         state->vfs_path);
             np2test_emit(state, "%s_RESULT=HARNESS_ERROR reason=%s\n",
                          np2test_namespace(state->config.profile),
-                         fixture_error == ESP_ERR_INVALID_ARG ?
-                             "vfs_path_invalid" : "dosio_attach");
+                         np2_fixture_vfs_error_name(fixture_error));
             goto runner_cleanup;
+        }
+        {
+            char digest[NP2_FIXTURE_SHA256_SIZE * 2U + 1U];
+
+            np2test_digest_hex(fixture.digest, digest);
+            np2test_emit(state,
+                         "%s_VFS_FIXTURE_VERIFY result=PASS logical=%s "
+                         "physical=%s size=%u sha256=%s read_only=1\n",
+                         np2test_namespace(state->config.profile),
+                         fixture.descriptor->logical_path,
+                         state->vfs_path,
+                         (unsigned)fixture.descriptor->image_size,
+                         digest);
         }
         np2test_emit(state,
                      "%s_DISK_SOURCE kind=%s logical=%s physical=%s\n",

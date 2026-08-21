@@ -5,6 +5,7 @@
 #include "esp_partition.h"
 
 #include <compiler.h>
+#include "common.h"
 #include <diskimage/fddfile.h>
 #include <np2host/dosio_esp.h>
 
@@ -14,29 +15,11 @@ typedef enum {
     NP2_FIXTURE_SOURCE_VFS,
 } np2_fixture_source;
 
-static const uint8_t np2_fixture_expected_sha256[NP2_FIXTURE_SHA256_SIZE] = {
-    0x3b, 0x73, 0x66, 0x7d, 0x23, 0x56, 0x15, 0xe8,
-    0x92, 0x05, 0xfb, 0xda, 0xb0, 0x4d, 0x3e, 0x6c,
-    0xf9, 0xc2, 0xf9, 0xa1, 0xf3, 0xa1, 0xde, 0x82,
-    0xcd, 0xb2, 0xb3, 0x86, 0x2a, 0xa3, 0x94, 0xb3,
-};
-
-static const np2_fixture_descriptor np2_fixture_default_descriptor = {
-    NP2_FIXTURE_PARTITION_LABEL,
-    NP2_FIXTURE_PATH,
-    NP2_FIXTURE_IMAGE_SIZE,
-    np2_fixture_expected_sha256,
-    NP2_FIXTURE_TRACKS,
-    NP2_FIXTURE_SECTORS,
-    NP2_FIXTURE_N,
-    DISKTYPE_2HD,
-};
-
 static const np2_fixture_descriptor *np2_fixture_get_descriptor(
     const np2_fixture *fixture)
 {
     return ((fixture != NULL) && (fixture->descriptor != NULL)) ?
-               fixture->descriptor : &np2_fixture_default_descriptor;
+               fixture->descriptor : np2_fixture_default_descriptor();
 }
 
 const char *np2_fixture_error_name(esp_err_t error)
@@ -59,6 +42,19 @@ const char *np2_fixture_error_name(esp_err_t error)
     }
 }
 
+static int np2_fixture_valid_descriptor(
+    const np2_fixture_descriptor *descriptor)
+{
+    return (descriptor != NULL) &&
+           (descriptor->partition_label != NULL) &&
+           (descriptor->logical_path != NULL) &&
+           (descriptor->expected_sha256 != NULL) &&
+           (descriptor->image_size != 0U) &&
+           (descriptor->tracks != 0U) &&
+           (descriptor->sectors != 0U) &&
+           (descriptor->n != 0U);
+}
+
 void np2_fixture_init(np2_fixture *fixture)
 {
     if (fixture != NULL) {
@@ -68,7 +64,7 @@ void np2_fixture_init(np2_fixture *fixture)
 
 esp_err_t np2_fixture_acquire(np2_fixture *fixture)
 {
-    return np2_fixture_acquire_for(fixture, &np2_fixture_default_descriptor);
+    return np2_fixture_acquire_for(fixture, np2_fixture_default_descriptor());
 }
 
 esp_err_t np2_fixture_acquire_for(
@@ -77,12 +73,7 @@ esp_err_t np2_fixture_acquire_for(
     const esp_partition_t *partition;
     const void *mapped = NULL;
 
-    if ((fixture == NULL) || (descriptor == NULL) ||
-        (descriptor->partition_label == NULL) ||
-        (descriptor->logical_path == NULL) ||
-        (descriptor->expected_sha256 == NULL) ||
-        (descriptor->image_size == 0U) || (descriptor->tracks == 0U) ||
-        (descriptor->sectors == 0U) || (descriptor->n == 0U)) {
+    if ((fixture == NULL) || !np2_fixture_valid_descriptor(descriptor)) {
         return ESP_ERR_INVALID_ARG;
     }
     np2_fixture_init(fixture);
@@ -137,14 +128,23 @@ esp_err_t np2_fixture_attach_dosio(np2_fixture *fixture)
 esp_err_t np2_fixture_attach_vfs_dosio(np2_fixture *fixture,
                                        const char *physical_path)
 {
-    if ((fixture == NULL) || (physical_path == NULL) ||
-        (physical_path[0] == '\0') || (fixture->source != NP2_FIXTURE_SOURCE_NONE) ||
+    const np2_fixture_descriptor *descriptor;
+    esp_err_t verification;
+
+    if ((fixture == NULL) || (fixture->source != NP2_FIXTURE_SOURCE_NONE) ||
         fixture->mapped != NULL || fixture->dosio_attached) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!np2_dosio_attach_vfs_file(NP2_FIXTURE_PATH, physical_path)) {
+    descriptor = np2_fixture_get_descriptor(fixture);
+    verification = np2_fixture_verify_vfs_file(descriptor, physical_path,
+                                               fixture->digest);
+    if (verification != ESP_OK) {
+        return verification;
+    }
+    if (!np2_dosio_attach_vfs_file(descriptor->logical_path, physical_path)) {
         return ESP_FAIL;
     }
+    fixture->descriptor = descriptor;
     fixture->source = NP2_FIXTURE_SOURCE_VFS;
     fixture->dosio_attached = 1;
     return ESP_OK;
