@@ -8,12 +8,49 @@ from pathlib import Path
 import tempfile
 
 from np2_fixture_cache import (
+    DEFAULT_CONTROL_TIMEOUT,
+    DEFAULT_HASH_TIMEOUT,
     RemoteError,
+    SerialFileTransferClient,
     UploadMetrics,
     derive_cache_path,
     hash_file,
     provision_fixture,
 )
+
+
+def make_serial_probe(files: dict[str, bytes] | None = None) -> tuple[SerialFileTransferClient, list[tuple[str, float | None]]]:
+    client = object.__new__(SerialFileTransferClient)
+    client.timeout = DEFAULT_CONTROL_TIMEOUT
+    client.hash_timeout = DEFAULT_HASH_TIMEOUT
+    client.files = dict(files or {})
+    calls: list[tuple[str, float | None]] = []
+
+    def request(command: str, params: dict | None = None, timeout: float | None = None) -> dict:
+        calls.append((command, timeout))
+        path = str((params or {}).get("path", ""))
+        if command == "system.ping":
+            return {"pong": True}
+        if command == "file.stat":
+            if path not in client.files:
+                raise RemoteError("NOT_FOUND", "missing")
+            return {"path": path, "type": "file", "size_bytes": len(client.files[path])}
+        if command == "file.sha256":
+            data = client.files[path]
+            return {"path": path, "size_bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest()}
+        raise AssertionError(f"unexpected command: {command}")
+
+    def upload(path: str, local_path: Path, replace: bool) -> UploadMetrics:
+        if not replace and path in client.files:
+            raise RemoteError("ALREADY_EXISTS", "already present")
+        data = local_path.read_bytes()
+        client.files[path] = data
+        return UploadMetrics(bytes_sent=len(data), frames=(len(data) + 1023) // 1024)
+
+    client.request = request
+    client.upload = upload
+    return client, calls
 
 
 class FakeClient:
@@ -78,6 +115,32 @@ def run() -> None:
         assert wrong_size_client.upload_calls == [(path, 1261568, True)]
 
         assert derive_cache_path("np2test-fd1232", local.sha256) == path
+
+        timeout_client, timeout_calls = make_serial_probe({path: payload})
+        timeout_client.ping()
+        timeout_client.sha256(path)
+        assert timeout_client.timeout == DEFAULT_CONTROL_TIMEOUT
+        assert timeout_client.hash_timeout == DEFAULT_HASH_TIMEOUT
+        assert timeout_calls == [
+            ("system.ping", None),
+            ("file.sha256", DEFAULT_HASH_TIMEOUT),
+        ]
+
+        hit_client, hit_calls = make_serial_probe({path: payload})
+        hit = provision_fixture(hit_client, fixture, emit=lambda _: None)
+        assert hit.cache_hit and hit.fixture_upload_bytes == 0
+        assert hit_calls == [
+            ("file.stat", None),
+            ("file.sha256", DEFAULT_HASH_TIMEOUT),
+        ]
+
+        verify_client, verify_calls = make_serial_probe()
+        replaced = provision_fixture(verify_client, fixture, emit=lambda _: None)
+        assert not replaced.cache_hit and replaced.fixture_upload_bytes == 1261568
+        assert verify_calls[-2:] == [
+            ("file.stat", None),
+            ("file.sha256", DEFAULT_HASH_TIMEOUT),
+        ]
 
     print("PASS: NP2 fixture cache helper tests")
 

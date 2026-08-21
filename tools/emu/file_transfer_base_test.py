@@ -276,7 +276,7 @@ def run(emu: wire.Emulator) -> None:
     require_error(send_request(emu, 7301, "file.sha256", {"path": "/upload/../escape"}), "INVALID_PATH")
     require_error(send_request(emu, 731, "file.stat", {"path": "/upload//bad"}), "INVALID_PATH")
     require_error(send_request(emu, 732, "file.stat", {"path": "/upload/bad/"}), "INVALID_PATH")
-    require_error(send_request(emu, 733, "file.stat", {"path": "/upload/" + "b" * 65}),
+    require_error(send_request(emu, 733, "file.stat", {"path": "/upload/" + "b" * 129}),
                   "INVALID_PATH")
     require_error(send_request(emu, 734, "file.read.begin", {"path": "/seed"}), "NOT_A_FILE")
     require_error(send_request(emu, 735, "file.write.begin", {

@@ -27,6 +27,8 @@ SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 SAFE_STEM = re.compile(r"^[A-Za-z0-9._-]+$")
 MAX_COMPONENT_BYTES = 128
 MAX_PATH_BYTES = 192
+DEFAULT_CONTROL_TIMEOUT = 5.0
+DEFAULT_HASH_TIMEOUT = 30.0
 
 
 class RemoteError(RuntimeError):
@@ -242,12 +244,15 @@ class _SerialParser:
 
 
 class SerialFileTransferClient:
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 5.0) -> None:
+    def __init__(self, port: str, baud: int = 115200,
+                 timeout: float = DEFAULT_CONTROL_TIMEOUT,
+                 hash_timeout: float = DEFAULT_HASH_TIMEOUT) -> None:
         if serial is None:
             raise RuntimeError("pyserial is required for the physical cache CLI")
         self.serial = serial.Serial(port, baudrate=baud, timeout=0.05,
                                     write_timeout=timeout)
         self.timeout = timeout
+        self.hash_timeout = hash_timeout
         self.parser = _SerialParser()
         self.request_id = 1
 
@@ -321,7 +326,7 @@ class SerialFileTransferClient:
         return self.request("file.stat", {"path": path})
 
     def sha256(self, path: str) -> dict:
-        return self.request("file.sha256", {"path": path})
+        return self.request("file.sha256", {"path": path}, timeout=self.hash_timeout)
 
     def upload(self, path: str, local_path: Path, replace: bool) -> UploadMetrics:
         local = hash_file(local_path)
@@ -385,13 +390,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stem", default="np2test-fd1232")
     parser.add_argument("--extension", default=".hdm")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument("--timeout", type=float, default=DEFAULT_CONTROL_TIMEOUT)
+    parser.add_argument("--hash-timeout", type=float, default=DEFAULT_HASH_TIMEOUT)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    with SerialFileTransferClient(args.port, args.baud, args.timeout) as client:
+    with SerialFileTransferClient(args.port, args.baud, args.timeout, args.hash_timeout) as client:
         client.sync()
         result = provision_fixture(client, args.fixture, args.stem, args.extension)
         if client.ping() != {"pong": True}:
@@ -400,7 +406,8 @@ def main() -> int:
         f"NP2_FIXTURE_PROVISION mode={'HIT' if result.cache_hit else 'MISS'} "
         f"path={result.cache_path} fixture_upload_bytes={result.fixture_upload_bytes} "
         f"preflight={result.preflight_seconds:.3f}s upload={result.upload_seconds:.3f}s "
-        f"verify={result.verify_seconds:.3f}s total={result.total_seconds:.3f}s"
+        f"verify={result.verify_seconds:.3f}s total={result.total_seconds:.3f}s "
+        f"timeout={args.timeout:.3f}s hash_timeout={args.hash_timeout:.3f}s"
     )
     return 0
 
