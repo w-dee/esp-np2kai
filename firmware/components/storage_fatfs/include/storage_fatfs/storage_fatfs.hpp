@@ -3,6 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+#include <sys/types.h>
+#endif
+
 #include "esp_err.h"
 #include "storage/storage.hpp"
 #include "wear_levelling.h"
@@ -31,12 +35,17 @@ inline constexpr RootConfig kSpiNorRootConfig{
 
 #if defined(STORAGE_FATFS_TEST_HOOKS)
 struct TestHooks {
+    using PreadHook = ssize_t (*)(int, void *, std::size_t, off_t);
+    using PwriteHook = ssize_t (*)(int, const void *, std::size_t, off_t);
+
     bool fail_mount_initialization = false;
     int fail_rename_call_1 = -1;
     int fail_rename_call_2 = -1;
     int fail_unlink_call = -1;
     int rename_call_count = 0;
     int unlink_call_count = 0;
+    PreadHook pread_hook = nullptr;
+    PwriteHook pwrite_hook = nullptr;
 };
 #endif
 

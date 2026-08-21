@@ -18,7 +18,6 @@ namespace storage_fatfs {
 namespace {
 
 constexpr std::size_t kMaxDirectoryEntries = 64;
-constexpr std::size_t kFatIoChunkBytes = 512;
 constexpr char kLogTag[] = "storage_fatfs";
 
 bool is_fat_invalid(unsigned char value)
@@ -425,19 +424,21 @@ storage::Error StorageFatfs::read_impl(std::uint64_t offset, std::uint8_t *out,
     }
     std::size_t completed = 0;
     while (completed < amount) {
-        const std::size_t chunk = std::min(kFatIoChunkBytes, amount - completed);
-        alignas(16) static std::array<std::uint8_t, kFatIoChunkBytes> scratch{};
-        std::uint8_t *destination = chunk < kFatIoChunkBytes ? scratch.data() :
-            out + completed;
-        const std::size_t request = chunk < kFatIoChunkBytes ? kFatIoChunkBytes : chunk;
-        const ssize_t result = ::pread(read_context_.fd, destination, request,
+        const std::size_t remaining = amount - completed;
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+        const ssize_t result = (test_hooks_ != nullptr &&
+                                test_hooks_->pread_hook != nullptr) ?
+            test_hooks_->pread_hook(read_context_.fd, out + completed, remaining,
+                                    static_cast<off_t>(offset + completed)) :
+            ::pread(read_context_.fd, out + completed, remaining,
+                    static_cast<off_t>(offset + completed));
+#else
+        const ssize_t result = ::pread(read_context_.fd, out + completed, remaining,
                                        static_cast<off_t>(offset + completed));
+#endif
         if (result < 0) return map_errno(errno, false);
-        if (static_cast<std::size_t>(result) < chunk) return storage::Error::ReadFailed;
-        if (destination == scratch.data()) {
-            std::memcpy(out + completed, scratch.data(), chunk);
-        }
-        completed += chunk;
+        if (result == 0) return storage::Error::ReadFailed;
+        completed += static_cast<std::size_t>(result);
     }
     *read = completed;
     return storage::Error::Ok;
@@ -461,12 +462,22 @@ storage::Error StorageFatfs::write_impl(std::uint64_t offset, const std::uint8_t
     if (length == 0) return storage::Error::Ok;
     std::size_t completed = 0;
     while (completed < length) {
-        const std::size_t chunk = std::min(kFatIoChunkBytes, length - completed);
-        const ssize_t result = ::pwrite(write_context_.fd, data + completed, chunk,
-                                         static_cast<off_t>(offset + completed));
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+        const std::size_t remaining = length - completed;
+        const ssize_t result = (test_hooks_ != nullptr &&
+                                test_hooks_->pwrite_hook != nullptr) ?
+            test_hooks_->pwrite_hook(write_context_.fd, data + completed, remaining,
+                                     static_cast<off_t>(offset + completed)) :
+            ::pwrite(write_context_.fd, data + completed, remaining,
+                     static_cast<off_t>(offset + completed));
+#else
+        const std::size_t remaining = length - completed;
+        const ssize_t result = ::pwrite(write_context_.fd, data + completed, remaining,
+                                        static_cast<off_t>(offset + completed));
+#endif
         if (result < 0) return map_errno(errno, true);
-        if (static_cast<std::size_t>(result) != chunk) return storage::Error::WriteFailed;
-        completed += chunk;
+        if (result == 0) return storage::Error::WriteFailed;
+        completed += static_cast<std::size_t>(result);
     }
     return storage::Error::Ok;
 }

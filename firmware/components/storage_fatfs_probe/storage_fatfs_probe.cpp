@@ -193,6 +193,133 @@ bool write_file_fresh_or_replace(const storage::Storage &api, const char *path,
 }
 
 #if defined(STORAGE_FATFS_TEST_HOOKS)
+constexpr char kNaturalIoFilePath[] = "/upload/.storage-fatfs-natural-io.bin";
+constexpr char kNaturalIoPhysicalPath[] =
+    "/persist/files/upload/.storage-fatfs-natural-io.bin";
+constexpr std::size_t kNaturalIoFileSize = 14876;
+constexpr std::array<std::size_t, 10> kNaturalIoSizes{
+    1, 511, 512, 513, 1023, 1024, 1025, 2048, 4095, 4096};
+
+ssize_t partial_pread(int fd, void *buffer, std::size_t count, off_t offset)
+{
+    const std::size_t partial = count > 1 ? (count + 1) / 2 : count;
+    return ::pread(fd, buffer, partial, offset);
+}
+
+ssize_t partial_pwrite(int fd, const void *buffer, std::size_t count, off_t offset)
+{
+    const std::size_t partial = count > 1 ? (count + 1) / 2 : count;
+    return ::pwrite(fd, buffer, partial, offset);
+}
+
+std::uint8_t natural_io_byte(std::size_t offset)
+{
+    return static_cast<std::uint8_t>((offset * 37U + (offset >> 5U) + 0x5aU) & 0xffU);
+}
+
+void fill_natural_io_data(std::uint8_t *buffer, std::size_t offset, std::size_t length)
+{
+    for (std::size_t index = 0; index < length; ++index) {
+        buffer[index] = natural_io_byte(offset + index);
+    }
+}
+
+bool run_natural_io_checks(storage_fatfs::StorageFatfs &storage)
+{
+    const storage::Storage api = storage.api();
+    storage_fatfs::TestHooks hooks{};
+    storage.set_test_hooks(&hooks);
+    hooks.pread_hook = partial_pread;
+    hooks.pwrite_hook = partial_pwrite;
+
+    struct HookReset {
+        storage_fatfs::StorageFatfs &storage;
+        ~HookReset() { storage.set_test_hooks(nullptr); }
+    } hook_reset{storage};
+
+    struct FileCleanup {
+        const char *path;
+        bool active = true;
+        ~FileCleanup() { if (active) ::unlink(path); }
+    } file_cleanup{kNaturalIoPhysicalPath};
+
+    ::unlink(kNaturalIoPhysicalPath);
+
+    storage::WriteSession write_session{};
+    if (api.begin_write(api.context, kNaturalIoFilePath, kNaturalIoFileSize, false,
+                        &write_session) != storage::Error::Ok) {
+        return false;
+    }
+
+    alignas(16) static std::array<std::uint8_t, 4096> buffer{};
+    std::size_t offset = 1;
+    for (const std::size_t size : kNaturalIoSizes) {
+        if (offset + size > kNaturalIoFileSize) {
+            write_session.abort(write_session.context);
+            return false;
+        }
+        fill_natural_io_data(buffer.data(), offset, size);
+        if (write_session.write(write_session.context, offset, buffer.data(), size) !=
+                storage::Error::Ok) {
+            write_session.abort(write_session.context);
+            return false;
+        }
+        offset += size + 3;
+    }
+    if (write_session.write(write_session.context, 0, nullptr, 0) != storage::Error::Ok ||
+        write_session.write(write_session.context, kNaturalIoFileSize, buffer.data(), 1) !=
+            storage::Error::OutOfRange ||
+        write_session.write(write_session.context, kNaturalIoFileSize - 1, buffer.data(), 2) !=
+            storage::Error::OutOfRange ||
+        write_session.commit(write_session.context) != storage::Error::Ok) {
+        write_session.abort(write_session.context);
+        return false;
+    }
+
+    storage::ReadSession read_session{};
+    if (api.begin_read(api.context, kNaturalIoFilePath, &read_session) != storage::Error::Ok) {
+        return false;
+    }
+    offset = 1;
+    for (const std::size_t size : kNaturalIoSizes) {
+        fill_natural_io_data(buffer.data(), offset, size);
+        alignas(16) static std::array<std::uint8_t, 4096> actual{};
+        std::size_t amount = 0;
+        if (read_session.read(read_session.context, offset, actual.data(), size, &amount) !=
+                storage::Error::Ok || amount != size ||
+            std::memcmp(actual.data(), buffer.data(), size) != 0) {
+            read_session.close(read_session.context);
+            return false;
+        }
+        offset += size + 3;
+    }
+
+    fill_natural_io_data(buffer.data(), kNaturalIoFileSize - 513, 513);
+    alignas(16) static std::array<std::uint8_t, 1024> tail{};
+    std::size_t amount = 0;
+    if (read_session.read(read_session.context, kNaturalIoFileSize - 513, tail.data(),
+                          tail.size(), &amount) != storage::Error::Ok || amount != 513 ||
+        std::memcmp(tail.data(), buffer.data(), amount) != 0 ||
+        read_session.read(read_session.context, 0, nullptr, 0, &amount) !=
+            storage::Error::Ok || amount != 0 ||
+        read_session.read(read_session.context, kNaturalIoFileSize, tail.data(), 1, &amount) !=
+            storage::Error::Ok || amount != 0 ||
+        read_session.read(read_session.context, kNaturalIoFileSize + 1, tail.data(), 1, &amount) !=
+            storage::Error::OutOfRange) {
+        read_session.close(read_session.context);
+        return false;
+    }
+    read_session.close(read_session.context);
+
+    if (::unlink(kNaturalIoPhysicalPath) != 0) {
+        return false;
+    }
+    file_cleanup.active = false;
+    std::printf("STORAGEFATFS_NATURAL_IO=PASS sizes=1,511,512,513,1023,1024,1025,2048,4095,4096 "
+                "unaligned_offsets=1 partial_io=1 cleanup=1\n");
+    return true;
+}
+
 void abort_session(storage::WriteSession *session)
 {
     if (session != nullptr && session->abort != nullptr) session->abort(session->context);
@@ -495,6 +622,10 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
                                      sizeof(utf8_file)) ||
         !read_small_file(api, "/upload/é.txt", utf8_file, sizeof(utf8_file))) return false;
     if (!write_file_fresh_or_replace(api, "/upload/zero.bin", nullptr, 0)) return false;
+
+#if defined(STORAGE_FATFS_TEST_HOOKS)
+    if (!run_natural_io_checks(storage)) return false;
+#endif
 
     storage::WriteSession aborted{};
     if (api.begin_write(api.context, "/seed/existing.bin", sizeof(seed), true, &aborted) !=
