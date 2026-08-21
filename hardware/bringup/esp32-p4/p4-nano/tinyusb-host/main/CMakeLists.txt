@@ -24,7 +24,7 @@ idf_component_register(
 )
 
 set(TINYUSB_DIAG_PROFILE "0" CACHE STRING
-    "TinyUSB diagnostic profile: 0=legacy, 1=cold, 2=keyboard hotplug, 3=hub hotplug, 4=reinit, 5=HS-root direct-FS")
+    "TinyUSB diagnostic profile: 0=legacy, 1=cold, 2=keyboard hotplug, 3=hub hotplug, 4=reinit, 5=HS-root direct-FS, 6=direct-FS hotplug")
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     TINYUSB_DIAG_PROFILE=${TINYUSB_DIAG_PROFILE}
 )

@@ -14,6 +14,10 @@
 #include "hid_boot_keyboard.h"
 #include "tinyusb_board_p4_nano.h"
 
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+#include "portable/synopsys/dwc2/dwc2_common.h"
+#endif
+
 #define TINYUSB_RHPORT 1U
 #define EXPECTED_VID 0x0853U
 #define EXPECTED_PID 0x0103U
@@ -23,6 +27,7 @@
 #define HOTPLUG_HEARTBEAT_MS 1000U
 #define STABLE_TIMEOUT_MS 2000U
 #define REINIT_ROUNDS 3U
+#define ROOT_REG_SAMPLE_MS 100U
 
 typedef struct {
     hid_boot_keyboard_event_kind_t kind;
@@ -117,11 +122,22 @@ static uint64_t s_stage_deadline_us;
 static uint8_t s_reinit_round;
 
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
 static uint64_t s_last_task_before_log_us;
 static uint64_t s_last_task_after_log_us;
 static uint32_t s_tuh_task_calls;
 static uint32_t s_tuh_task_returns;
+#endif
+
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+static uint64_t s_last_root_reg_sample_us;
+static bool s_root_reg_sample_valid;
+static uint32_t s_last_root_hprt;
+static uint32_t s_last_root_gintsts;
+static uint32_t s_last_root_gintmsk;
+static uint32_t s_last_root_hcfg;
+static uint32_t s_last_root_pcgcctl;
 #endif
 
 static const char *speed_name(tusb_speed_t speed)
@@ -150,6 +166,8 @@ static const char *profile_name(void)
     return "REINIT";
 #elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HS_ROOT_DIRECT_FS
     return "HS_ROOT_DIRECT_FS";
+#elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+    return "DIRECT_FS_HOTPLUG";
 #else
     return "LEGACY";
 #endif
@@ -190,7 +208,8 @@ static void set_stage(test_stage_t stage, uint32_t timeout_ms)
 }
 
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
 static void hotplug_task_heartbeat_before(void)
 {
     ++s_tuh_task_calls;
@@ -228,6 +247,86 @@ static void hotplug_task_heartbeat_after(void)
 #else
 static void hotplug_task_heartbeat_before(void) {}
 static void hotplug_task_heartbeat_after(void) {}
+#endif
+
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+static const char *root_reg_speed_name(uint32_t hprt)
+{
+    switch ((hprt & HPRT_SPEED_Msk) >> HPRT_SPEED_Pos) {
+    case HPRT_SPEED_HIGH:
+        return "HS";
+    case HPRT_SPEED_FULL:
+        return "FS";
+    case HPRT_SPEED_LOW:
+        return "LS";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void sample_root_registers(void)
+{
+    if (s_test_stage != TEST_STAGE_WAIT_REENUM) {
+        return;
+    }
+
+    const uint64_t now = (uint64_t)esp_timer_get_time();
+    if (s_last_root_reg_sample_us != 0 &&
+        now - s_last_root_reg_sample_us < ((uint64_t)ROOT_REG_SAMPLE_MS * 1000ULL)) {
+        return;
+    }
+    s_last_root_reg_sample_us = now;
+
+    // Read-only diagnostic sampling. In particular, do not write GINTSTS or HPRT:
+    // both contain W1C fields which belong to the TinyUSB ISR.
+    dwc2_regs_t * const dwc2 = DWC2_REG(TINYUSB_RHPORT);
+    const uint32_t hprt = dwc2->hprt;
+    const uint32_t gintsts = dwc2->gintsts;
+    const uint32_t gintmsk = dwc2->gintmsk;
+    const uint32_t hcfg = dwc2->hcfg;
+    const uint32_t pcgcctl = dwc2->pcgcctl;
+
+    const bool changed = !s_root_reg_sample_valid ||
+                          hprt != s_last_root_hprt ||
+                          gintsts != s_last_root_gintsts ||
+                          gintmsk != s_last_root_gintmsk ||
+                          hcfg != s_last_root_hcfg ||
+                          pcgcctl != s_last_root_pcgcctl;
+    if (!changed) {
+        return;
+    }
+
+    s_root_reg_sample_valid = true;
+    s_last_root_hprt = hprt;
+    s_last_root_gintsts = gintsts;
+    s_last_root_gintmsk = gintmsk;
+    s_last_root_hcfg = hcfg;
+    s_last_root_pcgcctl = pcgcctl;
+
+    ESP_LOGI(TAG,
+             "P4-NANO TINYUSB ROOT REG: HPRT=0x%08x CONN=%u CONNDET=%u EN=%u ENCHG=%u POWER=%u SPEED=%s(%u) "
+             "GINTSTS=0x%08x GINTMSK=0x%08x HPRTINT_RAW=%u HPRTINT_MASK=%u DISCINT_RAW=%u DISCINT_MASK=%u "
+             "HCFG=0x%08x FSLS_ONLY=%u PCGCCTL=0x%08x",
+             (unsigned)hprt,
+             (unsigned)((hprt & HPRT_CONN_STATUS) != 0),
+             (unsigned)((hprt & HPRT_CONN_DETECT) != 0),
+             (unsigned)((hprt & HPRT_ENABLE) != 0),
+             (unsigned)((hprt & HPRT_ENABLE_CHANGE) != 0),
+             (unsigned)((hprt & HPRT_POWER) != 0),
+             root_reg_speed_name(hprt),
+             (unsigned)((hprt & HPRT_SPEED_Msk) >> HPRT_SPEED_Pos),
+             (unsigned)gintsts,
+             (unsigned)gintmsk,
+             (unsigned)((gintsts & GINTSTS_HPRTINT) != 0),
+             (unsigned)((gintmsk & GINTSTS_HPRTINT) != 0),
+             (unsigned)((gintsts & GINTSTS_DISCINT) != 0),
+             (unsigned)((gintmsk & GINTSTS_DISCINT) != 0),
+             (unsigned)hcfg,
+             (unsigned)((hcfg & HCFG_FSLS_ONLY) != 0),
+             (unsigned)pcgcctl);
+}
+#else
+static void sample_root_registers(void) {}
 #endif
 
 static void request_cleanup(bool failed, const char *reason)
@@ -287,7 +386,8 @@ static void clear_hid_state(uint8_t daddr)
     s_sequence_pass_reported = false;
     hid_boot_keyboard_init(&s_keyboard_state);
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     ESP_LOGI(TAG,
              "P4-NANO TINYUSB HOTPLUG APP CHILD STATE CLEARED: addr=%u instance=%u generation=%u",
              s_last_umount_daddr, s_last_umount_idx, s_last_umount_generation);
@@ -338,7 +438,8 @@ static void observe_event(const hid_boot_keyboard_event_t *event)
         ESP_LOGI(TAG, "P4-NANO TINYUSB %s RESULT: PASS (software sequence)",
                  s_expected_sequence == s_hub_sequence ? "HUB FS" : "DIRECT");
 #elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
         ESP_LOGI(TAG, "ROBUST RAW A AFTER RECONNECT: PASS generation=%u",
                  s_hid_generation);
         request_cleanup(false, NULL);
@@ -355,7 +456,8 @@ void tuh_umount_cb(uint8_t daddr)
 {
     ESP_LOGI(TAG, "P4-NANO TINYUSB DEVICE UMOUNT addr=%u", daddr);
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     ESP_LOGI(TAG, "P4-NANO TINYUSB HOTPLUG DEVICE UMOUNT: addr=%u stage=%s hid_ready=%s",
              daddr, stage_name(s_test_stage), s_hid_ready ? "yes" : "no");
 #endif
@@ -386,6 +488,7 @@ void tuh_hid_mount_cb(uint8_t daddr, uint8_t idx,
     const uint8_t interface_protocol = tuh_hid_interface_protocol(daddr, idx);
     const uint8_t protocol = tuh_hid_get_protocol(daddr, idx);
     const bool via_hub = bus_info.hub_addr != 0;
+    const bool direct_root = bus_info.hub_addr == 0 && bus_info.hub_port == 0;
     const bool known_keyboard = vid == EXPECTED_VID && pid == EXPECTED_PID;
     const bool full_speed = bus_info.speed == TUSB_SPEED_FULL;
     const bool boot_keyboard = interface_protocol == HID_ITF_PROTOCOL_KEYBOARD &&
@@ -426,6 +529,13 @@ void tuh_hid_mount_cb(uint8_t daddr, uint8_t idx,
         request_cleanup(true, "expected FS keyboard behind Hub");
         return;
     }
+#elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+    if (!direct_root) {
+        request_cleanup(true, "expected direct FS keyboard on root port");
+        return;
+    }
+    ESP_LOGI(TAG, "ROBUST DIRECT FS ROOT ENUMERATION PASS addr=%u parent=root speed=FS",
+             daddr);
 #elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HS_ROOT_DIRECT_FS
     if (via_hub) {
         request_cleanup(true, "expected direct FS keyboard for HS-root test");
@@ -450,7 +560,8 @@ void tuh_hid_mount_cb(uint8_t daddr, uint8_t idx,
         ? sizeof(s_hub_sequence) / sizeof(s_hub_sequence[0])
         : sizeof(s_direct_sequence) / sizeof(s_direct_sequence[0]);
 #elif TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+      TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     if (s_hid_mount_count >= 2) {
         if (s_test_stage != TEST_STAGE_WAIT_REENUM) {
             request_cleanup(true, "unexpected HID re-enumeration stage");
@@ -497,7 +608,8 @@ void tuh_hid_umount_cb(uint8_t daddr, uint8_t idx)
 
     const bool matched = daddr == s_last_umount_daddr && idx == s_last_umount_idx;
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     ESP_LOGI(TAG,
              "P4-NANO TINYUSB HOTPLUG HID UMOUNT: addr=%u instance=%u stage=%s matched=%s",
              daddr, idx, stage_name(s_test_stage), matched ? "yes" : "no");
@@ -509,12 +621,15 @@ void tuh_hid_umount_cb(uint8_t daddr, uint8_t idx)
     }
 
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     if (matched && s_test_stage == TEST_STAGE_WAIT_UNMOUNT) {
         ESP_LOGI(TAG, "ROBUST HID UNMOUNT OBSERVED PASS addr=%u idx=%u generation=%u",
                  daddr, idx, s_last_umount_generation);
         if (TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG) {
             ESP_LOGI(TAG, "ROBUST ACTION: verify HUB close, then reconnect Hub upstream");
+        } else if (TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG) {
+            ESP_LOGI(TAG, "ROBUST ACTION: reconnect keyboard directly to the same P4-NANO Type-A port");
         } else {
             ESP_LOGI(TAG, "ROBUST ACTION: reconnect keyboard to the same Hub port");
         }
@@ -664,6 +779,10 @@ static void tinyusb_host_task(void *arg)
 #else
     ESP_LOGI(TAG, "P4-NANO TINYUSB ROOT MODE: FS");
     ESP_LOGI(TAG, "P4-NANO TINYUSB SPLIT: DISABLED root-speed=FS");
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+    ESP_LOGI(TAG, "P4-NANO TINYUSB DIRECT HOTPLUG: direct FS keyboard; no external Hub");
+    ESP_LOGI(TAG, "P4-NANO TINYUSB ROOT REG: read-only sampling during WAIT_REENUM");
+#endif
 #endif
 
     s_active_hid_daddr = 0;
@@ -674,11 +793,21 @@ static void tinyusb_host_task(void *arg)
     s_hid_mount_count = 0;
     s_reinit_round = 0;
 #if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_KEYBOARD_HOTPLUG || \
-    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_HUB_HOTPLUG || \
+    TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
     s_last_task_before_log_us = 0;
     s_last_task_after_log_us = 0;
     s_tuh_task_calls = 0;
     s_tuh_task_returns = 0;
+#endif
+#if TINYUSB_DIAG_PROFILE == TINYUSB_PROFILE_DIRECT_FS_HOTPLUG
+    s_last_root_reg_sample_us = 0;
+    s_root_reg_sample_valid = false;
+    s_last_root_hprt = 0;
+    s_last_root_gintsts = 0;
+    s_last_root_gintmsk = 0;
+    s_last_root_hcfg = 0;
+    s_last_root_pcgcctl = 0;
 #endif
 
     if (!tinyusb_host_init()) {
@@ -693,6 +822,7 @@ static void tinyusb_host_task(void *arg)
     for (;;) {
         if (robustness_profile()) {
             hotplug_task_heartbeat_before();
+            sample_root_registers();
             tuh_task_ext(20, false);
             hotplug_task_heartbeat_after();
             robustness_tick();
