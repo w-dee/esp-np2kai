@@ -228,6 +228,7 @@ void StorageFatfs::abort_cb(void *context)
 storage::Error StorageFatfs::stat_impl(std::string_view path, storage::Metadata *metadata)
 {
     if (metadata == nullptr || !validate_path(path, true)) return storage::Error::InvalidPath;
+    if (!provider_.mounted()) return storage::Error::ReadFailed;
     static char physical[kPhysicalPathBytes]{};
     if (!make_physical_path(path, physical, sizeof(physical))) return storage::Error::InvalidPath;
 
@@ -256,6 +257,7 @@ storage::Error StorageFatfs::list_page_impl(std::string_view path, std::string_v
         (!cursor.empty() && !valid_component(cursor))) {
         return storage::Error::InvalidPath;
     }
+    if (!provider_.mounted()) return storage::Error::ReadFailed;
     *count = 0;
     *more = false;
 
@@ -330,6 +332,7 @@ storage::Error StorageFatfs::begin_read_impl(std::string_view path,
 {
     if (session == nullptr || !validate_path(path, false)) return storage::Error::InvalidPath;
     if (has_active_sessions()) return storage::Error::Busy;
+    if (!provider_.mounted()) return storage::Error::ReadFailed;
 
     static char physical[kPhysicalPathBytes]{};
     if (!make_physical_path(path, physical, sizeof(physical))) return storage::Error::InvalidPath;
@@ -357,6 +360,7 @@ storage::Error StorageFatfs::begin_write_impl(std::string_view path, std::uint64
 {
     if (session == nullptr || !validate_path(path, false)) return storage::Error::InvalidPath;
     if (has_active_sessions()) return storage::Error::Busy;
+    if (!provider_.mounted()) return storage::Error::WriteFailed;
     if (!parent_is_directory(path)) return storage::Error::ParentNotFound;
 
     static char target[kPhysicalPathBytes]{};

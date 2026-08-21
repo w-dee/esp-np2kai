@@ -21,12 +21,22 @@
 #endif
 #if !defined(NP2_PRESENTATION_PROFILE)
 #if !defined(NP2_VIDEO_PROFILE)
-#if defined(NP2_VFS_FIXTURE_PROFILE) && defined(UART_FATFS_PROFILE)
-#error "NP2_VFS_FIXTURE_PROFILE and UART_FATFS_PROFILE are mutually exclusive"
+#if defined(UART_FATFS_PROFILE) && defined(UART_SDMMC_PROFILE)
+#error "UART_FATFS_PROFILE and UART_SDMMC_PROFILE are mutually exclusive"
+#endif
+#if defined(NP2_VFS_FIXTURE_PROFILE) && \
+    (defined(UART_FATFS_PROFILE) || defined(UART_SDMMC_PROFILE))
+#error "NP2_VFS_FIXTURE_PROFILE and UART storage profiles are mutually exclusive"
 #endif
 #if defined(UART_FATFS_PROFILE)
 #include "file_transfer/file_transfer.hpp"
 #include "storage_fatfs/storage_fatfs.hpp"
+#include "uart_control_transport/uart_control_transport.hpp"
+#endif
+#if defined(UART_SDMMC_PROFILE)
+#include "file_transfer/file_transfer.hpp"
+#include "storage_fatfs/storage_fatfs.hpp"
+#include "storage_sdmmc/storage_sdmmc.hpp"
 #include "uart_control_transport/uart_control_transport.hpp"
 #endif
 #if defined(NP2_VFS_FIXTURE_PROFILE)
@@ -51,6 +61,11 @@ bool write_np2_runner_output(void *, const char *data, std::size_t length)
     (defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE))
 storage_fatfs::MountProvider s_fatfs_provider;
 storage_fatfs::StorageFatfs s_fatfs_storage(s_fatfs_provider);
+#endif
+#if defined(UART_SDMMC_PROFILE)
+storage_sdmmc::SdmmcMountProvider s_sd_provider;
+storage_fatfs::StorageFatfs s_sd_storage(
+    s_sd_provider, storage_sdmmc::kSdmmcRootConfig);
 #endif
 
 } // namespace
@@ -143,6 +158,21 @@ extern "C" void app_main(void)
     file_limits.max_file_bytes = 2 * 1024 * 1024;
     const esp_err_t start_result =
         uart_control_transport::start_with_storage(&metadata, file_storage, file_limits);
+#elif defined(UART_SDMMC_PROFILE)
+    storage::Storage file_storage{};
+    file_transfer::Limits file_limits{};
+    const esp_err_t storage_mount_result = s_sd_storage.mount();
+    if (storage_mount_result == ESP_OK) {
+        std::printf("ESP-NP2KAI UART SDMMC STORAGE MOUNTED path=%s\n",
+                    storage_sdmmc::kFileTransferRoot);
+    } else {
+        std::printf("ESP-NP2KAI UART SDMMC STORAGE UNAVAILABLE; CONTROL CONTINUING\n");
+    }
+    std::fflush(stdout);
+    file_storage = s_sd_storage.api();
+    file_limits.max_file_bytes = 2 * 1024 * 1024;
+    const esp_err_t start_result =
+        uart_control_transport::start_with_storage(&metadata, file_storage, file_limits);
 #else
     const esp_err_t start_result = uart_control_transport_start(&metadata);
 #endif
@@ -152,6 +182,9 @@ extern "C" void app_main(void)
         std::fflush(stdout);
 #if defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE)
         s_fatfs_storage.unmount();
+#endif
+#if defined(UART_SDMMC_PROFILE)
+        if (s_sd_storage.mounted()) s_sd_storage.unmount();
 #endif
         return;
     }

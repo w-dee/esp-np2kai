@@ -531,6 +531,48 @@ bool run_provider_checks(storage_fatfs::StorageFatfs &storage)
     return true;
 }
 
+bool run_unmounted_guard_checks(storage_fatfs::StorageFatfs &storage)
+{
+    const storage::Storage api = storage.api();
+    storage::Metadata metadata{};
+    storage::DirectoryEntry entries[1]{};
+    std::size_t count = 0;
+    bool more = false;
+    storage::ReadSession read_session{};
+    storage::WriteSession write_session{};
+
+    if (api.stat(api.context, "/", &metadata) != storage::Error::ReadFailed ||
+        api.list_page(api.context, "/", "", 1, entries, 1, &count, &more) !=
+            storage::Error::ReadFailed ||
+        api.begin_read(api.context, "/seed/existing.bin", &read_session) !=
+            storage::Error::ReadFailed ||
+        api.begin_write(api.context, "/upload/unmounted.bin", 1, true, &write_session) !=
+            storage::Error::WriteFailed) {
+        return false;
+    }
+
+    if (api.stat(api.context, "/bad:name", &metadata) != storage::Error::InvalidPath ||
+        api.list_page(api.context, "/bad:name", "", 1, entries, 1, &count, &more) !=
+            storage::Error::InvalidPath ||
+        api.begin_read(api.context, "/bad:name", &read_session) !=
+            storage::Error::InvalidPath ||
+        api.begin_write(api.context, "/bad:name", 1, true, &write_session) !=
+            storage::Error::InvalidPath) {
+        return false;
+    }
+
+    if (storage.has_active_sessions() || read_session.context != nullptr ||
+        read_session.read != nullptr || read_session.close != nullptr ||
+        write_session.context != nullptr || write_session.write != nullptr ||
+        write_session.commit != nullptr || write_session.abort != nullptr) {
+        return false;
+    }
+
+    std::printf("STORAGEFATFS_UNMOUNTED_GUARDS stat=READ_FAILED list=READ_FAILED "
+                "read=READ_FAILED write=WRITE_FAILED invalid_path=preserved sessions=0\n");
+    return true;
+}
+
 } // namespace
 
 extern "C" esp_err_t storage_fatfs_probe_run(void)
@@ -624,6 +666,10 @@ extern "C" esp_err_t storage_fatfs_probe_run(void)
 #endif
     if (storage.unmount() != ESP_OK) {
         fail("unmount");
+        return ESP_FAIL;
+    }
+    if (!run_unmounted_guard_checks(storage)) {
+        fail("unmounted_guards");
         return ESP_FAIL;
     }
     std::printf("STORAGEFATFS_RESULT=PASS\n");
