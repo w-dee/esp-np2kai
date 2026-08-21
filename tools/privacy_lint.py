@@ -31,14 +31,14 @@ _WINDOWS_USERS = b"Users"
 _PLACEHOLDER_USERS = frozenset((b"USER", b"<user>"))
 
 _PATTERNS = (
-    re.compile(_LINUX_ROOT + rb"[^/\s]+" + re.escape(b"/")),
-    re.compile(_MACOS_ROOT + rb"[^/\s]+" + re.escape(b"/")),
+    re.compile(_LINUX_ROOT + rb"[^/\r\n]+" + re.escape(b"/")),
+    re.compile(_MACOS_ROOT + rb"[^/\r\n]+" + re.escape(b"/")),
     re.compile(
         rb"[A-Za-z]:"
         + re.escape(_WINDOWS_SEPARATOR)
         + _WINDOWS_USERS
         + re.escape(_WINDOWS_SEPARATOR)
-        + rb"[^\\\s]+"
+        + rb"[^\\\r\n]+"
         + re.escape(_WINDOWS_SEPARATOR)
     ),
 )

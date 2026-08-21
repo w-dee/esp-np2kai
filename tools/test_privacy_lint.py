@@ -49,6 +49,15 @@ class PrivacyLintTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(len(scan_bytes("fixture.txt", path.encode())), 1)
 
+    def test_rejects_profile_components_containing_spaces(self) -> None:
+        for path in (
+            _linux_path("Alice Smith"),
+            _macos_path("Jane Doe"),
+            _windows_path("John Smith"),
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(len(scan_bytes("fixture.txt", path.encode())), 1)
+
     def test_allows_neutral_home_forms(self) -> None:
         allowed = (
             "$HOME/project/file",

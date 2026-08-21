@@ -12,5 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Run privacy lint tests
+        run: python3 tools/test_privacy_lint.py
       - name: Check tracked files
         run: python3 tools/privacy_lint.py --tracked
