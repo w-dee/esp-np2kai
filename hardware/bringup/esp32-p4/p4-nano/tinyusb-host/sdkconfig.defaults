@@ -1,0 +1,19 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# Keep the standalone diagnostic on the measured ESP32-P4 v1.x path.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# The board has a physical 16 MiB NOR Flash device.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP=y
+
+# Use the ordinary UART0 console and no secondary console.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# TinyUSB owns the host stack in this diagnostic. No IDF USB Host component
+# or stock USB Host Hub/TT path is enabled here.
+CONFIG_USB_HOST_HUBS_SUPPORTED=n
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=n
+CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=n

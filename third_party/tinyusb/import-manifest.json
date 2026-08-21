@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "url": "https://github.com/hathach/tinyusb.git",
+    "tag": "0.21.0",
+    "commit": "dae3f9a366bfcddbf9dcf1b48d7500286a849539",
+    "license": "LICENSE",
+    "license_type_as_upstream": "MIT"
+  },
+  "policy": {
+    "snapshot": "byte-preserved",
+    "local_modifications": false,
+    "generated_files": ["README.md", "LICENSE-MAP.md", "SHA256SUMS"]
+  },
+  "files": [
+    "LICENSE",
+    "src/class/hid/hid.h",
+    "src/class/hid/hid_host.c",
+    "src/class/hid/hid_host.h",
+    "src/common/tusb_common.h",
+    "src/common/tusb_compiler.h",
+    "src/common/tusb_debug.h",
+    "src/common/tusb_fifo.c",
+    "src/common/tusb_fifo.h",
+    "src/common/tusb_mcu.h",
+    "src/common/tusb_private.h",
+    "src/common/tusb_types.h",
+    "src/common/tusb_verify.h",
+    "src/host/hcd.h",
+    "src/host/hub.c",
+    "src/host/hub.h",
+    "src/host/usbh.c",
+    "src/host/usbh.h",
+    "src/host/usbh_pvt.h",
+    "src/osal/osal.h",
+    "src/osal/osal_freertos.h",
+    "src/portable/synopsys/dwc2/dwc2_common.c",
+    "src/portable/synopsys/dwc2/dwc2_common.h",
+    "src/portable/synopsys/dwc2/dwc2_esp32.h",
+    "src/portable/synopsys/dwc2/dwc2_type.h",
+    "src/portable/synopsys/dwc2/hcd_dwc2.c",
+    "src/tusb.c",
+    "src/tusb.h",
+    "src/tusb_option.h"
+  ]
+}
