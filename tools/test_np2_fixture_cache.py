@@ -17,6 +17,8 @@ from np2_fixture_cache import (
     ENCODING_RAW,
     ENCODING_ZERO_RLE_V1,
     CAPABILITY_ZERO_RLE_V1,
+    DATA_ACK_TIMEOUT,
+    DATA_MAX_ATTEMPTS,
     FRAME_PREFIX,
     RemoteError,
     SerialFileTransferClient,
@@ -429,7 +431,10 @@ def test_retry_retains_encoded_frame() -> None:
             sent.append(data)
             return len(data)
 
+        wait_timeouts: list[float] = []
+
         def wait_frame(timeout: float) -> dict:
+            wait_timeouts.append(timeout)
             result = waits.pop(0)
             if isinstance(result, BaseException):
                 raise result
@@ -444,6 +449,8 @@ def test_retry_retains_encoded_frame() -> None:
         assert metrics.bytes_sent == plan.wire_size_bytes
         assert len(sent) == 2
         assert sent[0] == sent[1]
+        assert wait_timeouts == [DATA_ACK_TIMEOUT, DATA_ACK_TIMEOUT]
+        assert DATA_MAX_ATTEMPTS == 3
 
 
 def make_serial_probe(files: dict[str, bytes] | None = None) -> tuple[SerialFileTransferClient, list[tuple[str, float | None]]]:

@@ -29,6 +29,8 @@ MAX_COMPONENT_BYTES = 128
 MAX_PATH_BYTES = 192
 DEFAULT_CONTROL_TIMEOUT = 5.0
 DEFAULT_HASH_TIMEOUT = 30.0
+DATA_ACK_TIMEOUT = 2.0
+DATA_MAX_ATTEMPTS = 3
 SERIAL_READ_MAX_BYTES = 4096
 SERIAL_POLL_INTERVAL_SECONDS = 0.001
 ENCODING_RAW = "raw"
@@ -741,16 +743,16 @@ class SerialFileTransferClient:
                     attempts += 1
                     self.send_raw(frame)
                     try:
-                        response = self.wait_frame(timeout=30.0)
+                        response = self.wait_frame(timeout=DATA_ACK_TIMEOUT)
                     except TimeoutError:
                         metrics.protocol_timeouts += 1
-                        if attempts >= 3:
+                        if attempts >= DATA_MAX_ATTEMPTS:
                             raise
                         metrics.retries += 1
                         continue
                     if response["type"] == wire.NACK:
                         metrics.nacks += 1
-                        if attempts >= 3:
+                        if attempts >= DATA_MAX_ATTEMPTS:
                             raise RemoteError("NACK", f"upload frame rejected: {response}")
                         metrics.retries += 1
                         continue
