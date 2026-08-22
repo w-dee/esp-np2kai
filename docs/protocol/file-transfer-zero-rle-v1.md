@@ -3,8 +3,9 @@
 This protocol extension applies only to host-to-device File Transfer writes.
 Device-to-host reads remain raw, and an omitted `encoding` field continues to
 select the existing raw write behavior. The Binary Data Plane frame format,
-COBS framing, payload limit, CRC, ACK/NACK protocol, retry behavior, and
-stop-and-wait sequencing are unchanged.
+COBS framing, payload limit, CRC, and ACK/NACK wire format are unchanged.
+Production transport defaults to W=1 stop-and-wait; callers may explicitly
+select the existing W=2 bounded Go-Back-N transport.
 
 ## Wire format
 
@@ -62,9 +63,11 @@ Binary Data Plane transfer. Raw clients and raw response shapes remain
 backward compatible.
 
 The capability `file-transfer.zero-rle-v1` is advertised alongside
-`file-transfer.v1`; the protocol version is unchanged. This document records
-the software and esp-emu scope only and does not claim physical UART or
-physical-media validation.
+`file-transfer.v1`; the protocol version is unchanged. Software and esp-emu
+coverage includes W=1 and opt-in W=2. The production Host-to-Device path is
+also hardware-validated on P4-NANO physical SD at 1.5 Mbps with both W=1 and
+W=2. This scoped result does not claim TAB5, device-to-host, removal,
+durability, or every physical-media behavior.
 
 ## Host encoder and fixture provisioning
 
@@ -104,8 +107,11 @@ only when the predicted encoded size is strictly smaller than the logical
 size. Raw remains the default for direct low-level client calls; fixture-cache
 provisioning defaults to `auto`.
 
-The producer retains each encoded DATA payload until its ACK, so timeout and
-NACK retries retransmit the same frame byte-for-byte. Pass 2 recomputes the
+The W=1 producer retains each encoded DATA payload until its ACK. Under opt-in
+W=2, at most two retained DATA frames are outstanding and matching NACK or
+timeout recovery retransmits the bounded outstanding suffix according to the
+existing Go-Back-N rules. In both modes, retries retransmit the same frame
+bytes. Pass 2 recomputes the
 source SHA-256 and checks logical size, encoded byte count, and source size/
 mtime against Pass 1. A mismatch aborts the active transfer when possible and
 is never reported as successful provisioning. After upload, `file.stat` and

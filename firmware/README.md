@@ -2,9 +2,11 @@
 
 This directory contains the current minimal ESP32-P4 firmware application. It
 is a headless Hello World, UART Control Plane, Binary Data Plane, and
-RAM-backed File Transfer Base target with no board-specific code or
-peripherals. The project components also include `storage`, `storage_ram`, and
-`file_transfer`. The normal `main` component and ESP-IDF-provided
+RAM-backed File Transfer Base target by default. Explicit production profiles
+also compose persistent FATFS and P4-NANO SDMMC storage without moving board
+policy into the portable File Transfer layer. The project components also
+include `storage`, `storage_ram`, and `file_transfer`. The normal `main`
+component and ESP-IDF-provided
 dependencies are also part of the firmware project. No external third-party
 protocol dependency has been added. The Hello World, JSON UART Control Plane,
 Binary Data Plane, and File Transfer Base paths are verified under esp-emu
@@ -45,9 +47,10 @@ environment; it is not a portable default for other P4 or CH343 boards.
 Both variants use the same application, partition geometry, 8 MiB validation
 envelope, and production PSRAM settings. The revision selector is kept in the
 variant overlay rather than in the common defaults. `p4-v3x` is the variant
-used by esp-emu v0.39.0, which reports ESP32-P4 revision v3.1. `p4-v1x` is
-compile-only production evidence at this stage; the separate P4-NANO
-diagnostics are not a production-firmware validation result. The wrapper
+used by esp-emu v0.39.0, which reports ESP32-P4 revision v3.1. Generic
+`p4-v1x` remains compile evidence in CI, while the explicit P4-NANO board
+profile has scoped production hardware evidence for UART, SDMMC, and
+Host-to-Device File Transfer at 1.5 Mbps. The wrapper
 names the build directory and checks the generated revision bounds before
 emulator or image use. The two binaries must not be treated as interchangeable.
 
@@ -87,8 +90,9 @@ the final map), including the 2 MiB `mem[]` buffer. The formal profile remains
 The raw fixture is a dedicated read-only NOR partition containing the exact
 FD1232 Stage-1 image. Runtime validation checks its partition metadata,
 SHA-256, mmap/read-only DOSIO access, and vendor FDD/XDF recognition. This
-deliberately avoids a FAT layer under esp-emu; physical microSD/FATFS and
-writable media remain future storage work.
+deliberately avoids a FAT layer in this esp-emu oracle. Separately, P4-NANO
+physical SD, writable Host-to-Device File Transfer, and formal physical-SD
+NP2TEST have scoped hardware validation; broader media lifecycle work remains.
 
 The formal Ubuntu-native result is 13/13 with CRC `0x58f5b827` and
 `NP2TEST_RESULT=PASS`. The ESP32-P4 formal profile is currently blocked on
@@ -100,7 +104,8 @@ as NON-FORMAL supplementary evidence only; it reaches 13/13, CRC
 
 The CI workflow keeps three independent jobs: formal fixture CI,
 formal Ubuntu-native headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced
-Stage-1 job. No real ESP32-P4 hardware validation is claimed.
+Stage-1 job. Those jobs do not claim hardware validation; separate P4-NANO
+qualification covers the scoped paths documented below.
 
 ## D1 production-SD formal NP2TEST profile
 
@@ -205,8 +210,11 @@ It adds `file.stat`, `file.list`, `file.read.begin`, `file.write.begin`, and
 `file.transfer.status`, backed by a bounded in-memory hierarchy. The test
 performs a 131,109-byte upload/readback and verifies pagination, ranged reads,
 final-ACK replay, staged replacement/abort, zero-length files, and path bounds.
-The backend is test RAM only; microSD, FATFS, and physical UART remain future
-work.
+That specific base regression uses test RAM only. Persistent FATFS has separate
+esp-emu coverage, and production P4-NANO physical-SD Host-to-Device transfers
+are hardware-validated at 1.5 Mbps for bounded `zero-rle-v1` with default W=1
+and opt-in W=2. This does not make the RAM-base test a hardware test or qualify
+TAB5 and all media lifecycles.
 
 The eventual firmware should keep board-specific code outside the emulator
 core and retain a headless mode for emulator-core and integration tests.

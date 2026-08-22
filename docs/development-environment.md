@@ -252,9 +252,10 @@ The intended progression is:
 3. ESP32-P4 `esp-emu` firmware, FreeRTOS, RISC-V, video, and presentation
    validation (completed Step 5, Step 7A, Step 7B.1b, and Step 7B.1c
    milestones).
-4. After physical hardware arrival, ESP32-P4-NANO-KIT-D and M5Stack TAB5
-   board validation for storage, display, input, and audio (future Step 6B,
-   Step 6C, Step 7B.2, Step 8, and Step 9 work).
+4. P4-NANO board validation: UART, SDMMC, and production Host-to-Device File
+   Transfer have scoped hardware evidence at 1.5 Mbps. TAB5, physical display,
+   input/audio, removal/durability, and broader media lifecycles remain future
+   Step 6B/6C, Step 7B.2, Step 8, and Step 9 work.
 
 ESP32-S31 / S31 Korvo-1 is a possible future portability target only. It is not
 part of the current bring-up sequence and is not implemented, tested, or
@@ -276,8 +277,9 @@ The check preserves the existing Hello World regression, reuses the resulting
 merged firmware image, starts a second esp-emu instance, waits for the
 `ESP-NP2KAI UART CONTROL READY` marker, injects protocol requests, and
 validates the framed responses, request IDs, malformed-input recovery, and
-successful emulator exit. This verifies the emulator path only; no equivalent
-physical-board test command is defined yet.
+successful emulator exit. Separately,
+[`tools/uart_control_smoke.py`](../tools/uart_control_smoke.py) validates the
+P4-NANO onboard CH343P control path at 1.5 Mbps; TAB5 remains unverified.
 
 The verified Binary Data Plane v1 integration check is
 [`tools/emu/test-uart-binary-data-plane.sh`](../tools/emu/test-uart-binary-data-plane.sh).
@@ -308,10 +310,9 @@ Its additional artifacts are:
 - `firmware/build-p4-v3x/esp-emu-file-transfer-base.log`
 - `firmware/build-p4-v3x/esp-emu-file-transfer-base.uart.bin`
 
-This paragraph documents the completed RAM-backed File Transfer Base. It
-remains an emulator result and does not validate FATFS, microSD hardware,
-durability, physical UART transport, throughput, or timing. Persistent FATFS
-validation is documented separately as Step 6A below.
+This paragraph documents the completed RAM-backed File Transfer Base and is an
+emulator result. Persistent FATFS validation is documented separately as Step
+6A below; production physical-SD qualification is summarized after it.
 
 ## Step 6A routine persistent-storage validation
 
@@ -409,8 +410,26 @@ job or duplicate provisioning.
 The formal machine configuration remains `EXTMEM=13` and the authoritative
 formal result is the Ubuntu-native 13/13 CRC `0x58f5b827`. The ESP32-P4
 esp-emu result is explicitly NON-FORMAL reduced `EXTMEM=8`; its VFS/FATFS NP2
-run also reaches 13/13 with CRC `0x58f5b827`. No real P4 hardware, physical
-microSD, SDMMC, or physical UART validation is implied.
+run also reaches 13/13 with CRC `0x58f5b827`. Those Step 6A emulator results do
+not themselves imply hardware validation. Separately, a formal physical-SD
+P4-NANO NP2TEST run reached 13/13 with the same CRC; it is distinct from the
+File Transfer qualification below.
+
+Current production File Transfer status is:
+
+| Feature | ESP-EMU / CI | P4-NANO hardware | Transport selection |
+| --- | --- | --- | --- |
+| raw W=1 | validated | Host-to-Device physical SD at 1.5 Mbps | default W=1 |
+| bounded `zero-rle-v1` W=1 | validated and wired into CI | Host-to-Device physical SD at 1.5 Mbps | default W=1 when selected |
+| raw W=2 bounded Go-Back-N | validated | Host-to-Device physical SD at 1.5 Mbps | opt-in |
+| bounded `zero-rle-v1` W=2 | validated and wired into CI | Host-to-Device physical SD at 1.5 Mbps | opt-in |
+
+The bounded production NP2TEST fixture plan is 1,907 encoded bytes, 115
+ZERO_RUN records, 96 LITERAL records, 852 literal bytes, and 22 DATA frames.
+The independent 1,812-byte maximal-run stream remains a valid wire-format
+reference and must not be confused with production Host framing. Hardware
+File Transfer evidence is exact size/SHA and transport-event validation; it is
+not itself a formal 13-test NP2TEST execution.
 
 The primary success evidence is protocol validation on the UART-TCP socket.
 After the final JSON response, the helper performs controlled esp-emu cleanup;
@@ -420,8 +439,10 @@ preserves these artifacts:
 - `firmware/build-p4-v3x/esp-emu-uart-binary-data-plane.log`
 - `firmware/build-p4-v3x/esp-emu-uart-binary-data-plane.uart.bin`
 
-This verifies the emulator test bridge only. Physical P4-NANO-KIT-D, CH343P,
-and TAB5 UART transport, throughput, and timing remain unverified.
+This verifies the complete bidirectional emulator test bridge. The production
+Host-to-Device subset has separate P4-NANO/CH343P hardware evidence at
+1.5 Mbps through File Transfer; the complete physical bidirectional suite and
+TAB5 remain unverified.
 
 The ESP-IDF v5.5.4 activation script is not safe under the test script's
 strict Bash options and may run an external `eim select` operation. The test

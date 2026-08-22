@@ -36,9 +36,13 @@ uses ESP-IDF VFS/FATFS/WL on an emulator-supported SPI-NOR partition. The
 FATFS-backed File Transfer service, generic DOSIO VFS path, and VFS-backed NP2
 Stage-1 run are validated under esp-emu. The reduced non-formal runtime
 profile reaches 13/13 with CRC `0x58f5b827`, and a raw-partition poisoning test
-confirmed that the VFS run used the independent FATFS fixture source. Step 6B,
-physical ESP32-P4 microSD/SDMMC integration, remains future work; formal
-`EXTMEM=13` remains native-only.
+confirmed that the VFS run used the independent FATFS fixture source. The
+P4-NANO production SDMMC backend and Host-to-Device File Transfer path are
+also hardware-validated at 1.5 Mbps for bounded `zero-rle-v1` with the default
+W=1 transport and opt-in W=2 bounded Go-Back-N. This File Transfer result is
+separate from formal NP2TEST execution. Broader physical-media removal,
+durability, and device-to-host qualification remain future work; formal
+`EXTMEM=13` is tracked separately.
 
 The current approved ESP32-P4 validation image uses an 8 MiB flash envelope:
 the 2 MiB factory application partition is at `0x010000`, read-only `np2test`
@@ -99,35 +103,40 @@ slot size and memory telemetry are test evidence, not universal constants.
 ## Current hardware boundary
 
 The software-only headless video and presentation work through Step 7B.1c is
-complete. Physical-board work is paused until real ESP32-P4 hardware arrives.
+complete. P4-NANO UART, SDMMC, and the production Host-to-Device File Transfer
+path now have scoped hardware evidence at 1.5 Mbps; this does not validate the
+display path.
 PPA, MIPI-DSI, a physical LCD panel, real display timing, tearing behavior,
 physical bandwidth, and real hardware performance have not been validated.
-Physical storage, input, and audio branches remain future hardware-dependent
-work; this pause does not make unrelated software development impossible.
+Physical-media removal/durability, input, audio, and TAB5 integration remain
+future hardware-dependent work.
 
 Production firmware now has explicit `p4-v1x` and `p4-v3x` build variants.
 Use `tools/emu/build-production.sh --variant p4-v3x` for the existing
 esp-emu v0.39.0 regressions and `--variant p4-v1x` for the compile-only v1.x
 production check. Revision selection is kept out of common defaults, and the
 variant-specific build trees and preflight checks prevent the two image
-families from being confused. Real P4-NANO diagnostic results do not yet
-constitute a production-firmware v1.x validation result.
+families from being confused. The P4-NANO board profile has scoped production
+UART/SDMMC/File Transfer hardware validation; that does not imply complete
+validation of every production-firmware subsystem.
 
 The currently verified executable milestone is ESP32-P4-only. S31 Korvo-1 is
 not implemented, tested, or validated.
 
-The UART Control Plane Base is verified under `esp-emu` v0.39.0 for the
-ESP32-P4 emulator environment. It provides bounded `@ESP-NP2 ` JSON-lines
+The UART Control Plane Base is verified under `esp-emu` v0.39.0 and on the
+P4-NANO onboard CH343P path. It provides bounded `@ESP-NP2 ` JSON-lines
 framing, the separate `ESP-NP2KAI UART CONTROL READY` marker, and the initial
 read-only commands `protocol.hello`, `system.ping`, and `system.info`.
-Physical P4-NANO and TAB5 UART paths remain unverified.
+The TAB5 UART path remains unverified.
 
 The Binary Data Plane v1 is verified under the ESP32-P4 `esp-emu` UART-TCP
 environment. Its integration test transfers deterministic 64 KiB payloads in
 both directions and checks CRC, duplicate handling, NACK retransmission,
 corrupted-frame recovery, and text/binary resynchronization. This verifies the
-emulator byte path only; physical P4-NANO, CH343P, and TAB5 UART paths remain
-unverified.
+full bidirectional emulator suite. Separately, the production Host-to-Device
+data path used by File Transfer is hardware-validated on P4-NANO at 1.5 Mbps;
+that scoped result is not a full physical bidirectional test-suite claim, and
+TAB5 remains unverified.
 
 The File Transfer Base is verified over the same UART-TCP path. It adds a
 neutral streaming storage interface, a bounded 256 KiB RAM backend, logical
@@ -135,7 +144,9 @@ UTF-8 paths, paginated metadata, ranged reads, and staged complete-file writes.
 Its 131,109-byte round-trip regression covers final-ACK replay, abort-safe
 replacement, zero-length files, and path/error bounds. This paragraph records
 the completed RAM-backed foundation; the persistent FATFS backend is the
-separate Step 6A result above and is not microSD or physical-media validation.
+separate Step 6A result. Production physical-SD Host-to-Device transfer is
+additionally hardware-validated on P4-NANO at 1.5 Mbps with bounded
+`zero-rle-v1`, W=1, and opt-in W=2. W=1 remains the production default.
 
 ## Development model
 

@@ -20,9 +20,10 @@ the merged image, boots it, reaches `app_main()`, detects the UART marker
 The firmware uses GNU C++20 with C++ exceptions and RTTI disabled. Production
 firmware selects `p4-v1x` or `p4-v3x` explicitly through the build wrapper;
 revision selection is not placed in common defaults. The existing
-`esp-emu` v0.39.0 regressions use `p4-v3x`, while `p4-v1x` is compile-only
-evidence until the production image is validated on real hardware. The
-separate P4-NANO hardware diagnostics do not change that status.
+`esp-emu` v0.39.0 regressions use `p4-v3x`. Generic `p4-v1x` remains compile
+evidence in CI, while the explicit P4-NANO board profile now has scoped
+production UART/SDMMC/File Transfer hardware evidence. This is not a claim
+that every production subsystem has been physically validated.
 
 The current roadmap reaches the portable and headless core milestones before
 physical-board feature work. ESP32-S31 / S31 Korvo-1 remains a future
@@ -35,8 +36,8 @@ The UART Control Plane Base is a completed control-infrastructure milestone
 and is verified under `esp-emu` v0.39.0 for the ESP32-P4 emulator
 environment. It contains only the neutral protocol, bounded parser, configured
 console-UART transport, and three read-only commands: `protocol.hello`,
-`system.ping`, and `system.info`. Physical-board UART validation and the
-corresponding physical transport remain unverified.
+`system.ping`, and `system.info`. The P4-NANO onboard CH343P path is also
+hardware-validated at 1.5 Mbps; TAB5 remains unverified.
 
 The Binary Data Plane v1 base is completed and verified under ESP-IDF v5.5.4
 and esp-emu v0.39.0 for the ESP32-P4 emulator environment. It provides a
@@ -53,9 +54,11 @@ replay, and provides logical file operations through a neutral storage API and
 a bounded RAM backend. The integration check covers a 131,109-byte round trip,
 pagination, ranges, staged replacement/abort, zero-length files, UTF-8 names,
 and validation failures. Step 6A separately completes the persistent FATFS
-backend and its VFS/DOSIO integration; physical UART verification, physical
-microSD/SDMMC access, UART transfer to real media, input integration, and later
-emulator commands remain future work after the headless core milestones.
+backend and its VFS/DOSIO integration. P4-NANO physical SD and production
+Host-to-Device File Transfer are now hardware-validated at 1.5 Mbps for
+bounded `zero-rle-v1` with W=1 and opt-in W=2. Removal/durability,
+device-to-host qualification, TAB5, input integration, and later emulator
+commands remain future work.
 
 ## Steps 1-3: Completed foundations and core import
 
@@ -110,13 +113,14 @@ external BSS placement (including the 2 MiB `mem[]` buffer). The reduced
 and does not replace formal `EXTMEM=13` validation.
 
 The three CI jobs remain independent: formal fixture CI, formal Ubuntu-native
-headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced Stage-1 job. No real
-ESP32-P4 hardware result is claimed. Step 6A emulator SPI-NOR FATFS storage is
-complete; physical storage, peripherals, and future SoC work remain later
-scopes. Pending bring-up includes formal `EXTMEM=13` runtime validation, a
-real ESP32-P4 with the intended 32 MiB PSRAM, ESP32-S31, physical
-microSD/SDMMC and writable media, display/audio/input/USB, board integration,
-and performance or multicore work.
+headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced Stage-1 job. Those CI
+jobs do not themselves claim hardware validation. Separate P4-NANO evidence
+now covers SDMMC, production Host-to-Device File Transfer, and a formal
+physical-SD NP2TEST 13/13 run with CRC `0x58f5b827`; the File Transfer
+qualification is a separate test and must not be described as NP2TEST.
+Pending bring-up still includes unqualified `EXTMEM=13` configurations,
+ESP32-S31, removal/durability and broader writable-media behavior,
+display/audio/input/USB, TAB5 integration, and multicore work.
 
 ## Step 6A: emulator SPI-NOR FATFS persistent storage — COMPLETED
 
@@ -196,30 +200,33 @@ the FATFS storage region remained unchanged. The VFS run still passed 13/13,
 demonstrating source independence without claiming arbitrary guest software
 or general filesystem compatibility.
 
-## Step 6B: physical microSD / SDMMC — FUTURE
+## Step 6B: physical microSD / SDMMC — PARTIALLY HARDWARE VALIDATED
 
-Step 6B remains future real-hardware storage work. Its expected scope is:
+The P4-NANO SDMMC slot-1 production backend is implemented and validated with
+a physical SD card. Current evidence includes mount/access, production
+Host-to-Device writes, exact size/SHA verification, and the separate formal
+physical-SD NP2TEST 13/13 result. Remaining scope includes:
 
-- ESP32-P4-NANO or another supported real P4 board;
-- physical microSD and SDMMC integration;
 - real board pin mapping re-verification and card detect where available;
-- card initialization, CID/CSD where useful, bus-width and speed behavior;
 - physical removal/error handling;
 - durability, performance, and real-media validation.
 
 The Step 6A SPI-NOR FATFS backend is not the final physical microSD backend.
-There is no real P4 hardware storage validation yet, including P4-NANO,
-TAB5, or ESP32-S31.
+P4-NANO evidence does not generalize to TAB5, ESP32-S31, arbitrary cards, or
+the remaining lifecycle cases.
 
-## Step 6C: UART File Transfer to physical media — FUTURE
+## Step 6C: UART File Transfer to physical media — HOST-TO-DEVICE HW VALIDATED
 
-Step 6C is the hardware-dependent continuation of storage work. It requires
-real ESP32-P4 hardware and covers:
+The production P4-NANO path is hardware-validated at 1.5 Mbps for
+Host-to-Device physical-SD uploads using bounded `zero-rle-v1`, default W=1,
+and opt-in W=2 bounded Go-Back-N. Exact device-side SHA and transport event
+checks passed. This is File Transfer validation, not formal NP2TEST execution.
+Remaining scope covers:
 
-- upload/download through the UART control/data path to physical media; and
+- broader upload/download qualification through the UART control/data path;
 - real-media durability, removal, and error handling.
 
-The emulator UART and FATFS results do not validate this stage.
+TAB5 and other boards remain unqualified. W=1 remains the production default.
 
 ## Step 7A: headless guest framebuffer and deterministic video oracles — COMPLETE
 
@@ -286,13 +293,13 @@ The 30 fps figure is a bring-up target, not a proven result. PPA, MIPI-DSI,
 panel operation, physical timing, tearing-free output, bandwidth, and hardware
 performance have not been validated.
 
-## Hardware pause boundary
+## Remaining hardware boundary
 
-The software-only portion through Step 7B.1c is complete. Further board-facing
-work is intentionally paused until physical ESP32-P4 hardware is available.
-This includes Step 6B physical storage, Step 6C physical-media transfer, Step
-7B.2 physical display, Step 8 physical input, and Step 9 physical audio. The
-portable emulator, host, and documentation work can continue independently.
+The software-only portion through Step 7B.1c is complete. P4-NANO UART, SDMMC,
+and Host-to-Device File Transfer now have hardware evidence. Remaining Step
+6B/6C lifecycle cases, Step 7B.2 physical display, Step 8 physical input, Step
+9 physical audio, and TAB5 still require separate hardware work. The portable
+emulator, host, and documentation work can continue independently.
 
 ## Step 8: USB HID / input — FUTURE, hardware required
 

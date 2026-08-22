@@ -184,8 +184,11 @@ reference layer. It is not the target ESP32-P4 firmware. `esp-emu` validates
 actual ESP32-P4 firmware and integration, while real ESP32-P4 hardware is the
 layer for unsupported peripherals, real timing, performance, and board
 transport. The firmware integration is implemented and validated under the
-non-formal reduced emulator profile, but formal `EXTMEM=13` runtime validation
-and all real-hardware validation remain pending.
+non-formal reduced emulator profile. Formal `EXTMEM=13` runtime evidence is
+tracked separately. Real-hardware evidence is now scoped rather than wholly
+pending: P4-NANO UART/SDMMC and production Host-to-Device File Transfer are
+validated at 1.5 Mbps, while display, input, audio, TAB5, removal/durability,
+and other unqualified paths remain pending.
 
 ## Conceptual layers
 
@@ -433,8 +436,8 @@ are not implemented in the initial repository setup. The UART Control Plane
 Base provides the first neutral transport/protocol/dispatcher path and is
 verified under `esp-emu` v0.39.0 for the ESP32-P4 emulator environment. Its
 protocol is independent of the configured console UART and of any
-ESP32-P4-specific API. This emulator verification does not validate physical
-P4-NANO or TAB5 UART paths.
+ESP32-P4-specific API. The configured-console path is also validated on the
+P4-NANO onboard CH343P route at 1.5 Mbps; TAB5 remains unverified.
 
 The skeleton uses a bounded `@ESP-NP2 ` JSON-lines frame, a central command
 dispatcher, and a separate configured-console-UART transport. The existing
@@ -444,9 +447,11 @@ dispatcher, and a separate configured-console-UART transport. The existing
 ## UART Binary Data Plane v1
 
 The Binary Data Plane v1 is verified under ESP-IDF v5.5.4 and esp-emu v0.39.0
-for the ESP32-P4 emulator environment. This verification covers the byte path
-over esp-emu UART-TCP; it does not verify physical P4-NANO-KIT-D, CH343P, or
-TAB5 UART transport, throughput, or timing.
+for the ESP32-P4 emulator environment. This verification covers the complete
+bidirectional byte-path suite over esp-emu UART-TCP. The production
+Host-to-Device subset used by File Transfer is additionally hardware-validated
+on P4-NANO at 1.5 Mbps; this is not a claim that the complete bidirectional
+suite or TAB5 transport has been physically qualified.
 
 The responsibilities remain separate:
 
@@ -585,9 +590,11 @@ reads/writes use Binary Data Plane bytes; zero-length operations complete
 synchronously without a transfer ID.
 
 The RAM backend and esp-emu UART-TCP path are the completed File Transfer Base
-foundation. Step 6A now also verifies a persistent `StorageFatfs` backend under
-the same neutral contract. Real media and physical board transport remain
-outside both milestones.
+foundation. Step 6A also verifies a persistent `StorageFatfs` backend under
+the same neutral contract. Production `StorageSdmmc` Host-to-Device writes are
+hardware-validated on P4-NANO physical SD at 1.5 Mbps with raw and bounded
+`zero-rle-v1`; W=1 remains the default and W=2 bounded Go-Back-N is opt-in.
+This scoped result does not cover every real-media lifecycle or TAB5.
 
 ## Step 6A persistent storage architecture
 
@@ -614,8 +621,9 @@ functionality, while preserving the common 8 MiB validation envelope. The
 additional 1 MiB was taken from the internal FATFS test/storage partition;
 the read-only `np2test` fixture size was deliberately preserved. This FATFS
 partition is primarily a development and validation fixture, not the intended
-final large user-media store. Future real user disk/image storage is expected
-to use removable or external storage such as microSD/SDMMC where appropriate.
+final large user-media store. The production P4-NANO profile now uses
+microSD/SDMMC for real user files; other boards and media remain separate
+integration scopes.
 
 The offsets and sizes originate from `firmware/partitions.csv`. Operational
 tooling validates the generated ESP-IDF partition table through the shared
@@ -721,8 +729,10 @@ pinned esp-emu/IDF combination, while 512-byte operations passed. The current
 512-byte bound is therefore an emulator-observed local compatibility
 workaround. It is not a FATFS requirement, a physical ESP requirement, or a
 proven exact failure threshold. Step 6A.3 separately established that generic
-DOSIO VFS reads can perform 4096-byte POSIX reads successfully; hardware
-validation remains future work.
+DOSIO VFS reads can perform 4096-byte POSIX reads successfully. A separate
+formal P4-NANO physical-SD NP2TEST run validates the production DOSIO/VFS/SD
+path; it does not turn the esp-emu-specific 512-byte observation into a
+physical constraint.
 
 The strongest Step 6A.4 source-independence proof used a temporary 8 MiB image
 copy. Only the raw partition's first `0x1000` bytes at offset `0x210000` were
@@ -734,13 +744,14 @@ completed 13 tests with 13 passed, 0 failed, and CRC `0x58f5b827`. This is
 evidence of source independence, not a claim of arbitrary filesystem or guest
 software compatibility.
 
-The conceptual provider replacement for future physical storage is:
+The current provider split is:
 
 ```text
 File Transfer -> storage::Storage -> StorageFatfs -> VFS/FATFS/WL -> SPI NOR
 NP2 -> FDD/XDF -> DOSIO -> POSIX/VFS -> mounted FATFS -> SPI NOR
-                                               ^
-                         Step 6B may replace the mount provider here
+
+File Transfer -> storage::Storage -> StorageSdmmc -> VFS/FATFS -> SDMMC
+NP2 -> FDD/XDF -> DOSIO -> POSIX/VFS -> mounted FATFS -> SDMMC
 ```
 
 No FATFS-specific logic is introduced into NP2 core/host boundaries.
