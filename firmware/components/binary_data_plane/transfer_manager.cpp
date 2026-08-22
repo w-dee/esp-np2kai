@@ -162,6 +162,21 @@ bool is_valid_nack_reason(std::uint16_t reason)
     return false;
 }
 
+bool is_older_control_pair(std::uint32_t sequence, std::uint64_t offset,
+                           std::uint32_t current_sequence,
+                           std::uint64_t current_offset)
+{
+    return sequence < current_sequence && offset < current_offset;
+}
+
+bool is_stale_ack_pair(std::uint32_t sequence, std::uint64_t offset,
+                       std::uint32_t current_sequence,
+                       std::uint64_t current_offset)
+{
+    return (sequence == current_sequence && offset == current_offset) ||
+           is_older_control_pair(sequence, offset, current_sequence, current_offset);
+}
+
 void prepare_tx_payload(TransferManager *manager)
 {
     const std::uint64_t remaining = manager->total_bytes - manager->tx_offset;
@@ -288,42 +303,53 @@ void handle_tx_ack(TransferManager *manager, const codec::ParsedFrame &frame,
     if (frame.transfer_id != manager->transfer_id || !frame.crc_valid ||
         frame.payload_length != 0 || !manager->tx_waiting_ack) return;
     if (frame.type == FrameType::Nack) {
-        if (!is_valid_nack_reason(frame.status) ||
-            frame.sequence != manager->tx_sequence || frame.offset != manager->tx_offset) {
+        if (!is_valid_nack_reason(frame.status)) {
             finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);
             return;
         }
-        retry_current_tx(manager, now_ms);
-        return;
-    }
-    if (frame.type != FrameType::Ack || frame.status != 0) return;
-    const std::uint32_t expected_sequence = manager->tx_sequence + 1;
-    const std::uint64_t expected_offset = manager->tx_offset + manager->tx_length;
-    if (frame.sequence != expected_sequence) {
-        send_nack(manager, NackReason::BadSequence);
-        return;
-    }
-    if (frame.offset != expected_offset) {
-        send_nack(manager, NackReason::BadOffset);
-        return;
-    }
-    manager->transferred_bytes = expected_offset;
-    manager->expected_sequence = expected_sequence;
-    manager->expected_offset = expected_offset;
-    manager->tx_waiting_ack = false;
-    manager->tx_frame_ready = false;
-    if (manager->transferred_bytes == manager->total_bytes) {
-        if (manager->endpoint.finish == nullptr ||
-            manager->endpoint.finish(manager->endpoint.context) != EndpointResult::Ok) {
-            finish_active(manager, TransferState::Aborted, TerminalReason::EndpointFinishError);
+        if (frame.sequence == manager->tx_sequence && frame.offset == manager->tx_offset) {
+            retry_current_tx(manager, now_ms);
             return;
         }
-        manager->endpoint_finalized = true;
-        finish_active(manager, TransferState::Completed, TerminalReason::Completed);
+        if (is_older_control_pair(frame.sequence, frame.offset,
+                                   manager->tx_sequence, manager->tx_offset)) {
+            return;
+        }
+        finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);
         return;
     }
-    manager->tx_sequence = expected_sequence;
-    manager->tx_offset = expected_offset;
+    if (frame.type != FrameType::Ack) return;
+    if (frame.status != 0) {
+        finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);
+        return;
+    }
+    const std::uint32_t expected_sequence = manager->tx_sequence + 1;
+    const std::uint64_t expected_offset = manager->tx_offset + manager->tx_length;
+    if (frame.sequence == expected_sequence && frame.offset == expected_offset) {
+        manager->transferred_bytes = expected_offset;
+        manager->expected_sequence = expected_sequence;
+        manager->expected_offset = expected_offset;
+        manager->tx_waiting_ack = false;
+        manager->tx_frame_ready = false;
+        if (manager->transferred_bytes == manager->total_bytes) {
+            if (manager->endpoint.finish == nullptr ||
+                manager->endpoint.finish(manager->endpoint.context) != EndpointResult::Ok) {
+                finish_active(manager, TransferState::Aborted, TerminalReason::EndpointFinishError);
+                return;
+            }
+            manager->endpoint_finalized = true;
+            finish_active(manager, TransferState::Completed, TerminalReason::Completed);
+            return;
+        }
+        manager->tx_sequence = expected_sequence;
+        manager->tx_offset = expected_offset;
+        return;
+    }
+    if (is_stale_ack_pair(frame.sequence, frame.offset,
+                          manager->tx_sequence, manager->tx_offset)) {
+        return;
+    }
+    finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);
 }
 
 ManagerError begin_common(TransferManager *manager, std::uint64_t size,

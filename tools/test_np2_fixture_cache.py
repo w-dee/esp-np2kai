@@ -321,6 +321,8 @@ def test_supplied_upload_plan_consistency() -> None:
                 "transfer_id": 23,
                 "sequence": 1,
                 "offset": plan.wire_size_bytes,
+                "status": 0,
+                "payload": b"",
                 "crc_valid": True,
             }
             with patch.object(
@@ -404,6 +406,8 @@ def test_retry_retains_encoded_frame() -> None:
             "transfer_id": 17,
             "sequence": 1,
             "offset": plan.wire_size_bytes,
+            "status": 0,
+            "payload": b"",
             "crc_valid": True,
         }]
 

@@ -31,6 +31,7 @@ DEFAULT_CONTROL_TIMEOUT = 5.0
 DEFAULT_HASH_TIMEOUT = 30.0
 DATA_ACK_TIMEOUT = 2.0
 DATA_MAX_ATTEMPTS = 3
+DATA_NACK_REASONS = frozenset(range(1, 9))
 SERIAL_READ_MAX_BYTES = 4096
 SERIAL_POLL_INTERVAL_SECONDS = 0.001
 ENCODING_RAW = "raw"
@@ -56,6 +57,34 @@ class UploadModeError(ValueError):
 
 class SourceChangedError(IOError):
     """The source file changed between analysis and streaming."""
+
+
+def _is_stale_control_pair(sequence: object, offset: object,
+                            current_sequence: int, current_offset: int) -> bool:
+    """Return whether a W=1 response belongs to an already accepted frontier."""
+    return (
+        isinstance(sequence, int)
+        and not isinstance(sequence, bool)
+        and isinstance(offset, int)
+        and not isinstance(offset, bool)
+        and (
+            (sequence == current_sequence and offset == current_offset)
+            or (sequence < current_sequence and offset < current_offset)
+        )
+    )
+
+
+def _is_stale_nack_pair(sequence: object, offset: object,
+                        current_sequence: int, current_offset: int) -> bool:
+    """Return whether a NACK belongs to a DATA frame older than the current one."""
+    return (
+        isinstance(sequence, int)
+        and not isinstance(sequence, bool)
+        and isinstance(offset, int)
+        and not isinstance(offset, bool)
+        and sequence < current_sequence
+        and offset < current_offset
+    )
 
 
 @dataclass(frozen=True)
@@ -742,28 +771,121 @@ class SerialFileTransferClient:
                 while True:
                     attempts += 1
                     self.send_raw(frame)
-                    try:
-                        response = self.wait_frame(timeout=DATA_ACK_TIMEOUT)
-                    except TimeoutError:
+                    deadline = time.monotonic() + DATA_ACK_TIMEOUT
+                    accepted = False
+                    retry = False
+                    wait_timeout = DATA_ACK_TIMEOUT
+                    while time.monotonic() < deadline:
+                        try:
+                            response = self.wait_frame(timeout=wait_timeout)
+                        except TimeoutError:
+                            break
+                        wait_timeout = max(0.0, deadline - time.monotonic())
+
+                        # A response for another transfer is not evidence about
+                        # this DATA frame. Keep the same deadline and wait for
+                        # the response belonging to the active transfer.
+                        if response.get("transfer_id") != transfer_id:
+                            continue
+                        # A corrupt control frame is equivalent to a lost
+                        # response. It must not advance or rewind W=1.
+                        if response.get("crc_valid") is not True:
+                            continue
+
+                        response_type = response.get("type")
+                        response_sequence = response.get("sequence")
+                        response_offset = response.get("offset")
+                        response_payload = response.get("payload", b"")
+                        if response_type == wire.ACK:
+                            if (
+                                not isinstance(response.get("status"), int)
+                                or isinstance(response.get("status"), bool)
+                                or response.get("status") != 0
+                                or response_payload != b""
+                            ):
+                                raise RemoteError(
+                                    "PROTOCOL_ERROR",
+                                    f"invalid upload ACK: {response}",
+                                )
+                            if (
+                                not isinstance(response_sequence, int)
+                                or isinstance(response_sequence, bool)
+                                or not isinstance(response_offset, int)
+                                or isinstance(response_offset, bool)
+                            ):
+                                raise RemoteError(
+                                    "PROTOCOL_ERROR",
+                                    f"mismatched upload ACK: {response}",
+                                )
+                            if (
+                                response_sequence == sequence + 1
+                                and response_offset == offset + len(payload)
+                            ):
+                                accepted = True
+                                break
+                            if _is_stale_control_pair(
+                                response_sequence, response_offset, sequence, offset
+                            ):
+                                metrics.duplicate_frames += 1
+                                continue
+                            raise RemoteError(
+                                "PROTOCOL_ERROR",
+                                f"mismatched upload ACK: {response}",
+                            )
+                        if response_type == wire.NACK:
+                            response_status = response.get("status")
+                            if (
+                                response_payload != b""
+                                or not isinstance(response_status, int)
+                                or isinstance(response_status, bool)
+                                or response_status not in DATA_NACK_REASONS
+                            ):
+                                raise RemoteError(
+                                    "PROTOCOL_ERROR",
+                                    f"invalid upload NACK: {response}",
+                                )
+                            if (
+                                isinstance(response_sequence, bool)
+                                or not isinstance(response_sequence, int)
+                                or isinstance(response_offset, bool)
+                                or not isinstance(response_offset, int)
+                            ):
+                                raise RemoteError(
+                                    "PROTOCOL_ERROR",
+                                    f"mismatched upload NACK: {response}",
+                                )
+                            if (
+                                response_sequence == sequence
+                                and response_offset == offset
+                            ):
+                                metrics.nacks += 1
+                                if attempts >= DATA_MAX_ATTEMPTS:
+                                    raise RemoteError(
+                                        "NACK", f"upload frame rejected: {response}"
+                                    )
+                                metrics.retries += 1
+                                retry = True
+                                break
+                            if _is_stale_nack_pair(
+                                response_sequence, response_offset, sequence, offset
+                            ):
+                                continue
+                            raise RemoteError(
+                                "PROTOCOL_ERROR",
+                                f"mismatched upload NACK: {response}",
+                            )
+                        raise RemoteError(
+                            "PROTOCOL_ERROR",
+                            f"unexpected upload response: {response}",
+                        )
+
+                    if accepted:
+                        break
+                    if not retry:
                         metrics.protocol_timeouts += 1
                         if attempts >= DATA_MAX_ATTEMPTS:
-                            raise
+                            raise TimeoutError("binary frame timeout")
                         metrics.retries += 1
-                        continue
-                    if response["type"] == wire.NACK:
-                        metrics.nacks += 1
-                        if attempts >= DATA_MAX_ATTEMPTS:
-                            raise RemoteError("NACK", f"upload frame rejected: {response}")
-                        metrics.retries += 1
-                        continue
-                    if response["type"] != wire.ACK:
-                        raise RemoteError("PROTOCOL_ERROR", f"unexpected upload response: {response}")
-                    if (response["transfer_id"] == transfer_id and
-                            response["sequence"] == sequence + 1 and
-                            response["offset"] == offset + len(payload) and
-                            response["crc_valid"]):
-                        break
-                    metrics.duplicate_frames += 1
                 metrics.frames += 1
                 metrics.bytes_sent += len(payload)
                 offset += len(payload)

@@ -664,6 +664,14 @@ def run_device_to_host(emulator: Emulator, transfer_id: int) -> None:
                 raise AssertionError(
                     f"NACK retransmission changed DATA frame: {retransmitted}"
                 )
+            # A delayed NACK for the already accepted DATA must not trigger a
+            # second replay or rewind the device sender frontier.
+            emulator.send(build_frame(NACK, transfer_id, 0, 0, status=BAD_CRC))
+        elif sequence == 2:
+            # Both an older ACK and the duplicate ACK for the previous
+            # frontier are stale while this DATA frame is outstanding.
+            emulator.send(build_frame(ACK, transfer_id, 1, MAX_PAYLOAD))
+            emulator.send(build_frame(ACK, transfer_id, 2, 2 * MAX_PAYLOAD))
         emulator.send(
             build_frame(
                 ACK,
@@ -672,6 +680,63 @@ def run_device_to_host(emulator: Emulator, transfer_id: int) -> None:
                 offset + MAX_PAYLOAD,
             )
         )
+
+
+def run_device_to_host_protocol_error_case(
+    emulator: Emulator, begin_request_id: int, status_request_id: int,
+    frame_type: int, sequence: int, offset: int, status: int = 0,
+) -> None:
+    emulator.send_json(
+        begin_request_id, "binary.test.tx.begin", {"size_bytes": TRANSFER_BYTES}
+    )
+    result = require_response(
+        emulator.wait_response(begin_request_id), begin_request_id
+    )
+    transfer_id = int(result["transfer_id"])
+    if result.get("direction") != "device_to_host":
+        raise AssertionError(f"wrong TX direction: {result}")
+    first = emulator.wait_frame()
+    if (
+        first.get("type") != DATA
+        or first.get("transfer_id") != transfer_id
+        or first.get("sequence") != 0
+        or first.get("offset") != 0
+        or not first.get("crc_valid")
+    ):
+        raise AssertionError(f"unexpected protocol-error DATA frame: {first}")
+    emulator.send(
+        build_frame(
+            frame_type, transfer_id, sequence, offset, status=status
+        )
+    )
+    emulator.send_json(
+        status_request_id, "binary.transfer.status", {"transfer_id": transfer_id}
+    )
+    transfer_status = require_response(
+        emulator.wait_response(status_request_id), status_request_id
+    )
+    if (
+        transfer_status.get("state") != "aborted"
+        or transfer_status.get("transferred_bytes") != 0
+    ):
+        raise AssertionError(f"unexpected protocol-error TX status: {transfer_status}")
+
+
+def run_device_to_host_validation_cases(emulator: Emulator) -> None:
+    # Future ACK must not advance the sender frontier.
+    run_device_to_host_protocol_error_case(
+        emulator, 40, 41, ACK, sequence=2, offset=2 * MAX_PAYLOAD
+    )
+    # An offset-mismatched NACK must not cause a retransmission or a
+    # sequence/offset rewind.
+    run_device_to_host_protocol_error_case(
+        emulator, 42, 43, NACK, sequence=0, offset=1, status=BAD_CRC
+    )
+    print(
+        "E1C_FIRMWARE_SENDER_VALIDATION "
+        "duplicate_ack=PASS stale_ack=PASS future_ack=PASS "
+        "stale_nack=PASS mismatched_nack=PASS"
+    )
 
 
 def main() -> int:
@@ -717,6 +782,8 @@ def main() -> int:
             or tx_status.get("crc32") != expected_crc()
         ):
             raise AssertionError(f"unexpected ESP-to-Host status: {tx_status}")
+
+        run_device_to_host_validation_cases(emulator)
 
         malformed_probe = build_frame(ACK, 0x12345678, 0, 0)
         encoded_probe = bytearray(malformed_probe[2:-1])
