@@ -253,6 +253,104 @@ def test_upload_policy_and_source_mutation() -> None:
             producer.close()
 
 
+def test_supplied_upload_plan_consistency() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        raw_path = Path(directory) / "raw.bin"
+        raw_path.write_bytes(b"R")
+        raw_plan = select_upload_plan(raw_path, ENCODING_RAW, set())
+
+        compressed_path = Path(directory) / "compressed.bin"
+        compressed_path.write_bytes(b"\x00" * 4096)
+        compressed_plan = select_upload_plan(
+            compressed_path, ENCODING_ZERO_RLE_V1, {ENCODING_ZERO_RLE_V1}
+        )
+        compressed_raw_plan = select_upload_plan(
+            compressed_path, ENCODING_RAW, set()
+        )
+
+        def upload_with_plan(path: Path, mode: str, plan, capabilities: set[str]):
+            client = object.__new__(SerialFileTransferClient)
+            client.capabilities = frozenset(capabilities)
+
+            def request(command: str, params: dict | None = None,
+                        timeout: float | None = None) -> dict:
+                if command == "file.write.begin":
+                    result = {
+                        "transfer_id": 23,
+                        "size_bytes": plan.local.size_bytes,
+                    }
+                    if plan.encoding == ENCODING_ZERO_RLE_V1:
+                        result.update({
+                            "encoding": ENCODING_ZERO_RLE_V1,
+                            "wire_size_bytes": plan.wire_size_bytes,
+                        })
+                    return result
+                if command == "file.transfer.status":
+                    result = {
+                        "file_state": "completed",
+                        "size_bytes": plan.local.size_bytes,
+                        "transferred_bytes": plan.local.size_bytes,
+                    }
+                    if plan.encoding == ENCODING_ZERO_RLE_V1:
+                        result.update({
+                            "encoding": ENCODING_ZERO_RLE_V1,
+                            "wire_size_bytes": plan.wire_size_bytes,
+                            "wire_transferred_bytes": plan.wire_size_bytes,
+                        })
+                    return result
+                raise AssertionError(f"unexpected command {command}")
+
+            client.request = request
+            client.send_raw = lambda data: len(data)
+            client.wait_frame = lambda timeout: {
+                "type": wire.ACK,
+                "transfer_id": 23,
+                "sequence": 1,
+                "offset": plan.wire_size_bytes,
+                "crc_valid": True,
+            }
+            with patch.object(
+                    fixture_cache, "select_upload_plan",
+                    side_effect=AssertionError("supplied plan was recomputed")):
+                return client.upload(
+                    "/plan-check.bin", path, False, encoding=mode, plan=plan
+                )
+
+        def assert_rejected(path: Path, mode: str, plan,
+                            capabilities: set[str]) -> None:
+            try:
+                upload_with_plan(path, mode, plan, capabilities)
+            except UploadModeError:
+                return
+            raise AssertionError(f"accepted invalid supplied plan for mode {mode}")
+
+        # raw + raw plan: accepted.
+        assert upload_with_plan(raw_path, ENCODING_RAW, raw_plan, set()).encoding == ENCODING_RAW
+        # raw + compressed plan: rejected.
+        assert_rejected(compressed_path, ENCODING_RAW, compressed_plan,
+                        {ENCODING_ZERO_RLE_V1})
+        # zero-rle-v1 + compressed plan + capability: accepted.
+        assert upload_with_plan(
+            compressed_path, ENCODING_ZERO_RLE_V1, compressed_plan,
+            {ENCODING_ZERO_RLE_V1}
+        ).encoding == ENCODING_ZERO_RLE_V1
+        # zero-rle-v1 + raw plan: rejected.
+        assert_rejected(compressed_path, ENCODING_ZERO_RLE_V1,
+                        compressed_raw_plan, {ENCODING_ZERO_RLE_V1})
+        # zero-rle-v1 + compressed plan without capability: rejected.
+        assert_rejected(compressed_path, ENCODING_ZERO_RLE_V1,
+                        compressed_plan, set())
+        # auto + raw plan: accepted.
+        assert upload_with_plan(raw_path, ENCODING_AUTO, raw_plan, set()).encoding == ENCODING_RAW
+        # auto + compressed plan + capability: accepted.
+        assert upload_with_plan(
+            compressed_path, ENCODING_AUTO, compressed_plan,
+            {ENCODING_ZERO_RLE_V1}
+        ).encoding == ENCODING_ZERO_RLE_V1
+        # auto + compressed plan without capability: rejected.
+        assert_rejected(compressed_path, ENCODING_AUTO, compressed_plan, set())
+
+
 def test_capability_discovery() -> None:
     client = object.__new__(SerialFileTransferClient)
     sent: list[bytes] = []
@@ -419,6 +517,7 @@ def run() -> None:
     test_zero_rle_encoder()
     test_np2_fixture_canonical_shape()
     test_upload_policy_and_source_mutation()
+    test_supplied_upload_plan_consistency()
     test_capability_discovery()
     test_retry_retains_encoded_frame()
 

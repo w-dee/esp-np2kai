@@ -228,6 +228,24 @@ def select_upload_plan(path: Path, encoding: str,
     return _raw_upload_plan(path, compressed.local)
 
 
+def _validate_supplied_upload_plan(encoding: str, plan: UploadPlan,
+                                   capabilities: set[str] | frozenset[str]) -> None:
+    """Validate a caller-supplied plan without reselecting or recomputing it."""
+
+    if plan.encoding not in {ENCODING_RAW, ENCODING_ZERO_RLE_V1}:
+        raise UploadModeError(f"unsupported upload plan encoding: {plan.encoding}")
+    if encoding == ENCODING_RAW and plan.encoding != ENCODING_RAW:
+        raise UploadModeError("raw upload cannot use a compressed upload plan")
+    if encoding == ENCODING_ZERO_RLE_V1 and plan.encoding != ENCODING_ZERO_RLE_V1:
+        raise UploadModeError("zero-rle-v1 upload requires a compressed upload plan")
+    if (plan.encoding == ENCODING_ZERO_RLE_V1 and
+            ENCODING_ZERO_RLE_V1 not in capabilities):
+        raise UploadModeError(
+            "zero-rle-v1 upload requires protocol.hello capability "
+            "file-transfer.zero-rle-v1"
+        )
+
+
 def _scan_run(source, start: int) -> tuple[bool, int]:
     """Return (literal, length) for the run beginning at start."""
 
@@ -658,16 +676,16 @@ class SerialFileTransferClient:
     def upload(self, path: str, local_path: Path, replace: bool,
                encoding: str = ENCODING_RAW,
                plan: UploadPlan | None = None) -> UploadMetrics:
+        if encoding not in {ENCODING_RAW, ENCODING_ZERO_RLE_V1, ENCODING_AUTO}:
+            raise UploadModeError(f"unsupported upload encoding mode: {encoding}")
+        capabilities = set(self.capabilities)
         if plan is None:
-            plan = select_upload_plan(local_path, encoding, set(self.capabilities))
+            plan = select_upload_plan(local_path, encoding, capabilities)
         elif plan.local.path != local_path:
             raise ValueError("upload plan does not match local path")
+        else:
+            _validate_supplied_upload_plan(encoding, plan, capabilities)
         selected_encoding = plan.encoding
-        if encoding not in {ENCODING_RAW, ENCODING_ZERO_RLE_V1, ENCODING_AUTO,
-                            selected_encoding}:
-            raise UploadModeError(f"unsupported upload encoding mode: {encoding}")
-        if encoding == ENCODING_ZERO_RLE_V1 and selected_encoding != ENCODING_ZERO_RLE_V1:
-            raise UploadModeError("explicit zero-rle-v1 upload plan was not selected")
 
         producer: _ByteProducer
         if selected_encoding == ENCODING_ZERO_RLE_V1:
