@@ -6,17 +6,132 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
+import np2_fixture_cache as fixture_cache
+from emu import uart_binary_data_plane_test as wire
 from np2_fixture_cache import (
     DEFAULT_CONTROL_TIMEOUT,
     DEFAULT_HASH_TIMEOUT,
+    FRAME_PREFIX,
     RemoteError,
     SerialFileTransferClient,
+    _SerialParser,
     UploadMetrics,
     derive_cache_path,
     hash_file,
     provision_fixture,
 )
+
+
+class FakeSerialPump:
+    def __init__(self, data: bytes = b"") -> None:
+        self.buffer = bytearray(data)
+        self.read_calls: list[int] = []
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self.buffer)
+
+    def read(self, size: int) -> bytes:
+        self.read_calls.append(size)
+        if not self.buffer:
+            raise AssertionError("blocking read was attempted with no available data")
+        data = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return data
+
+    def close(self) -> None:
+        pass
+
+
+def make_pump_probe(data: bytes = b"") -> SerialFileTransferClient:
+    client = object.__new__(SerialFileTransferClient)
+    client.serial = FakeSerialPump(data)
+    client.parser = _SerialParser()
+    return client
+
+
+def test_serial_constructor_and_pump() -> None:
+    factory = type(
+        "SerialFactory",
+        (),
+        {
+            "kwargs": None,
+            "Serial": lambda self, *args, **kwargs: (
+                setattr(self, "kwargs", kwargs) or FakeSerialPump()
+            ),
+        },
+    )()
+    with patch.object(fixture_cache, "serial", factory):
+        client = SerialFileTransferClient(
+            "/dev/fake", baud=1500000, timeout=12.5, hash_timeout=45.0
+        )
+        assert factory.kwargs == {
+            "baudrate": 1500000,
+            "timeout": 0.0,
+            "write_timeout": 12.5,
+        }
+        client.close()
+
+    empty_client = make_pump_probe()
+    with patch.object(fixture_cache.time, "sleep") as sleep:
+        empty_client._pump()
+    assert empty_client.serial.read_calls == []
+    sleep.assert_called_once_with(fixture_cache.SERIAL_POLL_INTERVAL_SECONDS)
+
+    available_client = make_pump_probe(b"available-now")
+    with patch.object(fixture_cache.time, "sleep") as sleep:
+        available_client._pump()
+    assert available_client.serial.read_calls == [len(b"available-now")]
+    sleep.assert_not_called()
+
+    bounded_client = make_pump_probe(bytes(range(256)) * 20)
+    bounded_client._pump()
+    bounded_client._pump()
+    assert bounded_client.serial.read_calls == [
+        fixture_cache.SERIAL_READ_MAX_BYTES,
+        1024,
+    ]
+
+
+def test_pump_preserves_parser_byte_stream() -> None:
+    control = FRAME_PREFIX + b'{"type":"response","id":7,"ok":true,"result":{"pong":true}}\n'
+    frame = wire.build_frame(wire.ACK, 42, 3, 1024)
+    stream = control + frame
+    client = make_pump_probe(stream)
+    expected = _SerialParser()
+    expected.feed(stream)
+
+    while client.serial.in_waiting:
+        client._pump()
+
+    assert list(client.parser.lines) == list(expected.lines)
+    assert list(client.parser.frames) == list(expected.frames)
+
+
+def test_request_deadline_semantics() -> None:
+    client = make_pump_probe()
+    response = {"id": 7, "ok": True}
+
+    def deliver_response() -> None:
+        client.parser.lines.append(response)
+
+    client._pump = deliver_response
+    with patch.object(fixture_cache.time, "monotonic", side_effect=[100.0, 100.5, 100.6]):
+        assert client.wait_response(7, timeout=1.0) == response
+
+    expired_client = make_pump_probe()
+    pump_calls: list[bool] = []
+    expired_client._pump = lambda: pump_calls.append(True)
+    with patch.object(fixture_cache.time, "monotonic", side_effect=[200.0, 201.1]):
+        try:
+            expired_client.wait_response(7, timeout=1.0)
+        except TimeoutError:
+            pass
+        else:
+            raise AssertionError("expired request deadline did not time out")
+    assert pump_calls == []
 
 
 def make_serial_probe(files: dict[str, bytes] | None = None) -> tuple[SerialFileTransferClient, list[tuple[str, float | None]]]:
@@ -77,6 +192,10 @@ class FakeClient:
 
 
 def run() -> None:
+    test_serial_constructor_and_pump()
+    test_pump_preserves_parser_byte_stream()
+    test_request_deadline_semantics()
+
     payload = bytes((index * 17 + 3) & 0xFF for index in range(1261568))
     with tempfile.TemporaryDirectory() as directory:
         fixture = Path(directory) / "np2test-fd1232.hdm"

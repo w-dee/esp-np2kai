@@ -29,6 +29,8 @@ MAX_COMPONENT_BYTES = 128
 MAX_PATH_BYTES = 192
 DEFAULT_CONTROL_TIMEOUT = 5.0
 DEFAULT_HASH_TIMEOUT = 30.0
+SERIAL_READ_MAX_BYTES = 4096
+SERIAL_POLL_INTERVAL_SECONDS = 0.001
 
 
 class RemoteError(RuntimeError):
@@ -249,7 +251,7 @@ class SerialFileTransferClient:
                  hash_timeout: float = DEFAULT_HASH_TIMEOUT) -> None:
         if serial is None:
             raise RuntimeError("pyserial is required for the physical cache CLI")
-        self.serial = serial.Serial(port, baudrate=baud, timeout=0.05,
+        self.serial = serial.Serial(port, baudrate=baud, timeout=0.0,
                                     write_timeout=timeout)
         self.timeout = timeout
         self.hash_timeout = hash_timeout
@@ -272,7 +274,11 @@ class SerialFileTransferClient:
         return written
 
     def _pump(self) -> None:
-        data = self.serial.read(4096)
+        available = self.serial.in_waiting
+        if available == 0:
+            time.sleep(SERIAL_POLL_INTERVAL_SECONDS)
+            return
+        data = self.serial.read(min(available, SERIAL_READ_MAX_BYTES))
         if data:
             self.parser.feed(data)
 
