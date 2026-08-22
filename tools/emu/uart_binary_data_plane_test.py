@@ -111,11 +111,17 @@ def pattern_chunk(offset: int, length: int) -> bytes:
     return bytes(pattern(offset + index) for index in range(length))
 
 
-def expected_crc() -> int:
+def expected_crc_for_size(size: int) -> int:
     value = 0
-    for offset in range(0, TRANSFER_BYTES, MAX_PAYLOAD):
-        value = binascii.crc32(pattern_chunk(offset, MAX_PAYLOAD), value)
+    for offset in range(0, size, MAX_PAYLOAD):
+        value = binascii.crc32(
+            pattern_chunk(offset, min(MAX_PAYLOAD, size - offset)), value
+        )
     return value & 0xFFFFFFFF
+
+
+def expected_crc() -> int:
+    return expected_crc_for_size(TRANSFER_BYTES)
 
 
 def build_frame(
@@ -422,6 +428,158 @@ def require_ack(frame: dict, transfer_id: int, sequence: int, offset: int) -> No
         raise AssertionError(f"unexpected ACK: {frame}")
 
 
+def require_nack(frame: dict, transfer_id: int, sequence: int, offset: int,
+                 reason: int) -> None:
+    if (
+        frame["type"] != NACK
+        or frame["transfer_id"] != transfer_id
+        or frame["sequence"] != sequence
+        or frame["offset"] != offset
+        or frame["status"] != reason
+        or frame["payload"]
+        or not frame["crc_valid"]
+    ):
+        raise AssertionError(f"unexpected NACK: {frame}")
+
+
+def begin_rx(emulator: Emulator, request_id: int, size: int) -> int:
+    emulator.send_json(request_id, "binary.test.rx.begin", {"size_bytes": size})
+    result = require_response(emulator.wait_response(request_id), request_id)
+    transfer_id = int(result["transfer_id"])
+    if result.get("direction") != "host_to_device" or result.get("size_bytes") != size:
+        raise AssertionError(f"unexpected RX begin result: {result}")
+    return transfer_id
+
+
+def complete_rx(emulator: Emulator, request_id: int, transfer_id: int,
+                size: int) -> None:
+    emulator.send_json(request_id, "binary.transfer.status", {"transfer_id": transfer_id})
+    status = require_response(emulator.wait_response(request_id), request_id)
+    if (
+        status.get("state") != "completed"
+        or status.get("transferred_bytes") != size
+        or status.get("crc32") != expected_crc_for_size(size)
+    ):
+        raise AssertionError(f"unexpected small RX status: {status}")
+
+
+def send_data(emulator: Emulator, transfer_id: int, sequence: int,
+              offset: int, payload: bytes) -> None:
+    emulator.send(build_frame(DATA, transfer_id, sequence, offset, payload=payload))
+
+
+def corrupt_crc(wire: bytes) -> bytes:
+    decoded = bytearray(cobs_decode(wire[2:-1]))
+    decoded[-1] ^= 0x01
+    return b"\x00\x00" + cobs_encode(bytes(decoded)) + b"\x00"
+
+
+def finish_1812_case(emulator: Emulator, transfer_id: int) -> None:
+    final = pattern_chunk(1024, 788)
+    send_data(emulator, transfer_id, 1, 1024, final)
+    require_ack(emulator.wait_frame(), transfer_id, 2, 1812)
+
+
+def run_active_duplicate_cases(emulator: Emulator, request_id: int) -> None:
+    # CASE A: deliberately consume/drop the first ACK, replay the exact 1024-byte
+    # DATA frame, then accept the 788-byte final frame.  This is the original
+    # 1812-byte failure shape.
+    transfer_id = begin_rx(emulator, request_id, 1812)
+    first = pattern_chunk(0, 1024)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)  # dropped by host logic
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    finish_1812_case(emulator, transfer_id)
+    complete_rx(emulator, request_id + 1, transfer_id, 1812)
+
+    # CASE H: the same 1024 + 788 shape without a replay remains unchanged.
+    transfer_id = begin_rx(emulator, request_id + 10, 1812)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    finish_1812_case(emulator, transfer_id)
+    complete_rx(emulator, request_id + 11, transfer_id, 1812)
+
+    # The extreme 1024 + 1 shape is covered as well.
+    transfer_id = begin_rx(emulator, request_id + 20, 1025)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 1, 1024, pattern_chunk(1024, 1))
+    require_ack(emulator.wait_frame(), transfer_id, 2, 1025)
+    complete_rx(emulator, request_id + 21, transfer_id, 1025)
+
+
+def run_duplicate_validation_cases(emulator: Emulator, request_id: int) -> None:
+    first = pattern_chunk(0, 1024)
+
+    # CASE B: changed payload with an invalid CRC is rejected before duplicate
+    # recognition and does not change the accepted transfer state.
+    transfer_id = begin_rx(emulator, request_id, 1812)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    changed = bytearray(first)
+    changed[0] ^= 0x01
+    emulator.send(corrupt_crc(build_frame(DATA, transfer_id, 0, 0, payload=bytes(changed))))
+    require_nack(emulator.wait_frame(), transfer_id, 1, 1024, BAD_CRC)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    finish_1812_case(emulator, transfer_id)
+    complete_rx(emulator, request_id + 1, transfer_id, 1812)
+
+    # CASE C: changed payload with a valid CRC is not a duplicate.  Use an even
+    # 1024 + 1024 transfer so ordinary length validation can reach BAD_SEQUENCE.
+    transfer_id = begin_rx(emulator, request_id + 10, 2048)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    changed = bytearray(first)
+    changed[0] ^= 0x01
+    emulator.send(build_frame(DATA, transfer_id, 0, 0, payload=bytes(changed)))
+    require_nack(emulator.wait_frame(), transfer_id, 1, 1024, 2)  # BAD_SEQUENCE
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 1, 1024, pattern_chunk(1024, 1024))
+    require_ack(emulator.wait_frame(), transfer_id, 2, 2048)
+    complete_rx(emulator, request_id + 11, transfer_id, 2048)
+
+    # CASE D: wrong sequence is ordinary BAD_SEQUENCE.
+    transfer_id = begin_rx(emulator, request_id + 20, 2048)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    emulator.send(build_frame(DATA, transfer_id, 7, 0, payload=first))
+    require_nack(emulator.wait_frame(), transfer_id, 1, 1024, 2)  # BAD_SEQUENCE
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 1, 1024, pattern_chunk(1024, 1024))
+    require_ack(emulator.wait_frame(), transfer_id, 2, 2048)
+    complete_rx(emulator, request_id + 21, transfer_id, 2048)
+
+    # CASE E: wrong offset is ordinary BAD_OFFSET.
+    transfer_id = begin_rx(emulator, request_id + 30, 2048)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    emulator.send(build_frame(DATA, transfer_id, 1, 1, payload=first))
+    require_nack(emulator.wait_frame(), transfer_id, 1, 1024, 3)  # BAD_OFFSET
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 1, 1024, pattern_chunk(1024, 1024))
+    require_ack(emulator.wait_frame(), transfer_id, 2, 2048)
+    complete_rx(emulator, request_id + 31, transfer_id, 2048)
+
+    # CASE F: an oversized new frame is still INVALID_LENGTH.  The exact
+    # previous frame remains replayable afterwards.
+    transfer_id = begin_rx(emulator, request_id + 40, 1812)
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    send_data(emulator, transfer_id, 1, 1024, first)
+    require_nack(emulator.wait_frame(), transfer_id, 1, 1024, 4)  # INVALID_LENGTH
+    send_data(emulator, transfer_id, 0, 0, first)
+    require_ack(emulator.wait_frame(), transfer_id, 1, 1024)
+    finish_1812_case(emulator, transfer_id)
+    complete_rx(emulator, request_id + 41, transfer_id, 1812)
+
+
 def run_host_to_device(emulator: Emulator, transfer_id: int) -> None:
     def send_and_ack(wire: bytes, expected_sequence: int, expected_offset: int) -> None:
         emulator.send(wire)
@@ -524,6 +682,9 @@ def main() -> int:
     try:
         emulator.start()
         emulator.wait_line(READY_MARKER, timeout=10.0)
+
+        run_active_duplicate_cases(emulator, 100)
+        run_duplicate_validation_cases(emulator, 200)
 
         emulator.send_json(20, "binary.test.rx.begin", {"size_bytes": TRANSFER_BYTES})
         rx_result = require_response(emulator.wait_response(20), 20)

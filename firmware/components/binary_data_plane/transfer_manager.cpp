@@ -197,17 +197,22 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
         send_nack(manager, NackReason::BadCrc);
         return;
     }
-    if (frame.payload_length == 0 ||
-        frame.payload_length > manager->total_bytes - manager->transferred_bytes) {
-        send_nack(manager, NackReason::InvalidLength);
-        return;
-    }
+    // Recognize a replay of the immediately previous accepted DATA before
+    // validating it against the transfer bytes that remain.  A retransmitted
+    // frame can be larger than the current remainder when the following frame
+    // is shorter; it is still the already accepted frame and must be ACKed
+    // idempotently rather than rejected as a new oversized frame.
     if (manager->previous_data_valid &&
         frame.sequence == manager->previous_data_sequence &&
         frame.offset == manager->previous_data_offset &&
         frame.payload_length == manager->previous_data_length &&
         frame.wire_crc == manager->previous_data_crc) {
         send_ack(manager);
+        return;
+    }
+    if (frame.payload_length == 0 ||
+        frame.payload_length > manager->total_bytes - manager->transferred_bytes) {
+        send_nack(manager, NackReason::InvalidLength);
         return;
     }
     if (frame.sequence != manager->expected_sequence) {

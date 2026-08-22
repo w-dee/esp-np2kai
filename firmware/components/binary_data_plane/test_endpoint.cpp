@@ -10,7 +10,12 @@ namespace {
 constexpr std::string_view kPatternPrefix = "@ESP-NP2 ";
 constexpr std::string_view kPatternLog = "I (123) ESP-IDF log text\n";
 
-struct PatternContext { Direction direction = Direction::HostToDevice; };
+struct PatternContext {
+    Direction direction = Direction::HostToDevice;
+    std::uint64_t size = 0;
+    std::uint64_t consumed = 0;
+    std::uint64_t produced = 0;
+};
 PatternContext s_pattern_context{};
 
 std::uint8_t pattern_value(std::uint64_t offset)
@@ -33,33 +38,53 @@ std::uint8_t pattern_value(std::uint64_t offset)
 EndpointResult begin(void *context, Direction direction, std::uint64_t size)
 {
     auto *pattern = static_cast<PatternContext *>(context);
-    if (pattern == nullptr || size != kTestTransferBytes) return EndpointResult::Failed;
+    if (pattern == nullptr || size == 0) return EndpointResult::Failed;
     pattern->direction = direction;
+    pattern->size = size;
+    pattern->consumed = 0;
+    pattern->produced = 0;
     return EndpointResult::Ok;
 }
 
-EndpointResult consume(void *, std::uint64_t offset, const std::uint8_t *data,
+EndpointResult consume(void *context, std::uint64_t offset, const std::uint8_t *data,
                        std::size_t length)
 {
-    if (data == nullptr || length == 0) return EndpointResult::Failed;
+    auto *pattern = static_cast<PatternContext *>(context);
+    if (pattern == nullptr || data == nullptr || length == 0 ||
+        offset != pattern->consumed ||
+        length > pattern->size - pattern->consumed) {
+        return EndpointResult::Failed;
+    }
     for (std::size_t i = 0; i < length; ++i) {
         if (data[i] != pattern_value(offset + i)) return EndpointResult::Failed;
     }
+    pattern->consumed += length;
     return EndpointResult::Ok;
 }
 
-EndpointResult produce(void *, std::uint64_t offset, std::uint8_t *out,
+EndpointResult produce(void *context, std::uint64_t offset, std::uint8_t *out,
                        std::size_t requested, std::size_t *produced)
 {
-    if (out == nullptr || produced == nullptr || requested == 0 || requested > kMaxPayloadBytes) {
+    auto *pattern = static_cast<PatternContext *>(context);
+    if (pattern == nullptr || out == nullptr || produced == nullptr || requested == 0 ||
+        requested > kMaxPayloadBytes || offset != pattern->produced ||
+        requested > pattern->size - pattern->produced) {
         return EndpointResult::Failed;
     }
     for (std::size_t i = 0; i < requested; ++i) out[i] = pattern_value(offset + i);
     *produced = requested;
+    pattern->produced += requested;
     return EndpointResult::Ok;
 }
 
-EndpointResult finish(void *) { return EndpointResult::Ok; }
+EndpointResult finish(void *context)
+{
+    auto *pattern = static_cast<PatternContext *>(context);
+    if (pattern == nullptr) return EndpointResult::Failed;
+    return (pattern->direction == Direction::HostToDevice ?
+            pattern->consumed : pattern->produced) == pattern->size ?
+        EndpointResult::Ok : EndpointResult::Failed;
+}
 void abort_endpoint(void *, TerminalReason) {}
 void terminal(void *, TerminalReason) {}
 
