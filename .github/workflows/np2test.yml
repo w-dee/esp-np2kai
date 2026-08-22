@@ -268,6 +268,26 @@ jobs:
           NP2_REDUCED_PREBUILT_BUILD_DIR="${GITHUB_WORKSPACE}/firmware/build-reduced-extmem8" \
             bash tools/emu/test-step6a-ci.sh
 
+      - name: Run zero-rle W=2 File Transfer regression
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          readonly reduced_build="${GITHUB_WORKSPACE}/firmware/build-reduced-extmem8"
+          readonly e4_build="${GITHUB_WORKSPACE}/firmware/build-e4-ci"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          test -f "${reduced_build}/np2fixture-reduced-merged.bin"
+          mkdir -p "${e4_build}"
+          ln -sfn ../build-reduced-extmem8/np2fixture-reduced-merged.bin \
+            "${e4_build}/merged-binary.bin"
+          P4_V3X_BUILD_DIR="${e4_build}" \
+            bash tools/emu/test-file-transfer-zero-rle-windowed-gbn.sh
+
   esp32p4-esp-emu-video-golden:
     name: ESP32-P4 esp-emu video golden
     runs-on: ubuntu-24.04
