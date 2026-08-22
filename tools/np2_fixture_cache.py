@@ -150,6 +150,51 @@ class FixtureClient(Protocol):
                plan: UploadPlan | None = None) -> UploadMetrics: ...
 
 
+def _parse_received_frame(decoded: bytes) -> dict:
+    """Parse received frames structurally before applying transfer semantics.
+
+    The canonical wire parser deliberately rejects noncanonical ACK/NACK
+    fields. The production receive path must retain CRC-valid control frames so
+    the active upload can report their semantic errors as PROTOCOL_ERROR.
+    DATA frames continue through the canonical parser unchanged.
+    """
+    if len(decoded) < wire.HEADER_BYTES + wire.CRC_BYTES:
+        raise ValueError("decoded binary frame is too short")
+    (
+        magic,
+        version,
+        frame_type,
+        flags,
+        header_length,
+        transfer_id,
+        sequence,
+        offset,
+        payload_length,
+        status,
+    ) = wire.HEADER.unpack(decoded[:wire.HEADER_BYTES])
+    if magic != wire.MAGIC or version != wire.VERSION or flags != 0 or header_length != wire.HEADER_BYTES:
+        raise ValueError("binary frame header is invalid")
+    if frame_type not in (wire.DATA, wire.ACK, wire.NACK):
+        raise ValueError("unknown binary frame type")
+    if payload_length > wire.MAX_PAYLOAD or len(decoded) != wire.HEADER_BYTES + payload_length + wire.CRC_BYTES:
+        raise ValueError("binary frame payload length is invalid")
+    if frame_type == wire.DATA:
+        return wire.parse_frame(decoded)
+
+    payload = decoded[wire.HEADER_BYTES : wire.HEADER_BYTES + payload_length]
+    wire_crc = int.from_bytes(decoded[-wire.CRC_BYTES:], "little")
+    return {
+        "type": frame_type,
+        "transfer_id": transfer_id,
+        "sequence": sequence,
+        "offset": offset,
+        "status": status,
+        "payload": payload,
+        "wire_crc": wire_crc,
+        "crc_valid": wire.crc32(decoded[:-wire.CRC_BYTES]) == wire_crc,
+    }
+
+
 def hash_file(path: Path) -> LocalFile:
     digest = hashlib.sha256()
     size = 0
@@ -588,7 +633,11 @@ class _SerialParser:
                 if byte == 0:
                     if self.encoded:
                         try:
-                            self.frames.append(wire.parse_frame(wire.cobs_decode(bytes(self.encoded))))
+                            self.frames.append(
+                                _parse_received_frame(
+                                    wire.cobs_decode(bytes(self.encoded))
+                                )
+                            )
                         except (AssertionError, ValueError):
                             pass
                     self.encoded.clear()

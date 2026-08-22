@@ -30,6 +30,11 @@ CASE_MISMATCHED_NACK = "mismatched-nack"
 CASE_WRONG_TRANSFER_ACK = "wrong-transfer-ack"
 CASE_CORRUPT_ACK = "corrupt-ack"
 CASE_INVALID_ACK = "invalid-ack"
+CASE_RAW_ACK_PAYLOAD = "raw-ack-payload"
+CASE_RAW_ACK_STATUS = "raw-ack-status"
+CASE_RAW_NACK_PAYLOAD = "raw-nack-payload"
+CASE_RAW_NACK_ZERO_STATUS = "raw-nack-zero-status"
+CASE_RAW_NACK_INVALID_STATUS = "raw-nack-invalid-status"
 
 SUCCESS_CASES = {
     CASE_DUPLICATE_ACK,
@@ -42,6 +47,19 @@ PROTOCOL_ERROR_CASES = {
     CASE_FUTURE_ACK,
     CASE_MISMATCHED_NACK,
     CASE_INVALID_ACK,
+    CASE_RAW_ACK_PAYLOAD,
+    CASE_RAW_ACK_STATUS,
+    CASE_RAW_NACK_PAYLOAD,
+    CASE_RAW_NACK_ZERO_STATUS,
+    CASE_RAW_NACK_INVALID_STATUS,
+}
+
+RAW_SEMANTIC_CASES = {
+    CASE_RAW_ACK_PAYLOAD,
+    CASE_RAW_ACK_STATUS,
+    CASE_RAW_NACK_PAYLOAD,
+    CASE_RAW_NACK_ZERO_STATUS,
+    CASE_RAW_NACK_INVALID_STATUS,
 }
 
 
@@ -115,6 +133,77 @@ class InjectingAckParser(_SerialParser):
             )
 
 
+class EncodedSemanticValidationParser(_SerialParser):
+    """Inject one malformed encoded control frame through the production parser."""
+
+    def __init__(self, fault: str) -> None:
+        super().__init__()
+        self.fault = fault
+        self.injections: list[dict] = []
+
+    def _raw_frame(self, frame: dict) -> bytes:
+        transfer_id = int(frame["transfer_id"])
+        if self.fault == CASE_RAW_ACK_PAYLOAD:
+            return wire.build_unchecked_control_frame(
+                wire.ACK, transfer_id, 1, 1024, payload=b"unexpected-ack-payload"
+            )
+        if self.fault == CASE_RAW_ACK_STATUS:
+            return wire.build_unchecked_control_frame(
+                wire.ACK, transfer_id, 1, 1024, status=1
+            )
+        if self.fault == CASE_RAW_NACK_PAYLOAD:
+            return wire.build_unchecked_control_frame(
+                wire.NACK, transfer_id, 0, 0, status=NACK_BAD_CRC,
+                payload=b"unexpected-nack-payload",
+            )
+        if self.fault == CASE_RAW_NACK_ZERO_STATUS:
+            return wire.build_unchecked_control_frame(
+                wire.NACK, transfer_id, 0, 0, status=0
+            )
+        if self.fault == CASE_RAW_NACK_INVALID_STATUS:
+            return wire.build_unchecked_control_frame(
+                wire.NACK, transfer_id, 0, 0, status=0xFFFF
+            )
+        raise AssertionError(f"unsupported encoded semantic case: {self.fault}")
+
+    def feed(self, data: bytes) -> None:
+        before = len(self.frames)
+        super().feed(data)
+        if self.injections:
+            return
+        for index in range(before, len(self.frames)):
+            frame = self.frames[index]
+            if (
+                frame.get("type") == wire.ACK
+                and frame.get("sequence") == 2
+                and frame.get("offset") == 2048
+            ):
+                real_ack = self.frames[index]
+                raw = self._raw_frame(real_ack)
+                try:
+                    wire.parse_frame(wire.cobs_decode(raw[2:-1]))
+                except (AssertionError, ValueError):
+                    pass
+                else:
+                    if self.fault != CASE_RAW_NACK_INVALID_STATUS:
+                        raise AssertionError(
+                            "canonical parser unexpectedly accepted malformed control frame"
+                        )
+                del self.frames[index]
+                super().feed(raw)
+                injected = self.frames.pop()
+                self.frames.insert(index, injected)
+                self.frames.insert(index + 1, real_ack)
+                self.injections.append(injected)
+                print(
+                    "FAULT_INJECT action=append-encoded direction=firmware-to-host "
+                    f"case={self.fault} type={injected.get('type')} "
+                    f"transfer_id={injected.get('transfer_id')} "
+                    f"crc_valid={injected.get('crc_valid')}"
+                )
+                return
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--firmware", required=True, type=Path)
@@ -145,7 +234,10 @@ def make_client(emu: wire.Emulator, fault: str) -> tuple[
     client.serial = serial
     client.timeout = 5.0
     client.hash_timeout = 30.0
-    client.parser = InjectingAckParser(fault)
+    client.parser = (
+        EncodedSemanticValidationParser(fault)
+        if fault in RAW_SEMANTIC_CASES else InjectingAckParser(fault)
+    )
     client.request_id = 1
     client.capabilities = frozenset()
     return client, serial
@@ -252,6 +344,11 @@ def main() -> int:
             CASE_WRONG_TRANSFER_ACK,
             CASE_CORRUPT_ACK,
             CASE_INVALID_ACK,
+            CASE_RAW_ACK_PAYLOAD,
+            CASE_RAW_ACK_STATUS,
+            CASE_RAW_NACK_PAYLOAD,
+            CASE_RAW_NACK_ZERO_STATUS,
+            CASE_RAW_NACK_INVALID_STATUS,
         ):
             run_case(emu, fault)
         exit_status = emu.finish()
