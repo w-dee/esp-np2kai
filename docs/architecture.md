@@ -600,7 +600,9 @@ This scoped result does not cover every real-media lifecycle or TAB5.
 
 Step 6A is the completed, hardware-independent persistent storage integration
 using emulator-supported SPI-NOR plus ESP-IDF FATFS/Wear Levelling (WL). It is
-not the physical microSD implementation planned for Step 6B.
+distinct from the physical microSD/SDMMC implementation validated separately
+under Step 6B; Step 6B remains partial with removal and durability work
+outstanding.
 
 The common validation image uses the current approved 8 MiB flash envelope.
 This is the common esp-emu validation envelope, not a claim that every future
@@ -694,8 +696,8 @@ independent oracle.
 
 Step 6A File Transfer service capacity remains 2 MiB. Routine CI uses a
 bounded 262145-byte upload/download workload, while the routine persistence
-case uses 4097 bytes to cross the 4 KiB FAT cluster boundary. A clean
-A clean image using the approved 2 MiB-app / 8 MiB validation geometry accepts
+case uses 4097 bytes to cross the 4 KiB FAT cluster boundary. A clean image
+using the approved 2 MiB-app / 8 MiB validation geometry accepts
 a new 2 MiB file upload, readback, and ranged reads.
 That protocol maximum does not guarantee same-size replacement of a full 2 MiB
 file on the internal FATFS fixture: replacement temporarily needs both the

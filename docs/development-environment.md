@@ -189,10 +189,11 @@ the `tests/guest/np2test` build path.
 
 The validation order remains host native first, then ESP32-P4 firmware and
 integration through `esp-emu`, then real hardware. The headless framebuffer and
-portable presentation contracts are now complete in the first two layers; the
-physical display, storage, input, audio, timing, and performance branches
-remain hardware work. The host result is not an `esp-emu` or physical-board
-result.
+portable presentation contracts are now complete in the first two layers. The
+P4-NANO SDMMC and Host-to-Device File Transfer paths already have scoped
+hardware evidence; remaining storage lifecycle/removal/durability, physical
+display, input, audio, timing, and broader performance branches remain
+hardware work. The host result is not an `esp-emu` or physical-board result.
 
 ## Current headless video and presentation validation
 

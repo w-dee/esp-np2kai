@@ -272,10 +272,10 @@ presentation contract, ESP log-validator self-test, profile-isolation check,
 and ESP presentation runtime contract. The CI configuration reuses the pinned
 ESP-IDF v5.5.4 and esp-emu v0.39.0 environment.
 
-### Step 7B.2: physical ESP32-P4 display output — BLOCKED / DEFERRED UNTIL REAL HARDWARE ARRIVES
+### Step 7B.2: physical ESP32-P4 display output — NOT STARTED / READY FOR HARDWARE BRING-UP
 
-The next P4-NANO bring-up stage is intentionally paused until physical
-ESP32-P4 hardware is available. The first tasks are:
+P4-NANO hardware is available, but physical display bring-up has not started.
+The first tasks are:
 
 - confirm the actual board revision;
 - verify actual PSRAM size and allocation behavior;
