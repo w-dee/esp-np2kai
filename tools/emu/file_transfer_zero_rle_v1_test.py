@@ -9,8 +9,12 @@ import hashlib
 import os
 from pathlib import Path
 import sys
+import tempfile
 import traceback
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from np2_fixture_cache import _ZeroRleProducer, analyze_zero_rle
 import uart_binary_data_plane_test as wire
 
 
@@ -61,35 +65,18 @@ def logical_payload() -> bytes:
     return bytes(data)
 
 
-def zero_rle_encode(data: bytes) -> bytes:
-    encoded = bytearray()
-    offset = 0
-    while offset < len(data):
-        is_zero = data[offset] == 0
-        end = offset + 1
-        while end < len(data) and (data[end] == 0) == is_zero:
-            end += 1
-        encoded.append(0x00 if is_zero else 0x01)
-        encoded.extend((end - offset).to_bytes(4, "little"))
-        if not is_zero:
-            encoded.extend(data[offset:end])
-        offset = end
-    return bytes(encoded)
-
-
 def send_compressed(emu: wire.Emulator, request_id: int, path: str,
-                    logical: bytes, replace: bool = False) -> tuple[int, bytes]:
-    encoded = zero_rle_encode(logical)
+                    plan, replace: bool = False) -> tuple[int, int]:
     begin = response(emu, request_id, "file.write.begin", {
         "path": path,
-        "size_bytes": len(logical),
+        "size_bytes": plan.local.size_bytes,
         "encoding": "zero-rle-v1",
-        "wire_size_bytes": len(encoded),
+        "wire_size_bytes": plan.wire_size_bytes,
         "replace": replace,
     })
     if (begin.get("encoding") != "zero-rle-v1" or
-            begin.get("size_bytes") != len(logical) or
-            begin.get("wire_size_bytes") != len(encoded) or
+            begin.get("size_bytes") != plan.local.size_bytes or
+            begin.get("wire_size_bytes") != plan.wire_size_bytes or
             begin.get("expected_offset") != 0):
         raise AssertionError(f"compressed begin schema mismatch: {begin}")
     transfer_id = int(begin["transfer_id"])
@@ -98,7 +85,7 @@ def send_compressed(emu: wire.Emulator, request_id: int, path: str,
     # length, and inside its literal.  The 1000-byte frame carries many
     # records; the final frame is shorter than the maximum payload.
     lengths = [1, 2, 4, 1000]
-    remaining = len(encoded) - sum(lengths)
+    remaining = plan.wire_size_bytes - sum(lengths)
     while remaining > wire.MAX_PAYLOAD:
         lengths.append(wire.MAX_PAYLOAD)
         remaining -= wire.MAX_PAYLOAD
@@ -106,46 +93,57 @@ def send_compressed(emu: wire.Emulator, request_id: int, path: str,
     if lengths[-1] <= 0 or lengths[-1] >= wire.MAX_PAYLOAD:
         raise AssertionError(f"compressed test did not produce a short final frame: {lengths}")
 
+    producer = _ZeroRleProducer(plan)
     offset = 0
-    for sequence, length in enumerate(lengths):
-        chunk = encoded[offset : offset + length]
-        frame = wire.build_frame(wire.DATA, transfer_id, sequence, offset, payload=chunk)
-        emu.send(frame)
-        wire.require_ack(emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1, offset + length)
-        if sequence == 0:
-            # C0 duplicate DATA replay: the decoder must not consume the
-            # already accepted encoded byte twice.
+    crc = 0
+    try:
+        for sequence, length in enumerate(lengths):
+            chunk = producer.read(length)
+            if len(chunk) != length:
+                raise AssertionError(
+                    f"production encoder returned {len(chunk)} bytes, expected {length}"
+                )
+            frame = wire.build_frame(wire.DATA, transfer_id, sequence, offset, payload=chunk)
             emu.send(frame)
             wire.require_ack(emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1, offset + length)
-        offset += length
-    if offset != len(encoded):
+            if sequence == 0:
+                # C0 duplicate DATA replay: the decoder must not consume the
+                # already accepted encoded byte twice.
+                emu.send(frame)
+                wire.require_ack(emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1, offset + length)
+            crc = binascii.crc32(chunk, crc)
+            offset += length
+        producer.finish()
+    finally:
+        producer.close()
+    if offset != plan.wire_size_bytes:
         raise AssertionError("compressed frame plan did not consume the wire stream")
-    return transfer_id, encoded
+    return transfer_id, crc & 0xFFFFFFFF
 
 
 def require_completed(emu: wire.Emulator, request_id: int, transfer_id: int,
-                      logical: bytes, encoded: bytes) -> None:
+                      plan, wire_crc: int) -> None:
     binary = response(emu, request_id, "binary.transfer.status", {
         "transfer_id": transfer_id,
     })
     if (binary.get("state") != "completed" or
-            binary.get("transferred_bytes") != len(encoded) or
-            binary.get("crc32") != (binascii.crc32(encoded) & 0xFFFFFFFF)):
+            binary.get("transferred_bytes") != plan.wire_size_bytes or
+            binary.get("crc32") != wire_crc):
         raise AssertionError(f"compressed binary status mismatch: {binary}")
     file_status = response(emu, request_id + 1, "file.transfer.status", {
         "transfer_id": transfer_id,
     })
     if (file_status.get("transport_state") != "completed" or
             file_status.get("file_state") != "completed" or
-            file_status.get("size_bytes") != len(logical) or
-            file_status.get("transferred_bytes") != len(logical) or
-            file_status.get("wire_size_bytes") != len(encoded) or
-            file_status.get("wire_transferred_bytes") != len(encoded) or
+            file_status.get("size_bytes") != plan.local.size_bytes or
+            file_status.get("transferred_bytes") != plan.local.size_bytes or
+            file_status.get("wire_size_bytes") != plan.wire_size_bytes or
+            file_status.get("wire_transferred_bytes") != plan.wire_size_bytes or
             file_status.get("encoding") != "zero-rle-v1"):
         raise AssertionError(f"compressed file status mismatch: {file_status}")
     hashed = response(emu, request_id + 2, "file.sha256", {"path": "/upload/c1-valid.bin"})
-    if (hashed.get("size_bytes") != len(logical) or
-            hashed.get("sha256") != hashlib.sha256(logical).hexdigest()):
+    if (hashed.get("size_bytes") != plan.local.size_bytes or
+            hashed.get("sha256") != plan.local.sha256):
         raise AssertionError(f"compressed file SHA mismatch: {hashed}")
 
 
@@ -156,8 +154,18 @@ def run(emu: wire.Emulator) -> None:
         raise AssertionError(f"zero-rle capability missing: {hello}")
 
     logical = logical_payload()
-    transfer_id, encoded = send_compressed(emu, 10, "/upload/c1-valid.bin", logical)
-    require_completed(emu, 20, transfer_id, logical, encoded)
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "c1-source.bin"
+        source.write_bytes(logical)
+        plan = analyze_zero_rle(source)
+        transfer_id, wire_crc = send_compressed(emu, 10, "/upload/c1-valid.bin", plan)
+        require_completed(emu, 20, transfer_id, plan, wire_crc)
+
+        abort_producer = _ZeroRleProducer(plan)
+        try:
+            first = abort_producer.read(1)
+        finally:
+            abort_producer.close()
 
     zero = response(emu, 30, "file.write.begin", {
         "path": "/upload/c1-empty.bin",
@@ -239,12 +247,11 @@ def run(emu: wire.Emulator) -> None:
 
     aborted = response(emu, 60, "file.write.begin", {
         "path": "/upload/c1-aborted.bin",
-        "size_bytes": len(logical),
+        "size_bytes": plan.local.size_bytes,
         "encoding": "zero-rle-v1",
-        "wire_size_bytes": len(encoded),
+        "wire_size_bytes": plan.wire_size_bytes,
     })
     aborted_id = int(aborted["transfer_id"])
-    first = encoded[:1]
     emu.send(wire.build_frame(wire.DATA, aborted_id, 0, 0, payload=first))
     wire.require_ack(emu.wait_frame(), aborted_id, 1, 1)
     response(emu, 61, "binary.transfer.abort", {"transfer_id": aborted_id})

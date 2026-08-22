@@ -65,3 +65,31 @@ The capability `file-transfer.zero-rle-v1` is advertised alongside
 `file-transfer.v1`; the protocol version is unchanged. This document records
 the software and esp-emu scope only and does not claim physical UART or
 physical-media validation.
+
+## Host encoder and fixture provisioning
+
+The host fixture-cache tool uses a bounded two-pass encoder. Pass 1 streams
+the source through a 64 KiB scan buffer to calculate the logical SHA-256,
+logical size, canonical record counts, and exact encoded wire size. Pass 2
+reopens the source and emits at most one 1024-byte DATA payload at a time.
+Canonical records are maximal contiguous zero runs and maximal contiguous
+non-zero literal runs; no encoded stream is materialized in a temporary file.
+
+The upload mode is explicit `raw`, explicit `zero-rle-v1`, or `auto`.
+Explicit compressed mode requires the `file-transfer.zero-rle-v1` capability.
+`auto` falls back to raw when the capability is absent and selects compressed
+only when the predicted encoded size is strictly smaller than the logical
+size. Raw remains the default for direct low-level client calls; fixture-cache
+provisioning defaults to `auto`.
+
+The producer retains each encoded DATA payload until its ACK, so timeout and
+NACK retries retransmit the same frame byte-for-byte. Pass 2 recomputes the
+source SHA-256 and checks logical size, encoded byte count, and source size/
+mtime against Pass 1. A mismatch aborts the active transfer when possible and
+is never reported as successful provisioning. After upload, `file.stat` and
+device-side `file.sha256` verify the decoded logical file.
+
+Diagnostics distinguish logical and wire sizes. The existing
+`fixture_upload_bytes` field remains the actual DATA payload bytes sent; for
+compressed uploads the encoded wire count is reported separately with the
+selected encoding and DATA frame count.
