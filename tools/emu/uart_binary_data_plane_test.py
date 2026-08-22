@@ -380,10 +380,11 @@ class Emulator:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             for index, line in enumerate(self.parser.lines):
-                if not line.startswith(FRAME_PREFIX):
+                frame_index = line.find(FRAME_PREFIX)
+                if frame_index < 0:
                     continue
                 try:
-                    response = json.loads(line[len(FRAME_PREFIX) :])
+                    response = json.loads(line[frame_index + len(FRAME_PREFIX) :])
                 except json.JSONDecodeError as exc:
                     raise AssertionError(f"malformed JSON response: {line!r}") from exc
                 if response.get("id") == request_id:
