@@ -70,6 +70,9 @@ jobs:
               raise SystemExit(f"expected CPython 3.12, got {platform.python_implementation()} {sys.version}")
           PY
 
+      - name: Run bounded zero-rle Host fixture-cache regression
+        run: PYTHONPATH=tools:tools/emu python3 tools/test_np2_fixture_cache.py
+
       - name: Test control-stream TRANSPORT_SYNC
         run: bash tools/test-control-stream-sync.sh
 
@@ -287,6 +290,28 @@ jobs:
             "${e4_build}/merged-binary.bin"
           P4_V3X_BUILD_DIR="${e4_build}" \
             bash tools/emu/test-file-transfer-zero-rle-windowed-gbn.sh
+
+      - name: Run zero-rle W=1 File Transfer regression
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly emu_bin="${RUNNER_TEMP}/esp-emu-${ESP_EMU_VERSION}/bin/esp-emu"
+          readonly reduced_build="${GITHUB_WORKSPACE}/firmware/build-reduced-extmem8"
+          readonly w1_build="${GITHUB_WORKSPACE}/firmware/build-e5-ci"
+          readonly w1_log="${RUNNER_TEMP}/zero-rle-w1-file-transfer.log"
+          source "${idf_root}/export.sh"
+          export ESP_EMU="${emu_bin}"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          test "$(${ESP_EMU} --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" = \
+            "esp-emu 0.39.0"
+          test -f "${reduced_build}/np2fixture-reduced-merged.bin"
+          mkdir -p "${w1_build}"
+          ln -sfn ../build-reduced-extmem8/np2fixture-reduced-merged.bin \
+            "${w1_build}/merged-binary.bin"
+          P4_V3X_BUILD_DIR="${w1_build}" \
+            bash tools/emu/test-file-transfer-zero-rle-v1.sh | tee "${w1_log}"
+          grep -Fx 'PASS: FILE TRANSFER ZERO-RLE-V1 EMU INTEGRATION' "${w1_log}"
 
   esp32p4-esp-emu-video-golden:
     name: ESP32-P4 esp-emu video golden
