@@ -31,6 +31,7 @@ constexpr std::size_t kReadChunkSize = 64;
 constexpr std::size_t kControlTaskStackSize = 12288;
 constexpr UBaseType_t kControlTaskPriority = tskIDLE_PRIORITY + 2;
 constexpr uart_port_t kConsoleUart = static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM);
+constexpr TickType_t kReadWaitTicks = pdMS_TO_TICKS(100);
 
 control_plane::ControlPlane s_control_plane;
 binary_data_plane::TransferManager s_binary_manager;
@@ -61,6 +62,31 @@ bool write_control(void *context, const char *data, std::size_t length)
                          length);
 }
 
+int read_uart_chunk(std::uint8_t *buffer, std::size_t capacity)
+{
+    // Wait for the first byte while idle, then drain only what is already
+    // buffered. Do not make a partial control/binary frame wait for the
+    // requested chunk size before handing it to ControlStream.
+    const int first_bytes = uart_read_bytes(kConsoleUart, buffer, 1, kReadWaitTicks);
+    if (first_bytes <= 0) return first_bytes;
+
+    std::size_t buffered_bytes = 0;
+    if (uart_get_buffered_data_len(kConsoleUart, &buffered_bytes) != ESP_OK) {
+        return first_bytes;
+    }
+
+    const std::size_t remaining_capacity = capacity - static_cast<std::size_t>(first_bytes);
+    const std::size_t drain_bytes = buffered_bytes < remaining_capacity ?
+        buffered_bytes : remaining_capacity;
+    if (drain_bytes == 0) return first_bytes;
+
+    const int drained_bytes = uart_read_bytes(kConsoleUart,
+                                              buffer + first_bytes,
+                                              drain_bytes,
+                                              0);
+    return first_bytes + (drained_bytes > 0 ? drained_bytes : 0);
+}
+
 void control_task(void *)
 {
     const binary_data_plane::OutputSink binary_sink{nullptr, write_machine};
@@ -81,10 +107,7 @@ void control_task(void *)
 
     std::uint8_t read_buffer[kReadChunkSize];
     while (true) {
-        const int bytes_read = uart_read_bytes(kConsoleUart,
-                                               read_buffer,
-                                               sizeof(read_buffer),
-                                               pdMS_TO_TICKS(100));
+        const int bytes_read = read_uart_chunk(read_buffer, sizeof(read_buffer));
         if (bytes_read > 0) {
             const std::uint32_t now_ms = static_cast<std::uint32_t>(esp_timer_get_time() / 1000);
             control_stream::feed(&s_control_stream,
