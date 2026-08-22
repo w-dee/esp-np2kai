@@ -142,6 +142,7 @@ struct TransferManager {
     bool endpoint_started = false;
     bool endpoint_finalized = false;
     bool terminal_notified = false;
+    bool test_fail_final_ack_output_once = false;
 
     struct FinalAckReplay {
         bool valid = false;
@@ -187,6 +188,9 @@ void handle_decoded_frame(TransferManager *manager,
                           std::size_t length,
                           std::uint32_t now_ms);
 void poll(TransferManager *manager, std::uint32_t now_ms);
+
+// Test-only seam: fail the next final ACK output after the DATA is committed.
+void arm_test_final_ack_output_failure_once(TransferManager *manager);
 
 std::uint8_t test_pattern_byte(std::uint64_t offset);
 const char *error_code(ManagerError error);

@@ -217,6 +217,21 @@ Result abort_dispatch(const Request &request)
     return Result{true, result, nullptr, nullptr};
 }
 
+Result arm_final_ack_output_failure_dispatch(const Request &request)
+{
+    binary_data_plane::TransferManager *manager = binary_manager(request);
+    if (manager == nullptr || !manager->active) {
+        return failure("TRANSFER_CLOSED", "binary transfer is not active");
+    }
+    binary_data_plane::arm_test_final_ack_output_failure_once(manager);
+    cJSON *result = cJSON_CreateObject();
+    if (result == nullptr || cJSON_AddTrueToObject(result, "armed") == nullptr) {
+        cJSON_Delete(result);
+        return failure("INTERNAL_ERROR", "unable to allocate fault result");
+    }
+    return Result{true, result, nullptr, nullptr};
+}
+
 cJSON *ping_result()
 {
     cJSON *result = cJSON_CreateObject();
@@ -562,6 +577,9 @@ Result dispatch(const Request &request)
     }
     if (request.command == "binary.transfer.abort") {
         return abort_dispatch(request);
+    }
+    if (request.command == "binary.test.final-ack-output-failure-once") {
+        return arm_final_ack_output_failure_dispatch(request);
     }
     if (request.command == "file.stat") return file_stat_dispatch(request);
     if (request.command == "file.sha256") return file_sha256_dispatch(request);

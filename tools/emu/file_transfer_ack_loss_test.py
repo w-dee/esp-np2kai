@@ -63,6 +63,7 @@ class RecordingEmulatorSerial:
             raise AssertionError("emu UART socket is not connected")
         self.sock = emu.sock
         self.buffer = bytearray()
+        self.received_bytes = bytearray()
         self.tx_parser = wire.StreamParser()
         self.data_frames: list[dict] = []
 
@@ -75,6 +76,7 @@ class RecordingEmulatorSerial:
             return
         if not data:
             raise AssertionError("esp-emu closed the UART-TCP socket")
+        self.received_bytes.extend(data)
         self.buffer.extend(data)
 
     @property

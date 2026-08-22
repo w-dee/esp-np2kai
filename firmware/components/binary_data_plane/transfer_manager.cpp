@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 
 #include "binary_codec.hpp"
 #include "crc32.hpp"
@@ -101,6 +102,16 @@ bool write_wire(TransferManager *manager,
                              manager->encoded_body, sizeof(manager->encoded_body),
                              manager->wire_frame, sizeof(manager->wire_frame),
                              &wire_length)) {
+        return false;
+    }
+    if (manager->test_fail_final_ack_output_once &&
+        type == FrameType::Ack && manager->direction == Direction::HostToDevice &&
+        manager->transferred_bytes == manager->total_bytes &&
+        transfer_id == manager->transfer_id &&
+        sequence == manager->expected_sequence && offset == manager->expected_offset) {
+        manager->test_fail_final_ack_output_once = false;
+        std::printf("BINARY_TEST_FAULT action=fail-final-ack-once\n");
+        std::fflush(stdout);
         return false;
     }
     return manager->output.write != nullptr &&
@@ -253,11 +264,6 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
         return;
     }
     manager->endpoint_finalized = true;
-    if (!send_ack_values(manager, manager->transfer_id, manager->expected_sequence,
-                         manager->expected_offset)) {
-        finish_active(manager, TransferState::Aborted, TerminalReason::OutputError);
-        return;
-    }
     manager->final_ack_replay.valid = true;
     manager->final_ack_replay.transfer_id = manager->transfer_id;
     manager->final_ack_replay.sequence = frame.sequence;
@@ -267,6 +273,9 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
     manager->final_ack_replay.acknowledged_sequence = manager->expected_sequence;
     manager->final_ack_replay.acknowledged_offset = manager->expected_offset;
     finish_active(manager, TransferState::Completed, TerminalReason::Completed);
+    (void)send_ack_values(manager, manager->transfer_id,
+                          manager->final_ack_replay.acknowledged_sequence,
+                          manager->final_ack_replay.acknowledged_offset);
 }
 
 void handle_tx_ack(TransferManager *manager, const codec::ParsedFrame &frame,
@@ -479,6 +488,11 @@ void poll(TransferManager *manager, std::uint32_t now_ms)
     if (elapsed(now_ms, manager->tx_last_sent_ms, kAckTimeoutMs)) {
         retry_current_tx(manager, now_ms);
     }
+}
+
+void arm_test_final_ack_output_failure_once(TransferManager *manager)
+{
+    if (manager != nullptr) manager->test_fail_final_ack_output_once = true;
 }
 
 const char *error_code(ManagerError error)
