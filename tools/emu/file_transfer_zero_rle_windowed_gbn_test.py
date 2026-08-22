@@ -33,6 +33,7 @@ from np2_fixture_cache import (
     ENCODING_ZERO_RLE_V1,
     SerialFileTransferClient,
     SourceChangedError,
+    ZERO_RLE_DATA_LOGICAL_BUDGET,
     _ZeroRleProducer,
     analyze_zero_rle,
 )
@@ -178,6 +179,24 @@ def assert_transport_offsets(frames: list[dict], wire_size: int) -> None:
         )
 
 
+def production_data_frame_count(plan) -> int:
+    """Count the actual bounded DATA chunks emitted by the production encoder."""
+    producer = _ZeroRleProducer(plan)
+    count = 0
+    try:
+        while True:
+            chunk = producer.read(wire.MAX_PAYLOAD)
+            if not chunk:
+                break
+            if producer.last_data_logical_work > ZERO_RLE_DATA_LOGICAL_BUDGET:
+                raise AssertionError("bounded zero-rle DATA logical work exceeded 64 KiB")
+            count += 1
+        producer.finish()
+    finally:
+        producer.close()
+    return count
+
+
 def run_case(emu: wire.Emulator, logical: bytes, fault: str,
              encoding: str = ENCODING_ZERO_RLE_V1,
              label: str | None = None) -> None:
@@ -186,7 +205,7 @@ def run_case(emu: wire.Emulator, logical: bytes, fault: str,
         source = Path(directory) / f"e4-{fault}.bin"
         source.write_bytes(logical)
         plan = analyze_zero_rle(source)
-        data_frames = (plan.wire_size_bytes + wire.MAX_PAYLOAD - 1) // wire.MAX_PAYLOAD
+        data_frames = production_data_frame_count(plan)
         if data_frames < 6:
             raise AssertionError(f"combined fixture has too few encoded frames: {plan}")
         client, serial = make_client(emu, fault, data_frames)
@@ -299,7 +318,7 @@ def run_source_mutation_case(emu: wire.Emulator, logical: bytes) -> None:
         replacement = bytes((byte ^ 0x01) if byte else 0x02 for byte in logical)
         source.write_bytes(logical)
         plan = analyze_zero_rle(source)
-        data_frames = (plan.wire_size_bytes + wire.MAX_PAYLOAD - 1) // wire.MAX_PAYLOAD
+        data_frames = production_data_frame_count(plan)
         client, serial = make_client(
             emu, FAULT_NORMAL, data_frames, source=source, replacement=replacement
         )
@@ -453,12 +472,13 @@ def run(emu: wire.Emulator) -> None:
         probe = Path(directory) / "e4-probe.bin"
         probe.write_bytes(logical)
         plan = analyze_zero_rle(probe)
+        encoded_frames = production_data_frame_count(plan)
     if plan.wire_size_bytes <= 6 * wire.MAX_PAYLOAD:
         raise AssertionError(f"combined fixture is not a multi-window stream: {plan}")
     print(
         f"E4_ZERO_RLE_W2_PLAN logical_bytes={plan.local.size_bytes} "
         f"wire_bytes={plan.wire_size_bytes} "
-        f"encoded_frames={(plan.wire_size_bytes + wire.MAX_PAYLOAD - 1) // wire.MAX_PAYLOAD}"
+        f"encoded_frames={encoded_frames}"
     )
     for fault in (
         FAULT_NORMAL,

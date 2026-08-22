@@ -27,6 +27,7 @@ from np2_fixture_cache import (
     _SerialParser,
     _ZeroRleProducer,
     UploadMetrics,
+    ZERO_RLE_DATA_LOGICAL_BUDGET,
     analyze_zero_rle,
     derive_cache_path,
     hash_file,
@@ -63,20 +64,66 @@ def make_pump_probe(data: bytes = b"") -> SerialFileTransferClient:
     return client
 
 
-def collect_zero_rle(plan) -> bytes:
+def collect_zero_rle_chunks(plan) -> tuple[list[bytes], list[int]]:
     producer = _ZeroRleProducer(plan)
-    output = bytearray()
+    chunks: list[bytes] = []
+    works: list[int] = []
     try:
         while True:
             chunk = producer.read(wire.MAX_PAYLOAD)
             if not chunk:
                 break
             assert len(chunk) <= wire.MAX_PAYLOAD
-            output.extend(chunk)
+            chunks.append(chunk)
+            works.append(producer.last_data_logical_work)
         producer.finish()
     finally:
         producer.close()
-    return bytes(output)
+    return chunks, works
+
+
+def collect_zero_rle(plan) -> bytes:
+    chunks, _ = collect_zero_rle_chunks(plan)
+    return b"".join(chunks)
+
+
+def measure_zero_rle_chunk_work(chunks: list[bytes]) -> list[int]:
+    """Measure logical work and reject DATA-split zero-rle headers."""
+    header = bytearray()
+    tag: int | None = None
+    remaining = 0
+    works: list[int] = []
+    for chunk in chunks:
+        work = 0
+        offset = 0
+        while offset < len(chunk):
+            if tag is None:
+                take = min(5 - len(header), len(chunk) - offset)
+                header.extend(chunk[offset:offset + take])
+                offset += take
+                if len(header) < 5:
+                    continue
+                tag = header[0]
+                remaining = int.from_bytes(header[1:5], "little")
+                header.clear()
+                assert tag in (0, 1)
+                assert remaining > 0
+                if tag == 0:
+                    work += remaining
+                    tag = None
+                    remaining = 0
+                    continue
+            assert tag == 1
+            take = min(remaining, len(chunk) - offset)
+            offset += take
+            remaining -= take
+            work += take
+            if remaining == 0:
+                tag = None
+        assert not header
+        works.append(work)
+    assert tag is None and remaining == 0 and not header
+    return works
 
 
 def decode_zero_rle(encoded: bytes, logical_size: int) -> bytes:
@@ -207,6 +254,66 @@ def test_zero_rle_encoder() -> None:
             assert encoded == collect_zero_rle(plan)
 
 
+def test_zero_rle_bounded_work_boundaries() -> None:
+    budget = ZERO_RLE_DATA_LOGICAL_BUDGET
+    zero_cases = {
+        budget - 1: (1, 5),
+        budget: (1, 5),
+        budget + 1: (2, 10),
+        2 * budget: (2, 10),
+        2 * budget + 1: (3, 15),
+        1024 * 1024: (16, 80),
+    }
+    cases = [
+        (b"\x00" * size, zero_records, expected_wire)
+        for size, (zero_records, expected_wire) in zero_cases.items()
+    ]
+    cases.extend(
+        (
+            b"\x01" * (1019 - remainder) + b"\x00",
+            1,
+            1029 - remainder,
+        )
+        for remainder in range(5)
+    )
+    cases.append((b"\x01" * 1014 + b"\x00", 1, 1024))
+    cases.append((b"\x01" * 2048, 0, 2053))
+    cases.append((b"\x00" * (budget - 1) + b"\x01" * 16, 1, 26))
+
+    with tempfile.TemporaryDirectory() as directory:
+        for index, (data, expected_zero_records, expected_wire) in enumerate(cases):
+            path = Path(directory) / f"boundary-{index}.bin"
+            path.write_bytes(data)
+            plan = analyze_zero_rle(path)
+            chunks, producer_works = collect_zero_rle_chunks(plan)
+            encoded = b"".join(chunks)
+            measured_works = measure_zero_rle_chunk_work(chunks)
+            assert plan.zero_run_count == expected_zero_records
+            assert plan.wire_size_bytes == expected_wire
+            assert plan.wire_size_bytes == len(encoded)
+            assert producer_works == measured_works
+            assert all(work <= budget for work in producer_works)
+            assert decode_zero_rle(encoded, len(data)) == data
+
+            if data == b"\x00" * (budget + 1):
+                assert [len(chunk) for chunk in chunks] == [5, 5]
+            if data.startswith(b"\x01") and data.endswith(b"\x00") and len(data) >= 1015:
+                literal_length = len(data) - 1
+                if 1015 <= literal_length <= 1019:
+                    remainder = 1019 - literal_length
+                    assert [len(chunk) for chunk in chunks] == [
+                        1024 - remainder,
+                        5,
+                    ]
+            if data == b"\x01" * 1014 + b"\x00":
+                assert [len(chunk) for chunk in chunks] == [1024]
+            if data == b"\x01" * 2048:
+                assert [len(chunk) for chunk in chunks] == [1024, 1024, 5]
+            if data == b"\x00" * (budget - 1) + b"\x01" * 16:
+                assert producer_works[0] == budget
+                assert len(chunks[0]) == 11
+
+
 def test_np2_fixture_canonical_shape() -> None:
     fixture = Path(__file__).resolve().parents[1] / \
         "tests/guest/np2test/golden/np2test-fd1232.image"
@@ -214,12 +321,14 @@ def test_np2_fixture_canonical_shape() -> None:
     encoded = collect_zero_rle(plan)
     assert plan.local.size_bytes == 1261568
     assert plan.local.sha256 == "3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3"
-    assert plan.zero_run_count == 96
+    assert plan.zero_run_count == 115
     assert plan.literal_record_count == 96
     assert plan.literal_bytes == 852
-    assert plan.wire_size_bytes == 1812
-    assert len(encoded) == 1812
-    assert (len(encoded) + wire.MAX_PAYLOAD - 1) // wire.MAX_PAYLOAD == 2
+    assert plan.wire_size_bytes == 1907
+    chunks, works = collect_zero_rle_chunks(plan)
+    assert len(chunks) == 22
+    assert all(work <= ZERO_RLE_DATA_LOGICAL_BUDGET for work in works)
+    assert len(encoded) == 1907
     assert decode_zero_rle(encoded, 1261568) == fixture.read_bytes()
 
 
@@ -487,9 +596,14 @@ def make_serial_probe(files: dict[str, bytes] | None = None) -> tuple[SerialFile
         data = local_path.read_bytes()
         client.files[path] = data
         wire_size = plan.wire_size_bytes if plan is not None else len(data)
+        frames = (
+            len(collect_zero_rle_chunks(plan)[0])
+            if plan is not None and encoding == ENCODING_ZERO_RLE_V1
+            else (wire_size + 1023) // 1024
+        )
         return UploadMetrics(
             bytes_sent=wire_size,
-            frames=(wire_size + 1023) // 1024,
+            frames=frames,
             encoding=encoding,
             logical_size_bytes=len(data),
             wire_size_bytes=wire_size,
@@ -526,9 +640,14 @@ class FakeClient:
         self.files[path] = data
         wire_size = plan.wire_size_bytes if plan is not None else len(data)
         self.upload_calls.append((path, len(data), replace, encoding, wire_size))
+        frames = (
+            len(collect_zero_rle_chunks(plan)[0])
+            if plan is not None and encoding == ENCODING_ZERO_RLE_V1
+            else (wire_size + 1023) // 1024
+        )
         return UploadMetrics(
             bytes_sent=wire_size,
-            frames=(wire_size + 1023) // 1024,
+            frames=frames,
             encoding=encoding,
             logical_size_bytes=len(data),
             wire_size_bytes=wire_size,

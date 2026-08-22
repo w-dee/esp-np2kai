@@ -70,10 +70,32 @@ physical-media validation.
 
 The host fixture-cache tool uses a bounded two-pass encoder. Pass 1 streams
 the source through a 64 KiB scan buffer to calculate the logical SHA-256,
-logical size, canonical record counts, and exact encoded wire size. Pass 2
-reopens the source and emits at most one 1024-byte DATA payload at a time.
-Canonical records are maximal contiguous zero runs and maximal contiguous
-non-zero literal runs; no encoded stream is materialized in a temporary file.
+logical size, bounded-production record counts, and exact encoded wire size.
+The 64 KiB scan buffer is an I/O implementation detail; it is distinct from
+the 64 KiB logical-work budget applied to each DATA payload. Pass 2 reopens
+the source and emits at most one 1024-byte DATA payload at a time.
+
+Production Host policy splits a maximal source zero run into ZERO_RUN records
+of at most 64 KiB, and charges the complete zero length to the DATA payload
+that completes its five-byte record header. A LITERAL record keeps its maximal
+non-zero source run and charges one logical byte per literal body byte; its
+body may span DATA payloads. A DATA payload never splits a five-byte record
+header. When the next header cannot fit or the next zero record would exceed
+the 64 KiB logical-work budget, the producer intentionally returns a short
+non-final DATA payload. No encoded stream is materialized in a temporary file.
+
+This is a Host framing/work-bounding policy, not an additional wire-format
+validity rule. The wire format still permits adjacent records and arbitrary
+record boundaries across DATA frames; the decoder continues to accept older
+valid streams, including maximal zero-run records. The uint32 record maximum,
+capability name, and protocol version are unchanged.
+
+For the NP2TEST golden, the production bounded plan is 1,907 wire bytes with
+115 encoded ZERO_RUN records, 96 LITERAL records, 852 literal bytes, and 22
+actual DATA payloads. The independent maximal-run reference remains a valid
+1,812-byte stream with 96 ZERO_RUN records, 96 LITERAL records, and 852
+literal bytes; these are intentionally separate reference and production
+metrics.
 
 The upload mode is explicit `raw`, explicit `zero-rle-v1`, or `auto`.
 Explicit compressed mode requires the `file-transfer.zero-rle-v1` capability.

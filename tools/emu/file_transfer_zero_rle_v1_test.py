@@ -169,38 +169,32 @@ def send_compressed(emu: wire.Emulator, request_id: int, path: str,
         raise AssertionError(f"compressed begin schema mismatch: {begin}")
     transfer_id = int(begin["transfer_id"])
 
-    # The first four DATA frames deliberately end after a tag, inside its
-    # length, and inside its literal.  The 1000-byte frame carries many
-    # records; the final frame is shorter than the maximum payload.
-    lengths = [1, 2, 4, 1000]
-    remaining = plan.wire_size_bytes - sum(lengths)
-    while remaining > wire.MAX_PAYLOAD:
-        lengths.append(wire.MAX_PAYLOAD)
-        remaining -= wire.MAX_PAYLOAD
-    lengths.append(remaining)
-    if lengths[-1] <= 0 or lengths[-1] >= wire.MAX_PAYLOAD:
-        raise AssertionError(f"compressed test did not produce a short final frame: {lengths}")
-
     producer = _ZeroRleProducer(plan)
     offset = 0
     crc = 0
     try:
-        for sequence, length in enumerate(lengths):
-            chunk = producer.read(length)
-            if len(chunk) != length:
-                raise AssertionError(
-                    f"production encoder returned {len(chunk)} bytes, expected {length}"
-                )
+        sequence = 0
+        while offset < plan.wire_size_bytes:
+            chunk = producer.read(min(wire.MAX_PAYLOAD, plan.wire_size_bytes - offset))
+            if not chunk:
+                raise AssertionError("production encoder ended before the wire stream")
             frame = wire.build_frame(wire.DATA, transfer_id, sequence, offset, payload=chunk)
             emu.send(frame)
-            wire.require_ack(emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1, offset + length)
+            wire.require_ack(
+                emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1,
+                offset + len(chunk)
+            )
             if sequence == 0:
                 # C0 duplicate DATA replay: the decoder must not consume the
                 # already accepted encoded byte twice.
                 emu.send(frame)
-                wire.require_ack(emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1, offset + length)
+                wire.require_ack(
+                    emu.wait_frame(ACK_TIMEOUT), transfer_id, sequence + 1,
+                    offset + len(chunk)
+                )
             crc = binascii.crc32(chunk, crc)
-            offset += length
+            offset += len(chunk)
+            sequence += 1
         producer.finish()
     finally:
         producer.close()
@@ -253,7 +247,7 @@ def run(emu: wire.Emulator) -> None:
 
         abort_producer = _ZeroRleProducer(plan)
         try:
-            first = abort_producer.read(1)
+            first = abort_producer.read(wire.MAX_PAYLOAD)
         finally:
             abort_producer.close()
 
@@ -343,7 +337,7 @@ def run(emu: wire.Emulator) -> None:
     })
     aborted_id = int(aborted["transfer_id"])
     emu.send(wire.build_frame(wire.DATA, aborted_id, 0, 0, payload=first))
-    wire.require_ack(emu.wait_frame(), aborted_id, 1, 1)
+    wire.require_ack(emu.wait_frame(), aborted_id, 1, len(first))
     response(emu, 61, "binary.transfer.abort", {"transfer_id": aborted_id})
     aborted_status = response(emu, 62, "file.transfer.status", {"transfer_id": aborted_id})
     if (aborted_status.get("file_state") != "aborted" or

@@ -42,6 +42,7 @@ CAPABILITY_ZERO_RLE_V1 = "file-transfer.zero-rle-v1"
 CAPABILITY_WINDOWED_GBN_V1 = "file-transfer.windowed-gbn-v1"
 TRANSPORT_WINDOWED_GBN_V1 = "windowed-gbn-v1"
 ZERO_RLE_SCAN_BYTES = 64 * 1024
+ZERO_RLE_DATA_LOGICAL_BUDGET = 64 * 1024
 ZERO_RLE_RECORD_OVERHEAD = 5
 ZERO_RLE_MAX_RECORD_BYTES = 0xFFFFFFFF
 
@@ -243,7 +244,7 @@ def _record_wire_size(kind_is_literal: bool, length: int) -> int:
 
 
 def analyze_zero_rle(path: Path) -> UploadPlan:
-    """Pass 1: hash and count a canonical zero-rle-v1 stream."""
+    """Pass 1: hash and count the bounded production zero-rle-v1 stream."""
 
     digest = hashlib.sha256()
     size = 0
@@ -258,12 +259,16 @@ def analyze_zero_rle(path: Path) -> UploadPlan:
         nonlocal wire_size, zero_runs, literal_records, literal_bytes
         if current_literal is None:
             return
-        wire_size += _record_wire_size(current_literal, current_length)
         if current_literal:
+            wire_size += _record_wire_size(True, current_length)
             literal_records += 1
             literal_bytes += current_length
         else:
-            zero_runs += 1
+            split_records = (
+                current_length + ZERO_RLE_DATA_LOGICAL_BUDGET - 1
+            ) // ZERO_RLE_DATA_LOGICAL_BUDGET
+            wire_size += split_records * ZERO_RLE_RECORD_OVERHEAD
+            zero_runs += split_records
 
     with path.open("rb") as source:
         while True:
@@ -358,13 +363,16 @@ def _scan_run(source, start: int) -> tuple[bool, int]:
     while True:
         chunk = source.read(ZERO_RLE_SCAN_BYTES)
         if not chunk:
+            if literal and length > ZERO_RLE_MAX_RECORD_BYTES:
+                raise ValueError("zero-rle-v1 literal length exceeds uint32")
             return literal, length
         for index, byte in enumerate(chunk):
             if (byte != 0) != literal:
-                return literal, length + index
+                run_length = length + index
+                if literal and run_length > ZERO_RLE_MAX_RECORD_BYTES:
+                    raise ValueError("zero-rle-v1 literal length exceeds uint32")
+                return literal, run_length
         length += len(chunk)
-        if length > ZERO_RLE_MAX_RECORD_BYTES:
-            raise ValueError("zero-rle-v1 record length exceeds uint32")
 
 
 class _ByteProducer(Protocol):
@@ -411,7 +419,7 @@ class _RawProducer:
 
 
 class _ZeroRleProducer:
-    """Pass 2 bounded canonical encoder with one DATA-sized output buffer."""
+    """Pass 2 bounded-work encoder with one DATA-sized output buffer."""
 
     def __init__(self, plan: UploadPlan) -> None:
         self.plan = plan
@@ -424,6 +432,9 @@ class _ZeroRleProducer:
         self.logical_offset = 0
         self.logical_read = 0
         self.wire_returned = 0
+        self.last_data_logical_work = 0
+        self.source_run_literal: bool | None = None
+        self.source_run_remaining = 0
         self.record_literal = False
         self.record_remaining = 0
         self.header = b""
@@ -431,9 +442,27 @@ class _ZeroRleProducer:
         self.done = plan.local.size_bytes == 0
         self.closed = False
 
-    def _start_record(self) -> None:
+    def _prepare_source_run(self) -> None:
+        if self.source_run_remaining:
+            return
+        if self.logical_offset >= self.plan.local.size_bytes:
+            self.done = True
+            return
         literal, length = _scan_run(self.source, self.logical_offset)
         self.source.seek(self.logical_offset)
+        self.source_run_literal = literal
+        self.source_run_remaining = length
+
+    def _start_record(self) -> None:
+        self._prepare_source_run()
+        if self.source_run_literal is None or not self.source_run_remaining:
+            raise SourceChangedError("source ended during zero-rle encoding")
+        literal = self.source_run_literal
+        length = (
+            self.source_run_remaining
+            if literal
+            else min(self.source_run_remaining, ZERO_RLE_DATA_LOGICAL_BUDGET)
+        )
         tag = b"\x01" if literal else b"\x00"
         self.header = tag + length.to_bytes(4, "little")
         self.header_offset = 0
@@ -450,6 +479,7 @@ class _ZeroRleProducer:
             self.logical_read += count
             self.logical_offset += count
             self.record_remaining -= count
+            self.source_run_remaining -= count
         if self.logical_offset >= self.plan.local.size_bytes:
             self.done = True
 
@@ -459,26 +489,62 @@ class _ZeroRleProducer:
         if self.done:
             return b""
         output = bytearray()
+        logical_work = 0
         while len(output) < maximum:
             if self.record_remaining == 0:
                 if self.logical_offset >= self.plan.local.size_bytes:
                     self.done = True
                     break
+                self._prepare_source_run()
+                if self.source_run_literal is None or not self.source_run_remaining:
+                    raise SourceChangedError("source ended during zero-rle encoding")
+                next_length = (
+                    self.source_run_remaining
+                    if self.source_run_literal
+                    else min(self.source_run_remaining, ZERO_RLE_DATA_LOGICAL_BUDGET)
+                )
+                available = maximum - len(output)
+                if available < ZERO_RLE_RECORD_OVERHEAD:
+                    if output:
+                        break
+                    raise ValueError(
+                        "producer maximum is too small for a zero-rle record header"
+                    )
+                if (not self.source_run_literal and
+                        logical_work + next_length > ZERO_RLE_DATA_LOGICAL_BUDGET):
+                    if output:
+                        break
+                    raise SourceChangedError("zero-rle record exceeds logical DATA budget")
                 self._start_record()
 
             if self.header_offset < len(self.header):
-                count = min(maximum - len(output), len(self.header) - self.header_offset)
-                output.extend(self.header[self.header_offset:self.header_offset + count])
-                self.header_offset += count
-                if self.header_offset == len(self.header) and not self.record_literal:
+                available = maximum - len(output)
+                if available < len(self.header) - self.header_offset:
+                    if output:
+                        break
+                    raise ValueError(
+                        "producer maximum is too small to emit a zero-rle header"
+                    )
+                output.extend(self.header[self.header_offset:])
+                self.header_offset = len(self.header)
+                if not self.record_literal:
+                    logical_work += self.record_remaining
                     self._consume_zero_run()
+                    if logical_work == ZERO_RLE_DATA_LOGICAL_BUDGET:
+                        break
                 continue
 
             if not self.record_literal:
                 self._consume_zero_run()
                 continue
 
-            count = min(maximum - len(output), self.record_remaining)
+            count = min(
+                maximum - len(output),
+                self.record_remaining,
+                ZERO_RLE_DATA_LOGICAL_BUDGET - logical_work,
+            )
+            if count == 0:
+                break
             data = self.source.read(count)
             if len(data) != count:
                 raise SourceChangedError("source ended during zero-rle encoding")
@@ -486,10 +552,13 @@ class _ZeroRleProducer:
             self.logical_read += count
             self.logical_offset += count
             self.record_remaining -= count
+            self.source_run_remaining -= count
+            logical_work += count
             output.extend(data)
             if self.record_remaining == 0 and self.logical_offset >= self.plan.local.size_bytes:
                 self.done = True
 
+        self.last_data_logical_work = logical_work
         self.wire_returned += len(output)
         return bytes(output)
 
