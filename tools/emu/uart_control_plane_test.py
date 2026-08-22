@@ -21,6 +21,7 @@ EXPECTED_CAPABILITIES = [
     "binary.data-plane.v1",
     "file-transfer.v1",
     "file-transfer.zero-rle-v1",
+    "file-transfer.windowed-gbn-v1",
 ]
 
 

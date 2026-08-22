@@ -41,6 +41,7 @@ enum class CodecError : std::uint8_t {
 };
 
 const char *encoding_name(Encoding encoding);
+const char *transport_name(binary_data_plane::TransportMode transport);
 const char *codec_error_code(CodecError error);
 const char *codec_error_message(CodecError error);
 
@@ -49,6 +50,9 @@ struct WriteOptions {
     std::uint64_t wire_size_bytes = 0;
     bool replace = false;
     Encoding encoding = Encoding::Raw;
+    binary_data_plane::TransportMode transport =
+        binary_data_plane::TransportMode::StopAndWait;
+    std::uint8_t window_frames = 1;
 };
 
 struct ListPage {
@@ -64,6 +68,9 @@ struct BeginResult {
     Encoding encoding = Encoding::Raw;
     std::uint64_t logical_size_bytes = 0;
     std::uint64_t wire_size_bytes = 0;
+    binary_data_plane::TransportMode transport =
+        binary_data_plane::TransportMode::StopAndWait;
+    std::uint8_t window_frames = 1;
 };
 
 struct Sha256Result {

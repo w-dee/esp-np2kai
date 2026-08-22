@@ -32,12 +32,15 @@ DEFAULT_HASH_TIMEOUT = 30.0
 DATA_ACK_TIMEOUT = 2.0
 DATA_MAX_ATTEMPTS = 3
 DATA_NACK_REASONS = frozenset(range(1, 9))
+DATA_WINDOW_FRAMES = 2
 SERIAL_READ_MAX_BYTES = 4096
 SERIAL_POLL_INTERVAL_SECONDS = 0.001
 ENCODING_RAW = "raw"
 ENCODING_ZERO_RLE_V1 = "zero-rle-v1"
 ENCODING_AUTO = "auto"
 CAPABILITY_ZERO_RLE_V1 = "file-transfer.zero-rle-v1"
+CAPABILITY_WINDOWED_GBN_V1 = "file-transfer.windowed-gbn-v1"
+TRANSPORT_WINDOWED_GBN_V1 = "windowed-gbn-v1"
 ZERO_RLE_SCAN_BYTES = 64 * 1024
 ZERO_RLE_RECORD_OVERHEAD = 5
 ZERO_RLE_MAX_RECORD_BYTES = 0xFFFFFFFF
@@ -121,6 +124,14 @@ class UploadMetrics:
     wire_size_bytes: int = 0
     logical_bytes_sent: int = 0
     wire_bytes_sent: int = 0
+    transport: str = "stop-and-wait-v1"
+    window_frames: int = 1
+    max_outstanding_frames: int = 0
+    actual_data_transmissions: int = 0
+    retransmitted_data_frames: int = 0
+    cumulative_acks: int = 0
+    retransmission_rounds: int = 0
+    stale_control_frames: int = 0
 
 
 @dataclass
@@ -138,6 +149,18 @@ class ProvisionResult:
     upload: UploadMetrics | None
     encoding: str = "none"
     wire_size_bytes: int = 0
+
+
+@dataclass
+class _RetainedDataFrame:
+    transfer_id: int
+    sequence: int
+    offset: int
+    payload: bytes
+    wire_frame: bytes
+    end_sequence: int
+    end_offset: int
+    sent_at: float = 0.0
 
 
 class FixtureClient(Protocol):
@@ -754,12 +777,225 @@ class SerialFileTransferClient:
             # source mismatch is still reported to the caller below.
             pass
 
+    def _upload_windowed(self, plan: UploadPlan, producer: _ByteProducer,
+                         transfer_id: int, metrics: UploadMetrics,
+                         started: float) -> UploadMetrics:
+        """Send raw DATA with a bounded two-frame go-back-N window."""
+        outstanding: list[_RetainedDataFrame] = []
+        boundaries: dict[tuple[int, int], int] = {(0, 0): 0}
+        next_sequence = 0
+        next_offset = 0
+        retry_rounds = 0
+        last_nack_retry_base: tuple[int, int] | None = None
+
+        def send_retained(frame: _RetainedDataFrame) -> None:
+            self.send_raw(frame.wire_frame)
+            frame.sent_at = time.monotonic()
+            metrics.actual_data_transmissions += 1
+            metrics.max_outstanding_frames = max(
+                metrics.max_outstanding_frames, len(outstanding)
+            )
+
+        def fill_window() -> None:
+            nonlocal next_sequence, next_offset
+            while len(outstanding) < DATA_WINDOW_FRAMES and next_offset < plan.wire_size_bytes:
+                payload = producer.read(
+                    min(wire.MAX_PAYLOAD, plan.wire_size_bytes - next_offset)
+                )
+                if not payload:
+                    raise SourceChangedError(
+                        "producer ended before the planned wire size"
+                    )
+                frame = _RetainedDataFrame(
+                    transfer_id=transfer_id,
+                    sequence=next_sequence,
+                    offset=next_offset,
+                    payload=payload,
+                    wire_frame=wire.build_frame(
+                        wire.DATA, transfer_id, next_sequence, next_offset,
+                        payload=payload,
+                    ),
+                    end_sequence=next_sequence + 1,
+                    end_offset=next_offset + len(payload),
+                )
+                outstanding.append(frame)
+                boundaries[(frame.end_sequence, frame.end_offset)] = len(boundaries)
+                metrics.frames += 1
+                metrics.bytes_sent += len(payload)
+                next_sequence = frame.end_sequence
+                next_offset = frame.end_offset
+                send_retained(frame)
+
+        def retire_to(target: tuple[int, int]) -> int:
+            target_position = boundaries[target]
+            retired = 0
+            while outstanding:
+                end = (outstanding[0].end_sequence, outstanding[0].end_offset)
+                if boundaries[end] > target_position:
+                    break
+                outstanding.pop(0)
+                retired += 1
+            return retired
+
+        def retransmit_all() -> None:
+            nonlocal retry_rounds, last_nack_retry_base
+            if retry_rounds >= DATA_MAX_ATTEMPTS - 1:
+                raise RemoteError(
+                    "RETRY_EXHAUSTED",
+                    "windowed upload retransmission budget was exhausted",
+                )
+            retry_rounds += 1
+            metrics.retries += 1
+            metrics.retransmission_rounds += 1
+            last_nack_retry_base = (
+                outstanding[0].sequence, outstanding[0].offset
+            )
+            for frame in outstanding:
+                metrics.retransmitted_data_frames += 1
+                send_retained(frame)
+
+        fill_window()
+        while outstanding:
+            oldest = outstanding[0]
+            deadline = oldest.sent_at + DATA_ACK_TIMEOUT
+            while True:
+                wait_timeout = max(0.0, deadline - time.monotonic())
+                try:
+                    response = self.wait_frame(timeout=wait_timeout)
+                except TimeoutError:
+                    metrics.protocol_timeouts += 1
+                    retransmit_all()
+                    break
+
+                if response.get("transfer_id") != transfer_id:
+                    continue
+                if response.get("crc_valid") is not True:
+                    continue
+
+                response_type = response.get("type")
+                response_payload = response.get("payload", b"")
+                response_sequence = response.get("sequence")
+                response_offset = response.get("offset")
+                if response_type == wire.ACK:
+                    if (
+                        not isinstance(response.get("status"), int)
+                        or isinstance(response.get("status"), bool)
+                        or response.get("status") != 0
+                        or response_payload != b""
+                    ):
+                        raise RemoteError(
+                            "PROTOCOL_ERROR",
+                            f"invalid windowed upload ACK: {response}",
+                        )
+                elif response_type == wire.NACK:
+                    response_status = response.get("status")
+                    if (
+                        response_payload != b""
+                        or not isinstance(response_status, int)
+                        or isinstance(response_status, bool)
+                        or response_status not in DATA_NACK_REASONS
+                    ):
+                        raise RemoteError(
+                            "PROTOCOL_ERROR",
+                            f"invalid windowed upload NACK: {response}",
+                        )
+                else:
+                    raise RemoteError(
+                        "PROTOCOL_ERROR",
+                        f"unexpected windowed upload response: {response}",
+                    )
+
+                if (
+                    not isinstance(response_sequence, int)
+                    or isinstance(response_sequence, bool)
+                    or not isinstance(response_offset, int)
+                    or isinstance(response_offset, bool)
+                ):
+                    raise RemoteError(
+                        "PROTOCOL_ERROR",
+                        f"mismatched windowed upload response: {response}",
+                    )
+                boundary = (response_sequence, response_offset)
+                boundary_position = boundaries.get(boundary)
+                base = (outstanding[0].sequence, outstanding[0].offset)
+                base_position = boundaries[base]
+                if boundary_position is None or boundary_position > len(boundaries) - 1:
+                    raise RemoteError(
+                        "PROTOCOL_ERROR",
+                        f"future windowed upload response: {response}",
+                    )
+                stale = boundary_position < base_position or (
+                    response_type == wire.ACK and boundary_position == base_position
+                )
+                if stale:
+                    metrics.stale_control_frames += 1
+                    continue
+
+                if response_type == wire.ACK:
+                    if retire_to(boundary) == 0:
+                        raise RemoteError(
+                            "PROTOCOL_ERROR",
+                            f"mismatched windowed upload ACK: {response}",
+                        )
+                    metrics.cumulative_acks += 1
+                    retry_rounds = 0
+                    last_nack_retry_base = None
+                    fill_window()
+                    break
+
+                if (
+                    boundary_position == base_position
+                    and last_nack_retry_base == base
+                ):
+                    metrics.stale_control_frames += 1
+                    continue
+                retired = retire_to(boundary)
+                if not outstanding:
+                    raise RemoteError(
+                        "PROTOCOL_ERROR",
+                        f"windowed upload NACK has no retry frontier: {response}",
+                    )
+                metrics.nacks += 1
+                if retired:
+                    retry_rounds = 0
+                    last_nack_retry_base = None
+                retransmit_all()
+                break
+
+        producer.finish()
+        if metrics.bytes_sent != plan.wire_size_bytes:
+            raise SourceChangedError("emitted wire size differs from the upload plan")
+        status = self.request("file.transfer.status", {"transfer_id": transfer_id})
+        if (status.get("file_state") != "completed" or
+                status.get("size_bytes") != plan.local.size_bytes or
+                status.get("transferred_bytes") != plan.local.size_bytes):
+            raise RemoteError("TRANSFER_FAILED", f"upload did not complete: {status}")
+        metrics.logical_bytes_sent = plan.local.size_bytes
+        metrics.wire_bytes_sent = metrics.bytes_sent
+        metrics.elapsed = time.monotonic() - started
+        return metrics
+
     def upload(self, path: str, local_path: Path, replace: bool,
                encoding: str = ENCODING_RAW,
-               plan: UploadPlan | None = None) -> UploadMetrics:
+               plan: UploadPlan | None = None,
+               transport: str | None = None,
+               window_frames: int | None = None) -> UploadMetrics:
         if encoding not in {ENCODING_RAW, ENCODING_ZERO_RLE_V1, ENCODING_AUTO}:
             raise UploadModeError(f"unsupported upload encoding mode: {encoding}")
+        windowed = transport == TRANSPORT_WINDOWED_GBN_V1
+        if transport is None and window_frames is not None:
+            raise UploadModeError("window_frames requires windowed-gbn-v1 transport")
+        if transport is not None and transport != TRANSPORT_WINDOWED_GBN_V1:
+            raise UploadModeError(f"unsupported upload transport: {transport}")
+        if windowed and window_frames != DATA_WINDOW_FRAMES:
+            raise UploadModeError("windowed-gbn-v1 requires window_frames=2")
+        if windowed and encoding != ENCODING_RAW:
+            raise UploadModeError("windowed-gbn-v1 supports raw encoding only")
         capabilities = set(self.capabilities)
+        if windowed and CAPABILITY_WINDOWED_GBN_V1 not in capabilities:
+            raise UploadModeError(
+                "peer does not advertise file-transfer.windowed-gbn-v1"
+            )
         if plan is None:
             plan = select_upload_plan(local_path, encoding, capabilities)
         elif plan.local.path != local_path:
@@ -779,6 +1015,9 @@ class SerialFileTransferClient:
             "size_bytes": plan.local.size_bytes,
             "replace": replace,
         }
+        if windowed:
+            begin_params["transport"] = TRANSPORT_WINDOWED_GBN_V1
+            begin_params["window_frames"] = DATA_WINDOW_FRAMES
         if selected_encoding == ENCODING_ZERO_RLE_V1:
             begin_params["encoding"] = ENCODING_ZERO_RLE_V1
             begin_params["wire_size_bytes"] = plan.wire_size_bytes
@@ -787,6 +1026,16 @@ class SerialFileTransferClient:
         started = time.monotonic()
         try:
             begin = self.request("file.write.begin", begin_params, timeout=120.0)
+            if windowed and (
+                begin.get("transport") != TRANSPORT_WINDOWED_GBN_V1
+                or begin.get("window_frames") != DATA_WINDOW_FRAMES
+            ):
+                if begin.get("transfer_id") is not None:
+                    self._abort_upload(int(begin["transfer_id"]))
+                raise RemoteError(
+                    "PROTOCOL_ERROR",
+                    f"windowed transport negotiation mismatch: {begin}",
+                )
             if selected_encoding == ENCODING_ZERO_RLE_V1:
                 if (begin.get("encoding") != ENCODING_ZERO_RLE_V1 or
                         begin.get("size_bytes") != plan.local.size_bytes or
@@ -798,6 +1047,8 @@ class SerialFileTransferClient:
                     encoding=selected_encoding,
                     logical_size_bytes=plan.local.size_bytes,
                     wire_size_bytes=plan.wire_size_bytes,
+                    transport=TRANSPORT_WINDOWED_GBN_V1 if windowed else "stop-and-wait-v1",
+                    window_frames=DATA_WINDOW_FRAMES if windowed else 1,
                 )
                 metrics.logical_bytes_sent = plan.local.size_bytes
                 metrics.wire_bytes_sent = 0
@@ -808,7 +1059,13 @@ class SerialFileTransferClient:
                 encoding=selected_encoding,
                 logical_size_bytes=plan.local.size_bytes,
                 wire_size_bytes=plan.wire_size_bytes,
+                transport=TRANSPORT_WINDOWED_GBN_V1 if windowed else "stop-and-wait-v1",
+                window_frames=DATA_WINDOW_FRAMES if windowed else 1,
             )
+            if windowed:
+                return self._upload_windowed(
+                    plan, producer, transfer_id, metrics, started
+                )
             sequence = 0
             offset = 0
             while offset < plan.wire_size_bytes:
@@ -819,7 +1076,13 @@ class SerialFileTransferClient:
                 attempts = 0
                 while True:
                     attempts += 1
+                    if attempts > 1:
+                        metrics.retransmitted_data_frames += 1
                     self.send_raw(frame)
+                    metrics.actual_data_transmissions += 1
+                    metrics.max_outstanding_frames = max(
+                        metrics.max_outstanding_frames, 1
+                    )
                     deadline = time.monotonic() + DATA_ACK_TIMEOUT
                     accepted = False
                     retry = False
@@ -871,11 +1134,13 @@ class SerialFileTransferClient:
                                 and response_offset == offset + len(payload)
                             ):
                                 accepted = True
+                                metrics.cumulative_acks += 1
                                 break
                             if _is_stale_control_pair(
                                 response_sequence, response_offset, sequence, offset
                             ):
                                 metrics.duplicate_frames += 1
+                                metrics.stale_control_frames += 1
                                 continue
                             raise RemoteError(
                                 "PROTOCOL_ERROR",
@@ -913,11 +1178,13 @@ class SerialFileTransferClient:
                                         "NACK", f"upload frame rejected: {response}"
                                     )
                                 metrics.retries += 1
+                                metrics.retransmission_rounds += 1
                                 retry = True
                                 break
                             if _is_stale_nack_pair(
                                 response_sequence, response_offset, sequence, offset
                             ):
+                                metrics.stale_control_frames += 1
                                 continue
                             raise RemoteError(
                                 "PROTOCOL_ERROR",
@@ -935,6 +1202,7 @@ class SerialFileTransferClient:
                         if attempts >= DATA_MAX_ATTEMPTS:
                             raise TimeoutError("binary frame timeout")
                         metrics.retries += 1
+                        metrics.retransmission_rounds += 1
                 metrics.frames += 1
                 metrics.bytes_sent += len(payload)
                 offset += len(payload)

@@ -59,6 +59,15 @@ const char *encoding_name(Encoding encoding)
     return "raw";
 }
 
+const char *transport_name(binary_data_plane::TransportMode transport)
+{
+    switch (transport) {
+    case binary_data_plane::TransportMode::StopAndWait: return "stop-and-wait-v1";
+    case binary_data_plane::TransportMode::WindowedGbnV1: return "windowed-gbn-v1";
+    }
+    return "stop-and-wait-v1";
+}
+
 const char *codec_error_code(CodecError error)
 {
     switch (error) {
@@ -340,6 +349,13 @@ Error Service::begin_write(std::string_view path_value, const WriteOptions &opti
     if (result == nullptr) return Error::InternalError;
     if (!path::validate(path_value, false)) return Error::InvalidPath;
     if (active() || binary == nullptr) return Error::Busy;
+    if ((options.transport == binary_data_plane::TransportMode::StopAndWait &&
+         options.window_frames != 1) ||
+        (options.transport == binary_data_plane::TransportMode::WindowedGbnV1 &&
+         (options.window_frames != binary_data_plane::kMaxWindowFrames ||
+          options.encoding != Encoding::Raw))) {
+        return Error::Unsupported;
+    }
     if (options.logical_size_bytes > limits.max_file_bytes ||
         options.wire_size_bytes > limits.max_file_bytes) return Error::NoSpace;
     if ((options.logical_size_bytes == 0) != (options.wire_size_bytes == 0)) {
@@ -370,6 +386,8 @@ Error Service::begin_write(std::string_view path_value, const WriteOptions &opti
         result->encoding = options.encoding;
         result->logical_size_bytes = 0;
         result->wire_size_bytes = 0;
+        result->transport = options.transport;
+        result->window_frames = options.window_frames;
         return Error::Ok;
     }
     endpoint = EndpointContext{};
@@ -383,7 +401,9 @@ Error Service::begin_write(std::string_view path_value, const WriteOptions &opti
     endpoint.path[path_value.size()] = '\0';
     binary_data_plane::TransferInfo info{};
     const binary_data_plane::ManagerError manager_error =
-        binary_data_plane::begin_rx(binary, options.wire_size_bytes, make_endpoint(), &info);
+        binary_data_plane::begin_rx(
+            binary, options.wire_size_bytes, make_endpoint(),
+            binary_data_plane::TransferOptions{options.transport, options.window_frames}, &info);
     if (manager_error != binary_data_plane::ManagerError::Ok) {
         return endpoint.storage_error != storage::Error::Ok ?
             map_storage(endpoint.storage_error) :
@@ -397,6 +417,8 @@ Error Service::begin_write(std::string_view path_value, const WriteOptions &opti
     result->encoding = options.encoding;
     result->logical_size_bytes = options.logical_size_bytes;
     result->wire_size_bytes = options.wire_size_bytes;
+    result->transport = options.transport;
+    result->window_frames = options.window_frames;
     return Error::Ok;
 }
 

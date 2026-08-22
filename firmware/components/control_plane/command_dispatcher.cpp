@@ -46,6 +46,7 @@ cJSON *hello_result(const Request &request)
         "binary.data-plane.v1",
         "file-transfer.v1",
         "file-transfer.zero-rle-v1",
+        "file-transfer.windowed-gbn-v1",
     };
     for (const char *name : names) {
         if (cJSON_AddItemToArray(capabilities, cJSON_CreateString(name)) == false) {
@@ -127,14 +128,22 @@ bool add_transfer_info(cJSON *result, const binary_data_plane::TransferInfo &inf
 bool add_file_begin_info(cJSON *result, const file_transfer::BeginResult &begin)
 {
     if (!add_transfer_info(result, begin.info)) return false;
-    if (begin.encoding == file_transfer::Encoding::Raw) return true;
-    if (cJSON_ReplaceItemInObject(result, "size_bytes",
-                                  cJSON_CreateNumber(static_cast<double>(begin.logical_size_bytes))) == 0 ||
-        cJSON_AddStringToObject(result, "encoding",
-                                file_transfer::encoding_name(begin.encoding)) == nullptr ||
-        cJSON_AddNumberToObject(result, "wire_size_bytes",
-                                static_cast<double>(begin.wire_size_bytes)) == nullptr) {
+    if (begin.encoding != file_transfer::Encoding::Raw &&
+        (cJSON_ReplaceItemInObject(result, "size_bytes",
+                                   cJSON_CreateNumber(static_cast<double>(begin.logical_size_bytes))) == 0 ||
+         cJSON_AddStringToObject(result, "encoding",
+                                 file_transfer::encoding_name(begin.encoding)) == nullptr ||
+         cJSON_AddNumberToObject(result, "wire_size_bytes",
+                                 static_cast<double>(begin.wire_size_bytes)) == nullptr)) {
         return false;
+    }
+    if (begin.transport != binary_data_plane::TransportMode::StopAndWait ||
+        begin.window_frames != 1) {
+        if (cJSON_AddStringToObject(result, "transport",
+                                    file_transfer::transport_name(begin.transport)) == nullptr ||
+            cJSON_AddNumberToObject(result, "window_frames", begin.window_frames) == nullptr) {
+            return false;
+        }
     }
     return true;
 }
@@ -453,8 +462,37 @@ Result file_begin_dispatch(const Request &request, bool write)
         } else {
             wire_size = size;
         }
+        binary_data_plane::TransportMode transport =
+            binary_data_plane::TransportMode::StopAndWait;
+        std::uint8_t window_frames = 1;
+        const cJSON *transport_item = request.params == nullptr ? nullptr :
+            cJSON_GetObjectItemCaseSensitive(request.params, "transport");
+        const cJSON *window_item = request.params == nullptr ? nullptr :
+            cJSON_GetObjectItemCaseSensitive(request.params, "window_frames");
+        if (transport_item != nullptr) {
+            if (!cJSON_IsString(transport_item) || transport_item->valuestring == nullptr) {
+                return failure("INVALID_PARAMS", "transport must be a string");
+            }
+            if (std::strcmp(transport_item->valuestring, "windowed-gbn-v1") != 0) {
+                return failure("UNSUPPORTED", "file transfer transport is unsupported");
+            }
+            std::uint64_t requested_window = 0;
+            if (!read_u64(request.params, "window_frames", &requested_window) ||
+                requested_window != binary_data_plane::kMaxWindowFrames) {
+                return failure("UNSUPPORTED", "windowed-gbn-v1 requires window_frames=2");
+            }
+            if (encoding != file_transfer::Encoding::Raw) {
+                return failure("UNSUPPORTED", "windowed-gbn-v1 supports raw encoding only");
+            }
+            transport = binary_data_plane::TransportMode::WindowedGbnV1;
+            window_frames = binary_data_plane::kMaxWindowFrames;
+        } else if (window_item != nullptr) {
+            return failure("INVALID_PARAMS", "window_frames requires a transport");
+        }
         error = service->begin_write(path,
-                                     file_transfer::WriteOptions{size, wire_size, replace, encoding},
+                                     file_transfer::WriteOptions{
+                                         size, wire_size, replace, encoding,
+                                         transport, window_frames},
                                      &begin);
     } else {
         std::uint64_t offset = 0;
@@ -481,6 +519,15 @@ Result file_begin_dispatch(const Request &request, bool write)
                                      static_cast<double>(begin.wire_size_bytes)) == nullptr)) {
             cJSON_Delete(result);
             return failure("INTERNAL_ERROR", "unable to allocate transfer result");
+        }
+        if (begin.transport != binary_data_plane::TransportMode::StopAndWait ||
+            begin.window_frames != 1) {
+            if (cJSON_AddStringToObject(result, "transport",
+                                        file_transfer::transport_name(begin.transport)) == nullptr ||
+                cJSON_AddNumberToObject(result, "window_frames", begin.window_frames) == nullptr) {
+                cJSON_Delete(result);
+                return failure("INTERNAL_ERROR", "unable to allocate transfer result");
+            }
         }
     } else if (!add_file_begin_info(result, begin)) {
         cJSON_Delete(result);

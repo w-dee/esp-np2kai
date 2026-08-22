@@ -20,6 +20,7 @@ inline constexpr std::uint64_t kMaxTransferBytes =
 inline constexpr std::uint32_t kAckTimeoutMs = 1000;
 inline constexpr std::uint32_t kMaxRetransmissions = 3;
 inline constexpr std::uint32_t kReceiverTimeoutMs = 10000;
+inline constexpr std::uint8_t kMaxWindowFrames = 2;
 
 enum class FrameType : std::uint8_t {
     Data = 0x01,
@@ -30,6 +31,16 @@ enum class FrameType : std::uint8_t {
 enum class Direction : std::uint8_t {
     HostToDevice = 1,
     DeviceToHost = 2,
+};
+
+enum class TransportMode : std::uint8_t {
+    StopAndWait,
+    WindowedGbnV1,
+};
+
+struct TransferOptions {
+    TransportMode transport = TransportMode::StopAndWait;
+    std::uint8_t window_frames = 1;
 };
 
 enum class TransferState : std::uint8_t {
@@ -99,12 +110,22 @@ struct TransferInfo {
     bool has_crc32 = false;
 };
 
+struct DataIdentity {
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint64_t offset = 0;
+    std::uint16_t payload_length = 0;
+    std::uint32_t wire_crc = 0;
+};
+
 struct TransferManager {
     OutputSink output{};
     TransferEndpoint endpoint{};
     std::uint32_t next_transfer_id = 1;
     bool active = false;
     Direction direction = Direction::HostToDevice;
+    TransportMode transport = TransportMode::StopAndWait;
+    std::uint8_t window_frames = 1;
     TransferState state = TransferState::Idle;
     std::uint32_t transfer_id = 0;
     std::uint64_t total_bytes = 0;
@@ -126,11 +147,8 @@ struct TransferManager {
     std::uint32_t tx_crc = 0xffffffffu;
     std::uint8_t tx_payload[kMaxPayloadBytes]{};
 
-    bool previous_data_valid = false;
-    std::uint32_t previous_data_sequence = 0;
-    std::uint64_t previous_data_offset = 0;
-    std::uint16_t previous_data_length = 0;
-    std::uint32_t previous_data_crc = 0;
+    DataIdentity accepted_data_history[kMaxWindowFrames]{};
+    std::uint8_t accepted_data_history_count = 0;
 
     std::uint32_t last_activity_ms = 0;
     // A valid frame may be processed synchronously during control_stream::feed().
@@ -149,10 +167,8 @@ struct TransferManager {
     struct FinalAckReplay {
         bool valid = false;
         std::uint32_t transfer_id = 0;
-        std::uint32_t sequence = 0;
-        std::uint64_t offset = 0;
-        std::uint16_t payload_length = 0;
-        std::uint32_t wire_crc = 0;
+        DataIdentity identities[kMaxWindowFrames]{};
+        std::uint8_t identity_count = 0;
         std::uint32_t acknowledged_sequence = 0;
         std::uint64_t acknowledged_offset = 0;
     } final_ack_replay{};
@@ -167,6 +183,11 @@ void init(TransferManager *manager, OutputSink output);
 ManagerError begin_rx(TransferManager *manager,
                       std::uint64_t size_bytes,
                       TransferEndpoint endpoint,
+                      TransferInfo *info);
+ManagerError begin_rx(TransferManager *manager,
+                      std::uint64_t size_bytes,
+                      TransferEndpoint endpoint,
+                      TransferOptions options,
                       TransferInfo *info);
 ManagerError begin_tx(TransferManager *manager,
                       std::uint64_t size_bytes,

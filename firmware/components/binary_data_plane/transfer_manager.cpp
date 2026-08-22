@@ -177,6 +177,38 @@ bool is_stale_ack_pair(std::uint32_t sequence, std::uint64_t offset,
            is_older_control_pair(sequence, offset, current_sequence, current_offset);
 }
 
+bool matches_identity(const DataIdentity &identity, const codec::ParsedFrame &frame)
+{
+    return identity.valid && identity.sequence == frame.sequence &&
+           identity.offset == frame.offset &&
+           identity.payload_length == frame.payload_length &&
+           identity.wire_crc == frame.wire_crc;
+}
+
+void remember_accepted_data(TransferManager *manager, const codec::ParsedFrame &frame)
+{
+    const std::uint8_t capacity = manager->transport == TransportMode::WindowedGbnV1 ?
+        kMaxWindowFrames : 1;
+    if (manager->accepted_data_history_count < capacity) {
+        manager->accepted_data_history[manager->accepted_data_history_count++] = DataIdentity{
+            true, frame.sequence, frame.offset, frame.payload_length, frame.wire_crc};
+        return;
+    }
+    for (std::uint8_t index = 1; index < capacity; ++index) {
+        manager->accepted_data_history[index - 1] = manager->accepted_data_history[index];
+    }
+    manager->accepted_data_history[capacity - 1] = DataIdentity{
+        true, frame.sequence, frame.offset, frame.payload_length, frame.wire_crc};
+}
+
+void capture_terminal_history(TransferManager *manager)
+{
+    manager->final_ack_replay.identity_count = manager->accepted_data_history_count;
+    for (std::uint8_t index = 0; index < manager->accepted_data_history_count; ++index) {
+        manager->final_ack_replay.identities[index] = manager->accepted_data_history[index];
+    }
+}
+
 void prepare_tx_payload(TransferManager *manager)
 {
     const std::uint64_t remaining = manager->total_bytes - manager->tx_offset;
@@ -227,18 +259,15 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
         send_nack(manager, NackReason::BadCrc);
         return;
     }
-    // Recognize a replay of the immediately previous accepted DATA before
-    // validating it against the transfer bytes that remain.  A retransmitted
-    // frame can be larger than the current remainder when the following frame
-    // is shorter; it is still the already accepted frame and must be ACKed
-    // idempotently rather than rejected as a new oversized frame.
-    if (manager->previous_data_valid &&
-        frame.sequence == manager->previous_data_sequence &&
-        frame.offset == manager->previous_data_offset &&
-        frame.payload_length == manager->previous_data_length &&
-        frame.wire_crc == manager->previous_data_crc) {
-        send_ack(manager);
-        return;
+    // Recognize replay of any recently accepted DATA before validating it
+    // against the remaining transfer bytes.  A retransmitted frame can be
+    // larger than the current remainder when the following frame is shorter;
+    // it is still an accepted frame and must be ACKed idempotently.
+    for (std::uint8_t index = 0; index < manager->accepted_data_history_count; ++index) {
+        if (matches_identity(manager->accepted_data_history[index], frame)) {
+            send_ack(manager);
+            return;
+        }
     }
     if (frame.payload_length == 0 ||
         frame.payload_length > manager->total_bytes - manager->transferred_bytes) {
@@ -262,11 +291,7 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
 
     manager->running_crc = crc32::update(manager->running_crc, frame.payload,
                                           frame.payload_length);
-    manager->previous_data_valid = true;
-    manager->previous_data_sequence = frame.sequence;
-    manager->previous_data_offset = frame.offset;
-    manager->previous_data_length = frame.payload_length;
-    manager->previous_data_crc = frame.wire_crc;
+    remember_accepted_data(manager, frame);
     manager->transferred_bytes += frame.payload_length;
     ++manager->expected_sequence;
     manager->expected_offset += frame.payload_length;
@@ -285,10 +310,7 @@ void handle_rx_data(TransferManager *manager, const codec::ParsedFrame &frame)
     manager->endpoint_finalized = true;
     manager->final_ack_replay.valid = true;
     manager->final_ack_replay.transfer_id = manager->transfer_id;
-    manager->final_ack_replay.sequence = frame.sequence;
-    manager->final_ack_replay.offset = frame.offset;
-    manager->final_ack_replay.payload_length = frame.payload_length;
-    manager->final_ack_replay.wire_crc = frame.wire_crc;
+    capture_terminal_history(manager);
     manager->final_ack_replay.acknowledged_sequence = manager->expected_sequence;
     manager->final_ack_replay.acknowledged_offset = manager->expected_offset;
     finish_active(manager, TransferState::Completed, TerminalReason::Completed);
@@ -358,13 +380,18 @@ void handle_tx_ack(TransferManager *manager, const codec::ParsedFrame &frame,
 
 ManagerError begin_common(TransferManager *manager, std::uint64_t size,
                            Direction direction, TransferEndpoint endpoint,
-                           TransferInfo *info)
+                           TransferOptions options, TransferInfo *info)
 {
     if (manager == nullptr || info == nullptr || endpoint.context == nullptr ||
         endpoint.begin == nullptr || endpoint.finish == nullptr || endpoint.abort == nullptr ||
         endpoint.terminal == nullptr ||
         (direction == Direction::HostToDevice && endpoint.consume == nullptr) ||
         (direction == Direction::DeviceToHost && endpoint.produce == nullptr)) {
+        return ManagerError::InvalidParams;
+    }
+    if ((options.transport == TransportMode::StopAndWait && options.window_frames != 1) ||
+        (options.transport == TransportMode::WindowedGbnV1 &&
+         (options.window_frames != kMaxWindowFrames || direction != Direction::HostToDevice))) {
         return ManagerError::InvalidParams;
     }
     if (manager->active) return ManagerError::Busy;
@@ -382,6 +409,8 @@ ManagerError begin_common(TransferManager *manager, std::uint64_t size,
     manager->endpoint_started = true;
     manager->active = true;
     manager->direction = direction;
+    manager->transport = options.transport;
+    manager->window_frames = options.window_frames;
     manager->state = TransferState::Active;
     manager->transfer_id = manager->next_transfer_id++;
     if (manager->next_transfer_id == 0) manager->next_transfer_id = 1;
@@ -410,13 +439,22 @@ void init(TransferManager *manager, OutputSink output)
 ManagerError begin_rx(TransferManager *manager, std::uint64_t size,
                       TransferEndpoint endpoint, TransferInfo *info)
 {
-    return begin_common(manager, size, Direction::HostToDevice, endpoint, info);
+    return begin_common(manager, size, Direction::HostToDevice, endpoint,
+                        TransferOptions{}, info);
+}
+
+ManagerError begin_rx(TransferManager *manager, std::uint64_t size,
+                      TransferEndpoint endpoint, TransferOptions options,
+                      TransferInfo *info)
+{
+    return begin_common(manager, size, Direction::HostToDevice, endpoint, options, info);
 }
 
 ManagerError begin_tx(TransferManager *manager, std::uint64_t size,
                       TransferEndpoint endpoint, TransferInfo *info)
 {
-    return begin_common(manager, size, Direction::DeviceToHost, endpoint, info);
+    return begin_common(manager, size, Direction::DeviceToHost, endpoint,
+                        TransferOptions{}, info);
 }
 
 ManagerError get_status(const TransferManager *manager, std::uint32_t transfer_id,
@@ -470,12 +508,14 @@ void handle_decoded_frame(TransferManager *manager, const std::uint8_t *decoded,
     if (!manager->active) {
         const auto &replay = manager->final_ack_replay;
         if (frame.type == FrameType::Data && replay.valid &&
-            frame.transfer_id == replay.transfer_id &&
-            frame.sequence == replay.sequence && frame.offset == replay.offset &&
-            frame.payload_length == replay.payload_length && frame.wire_crc == replay.wire_crc) {
-            (void)send_ack_values(manager, replay.transfer_id,
-                                  replay.acknowledged_sequence,
-                                  replay.acknowledged_offset);
+            frame.transfer_id == replay.transfer_id) {
+            for (std::uint8_t index = 0; index < replay.identity_count; ++index) {
+                if (!matches_identity(replay.identities[index], frame)) continue;
+                (void)send_ack_values(manager, replay.transfer_id,
+                                      replay.acknowledged_sequence,
+                                      replay.acknowledged_offset);
+                break;
+            }
         }
         return;
     }
