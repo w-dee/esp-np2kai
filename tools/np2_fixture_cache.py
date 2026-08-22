@@ -34,6 +34,7 @@ SERIAL_POLL_INTERVAL_SECONDS = 0.001
 ENCODING_RAW = "raw"
 ENCODING_ZERO_RLE_V1 = "zero-rle-v1"
 ENCODING_AUTO = "auto"
+CAPABILITY_ZERO_RLE_V1 = "file-transfer.zero-rle-v1"
 ZERO_RLE_SCAN_BYTES = 64 * 1024
 ZERO_RLE_RECORD_OVERHEAD = 5
 ZERO_RLE_MAX_RECORD_BYTES = 0xFFFFFFFF
@@ -213,7 +214,7 @@ def select_upload_plan(path: Path, encoding: str,
 
     if encoding not in {ENCODING_RAW, ENCODING_ZERO_RLE_V1, ENCODING_AUTO}:
         raise UploadModeError(f"unsupported upload encoding mode: {encoding}")
-    supports_zero_rle = ENCODING_ZERO_RLE_V1 in capabilities
+    supports_zero_rle = CAPABILITY_ZERO_RLE_V1 in capabilities
     if encoding == ENCODING_ZERO_RLE_V1 and not supports_zero_rle:
         raise UploadModeError(
             "zero-rle-v1 upload requires protocol.hello capability "
@@ -239,7 +240,7 @@ def _validate_supplied_upload_plan(encoding: str, plan: UploadPlan,
     if encoding == ENCODING_ZERO_RLE_V1 and plan.encoding != ENCODING_ZERO_RLE_V1:
         raise UploadModeError("zero-rle-v1 upload requires a compressed upload plan")
     if (plan.encoding == ENCODING_ZERO_RLE_V1 and
-            ENCODING_ZERO_RLE_V1 not in capabilities):
+            CAPABILITY_ZERO_RLE_V1 not in capabilities):
         raise UploadModeError(
             "zero-rle-v1 upload requires protocol.hello capability "
             "file-transfer.zero-rle-v1"

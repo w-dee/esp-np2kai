@@ -14,12 +14,58 @@ import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from np2_fixture_cache import _ZeroRleProducer, analyze_zero_rle
+from np2_fixture_cache import (
+    CAPABILITY_ZERO_RLE_V1,
+    ENCODING_ZERO_RLE_V1,
+    SerialFileTransferClient,
+    _SerialParser,
+    _ZeroRleProducer,
+    analyze_zero_rle,
+)
 import uart_binary_data_plane_test as wire
 
 
 LOGICAL_SIZE = 80 * 1024
 ACK_TIMEOUT = 2.0
+
+
+class EmulatorSerial:
+    """Small pyserial-compatible adapter for the production host client."""
+
+    def __init__(self, emu: wire.Emulator) -> None:
+        if emu.sock is None:
+            raise AssertionError("emu UART socket is not connected")
+        self.sock = emu.sock
+        self.buffer = bytearray()
+
+    def _fill(self) -> None:
+        if self.buffer:
+            return
+        try:
+            data = self.sock.recv(65536)
+        except BlockingIOError:
+            return
+        if not data:
+            raise AssertionError("esp-emu closed the UART-TCP socket")
+        self.buffer.extend(data)
+
+    @property
+    def in_waiting(self) -> int:
+        self._fill()
+        return len(self.buffer)
+
+    def read(self, size: int) -> bytes:
+        self._fill()
+        data = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return data
+
+    def write(self, data: bytes) -> int:
+        self.sock.sendall(data)
+        return len(data)
+
+    def close(self) -> None:
+        pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,16 +111,58 @@ def logical_payload() -> bytes:
     return bytes(data)
 
 
+def run_production_host_client(emu: wire.Emulator) -> None:
+    """Exercise the real host client against the emulator's actual hello."""
+
+    logical = logical_payload()
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory) / "c2-host-source.bin"
+        source.write_bytes(logical)
+        client = object.__new__(SerialFileTransferClient)
+        client.serial = EmulatorSerial(emu)
+        client.timeout = 5.0
+        client.hash_timeout = 30.0
+        client.parser = _SerialParser()
+        client.request_id = 1
+        client.capabilities = frozenset()
+        try:
+            hello = client.sync()
+            if CAPABILITY_ZERO_RLE_V1 not in client.capabilities:
+                raise AssertionError(f"production host did not recognize capability: {hello}")
+            metrics = client.upload(
+                "/upload/c2-host-client.bin",
+                source,
+                replace=False,
+                encoding=ENCODING_ZERO_RLE_V1,
+            )
+            if (metrics.encoding != ENCODING_ZERO_RLE_V1 or
+                    metrics.logical_size_bytes != len(logical) or
+                    metrics.logical_bytes_sent != len(logical) or
+                    metrics.wire_bytes_sent != metrics.wire_size_bytes or
+                    metrics.frames == 0):
+                raise AssertionError(f"production host compressed metrics mismatch: {metrics}")
+            stat = client.stat("/upload/c2-host-client.bin")
+            hashed = client.sha256("/upload/c2-host-client.bin")
+            if (stat.get("type") != "file" or stat.get("size_bytes") != len(logical) or
+                    hashed.get("size_bytes") != len(logical) or
+                    hashed.get("sha256") != hashlib.sha256(logical).hexdigest()):
+                raise AssertionError(f"production host logical verification failed: {stat} {hashed}")
+            if client.ping() != {"pong": True}:
+                raise AssertionError("production host final ping failed")
+        finally:
+            client.close()
+
+
 def send_compressed(emu: wire.Emulator, request_id: int, path: str,
                     plan, replace: bool = False) -> tuple[int, int]:
     begin = response(emu, request_id, "file.write.begin", {
         "path": path,
         "size_bytes": plan.local.size_bytes,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
         "wire_size_bytes": plan.wire_size_bytes,
         "replace": replace,
     })
-    if (begin.get("encoding") != "zero-rle-v1" or
+    if (begin.get("encoding") != ENCODING_ZERO_RLE_V1 or
             begin.get("size_bytes") != plan.local.size_bytes or
             begin.get("wire_size_bytes") != plan.wire_size_bytes or
             begin.get("expected_offset") != 0):
@@ -139,7 +227,7 @@ def require_completed(emu: wire.Emulator, request_id: int, transfer_id: int,
             file_status.get("transferred_bytes") != plan.local.size_bytes or
             file_status.get("wire_size_bytes") != plan.wire_size_bytes or
             file_status.get("wire_transferred_bytes") != plan.wire_size_bytes or
-            file_status.get("encoding") != "zero-rle-v1"):
+            file_status.get("encoding") != ENCODING_ZERO_RLE_V1):
         raise AssertionError(f"compressed file status mismatch: {file_status}")
     hashed = response(emu, request_id + 2, "file.sha256", {"path": "/upload/c1-valid.bin"})
     if (hashed.get("size_bytes") != plan.local.size_bytes or
@@ -150,8 +238,10 @@ def require_completed(emu: wire.Emulator, request_id: int, transfer_id: int,
 def run(emu: wire.Emulator) -> None:
     hello = response(emu, 1, "protocol.hello")
     capabilities = hello.get("capabilities", [])
-    if "file-transfer.v1" not in capabilities or "file-transfer.zero-rle-v1" not in capabilities:
+    if "file-transfer.v1" not in capabilities or CAPABILITY_ZERO_RLE_V1 not in capabilities:
         raise AssertionError(f"zero-rle capability missing: {hello}")
+
+    run_production_host_client(emu)
 
     logical = logical_payload()
     with tempfile.TemporaryDirectory() as directory:
@@ -170,11 +260,11 @@ def run(emu: wire.Emulator) -> None:
     zero = response(emu, 30, "file.write.begin", {
         "path": "/upload/c1-empty.bin",
         "size_bytes": 0,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
         "wire_size_bytes": 0,
     })
     if (zero.get("state") != "completed" or zero.get("transfer_id") is not None or
-            zero.get("size_bytes") != 0 or zero.get("encoding") != "zero-rle-v1" or
+            zero.get("size_bytes") != 0 or zero.get("encoding") != ENCODING_ZERO_RLE_V1 or
             zero.get("wire_size_bytes") != 0):
         raise AssertionError(f"compressed zero-byte response mismatch: {zero}")
 
@@ -187,14 +277,14 @@ def run(emu: wire.Emulator) -> None:
     require_error(emu, 32, "file.write.begin", "INVALID_PARAMS", {
         "path": "/upload/c1-missing-wire.bin",
         "size_bytes": 1,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
     })
 
     bad_path = "/upload/c1-malformed.bin"
     bad_begin = response(emu, 40, "file.write.begin", {
         "path": bad_path,
         "size_bytes": 1,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
         "wire_size_bytes": 5,
     })
     bad_id = int(bad_begin["transfer_id"])
@@ -225,7 +315,7 @@ def run(emu: wire.Emulator) -> None:
     bad_replace = response(emu, 52, "file.write.begin", {
         "path": preserved_path,
         "size_bytes": 1,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
         "wire_size_bytes": 5,
         "replace": True,
     })
@@ -248,7 +338,7 @@ def run(emu: wire.Emulator) -> None:
     aborted = response(emu, 60, "file.write.begin", {
         "path": "/upload/c1-aborted.bin",
         "size_bytes": plan.local.size_bytes,
-        "encoding": "zero-rle-v1",
+        "encoding": ENCODING_ZERO_RLE_V1,
         "wire_size_bytes": plan.wire_size_bytes,
     })
     aborted_id = int(aborted["transfer_id"])

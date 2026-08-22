@@ -16,6 +16,7 @@ from np2_fixture_cache import (
     ENCODING_AUTO,
     ENCODING_RAW,
     ENCODING_ZERO_RLE_V1,
+    CAPABILITY_ZERO_RLE_V1,
     FRAME_PREFIX,
     RemoteError,
     SerialFileTransferClient,
@@ -224,17 +225,28 @@ def test_upload_policy_and_source_mutation() -> None:
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "fixture.bin"
         path.write_bytes(b"\x00" * 4096)
-        compressed = select_upload_plan(path, ENCODING_AUTO, {ENCODING_ZERO_RLE_V1})
+        assert ENCODING_ZERO_RLE_V1 == "zero-rle-v1"
+        assert CAPABILITY_ZERO_RLE_V1 == "file-transfer.zero-rle-v1"
+        compressed = select_upload_plan(path, ENCODING_AUTO, {CAPABILITY_ZERO_RLE_V1})
         assert compressed.encoding == ENCODING_ZERO_RLE_V1
         assert compressed.wire_size_bytes < compressed.local.size_bytes
         assert select_upload_plan(path, ENCODING_AUTO, set()).encoding == ENCODING_RAW
-        assert select_upload_plan(path, ENCODING_RAW, {ENCODING_ZERO_RLE_V1}).encoding == ENCODING_RAW
+        assert select_upload_plan(
+            path, ENCODING_AUTO, {ENCODING_ZERO_RLE_V1}
+        ).encoding == ENCODING_RAW
+        assert select_upload_plan(path, ENCODING_RAW, {CAPABILITY_ZERO_RLE_V1}).encoding == ENCODING_RAW
         try:
             select_upload_plan(path, ENCODING_ZERO_RLE_V1, set())
         except UploadModeError:
             pass
         else:
             raise AssertionError("explicit compressed mode accepted absent capability")
+        try:
+            select_upload_plan(path, ENCODING_ZERO_RLE_V1, {ENCODING_ZERO_RLE_V1})
+        except UploadModeError:
+            pass
+        else:
+            raise AssertionError("short encoding name was accepted as a capability")
 
         path.write_bytes(b"\x00" * 4096 + b"\x01")
         plan = analyze_zero_rle(path)
@@ -262,7 +274,7 @@ def test_supplied_upload_plan_consistency() -> None:
         compressed_path = Path(directory) / "compressed.bin"
         compressed_path.write_bytes(b"\x00" * 4096)
         compressed_plan = select_upload_plan(
-            compressed_path, ENCODING_ZERO_RLE_V1, {ENCODING_ZERO_RLE_V1}
+            compressed_path, ENCODING_ZERO_RLE_V1, {CAPABILITY_ZERO_RLE_V1}
         )
         compressed_raw_plan = select_upload_plan(
             compressed_path, ENCODING_RAW, set()
@@ -328,15 +340,18 @@ def test_supplied_upload_plan_consistency() -> None:
         assert upload_with_plan(raw_path, ENCODING_RAW, raw_plan, set()).encoding == ENCODING_RAW
         # raw + compressed plan: rejected.
         assert_rejected(compressed_path, ENCODING_RAW, compressed_plan,
-                        {ENCODING_ZERO_RLE_V1})
+                        {CAPABILITY_ZERO_RLE_V1})
         # zero-rle-v1 + compressed plan + capability: accepted.
         assert upload_with_plan(
             compressed_path, ENCODING_ZERO_RLE_V1, compressed_plan,
-            {ENCODING_ZERO_RLE_V1}
+            {CAPABILITY_ZERO_RLE_V1}
         ).encoding == ENCODING_ZERO_RLE_V1
+        # supplied compressed plan + short encoding name only: rejected.
+        assert_rejected(compressed_path, ENCODING_ZERO_RLE_V1,
+                        compressed_plan, {ENCODING_ZERO_RLE_V1})
         # zero-rle-v1 + raw plan: rejected.
         assert_rejected(compressed_path, ENCODING_ZERO_RLE_V1,
-                        compressed_raw_plan, {ENCODING_ZERO_RLE_V1})
+                        compressed_raw_plan, {CAPABILITY_ZERO_RLE_V1})
         # zero-rle-v1 + compressed plan without capability: rejected.
         assert_rejected(compressed_path, ENCODING_ZERO_RLE_V1,
                         compressed_plan, set())
@@ -345,7 +360,7 @@ def test_supplied_upload_plan_consistency() -> None:
         # auto + compressed plan + capability: accepted.
         assert upload_with_plan(
             compressed_path, ENCODING_AUTO, compressed_plan,
-            {ENCODING_ZERO_RLE_V1}
+            {CAPABILITY_ZERO_RLE_V1}
         ).encoding == ENCODING_ZERO_RLE_V1
         # auto + compressed plan without capability: rejected.
         assert_rejected(compressed_path, ENCODING_AUTO, compressed_plan, set())
@@ -363,12 +378,13 @@ def test_capability_discovery() -> None:
                 timeout: float | None = None) -> dict:
         assert command == "protocol.hello"
         return {"protocol_version": 1,
-                "capabilities": ["file-transfer.v1", ENCODING_ZERO_RLE_V1]}
+                "capabilities": ["file-transfer.v1", CAPABILITY_ZERO_RLE_V1]}
 
     client.send_raw = send_raw
     client.request = request
     hello = client.sync()
-    assert ENCODING_ZERO_RLE_V1 in client.capabilities
+    assert CAPABILITY_ZERO_RLE_V1 in client.capabilities
+    assert ENCODING_ZERO_RLE_V1 not in client.capabilities
     assert hello["protocol_version"] == 1
     assert sent == [b"\x00\x00\x00\x00"]
 
@@ -379,7 +395,7 @@ def test_retry_retains_encoded_frame() -> None:
         path.write_bytes(b"\x00" * 1024)
         plan = analyze_zero_rle(path)
         client = object.__new__(SerialFileTransferClient)
-        client.capabilities = frozenset({ENCODING_ZERO_RLE_V1})
+        client.capabilities = frozenset({CAPABILITY_ZERO_RLE_V1})
         sent: list[bytes] = []
         waits = [TimeoutError("simulated lost ACK"), {
             "type": wire.ACK,
@@ -566,7 +582,7 @@ def run() -> None:
 
         sparse = Path(directory) / "sparse.bin"
         sparse.write_bytes(b"\x00" * 4096)
-        compressed_client = FakeClient(capabilities={ENCODING_ZERO_RLE_V1})
+        compressed_client = FakeClient(capabilities={CAPABILITY_ZERO_RLE_V1})
         compressed = provision_fixture(compressed_client, sparse,
                                         stem="sparse", emit=lambda _: None)
         assert not compressed.cache_hit
