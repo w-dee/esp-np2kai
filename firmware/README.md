@@ -102,6 +102,35 @@ The CI workflow keeps three independent jobs: formal fixture CI,
 formal Ubuntu-native headless CI, and the NON-FORMAL ESP32-P4 esp-emu reduced
 Stage-1 job. No real ESP32-P4 hardware validation is claimed.
 
+## D1 production-SD formal NP2TEST profile
+
+The explicit `NP2_SD_NP2TEST_PROFILE` composition mounts the already accepted
+physical SD fixture through the existing SDMMC slot-1 provider, FATFS/VFS, and
+read-only DOSIO/FDD path. It preserves formal `EXTMEM=13` and is built with:
+
+```bash
+NP2_SD_NP2TEST_PROFILE=1 \
+  tools/emu/build-production.sh --variant p4-v1x --board p4-nano
+```
+
+The fixed physical fixture path is:
+
+```text
+/sdcard/files/np2-fixtures/np2test-a2-20260821-r1-3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3.hdm
+```
+
+This diagnostic image starts the UART Control Plane without registering the SD
+Storage API with File Transfer. D2 must first use the accepted normal
+`UART_SDMMC_PROFILE` image for read-only `file.stat` and `file.sha256` checks,
+then boot the dedicated image, which repeats the exact VFS size/SHA check before
+FDD attachment. D1 performs no physical hardware validation, SD write, or
+flash operation.
+
+The observation-only D2 result harness is
+[`tools/np2test_physical.py`](../tools/np2test_physical.py). It requires an
+explicit serial port and baud, accepts only formal `13/13` with CRC
+`0x58f5b827`, and never sends UART or File Transfer bytes.
+
 This firmware is the current ESP32-P4-specific firmware baseline. The current
 firmware tree and configuration do not build for ESP32-S31; future S31 work
 would require a separate SoC implementation below the portable emulator and
