@@ -301,7 +301,11 @@ void handle_tx_ack(TransferManager *manager, const codec::ParsedFrame &frame,
                    std::uint32_t now_ms)
 {
     if (frame.transfer_id != manager->transfer_id || !frame.crc_valid ||
-        frame.payload_length != 0 || !manager->tx_waiting_ack) return;
+        !manager->tx_waiting_ack) return;
+    if (frame.payload_length != 0) {
+        finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);
+        return;
+    }
     if (frame.type == FrameType::Nack) {
         if (!is_valid_nack_reason(frame.status)) {
             finish_active(manager, TransferState::Aborted, TerminalReason::ProtocolError);

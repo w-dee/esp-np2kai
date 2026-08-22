@@ -160,6 +160,29 @@ def build_frame(
     return b"\x00\x00" + encoded + b"\x00"
 
 
+def build_unchecked_control_frame(
+    frame_type: int, transfer_id: int, sequence: int, offset: int,
+    status: int = 0, payload: bytes = b"",
+) -> bytes:
+    """Build a CRC-valid noncanonical ACK/NACK for receiver validation tests."""
+    header = HEADER.pack(
+        MAGIC,
+        VERSION,
+        frame_type,
+        0,
+        HEADER_BYTES,
+        transfer_id,
+        sequence,
+        offset,
+        len(payload),
+        status,
+    )
+    decoded = header + payload
+    decoded += struct.pack("<I", crc32(decoded))
+    encoded = cobs_encode(decoded)
+    return b"\x00\x00" + encoded + b"\x00"
+
+
 def parse_frame(decoded: bytes) -> dict:
     if len(decoded) < HEADER_BYTES + CRC_BYTES:
         raise AssertionError("decoded binary frame is too short")
@@ -685,6 +708,7 @@ def run_device_to_host(emulator: Emulator, transfer_id: int) -> None:
 def run_device_to_host_protocol_error_case(
     emulator: Emulator, begin_request_id: int, status_request_id: int,
     frame_type: int, sequence: int, offset: int, status: int = 0,
+    payload: bytes = b"",
 ) -> None:
     emulator.send_json(
         begin_request_id, "binary.test.tx.begin", {"size_bytes": TRANSFER_BYTES}
@@ -705,8 +729,9 @@ def run_device_to_host_protocol_error_case(
     ):
         raise AssertionError(f"unexpected protocol-error DATA frame: {first}")
     emulator.send(
-        build_frame(
-            frame_type, transfer_id, sequence, offset, status=status
+        build_unchecked_control_frame(
+            frame_type, transfer_id, sequence, offset, status=status,
+            payload=payload,
         )
     )
     emulator.send_json(
@@ -732,10 +757,20 @@ def run_device_to_host_validation_cases(emulator: Emulator) -> None:
     run_device_to_host_protocol_error_case(
         emulator, 42, 43, NACK, sequence=0, offset=1, status=BAD_CRC
     )
+    # CRC-valid control frames with payload are semantic protocol errors, not
+    # silently ignored malformed responses.
+    run_device_to_host_protocol_error_case(
+        emulator, 44, 45, ACK, sequence=1, offset=MAX_PAYLOAD,
+        payload=b"unexpected-ack-payload",
+    )
+    run_device_to_host_protocol_error_case(
+        emulator, 46, 47, NACK, sequence=0, offset=0, status=BAD_CRC,
+        payload=b"unexpected-nack-payload",
+    )
     print(
         "E1C_FIRMWARE_SENDER_VALIDATION "
         "duplicate_ack=PASS stale_ack=PASS future_ack=PASS "
-        "stale_nack=PASS mismatched_nack=PASS"
+        "stale_nack=PASS mismatched_nack=PASS ack_payload=PASS nack_payload=PASS"
     )
 
 

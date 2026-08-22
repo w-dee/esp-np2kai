@@ -68,6 +68,17 @@ bool has_valid_type_fields(FrameType type, std::uint16_t status, std::uint16_t p
     return false;
 }
 
+bool has_valid_received_type_fields(FrameType type, std::uint16_t status,
+                                    std::uint16_t payload_length)
+{
+    if (type == FrameType::Data) {
+        return has_valid_type_fields(type, status, payload_length);
+    }
+    // ACK/NACK semantic validation belongs to the active transfer manager so
+    // a CRC-valid malformed response can terminate a DeviceToHost sender.
+    return type == FrameType::Ack || type == FrameType::Nack;
+}
+
 } // namespace
 
 bool parse_decoded(const std::uint8_t *decoded,
@@ -97,7 +108,8 @@ bool parse_decoded(const std::uint8_t *decoded,
         frame->header_length != kHeaderBytes ||
         !is_known_type(frame->type) ||
         frame->payload_length > kMaxPayloadBytes ||
-        !has_valid_type_fields(frame->type, frame->status, frame->payload_length) ||
+        !has_valid_received_type_fields(frame->type, frame->status,
+                                        frame->payload_length) ||
         frame->transfer_id == 0 ||
         length != kHeaderBytes + frame->payload_length + kCrcBytes) {
         return false;
