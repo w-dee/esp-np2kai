@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from file_transfer_ack_loss_test import RecordingEmulatorSerial
 from np2_fixture_cache import (
+    CAPABILITY_ZERO_RLE_V1,
     CAPABILITY_WINDOWED_GBN_V1,
     DATA_WINDOW_FRAMES,
     ENCODING_ZERO_RLE_V1,
@@ -308,7 +309,8 @@ def require_error(response: dict, request_id: int, code: str) -> None:
 
 def run_negotiation_cases(emu: wire.Emulator) -> None:
     hello = require_ok(emu.send_json(10, "protocol.hello") or emu.wait_response(10), 10)
-    if CAPABILITY_WINDOWED_GBN_V1 not in hello.get("capabilities", []):
+    if (CAPABILITY_WINDOWED_GBN_V1 not in hello.get("capabilities", []) or
+            CAPABILITY_ZERO_RLE_V1 not in hello.get("capabilities", [])):
         raise AssertionError(f"windowed capability missing: {hello}")
 
     default = require_ok(
@@ -358,7 +360,7 @@ def run_negotiation_cases(emu: wire.Emulator) -> None:
         15,
         "UNSUPPORTED",
     )
-    require_error(
+    selected_compressed = require_ok(
         emu.send_json(16, "file.write.begin", {
             "path": "/upload/e2-zero-rle.bin",
             "size_bytes": 1,
@@ -369,9 +371,19 @@ def run_negotiation_cases(emu: wire.Emulator) -> None:
             "window_frames": 2,
         }) or emu.wait_response(16),
         16,
-        "UNSUPPORTED",
     )
-    print("E2_NEGOTIATION default=W1 selected=W2 window4=REJECT zero_rle=REJECT")
+    if (selected_compressed.get("encoding") != ENCODING_ZERO_RLE_V1 or
+            selected_compressed.get("wire_size_bytes") != 6 or
+            selected_compressed.get("transport") != "windowed-gbn-v1" or
+            selected_compressed.get("window_frames") != 2):
+        raise AssertionError(f"W=2 zero-rle selection was not echoed: {selected_compressed}")
+    compressed_id = int(selected_compressed["transfer_id"])
+    require_ok(
+        emu.send_json(17, "binary.transfer.abort", {"transfer_id": compressed_id}) or
+        emu.wait_response(17),
+        17,
+    )
+    print("E2_NEGOTIATION default=W1 selected=W2 window4=REJECT zero_rle=W2_ACCEPT")
 
 
 def run_host_negotiation_unit_cases() -> None:
@@ -393,6 +405,22 @@ def run_host_negotiation_unit_cases() -> None:
             pass
         else:
             raise AssertionError("windowed upload unexpectedly fell back without capability")
+
+        zero_old_client = object.__new__(SerialFileTransferClient)
+        zero_old_client.capabilities = frozenset({CAPABILITY_WINDOWED_GBN_V1})
+        zero_old_client.request = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("peer without zero-rle capability must be rejected before begin")
+        )
+        try:
+            zero_old_client.upload(
+                "/upload/e2-old-zero-rle.bin", source, replace=True,
+                encoding=ENCODING_ZERO_RLE_V1,
+                transport="windowed-gbn-v1", window_frames=2,
+            )
+        except UploadModeError:
+            pass
+        else:
+            raise AssertionError("W=2 zero-rle upload accepted without capability")
 
         mismatch_client = object.__new__(SerialFileTransferClient)
         mismatch_client.capabilities = frozenset({CAPABILITY_WINDOWED_GBN_V1})

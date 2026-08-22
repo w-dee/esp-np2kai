@@ -481,9 +481,6 @@ Result file_begin_dispatch(const Request &request, bool write)
                 requested_window != binary_data_plane::kMaxWindowFrames) {
                 return failure("UNSUPPORTED", "windowed-gbn-v1 requires window_frames=2");
             }
-            if (encoding != file_transfer::Encoding::Raw) {
-                return failure("UNSUPPORTED", "windowed-gbn-v1 supports raw encoding only");
-            }
             transport = binary_data_plane::TransportMode::WindowedGbnV1;
             window_frames = binary_data_plane::kMaxWindowFrames;
         } else if (window_item != nullptr) {

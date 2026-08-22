@@ -352,8 +352,7 @@ Error Service::begin_write(std::string_view path_value, const WriteOptions &opti
     if ((options.transport == binary_data_plane::TransportMode::StopAndWait &&
          options.window_frames != 1) ||
         (options.transport == binary_data_plane::TransportMode::WindowedGbnV1 &&
-         (options.window_frames != binary_data_plane::kMaxWindowFrames ||
-          options.encoding != Encoding::Raw))) {
+         options.window_frames != binary_data_plane::kMaxWindowFrames)) {
         return Error::Unsupported;
     }
     if (options.logical_size_bytes > limits.max_file_bytes ||
@@ -489,6 +488,8 @@ binary_data_plane::EndpointResult Service::endpoint_consume(void *context,
 {
     auto *ctx = static_cast<EndpointContext *>(context);
     if (ctx == nullptr || !ctx->session_open || !ctx->write_session.write) return binary_data_plane::EndpointResult::Failed;
+    // The binary transport offset is an encoded-stream offset.  The
+    // zero-rle decoder separately tracks logical output offsets.
     if (ctx->encoding == Encoding::ZeroRleV1 &&
         (!ctx->decoder_initialized || offset != ctx->decoder.wire_consumed())) {
         ctx->codec_error = CodecError::MalformedEncoding;

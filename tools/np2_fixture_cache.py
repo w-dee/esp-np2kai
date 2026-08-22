@@ -780,7 +780,12 @@ class SerialFileTransferClient:
     def _upload_windowed(self, plan: UploadPlan, producer: _ByteProducer,
                          transfer_id: int, metrics: UploadMetrics,
                          started: float) -> UploadMetrics:
-        """Send raw DATA with a bounded two-frame go-back-N window."""
+        """Send retained encoded DATA with a bounded two-frame go-back-N window.
+
+        The DATA offset/sequence frontier is always the encoded transport
+        stream.  It is independent of the logical bytes produced by a
+        zero-rle decoder on the receiver.
+        """
         outstanding: list[_RetainedDataFrame] = []
         boundaries: dict[tuple[int, int], int] = {(0, 0): 0}
         next_sequence = 0
@@ -798,6 +803,8 @@ class SerialFileTransferClient:
 
         def fill_window() -> None:
             nonlocal next_sequence, next_offset
+            # next_offset and every retained boundary are wire offsets, even
+            # when the producer is streaming a compressed representation.
             while len(outstanding) < DATA_WINDOW_FRAMES and next_offset < plan.wire_size_bytes:
                 payload = producer.read(
                     min(wire.MAX_PAYLOAD, plan.wire_size_bytes - next_offset)
@@ -916,6 +923,9 @@ class SerialFileTransferClient:
                         f"mismatched windowed upload response: {response}",
                     )
                 boundary = (response_sequence, response_offset)
+                # ACK/NACK frontiers are compared with encoded DATA
+                # boundaries; logical decompressed offsets never appear on
+                # this transport path.
                 boundary_position = boundaries.get(boundary)
                 base = (outstanding[0].sequence, outstanding[0].offset)
                 base_position = boundaries[base]
@@ -970,6 +980,11 @@ class SerialFileTransferClient:
                 status.get("size_bytes") != plan.local.size_bytes or
                 status.get("transferred_bytes") != plan.local.size_bytes):
             raise RemoteError("TRANSFER_FAILED", f"upload did not complete: {status}")
+        if plan.encoding == ENCODING_ZERO_RLE_V1 and (
+                status.get("encoding") != ENCODING_ZERO_RLE_V1 or
+                status.get("wire_size_bytes") != plan.wire_size_bytes or
+                status.get("wire_transferred_bytes") != plan.wire_size_bytes):
+            raise RemoteError("TRANSFER_FAILED", f"compressed status mismatch: {status}")
         metrics.logical_bytes_sent = plan.local.size_bytes
         metrics.wire_bytes_sent = metrics.bytes_sent
         metrics.elapsed = time.monotonic() - started
@@ -989,8 +1004,6 @@ class SerialFileTransferClient:
             raise UploadModeError(f"unsupported upload transport: {transport}")
         if windowed and window_frames != DATA_WINDOW_FRAMES:
             raise UploadModeError("windowed-gbn-v1 requires window_frames=2")
-        if windowed and encoding != ENCODING_RAW:
-            raise UploadModeError("windowed-gbn-v1 supports raw encoding only")
         capabilities = set(self.capabilities)
         if windowed and CAPABILITY_WINDOWED_GBN_V1 not in capabilities:
             raise UploadModeError(
@@ -1003,6 +1016,12 @@ class SerialFileTransferClient:
         else:
             _validate_supplied_upload_plan(encoding, plan, capabilities)
         selected_encoding = plan.encoding
+        if (windowed and selected_encoding == ENCODING_ZERO_RLE_V1 and
+                CAPABILITY_ZERO_RLE_V1 not in capabilities):
+            raise UploadModeError(
+                "windowed zero-rle-v1 upload requires protocol.hello capability "
+                "file-transfer.zero-rle-v1"
+            )
 
         producer: _ByteProducer
         if selected_encoding == ENCODING_ZERO_RLE_V1:
