@@ -45,6 +45,7 @@ cJSON *hello_result(const Request &request)
         "system.info",
         "binary.data-plane.v1",
         "file-transfer.v1",
+        "file-transfer.zero-rle-v1",
     };
     for (const char *name : names) {
         if (cJSON_AddItemToArray(capabilities, cJSON_CreateString(name)) == false) {
@@ -118,6 +119,21 @@ bool add_transfer_info(cJSON *result, const binary_data_plane::TransferInfo &inf
     }
     if (info.has_crc32 &&
         cJSON_AddNumberToObject(result, "crc32", info.crc32) == nullptr) {
+        return false;
+    }
+    return true;
+}
+
+bool add_file_begin_info(cJSON *result, const file_transfer::BeginResult &begin)
+{
+    if (!add_transfer_info(result, begin.info)) return false;
+    if (begin.encoding == file_transfer::Encoding::Raw) return true;
+    if (cJSON_ReplaceItemInObject(result, "size_bytes",
+                                  cJSON_CreateNumber(static_cast<double>(begin.logical_size_bytes))) == 0 ||
+        cJSON_AddStringToObject(result, "encoding",
+                                file_transfer::encoding_name(begin.encoding)) == nullptr ||
+        cJSON_AddNumberToObject(result, "wire_size_bytes",
+                                static_cast<double>(begin.wire_size_bytes)) == nullptr) {
         return false;
     }
     return true;
@@ -386,12 +402,43 @@ Result file_begin_dispatch(const Request &request, bool write)
     file_transfer::Error error = file_transfer::Error::InternalError;
     if (write) {
         std::uint64_t size = 0;
+        std::uint64_t wire_size = 0;
         bool replace = false;
+        file_transfer::Encoding encoding = file_transfer::Encoding::Raw;
         if (!read_u64(request.params, "size_bytes", &size) ||
             !read_bool_optional(request.params, "replace", false, &replace)) {
             return failure("INVALID_PARAMS", "size_bytes or replace is invalid");
         }
-        error = service->begin_write(path, size, replace, &begin);
+        const cJSON *encoding_item = request.params == nullptr ? nullptr :
+            cJSON_GetObjectItemCaseSensitive(request.params, "encoding");
+        if (encoding_item != nullptr) {
+            if (!cJSON_IsString(encoding_item) || encoding_item->valuestring == nullptr) {
+                return failure("INVALID_PARAMS", "encoding must be a string");
+            }
+            if (std::strcmp(encoding_item->valuestring, "raw") == 0) {
+                encoding = file_transfer::Encoding::Raw;
+            } else if (std::strcmp(encoding_item->valuestring, "zero-rle-v1") == 0) {
+                encoding = file_transfer::Encoding::ZeroRleV1;
+            } else {
+                return failure("UNSUPPORTED", "file transfer encoding is unsupported");
+            }
+        }
+        const cJSON *wire_item = request.params == nullptr ? nullptr :
+            cJSON_GetObjectItemCaseSensitive(request.params, "wire_size_bytes");
+        if (encoding == file_transfer::Encoding::ZeroRleV1) {
+            if (!read_u64(request.params, "wire_size_bytes", &wire_size)) {
+                return failure("INVALID_PARAMS", "wire_size_bytes is required for compressed writes");
+            }
+        } else if (wire_item != nullptr) {
+            if (!read_u64(request.params, "wire_size_bytes", &wire_size) || wire_size != size) {
+                return failure("INVALID_PARAMS", "raw wire_size_bytes must equal size_bytes");
+            }
+        } else {
+            wire_size = size;
+        }
+        error = service->begin_write(path,
+                                     file_transfer::WriteOptions{size, wire_size, replace, encoding},
+                                     &begin);
     } else {
         std::uint64_t offset = 0;
         std::uint64_t length = 0;
@@ -409,8 +456,16 @@ Result file_begin_dispatch(const Request &request, bool write)
     if (begin.synchronous) {
         cJSON_AddNullToObject(result, "transfer_id");
         cJSON_AddStringToObject(result, "state", "completed");
-        cJSON_AddNumberToObject(result, "size_bytes", static_cast<double>(begin.info.total_bytes));
-    } else if (!add_transfer_info(result, begin.info)) {
+        cJSON_AddNumberToObject(result, "size_bytes", static_cast<double>(begin.logical_size_bytes));
+        if (begin.encoding != file_transfer::Encoding::Raw &&
+            (cJSON_AddStringToObject(result, "encoding",
+                                     file_transfer::encoding_name(begin.encoding)) == nullptr ||
+             cJSON_AddNumberToObject(result, "wire_size_bytes",
+                                     static_cast<double>(begin.wire_size_bytes)) == nullptr)) {
+            cJSON_Delete(result);
+            return failure("INTERNAL_ERROR", "unable to allocate transfer result");
+        }
+    } else if (!add_file_begin_info(result, begin)) {
         cJSON_Delete(result);
         return failure("INTERNAL_ERROR", "unable to allocate transfer result");
     }
@@ -443,13 +498,28 @@ Result file_status_dispatch(const Request &request)
         cJSON_Delete(result);
         return failure("INTERNAL_ERROR", "unable to allocate file status");
     }
+    if (summary.encoding != file_transfer::Encoding::Raw &&
+        (cJSON_AddStringToObject(result, "encoding",
+                                 file_transfer::encoding_name(summary.encoding)) == nullptr ||
+         cJSON_AddNumberToObject(result, "wire_size_bytes",
+                                 static_cast<double>(summary.wire_size_bytes)) == nullptr ||
+         cJSON_AddNumberToObject(result, "wire_transferred_bytes",
+                                 static_cast<double>(summary.wire_transferred_bytes)) == nullptr)) {
+        cJSON_Delete(result);
+        return failure("INTERNAL_ERROR", "unable to allocate compressed file status");
+    }
     if (summary.storage_error != storage::Error::Ok ||
+        summary.codec_error != file_transfer::CodecError::None ||
         summary.transport_state == binary_data_plane::TransferState::Aborted) {
         cJSON *error_object = cJSON_CreateObject();
-        const char *code = summary.storage_error != storage::Error::Ok ?
+        const char *code = summary.codec_error != file_transfer::CodecError::None ?
+            file_transfer::codec_error_code(summary.codec_error) :
+            summary.storage_error != storage::Error::Ok ?
             storage::error_code(summary.storage_error) :
             file_transfer::terminal_error_code(summary.terminal_reason);
-        const char *message = summary.storage_error != storage::Error::Ok ?
+        const char *message = summary.codec_error != file_transfer::CodecError::None ?
+            file_transfer::codec_error_message(summary.codec_error) :
+            summary.storage_error != storage::Error::Ok ?
             "storage operation failed" :
             file_transfer::terminal_error_message(summary.terminal_reason);
         if (error_object == nullptr ||

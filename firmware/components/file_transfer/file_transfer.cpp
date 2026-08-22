@@ -9,7 +9,9 @@
 namespace {
 
 constexpr std::size_t kSha256ChunkBytes = 4096;
+constexpr std::size_t kZeroRunBufferBytes = 4096;
 constexpr char kHex[] = "0123456789abcdef";
+alignas(4) std::uint8_t zero_run_buffer[kZeroRunBufferBytes]{};
 
 void format_sha256(const std::uint8_t digest[32], char out[65])
 {
@@ -46,6 +48,33 @@ const char *error_code(Error error)
     case Error::InternalError: return "INTERNAL_ERROR";
     }
     return "INTERNAL_ERROR";
+}
+
+const char *encoding_name(Encoding encoding)
+{
+    switch (encoding) {
+    case Encoding::Raw: return "raw";
+    case Encoding::ZeroRleV1: return "zero-rle-v1";
+    }
+    return "raw";
+}
+
+const char *codec_error_code(CodecError error)
+{
+    switch (error) {
+    case CodecError::None: return "OK";
+    case CodecError::MalformedEncoding: return "MALFORMED_ENCODING";
+    }
+    return "MALFORMED_ENCODING";
+}
+
+const char *codec_error_message(CodecError error)
+{
+    switch (error) {
+    case CodecError::None: return "encoding is valid";
+    case CodecError::MalformedEncoding: return "zero-rle-v1 stream is malformed";
+    }
+    return "file transfer encoding is malformed";
 }
 
 const char *file_state_name(Summary::FileState state)
@@ -213,13 +242,16 @@ Error Service::list(std::string_view path_value, std::string_view cursor,
 
 void Service::copy_current(std::string_view path_value,
                            binary_data_plane::Direction direction,
-                           std::uint64_t size)
+                           Encoding encoding, std::uint64_t logical_size,
+                           std::uint64_t wire_size)
 {
     terminal = Summary{};
     current = Summary{};
     current.valid = true;
     current.direction = direction;
-    current.size_bytes = size;
+    current.size_bytes = logical_size;
+    current.encoding = encoding;
+    current.wire_size_bytes = wire_size;
     current.file_state = Summary::FileState::Active;
     if (path_value.size() <= storage::kMaxPathBytes) {
         std::memcpy(current.path, path_value.data(), path_value.size());
@@ -268,13 +300,18 @@ Error Service::begin_read(std::string_view path_value, std::uint64_t offset,
         result->info.direction = binary_data_plane::Direction::DeviceToHost;
         result->info.state = binary_data_plane::TransferState::Completed;
         result->info.total_bytes = 0;
+        result->encoding = Encoding::Raw;
+        result->logical_size_bytes = 0;
+        result->wire_size_bytes = 0;
         return Error::Ok;
     }
     endpoint = EndpointContext{};
     endpoint.service = this;
     endpoint.write = false;
     endpoint.file_offset = offset;
-    endpoint.size = selected;
+    endpoint.logical_size = selected;
+    endpoint.wire_size = selected;
+    endpoint.encoding = Encoding::Raw;
     std::memcpy(endpoint.path, path_value.data(), path_value.size());
     endpoint.path[path_value.size()] = '\0';
     binary_data_plane::TransferInfo info{};
@@ -285,25 +322,38 @@ Error Service::begin_read(std::string_view path_value, std::uint64_t offset,
             map_storage(endpoint.storage_error) :
             (manager_error == binary_data_plane::ManagerError::Busy ? Error::Busy : Error::InternalError);
     }
-    copy_current(path_value, binary_data_plane::Direction::DeviceToHost, selected);
+    copy_current(path_value, binary_data_plane::Direction::DeviceToHost,
+                 Encoding::Raw, selected, selected);
     current.transfer_id = info.transfer_id;
     result->info = info;
     result->synchronous = false;
     result->file_offset = offset;
+    result->encoding = Encoding::Raw;
+    result->logical_size_bytes = selected;
+    result->wire_size_bytes = selected;
     return Error::Ok;
 }
 
-Error Service::begin_write(std::string_view path_value, std::uint64_t size,
-                           bool replace, BeginResult *result)
+Error Service::begin_write(std::string_view path_value, const WriteOptions &options,
+                           BeginResult *result)
 {
     if (result == nullptr) return Error::InternalError;
     if (!path::validate(path_value, false)) return Error::InvalidPath;
     if (active() || binary == nullptr) return Error::Busy;
-    if (size > limits.max_file_bytes) return Error::NoSpace;
-    if (size == 0) {
+    if (options.logical_size_bytes > limits.max_file_bytes ||
+        options.wire_size_bytes > limits.max_file_bytes) return Error::NoSpace;
+    if ((options.logical_size_bytes == 0) != (options.wire_size_bytes == 0)) {
+        return Error::InvalidPath;
+    }
+    if (options.encoding == Encoding::Raw &&
+        options.logical_size_bytes != options.wire_size_bytes) {
+        return Error::InvalidPath;
+    }
+    if (options.logical_size_bytes == 0) {
         if (storage.begin_write == nullptr) return Error::InternalError;
         storage::WriteSession session{};
-        const storage::Error open = storage.begin_write(storage.context, path_value, 0, replace, &session);
+        const storage::Error open = storage.begin_write(storage.context, path_value, 0,
+                                                        options.replace, &session);
         if (open != storage::Error::Ok) return map_storage(open);
         const storage::Error committed = session.commit == nullptr ? storage::Error::CommitFailed :
             session.commit(session.context);
@@ -317,27 +367,36 @@ Error Service::begin_write(std::string_view path_value, std::uint64_t size,
         result->info = binary_data_plane::TransferInfo{};
         result->info.direction = binary_data_plane::Direction::HostToDevice;
         result->info.state = binary_data_plane::TransferState::Completed;
+        result->encoding = options.encoding;
+        result->logical_size_bytes = 0;
+        result->wire_size_bytes = 0;
         return Error::Ok;
     }
     endpoint = EndpointContext{};
     endpoint.service = this;
     endpoint.write = true;
-    endpoint.replace = replace;
-    endpoint.size = size;
+    endpoint.replace = options.replace;
+    endpoint.logical_size = options.logical_size_bytes;
+    endpoint.wire_size = options.wire_size_bytes;
+    endpoint.encoding = options.encoding;
     std::memcpy(endpoint.path, path_value.data(), path_value.size());
     endpoint.path[path_value.size()] = '\0';
     binary_data_plane::TransferInfo info{};
     const binary_data_plane::ManagerError manager_error =
-        binary_data_plane::begin_rx(binary, size, make_endpoint(), &info);
+        binary_data_plane::begin_rx(binary, options.wire_size_bytes, make_endpoint(), &info);
     if (manager_error != binary_data_plane::ManagerError::Ok) {
         return endpoint.storage_error != storage::Error::Ok ?
             map_storage(endpoint.storage_error) :
             (manager_error == binary_data_plane::ManagerError::Busy ? Error::Busy : Error::InternalError);
     }
-    copy_current(path_value, binary_data_plane::Direction::HostToDevice, size);
+    copy_current(path_value, binary_data_plane::Direction::HostToDevice,
+                 options.encoding, options.logical_size_bytes, options.wire_size_bytes);
     current.transfer_id = info.transfer_id;
     result->info = info;
     result->synchronous = false;
+    result->encoding = options.encoding;
+    result->logical_size_bytes = options.logical_size_bytes;
+    result->wire_size_bytes = options.wire_size_bytes;
     return Error::Ok;
 }
 
@@ -355,7 +414,9 @@ Error Service::status(std::uint32_t transfer_id, Summary *summary)
     }
     *summary = current;
     summary->transport_state = info.state;
-    summary->transferred_bytes = info.transferred_bytes;
+    summary->wire_transferred_bytes = info.transferred_bytes;
+    summary->transferred_bytes = current.encoding == Encoding::ZeroRleV1 &&
+        endpoint.decoder_initialized ? endpoint.decoder.logical_produced() : info.transferred_bytes;
     summary->crc32 = info.crc32;
     summary->has_crc32 = info.has_crc32;
     return Error::Ok;
@@ -375,9 +436,15 @@ binary_data_plane::EndpointResult Service::endpoint_begin(void *context,
             return binary_data_plane::EndpointResult::Failed;
         }
         const storage::Error error = service->storage.begin_write(service->storage.context,
-                                                                   path_value, ctx->size, ctx->replace, &ctx->write_session);
+                                                                   path_value, ctx->logical_size,
+                                                                   ctx->replace, &ctx->write_session);
         ctx->storage_error = error;
         ctx->session_open = error == storage::Error::Ok;
+        if (ctx->session_open && ctx->encoding == Encoding::ZeroRleV1) {
+            ctx->decoder.init(ctx->logical_size, ctx->wire_size, decoder_emit, ctx,
+                              zero_run_buffer, sizeof(zero_run_buffer));
+            ctx->decoder_initialized = true;
+        }
         return error == storage::Error::Ok ? binary_data_plane::EndpointResult::Ok :
             binary_data_plane::EndpointResult::Failed;
     }
@@ -400,6 +467,25 @@ binary_data_plane::EndpointResult Service::endpoint_consume(void *context,
 {
     auto *ctx = static_cast<EndpointContext *>(context);
     if (ctx == nullptr || !ctx->session_open || !ctx->write_session.write) return binary_data_plane::EndpointResult::Failed;
+    if (ctx->encoding == Encoding::ZeroRleV1 &&
+        (!ctx->decoder_initialized || offset != ctx->decoder.wire_consumed())) {
+        ctx->codec_error = CodecError::MalformedEncoding;
+        ctx->failed = true;
+        return binary_data_plane::EndpointResult::Failed;
+    }
+    if (ctx->encoding == Encoding::ZeroRleV1) {
+        const zero_rle_v1::Result result = ctx->decoder.consume(offset, data, length);
+        if (result == zero_rle_v1::Result::Malformed) {
+            ctx->codec_error = CodecError::MalformedEncoding;
+            ctx->failed = true;
+            return binary_data_plane::EndpointResult::Failed;
+        }
+        if (result == zero_rle_v1::Result::OutputFailed) {
+            ctx->failed = true;
+            return binary_data_plane::EndpointResult::Failed;
+        }
+        return binary_data_plane::EndpointResult::Ok;
+    }
     const storage::Error error = ctx->write_session.write(ctx->write_session.context, offset, data, length);
     if (error != storage::Error::Ok) {
         ctx->storage_error = error;
@@ -407,6 +493,21 @@ binary_data_plane::EndpointResult Service::endpoint_consume(void *context,
         return binary_data_plane::EndpointResult::Failed;
     }
     return binary_data_plane::EndpointResult::Ok;
+}
+
+bool Service::decoder_emit(void *context, std::uint64_t offset,
+                           const std::uint8_t *data, std::size_t length)
+{
+    auto *ctx = static_cast<EndpointContext *>(context);
+    if (ctx == nullptr || !ctx->session_open || !ctx->write_session.write) return false;
+    const storage::Error error = ctx->write_session.write(ctx->write_session.context,
+                                                          offset, data, length);
+    if (error != storage::Error::Ok) {
+        ctx->storage_error = error;
+        ctx->failed = true;
+        return false;
+    }
+    return true;
 }
 
 binary_data_plane::EndpointResult Service::endpoint_produce(void *context,
@@ -434,6 +535,25 @@ binary_data_plane::EndpointResult Service::endpoint_finish(void *context)
     if (ctx == nullptr || !ctx->session_open) return binary_data_plane::EndpointResult::Failed;
     storage::Error error = storage::Error::Ok;
     if (ctx->write) {
+        if (ctx->encoding == Encoding::ZeroRleV1 && ctx->decoder_initialized) {
+            const zero_rle_v1::Result decoded = ctx->decoder.finish();
+            if (decoded == zero_rle_v1::Result::Malformed) {
+                ctx->codec_error = CodecError::MalformedEncoding;
+                ctx->failed = true;
+                if (ctx->write_session.abort != nullptr) ctx->write_session.abort(ctx->write_session.context);
+                ctx->session_open = false;
+                ctx->storage_error = storage::Error::Ok;
+                ctx->finish_succeeded = false;
+                return binary_data_plane::EndpointResult::Failed;
+            }
+            if (decoded == zero_rle_v1::Result::OutputFailed) {
+                ctx->failed = true;
+                if (ctx->write_session.abort != nullptr) ctx->write_session.abort(ctx->write_session.context);
+                ctx->session_open = false;
+                ctx->finish_succeeded = false;
+                return binary_data_plane::EndpointResult::Failed;
+            }
+        }
         error = ctx->write_session.commit == nullptr ? storage::Error::CommitFailed :
             ctx->write_session.commit(ctx->write_session.context);
         if (error != storage::Error::Ok && ctx->write_session.abort != nullptr) {
@@ -469,7 +589,12 @@ void Service::endpoint_terminal(void *context, binary_data_plane::TerminalReason
     Service *service = ctx->service;
     Summary summary = service->current;
     summary.transport_state = service->binary->terminal.state;
-    summary.transferred_bytes = service->binary->terminal.transferred_bytes;
+    summary.wire_transferred_bytes = service->binary->terminal.transferred_bytes;
+    summary.transferred_bytes = ctx->encoding == Encoding::ZeroRleV1 && ctx->decoder_initialized ?
+        ctx->decoder.logical_produced() : service->binary->terminal.transferred_bytes;
+    summary.encoding = ctx->encoding;
+    summary.size_bytes = ctx->logical_size;
+    summary.wire_size_bytes = ctx->wire_size;
     summary.crc32 = service->binary->terminal.crc32;
     summary.has_crc32 = service->binary->terminal.has_crc32;
     if (ctx->finish_succeeded) {
@@ -482,6 +607,7 @@ void Service::endpoint_terminal(void *context, binary_data_plane::TerminalReason
         summary.file_state = Summary::FileState::Aborted;
     }
     summary.storage_error = ctx->storage_error;
+    summary.codec_error = ctx->codec_error;
     summary.terminal_reason = reason;
     summary.valid = true;
     service->terminal = summary;
