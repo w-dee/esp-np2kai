@@ -1,0 +1,5 @@
+# Waveshare ESP32-P4-NANO-KIT-D board-qualified UART overlay.
+# This value is qualified only for the tested onboard CH343P USB-UART path;
+# it must not become the default for other ESP32-P4 or CH343 boards.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=1500000

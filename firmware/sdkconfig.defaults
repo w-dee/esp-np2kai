@@ -1,5 +1,8 @@
 CONFIG_IDF_TARGET="esp32p4"
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# Conservative default for generic and unqualified boards.  Board-qualified
+# overlays may select a different value explicitly.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 

@@ -38,8 +38,38 @@ Production builds select the silicon family explicitly with
 Revision selectors are intentionally absent from the common defaults. The
 wrapper uses separate `firmware/build-p4-v1x` and `firmware/build-p4-v3x`
 trees, verifies generated revision bounds, and emits variant-labelled
-artifacts. The existing esp-emu v0.39.0 regressions use `p4-v3x`; the v1.x
-path is compile-only until production firmware is validated on real hardware.
+artifacts. The existing esp-emu v0.39.0 regressions use `p4-v3x`.
+
+## Board-qualified UART baud policy
+
+UART baud is a build-time policy. Generic and unqualified builds use the
+conservative 115200 8N1 default. The P4-NANO value is selected explicitly:
+
+```bash
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano
+```
+
+| Board/profile | UART baud | Status |
+| --- | ---: | --- |
+| Generic or unqualified board | 115200 | Conservative baseline |
+| Waveshare ESP32-P4-NANO-KIT-D, onboard CH343P path | 1500000 | IMPLEMENTED; HW VALIDATED on the tested board/configuration |
+| Waveshare P4-NANO, 2 Mbps option | 2000000 | Experimental; separately validated option, not the normal default |
+| M5Stack TAB5 | 115200 | Not high-speed qualified |
+| ESP32-S31 boards | 115200 | Not high-speed qualified |
+
+The 1500000 result is not generalized to all ESP32-P4 boards or all CH343
+bridges. Qualification is specific to the tested P4-NANO board routing and
+signal integrity, onboard CH343P bridge, oscillator/baud-divisor behavior,
+host OS and driver, and the tested cable/hub path. Each board and host path
+must be validated independently. There is no runtime baud negotiation or
+automatic fallback, and host tools retain an explicit `--baud` option with a
+conservative 115200 default.
+
+The qualification evidence is repeated 256 KiB transfers and an exact
+1,261,568-byte NP2 fixture SHA pass at 1500000, with a healthy control plane.
+The same checks passed at 2000000, but 2 Mbps remains experimental; 1500000
+is the normal P4-NANO high-speed choice because it provides more margin with
+negligible measured difference.
 
 This is the current ESP32-P4 baseline, not a universal future baseline for
 every Espressif SoC target. No ESP32-S31 toolchain, target, or emulator

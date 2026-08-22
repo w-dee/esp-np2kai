@@ -6,10 +6,12 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--build-dir PATH]\n' "${BASH_SOURCE[0]}"
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH]\n' \
+        "${BASH_SOURCE[0]}"
 }
 
 variant=""
+board="generic"
 build_dir=""
 while (($# > 0)); do
     case "$1" in
@@ -20,6 +22,15 @@ while (($# > 0)); do
             ;;
         --variant=*)
             variant="${1#*=}"
+            shift
+            ;;
+        --board)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            board="$2"
+            shift 2
+            ;;
+        --board=*)
+            board="${1#*=}"
             shift
             ;;
         --build-dir)
@@ -51,15 +62,39 @@ case "${variant}" in
         ;;
 esac
 
+case "${board}" in
+    generic)
+        ;;
+    p4-nano)
+        [[ "${variant}" == "p4-v1x" ]] || {
+            printf 'ERROR: --board p4-nano requires --variant p4-v1x\n' >&2
+            exit 2
+        }
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
 if [[ -z "${build_dir}" ]]; then
-    build_dir="${FIRMWARE_DIR}/build-${variant}"
+    if [[ "${board}" == "generic" ]]; then
+        build_dir="${FIRMWARE_DIR}/build-${variant}"
+    else
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}"
+    fi
 elif [[ "${build_dir}" != /* ]]; then
     build_dir="${REPOSITORY_ROOT}/${build_dir}"
 fi
 
 readonly SDKCONFIG_PATH="${build_dir}/sdkconfig"
-readonly DEFAULTS="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.${variant}"
+defaults="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.${variant}"
+if [[ "${board}" == "p4-nano" ]]; then
+    defaults+=";${FIRMWARE_DIR}/sdkconfig.defaults.p4-nano"
+fi
+readonly DEFAULTS="${defaults}"
 readonly VARIANT_MARKER="${build_dir}/.p4-production-variant"
+readonly BOARD_MARKER="${build_dir}/.p4-production-board"
 
 source "${SCRIPT_DIR}/activate-idf.sh"
 source "${SCRIPT_DIR}/check-firmware-sdkconfig.sh"
@@ -84,8 +119,17 @@ if [[ -e "${VARIANT_MARKER}" ]]; then
     }
 fi
 
+if [[ -e "${BOARD_MARKER}" ]]; then
+    marker_value="$(<"${BOARD_MARKER}")"
+    [[ "${marker_value}" == "${board}" ]] || {
+        printf 'ERROR: build directory belongs to board %s, not %s: %s\n' \
+            "${marker_value}" "${board}" "${build_dir}" >&2
+        exit 1
+    }
+fi
+
 if [[ -f "${SDKCONFIG_PATH}" ]]; then
-    check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}"
+    check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 elif [[ -f "${build_dir}/CMakeCache.txt" ]]; then
     printf 'ERROR: build directory has a CMake cache but no sdkconfig; refusing silent regeneration: %s\n' \
         "${build_dir}" >&2
@@ -105,12 +149,13 @@ cd -- "${FIRMWARE_DIR}"
 if [[ ! -f "${SDKCONFIG_PATH}" || ! -f "${build_dir}/CMakeCache.txt" ]]; then
     idf.py "${cmake_args[@]}" set-target esp32p4
 fi
-check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}"
+check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 idf.py "${cmake_args[@]}" reconfigure
-check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}"
+check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 idf.py "${cmake_args[@]}" build
-check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}"
+check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 printf '%s\n' "${variant}" > "${VARIANT_MARKER}"
+printf '%s\n' "${board}" > "${BOARD_MARKER}"
 
 for artifact in \
     "${build_dir}/bootloader/bootloader.bin" \
@@ -123,9 +168,9 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${build_dir}" "${SDKCONFIG_PATH}"
-printf 'PRODUCTION_ARTIFACT variant=%s bootloader=%s partition=%s app=%s map=%s\n' \
-    "${variant}" "${build_dir}/bootloader/bootloader.bin" \
+printf 'PRODUCTION_BUILD variant=%s board=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${build_dir}" "${SDKCONFIG_PATH}"
+printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
+    "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \
     "${build_dir}/partition_table/partition-table.bin" \
     "${build_dir}/esp_np2kai.bin" "${build_dir}/esp_np2kai.map"

@@ -3,10 +3,13 @@
 check_firmware_sdkconfig() {
     local sdkconfig_path="${1:?sdkconfig path is required}"
     local variant="${2:-}"
+    local board="${3:-generic}"
+    local expected_baud_line=""
+    local -a expected_board_lines=()
 
     if [[ ! -f "${sdkconfig_path}" ]]; then
-        printf 'SDKCONFIG_PREFLIGHT absent path=%s variant=%s action=use_defaults\n' \
-            "${sdkconfig_path}" "${variant:--}"
+        printf 'SDKCONFIG_PREFLIGHT absent path=%s variant=%s board=%s action=use_defaults\n' \
+            "${sdkconfig_path}" "${variant:--}" "${board}"
         return 0
     fi
 
@@ -28,8 +31,8 @@ check_firmware_sdkconfig() {
 
     case "${variant}" in
         '')
-            printf 'SDKCONFIG_PREFLIGHT valid path=%s flash=8MB variant=unspecified\n' \
-                "${sdkconfig_path}"
+            printf 'SDKCONFIG_PREFLIGHT valid path=%s flash=8MB variant=unspecified board=%s\n' \
+                "${sdkconfig_path}" "${board}"
             return 0
             ;;
         p4-v1x)
@@ -56,6 +59,40 @@ check_firmware_sdkconfig() {
             ;;
     esac
 
+    case "${board}" in
+        generic)
+            expected_baud_line='CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200'
+            ;;
+        p4-nano)
+            if [[ "${variant}" != "p4-v1x" ]]; then
+                printf 'ERROR: board %s requires production variant p4-v1x, got %s\n' \
+                    "${board}" "${variant}" >&2
+                return 1
+            fi
+            expected_baud_line='CONFIG_ESP_CONSOLE_UART_BAUDRATE=1500000'
+            expected_board_lines=('CONFIG_ESP_CONSOLE_UART_CUSTOM=y')
+            ;;
+        *)
+            printf 'ERROR: unknown production firmware board: %s\n' "${board}" >&2
+            return 1
+            ;;
+    esac
+
+    if ! grep -qxF "${expected_baud_line}" "${sdkconfig_path}"; then
+        printf 'ERROR: sdkconfig does not match production board %s: missing %s\n' \
+            "${board}" "${expected_baud_line}" >&2
+        return 1
+    fi
+
+    local expected_board_line
+    for expected_board_line in "${expected_board_lines[@]:-}"; do
+        if [[ -n "${expected_board_line}" ]] && ! grep -qxF "${expected_board_line}" "${sdkconfig_path}"; then
+            printf 'ERROR: sdkconfig does not match production board %s: missing %s\n' \
+                "${board}" "${expected_board_line}" >&2
+            return 1
+        fi
+    done
+
     local expected_line
     for expected_line in "${expected_lines[@]}"; do
         if ! grep -qxF "${expected_line}" "${sdkconfig_path}"; then
@@ -76,7 +113,7 @@ check_firmware_sdkconfig() {
         fi
     done
 
-    printf 'SDKCONFIG_PREFLIGHT valid path=%s flash=8MB variant=%s\n' \
-        "${sdkconfig_path}" "${variant}"
+    printf 'SDKCONFIG_PREFLIGHT valid path=%s flash=8MB variant=%s board=%s baud=%s\n' \
+        "${sdkconfig_path}" "${variant}" "${board}" "${expected_baud_line#*=}"
     return 0
 }

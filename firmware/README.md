@@ -34,7 +34,13 @@ Production firmware builds must select a silicon-family variant explicitly:
 ```bash
 tools/emu/build-production.sh --variant p4-v3x
 tools/emu/build-production.sh --variant p4-v1x
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano
 ```
+
+The unqualified production profiles use a conservative 115200 baud. The
+explicit `p4-nano` board overlay selects 1500000 only for the Waveshare
+ESP32-P4-NANO-KIT-D onboard CH343P path validated in the development
+environment; it is not a portable default for other P4 or CH343 boards.
 
 Both variants use the same application, partition geometry, 8 MiB validation
 envelope, and production PSRAM settings. The revision selector is kept in the
