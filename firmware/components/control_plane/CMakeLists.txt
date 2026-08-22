@@ -9,3 +9,7 @@ idf_component_register(
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
+
+if(NP2_EMU_TEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NP2_EMU_TEST=1)
+endif()

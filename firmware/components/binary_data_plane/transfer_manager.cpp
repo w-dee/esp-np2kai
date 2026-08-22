@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#if defined(NP2_EMU_TEST)
 #include <cstdio>
+#endif
 
 #include "binary_codec.hpp"
 #include "crc32.hpp"
@@ -104,6 +106,7 @@ bool write_wire(TransferManager *manager,
                              &wire_length)) {
         return false;
     }
+#if defined(NP2_EMU_TEST)
     if (manager->test_fail_final_ack_output_once &&
         type == FrameType::Ack && manager->direction == Direction::HostToDevice &&
         manager->transferred_bytes == manager->total_bytes &&
@@ -114,6 +117,7 @@ bool write_wire(TransferManager *manager,
         std::fflush(stdout);
         return false;
     }
+#endif
     return manager->output.write != nullptr &&
            manager->output.write(manager->output.context, manager->wire_frame, wire_length);
 }
@@ -490,10 +494,12 @@ void poll(TransferManager *manager, std::uint32_t now_ms)
     }
 }
 
+#if defined(NP2_EMU_TEST)
 void arm_test_final_ack_output_failure_once(TransferManager *manager)
 {
     if (manager != nullptr) manager->test_fail_final_ack_output_once = true;
 }
+#endif
 
 const char *error_code(ManagerError error)
 {

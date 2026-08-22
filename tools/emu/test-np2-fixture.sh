@@ -35,6 +35,7 @@ python3 "${REPOSITORY_ROOT}/tools/guest/verify_np2test.py" \
 
 bash "${SCRIPT_DIR}/build-production.sh" \
     --variant p4-v3x \
+    --esp-emu-test \
     --build-dir "${BUILD_DIR}"
 
 python3 "${REPOSITORY_ROOT}/tools/emu/build_np2_fixture_flash.py" \

@@ -58,6 +58,7 @@ fi
 
 bash "${SCRIPT_DIR}/build-production.sh" \
     --variant p4-v3x \
+    --esp-emu-test \
     --build-dir "${BUILD_DIR}"
 
 cd -- "${FIRMWARE_DIR}"

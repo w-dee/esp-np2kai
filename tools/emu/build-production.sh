@@ -6,13 +6,14 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
 variant=""
 board="generic"
 build_dir=""
+esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
         --variant)
@@ -40,6 +41,10 @@ while (($# > 0)); do
             ;;
         --build-dir=*)
             build_dir="${1#*=}"
+            shift
+            ;;
+        --esp-emu-test)
+            esp_emu_test=1
             shift
             ;;
         -h|--help)
@@ -76,6 +81,11 @@ case "${board}" in
         exit 2
         ;;
 esac
+
+if (( esp_emu_test )) && [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ]]; then
+    printf 'ERROR: --esp-emu-test requires the generic p4-v3x emulator build\n' >&2
+    exit 2
+fi
 
 if [[ -z "${build_dir}" ]]; then
     if [[ "${board}" == "generic" ]]; then
@@ -143,6 +153,7 @@ cmake_args=(
     -D "SDKCONFIG=${SDKCONFIG_PATH}"
     -D "SDKCONFIG_DEFAULTS=${DEFAULTS}"
     -D IDF_TARGET=esp32p4
+    -D "NP2_EMU_TEST=${esp_emu_test}"
 )
 
 cd -- "${FIRMWARE_DIR}"

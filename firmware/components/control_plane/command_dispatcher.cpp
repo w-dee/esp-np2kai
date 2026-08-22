@@ -217,6 +217,7 @@ Result abort_dispatch(const Request &request)
     return Result{true, result, nullptr, nullptr};
 }
 
+#if defined(NP2_EMU_TEST)
 Result arm_final_ack_output_failure_dispatch(const Request &request)
 {
     binary_data_plane::TransferManager *manager = binary_manager(request);
@@ -231,6 +232,7 @@ Result arm_final_ack_output_failure_dispatch(const Request &request)
     }
     return Result{true, result, nullptr, nullptr};
 }
+#endif
 
 cJSON *ping_result()
 {
@@ -578,9 +580,11 @@ Result dispatch(const Request &request)
     if (request.command == "binary.transfer.abort") {
         return abort_dispatch(request);
     }
+#if defined(NP2_EMU_TEST)
     if (request.command == "binary.test.final-ack-output-failure-once") {
         return arm_final_ack_output_failure_dispatch(request);
     }
+#endif
     if (request.command == "file.stat") return file_stat_dispatch(request);
     if (request.command == "file.sha256") return file_sha256_dispatch(request);
     if (request.command == "file.list") return file_list_dispatch(request);
