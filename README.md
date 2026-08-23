@@ -117,18 +117,27 @@ backlight lifecycle all passed; human inspection separately confirmed the
 physical LCD output. This is scoped Step 7B.2a evidence, not blanket physical
 display completion.
 
-Live NP2 presentation consumption, 640x400-to-panel mapping, exact 2x scaling,
-90-degree rotation, double buffering, framebuffer reuse, tearing under
-animation, measured refresh, long-duration stability, live-load PSRAM
-bandwidth/performance, PPA, and display concurrency with SDMMC/audio remain
-future work.
+Step 7B.2b is COMPLETE for its bounded pixel-exact reference and static
+physical-transform validation scope. The project-owned C++20 transform consumes
+an immutable 640x400 RGB565 frame, applies exact nearest-neighbor 2x to a
+logical 1280x800 landscape, and writes directly to one native 800x1280 RGB565
+destination. It has no intermediate framebuffer, filtering, color conversion,
+PPA, DMA2D, or per-frame allocation. Both quarter-turn mappings remain in the
+API; the P4-NANO board policy is COUNTERCLOCKWISE, selected by human inspection
+as the natural upright orientation. Host validation freezes reference CRCs
+`0xdb938d53` (CW) and `0x164584cf` (CCW), while the separate physical diagnostic
+source is `0x4291f7e5`, with transformed CRCs `0x37fd7262` (CW) and
+`0xd98ce5d4` (CCW). Both candidates built and ran on the qualified P4-NANO;
+both were visually inspected successfully. The CCW capture began after early
+boot, so only its terminal runtime/cleanup result was retained.
 
-Step 7B.2b is the planned pixel-exact landscape-to-native transform reference:
-immutable 640x400 RGB565 -> exact nearest-neighbor 2x -> logical 1280x800
-landscape -> 90-degree rotation -> physical 800x1280 RGB565. The initial
-implementation should be deterministic, byte-exact, host-testable, and fused
-directly into the 800x1280 destination without a temporary 1280x800 framebuffer.
-PPA remains a later A/B performance experiment.
+Step 7B.2c is the next bounded integration step: consume immutable acquired
+640x400 presentation frames from Step 7B.1 and feed the validated P4-NANO
+COUNTERCLOCKWISE transform to the physical display. Live NP2 consumption,
+buffering/reuse, tearing, measured refresh, long-duration stability, live-load
+PSRAM bandwidth/performance, PPA, and display concurrency with SDMMC/audio
+remain future work. This P4-NANO policy does not generalize to TAB5, ESP32-S31,
+or ESP32-S3 without an independent geometry/orientation decision.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 

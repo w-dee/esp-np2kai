@@ -367,22 +367,102 @@ framebuffer. The reported free-heap delta was 2,049,252 bytes versus the
 2,048,000-byte payload; allocator, alignment, and driver bookkeeping must not
 be inferred as double-buffer viability.
 
-The current P4-NANO live-display policy is the planned Step 7B.2b exact
-nearest-neighbor transform:
+Step 7B.2b is COMPLETE for the bounded pixel-exact transform reference and
+static physical-transform validation. The project-owned C++20 implementation
+consumes an immutable `640x400 RGB565` source, applies exact nearest-neighbor
+2x to a logical `1280x800` landscape, and writes directly to one native
+`800x1280 RGB565` destination:
 
 ```text
-640x400 guest framebuffer -> exact 2x -> 1280x800 logical landscape
-                           -> 90-degree rotation -> 800x1280 physical portrait
+640x400 RGB565 -> exact 2x -> logical 1280x800 landscape
+               -> quarter-turn -> native 800x1280 RGB565
 ```
 
-Step 7B.2b should initially be a deterministic, byte-exact, host-testable
-software reference that fuses `640x400 RGB565` directly into the `800x1280
-RGB565` destination without allocating a temporary `1280x800` framebuffer.
-The live consumer, double buffering, framebuffer reuse/switch semantics,
-tearing under animation, measured refresh, long-duration stability, live-load
-PSRAM bandwidth/performance, PPA A/B, SDMMC/audio concurrency, touch, LVGL,
-OSD, TAB5, ESP32-S31, and ESP32-S3 remain future/unvalidated work. A revision-
-1 refresh callback is not a true VSYNC signal.
+The transform is fused. It has no `1280x800` intermediate framebuffer, filtering,
+bilinear interpolation, color conversion, RGB565 modification, PPA, DMA2D,
+per-frame dynamic allocation, live NP2 consumer, or presentation-slot consumer.
+Each input pixel becomes exactly four identical output pixels. The API retains
+both mathematical mappings:
+
+```text
+CLOCKWISE:
+dst_x = 799 - (2 * sy + oy)
+dst_y =       2 * sx + ox
+
+COUNTERCLOCKWISE:
+dst_x =       2 * sy + oy
+dst_y = 1279 - (2 * sx + ox)
+```
+
+where `ox, oy ∈ {0, 1}`. The host reference test exhaustively compares both
+directions against an independent inverse-mapping oracle over every destination
+pixel, including full coverage, corners, edge centers, asymmetric interior
+points, canaries, bounds, exact 2x duplication, geometry, destination bytes,
+and invalid input sizes. Frozen reference CRCs are CW `0xdb938d53` and CCW
+`0x164584cf`; CRCs are regression goldens, not the sole correctness proof.
+
+The separate physical diagnostic uses a real deterministic `640x400 RGB565`
+source with four distinct edges, four distinct corners, and asymmetric interior
+markers. Its source CRC is `0x4291f7e5`; transformed diagnostic CRCs are CW
+`0x37fd7262` and CCW `0xd98ce5d4`. The source is transformed into the native
+destination rather than constructing a final `800x1280` source image directly.
+
+The physical validation used the qualified Waveshare ESP32-P4-NANO-KIT-D and
+Waveshare 10.1-DSI-TOUCH-A/JD9365 path: ESP32-P4 revision v1.3, 40 MHz crystal,
+ESP-IDF v5.5.4, 32 MiB PSRAM, native 800x1280 RGB565, one 2,048,000-byte DSI
+framebuffer, `num_fbs=1`, two MIPI-DSI lanes at 1500 Mbps/lane, and an 80 MHz
+DPI clock. Both CW and CCW candidates built and ran; both had successful
+bounded display cleanup and human visual inspection. COUNTERCLOCKWISE is the
+canonical P4-NANO rotation because the human operator identified it as the
+natural upright orientation on the installed assembly. This is a board/display
+policy result, not a universal rule for future backends; TAB5, ESP32-S31, and
+ESP32-S3 require independent geometry/orientation decisions.
+
+The diagnostic holds each candidate image visibly for approximately 30 seconds
+as validation-harness behavior only. This is not a production cadence,
+framebuffer lifetime, refresh interval, or presentation timeout. The earlier
+Step 7B.2a native diagnostic retains its separate approximately five-second
+hold.
+
+For the CW run, the retained runtime evidence includes source and destination
+geometry/CRC, one framebuffer, PSRAM allocation telemetry, cache synchronization,
+backlight `0x40`, 30-second hold, and final cleanup. The CCW UART capture began
+after early boot, so its initial startup lines were not retained; the terminal
+runtime/cleanup result and human physical result were retained. This is an
+evidence limitation, not a blocking failure, because the CCW path is also
+independently host-validated and its firmware build passed.
+
+The CW telemetry measured PSRAM free/largest-block values of `33,551,868 /
+33,030,144` before the source allocation, `33,035,768 / 33,030,144` after the
+512,000-byte source allocation, and `30,986,520 / 30,932,992` after the native
+framebuffer acquisition. The CCW run established the same allocation model on
+the real 32 MiB PSRAM hardware, but its early telemetry lines were not retained.
+These static measurements do not establish double-buffer viability, sustained
+bandwidth, or live-emulator performance.
+
+Step 7B.2c is the next boundary:
+
+```text
+mutable NP2 guest framebuffer
+    -> Step 7B.1 synchronous publication copy
+    -> immutable ACQUIRED 640x400 presentation frame
+    -> P4-NANO display consumer
+    -> Step 7B.2b exact 2x + canonical CCW transform
+    -> native 800x1280 framebuffer
+    -> physical LCD
+```
+
+Its smallest live integration must prove acquisition of actual NP2 frames,
+immutability while consumed, transform of each consumed frame, canonical P4-NANO
+CCW policy, and physical LCD output. Consumer/transform/panel cadence,
+ownership and reuse, tearing, refresh-boundary synchronization, double-buffer
+justification, CPU throughput, and PPA A/B remain unresolved. A revision-1
+refresh callback is not a universal true VSYNC guarantee; NP2 render cadence,
+publication cadence, transform cadence, and panel refresh cadence must not be
+treated as the same event. Live NP2 consumption, sustained throughput,
+presentation latency, frame dropping, long-duration stability, live-load PSRAM
+bandwidth, PPA, display+SDMMC/audio concurrency, touch, LVGL, OSD, TAB5,
+ESP32-S31, and ESP32-S3 remain FUTURE / UNVALIDATED.
 
 ## Audio boundary
 

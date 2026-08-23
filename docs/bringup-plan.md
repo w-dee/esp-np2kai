@@ -377,33 +377,176 @@ bandwidth under live emulator load, PPA scaling/rotation, display plus SDMMC
 or audio concurrency, touch, LVGL, OSD, TAB5 physical display, ESP32-S31, and
 ESP32-S3 display backends.
 
-### Step 7B.2b: Pixel-exact landscape-to-native transform reference — FUTURE
+### Step 7B.2b: Pixel-exact landscape-to-native transform reference — COMPLETE
 
-The next display step is a deterministic, byte-exact, host-testable software
-reference for:
+Status: **IMPLEMENTED / HOST BYTE-EXACT VALIDATED / ESP32-P4 BUILD VALIDATED /
+REAL-HARDWARE TRANSFORM VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE**
+for the bounded transform-reference and static physical-diagnostic scope.
+
+The project-owned C++20 reference consumes an immutable `640x400 RGB565`
+source, applies exact nearest-neighbor 2x to a logical `1280x800` landscape,
+and writes directly to one native `800x1280 RGB565` destination:
 
 ```text
-immutable 640x400 RGB565 presentation frame
+immutable 640x400 RGB565 source
  -> exact nearest-neighbor 2x
  -> logical 1280x800 landscape
- -> rotate 90 degrees
- -> physical 800x1280 RGB565 destination
+ -> quarter-turn
+ -> native 800x1280 RGB565 destination
 ```
 
-The preferred implementation is a fused `640x400 RGB565 -> 800x1280 RGB565`
-transform that writes directly to the native destination without allocating a
-temporary 1280x800 framebuffer. PPA remains a later A/B performance experiment
-and is not the pixel-exact reference.
+The implementation is fused: there is no `1280x800` intermediate framebuffer,
+filtering, bilinear interpolation, color conversion, RGB565 modification, PPA,
+DMA2D, per-frame dynamic allocation inside the transform, live NP2 consumer, or
+presentation-slot consumer. Every source pixel becomes exactly four identical
+destination pixels.
+
+The API intentionally retains both mathematical mappings:
+
+```text
+CLOCKWISE:
+dst_x = 799 - (2 * sy + oy)
+dst_y =       2 * sx + ox
+
+COUNTERCLOCKWISE:
+dst_x =       2 * sy + oy
+dst_y = 1279 - (2 * sx + ox)
+```
+
+where `ox, oy ∈ {0, 1}`. The host coordinate-rich test exhaustively compares
+both directions with an independent inverse-mapping oracle over every
+destination pixel. It covers source/destination geometry, the 2,048,000-byte
+destination, exact 2x duplication, full destination coverage, corners,
+edge-center points, asymmetric interior points, bounds/canaries, and invalid
+input sizes. Frozen reference CRC32 values are:
+
+- CLOCKWISE: `0xdb938d53`;
+- COUNTERCLOCKWISE: `0x164584cf`.
+
+These CRCs are stable regression goldens, not the sole correctness proof.
+
+The physical diagnostic uses a separate real `640x400 RGB565` source with
+distinct four edges, four corners, and asymmetric interior markers. The source
+CRC32 is `0x4291f7e5`; transformed diagnostic CRC32 values are CW
+`0x37fd7262` and CCW `0xd98ce5d4`. The diagnostic starts from this source image
+and transforms it into the native destination; it does not construct a final
+`800x1280` source image directly. Its expected source semantics are top red,
+right green, bottom blue, left white; top-left yellow, top-right magenta,
+bottom-left cyan, bottom-right orange; plus an asymmetric interior marker. The
+pattern detects wrong quarter-turn, mirroring, 180-degree reversal, RGB
+ordering, and clipping.
+
+The qualified real-hardware environment was the Waveshare
+ESP32-P4-NANO-KIT-D with Waveshare 10.1-DSI-TOUCH-A/JD9365 display path,
+ESP32-P4 revision v1.3, 40 MHz crystal, 32 MiB PSRAM, ESP-IDF v5.5.4, native
+800x1280 RGB565 output, one 2,048,000-byte DSI framebuffer, `num_fbs=1`, two
+MIPI-DSI lanes at 1500 Mbps/lane, and an 80 MHz DPI clock. The diagnostic path
+was:
+
+```text
+640x400 RGB565 PSRAM source
+ -> transform_to_native()
+ -> one existing 800x1280 RGB565 DSI framebuffer
+ -> full framebuffer cache synchronization
+ -> physical JD9365 output
+```
+
+Both candidates were built and executed on the real P4-NANO. The CW candidate
+had firmware-build PASS, runtime transform/CRC PASS, bounded display lifecycle
+PASS, cleanup PASS, and human visual inspection PASS. The CCW candidate had
+firmware-build PASS, captured terminal runtime/cleanup PASS, and human visual
+inspection PASS. The human operator selected CCW as the natural upright
+orientation on the installed P4-NANO/JD9365 assembly.
+
+The retained CW PSRAM telemetry was:
+
+- before source allocation: free `33,551,868`, largest `33,030,144`;
+- after the 512,000-byte source allocation: free `33,035,768`, largest
+  `33,030,144`;
+- after native framebuffer acquisition: free `30,986,520`, largest `30,932,992`.
+
+The CCW run established the same 512,000-byte source plus one native
+2,048,000-byte framebuffer allocation model on the real 32 MiB PSRAM device,
+but its early telemetry lines were not retained. These static measurements do
+not establish double-buffer viability, sustained bandwidth, or live-emulator
+performance.
+
+The diagnostic held each candidate image visible for approximately 30 seconds
+as validation-harness behavior only. This is not a production cadence,
+framebuffer lifetime requirement, refresh interval, or presentation timeout.
+The earlier Step 7B.2a native foundation retains its separate approximately
+five-second bounded hold.
+
+For the CCW physical run, UART capture began after early boot, so the initial
+startup lines were not preserved in the saved capture. The CCW terminal
+runtime/cleanup result was captured, physical display output was observed by
+the human operator, and the CCW visual result was PASS. This is a recorded
+evidence limitation, not a Step 7B.2b blocking failure; it must not be
+described as a complete boot-to-cleanup UART transcript.
+
+The architectural result is now explicit:
+
+```text
+P4-NANO CANONICAL ROTATION: COUNTERCLOCKWISE
+
+640x400 RGB565
+ -> exact nearest-neighbor 2x
+ -> logical 1280x800 landscape
+ -> 90-degree COUNTERCLOCKWISE rotation
+ -> physical 800x1280 portrait framebuffer
+```
+
+CCW is a P4-NANO board/display policy result, not a universal rule for future
+display backends. The reference remains capable of both CW and CCW; TAB5,
+ESP32-S31, and ESP32-S3 must not inherit CCW without their own geometry and
+orientation decision. No speculative global orientation abstraction is added.
+
+Step 7B.2a remains independently COMPLETE for the native display foundation:
+safe JD9365/P4-NANO initialization, one native framebuffer, static native
+diagnostic, and safe bounded backlight lifecycle. Step 7B.2b adds the
+pixel-exact landscape-to-native transform reference and physical orientation;
+neither step completes the live display pipeline.
+
+### Step 7B.2c: immutable presentation frame -> physical display consumer — FUTURE
+
+The next display step is the smallest live integration that proves:
+
+```text
+NP2 mutable guest framebuffer
+ -> Step 7B.1 synchronous publication copy
+ -> immutable ACQUIRED 640x400 presentation frame
+ -> P4-NANO display consumer
+ -> Step 7B.2b exact 2x + canonical CCW transform
+ -> native 800x1280 framebuffer
+ -> physical LCD
+```
+
+Step 7B.2c must prove that actual NP2 presentation frames are acquired, remain
+immutable while consumed, transform through the validated reference, use the
+canonical P4-NANO CCW policy, and reach the physical LCD. It is not implemented
+by this closeout.
+
+Do not pre-decide presentation/transform/panel cadence, framebuffer ownership
+or reuse, tearing behavior, refresh-boundary synchronization, whether a second
+DSI framebuffer is justified, CPU reference throughput, or PPA optimization.
+The revision-1 refresh callback is not a universal true VSYNC guarantee; NP2
+render cadence, presentation publication cadence, transform cadence, and panel
+refresh cadence are distinct events. PPA remains a future A/B optimization and
+the CPU fused reference remains the correctness oracle.
 
 ## Remaining hardware boundary
 
 The software-only portion through Step 7B.1c is complete, and Step 7B.2a is
 complete through real hardware UART and visual LCD validation for its bounded
-native diagnostic scope. Remaining Step 6B/6C lifecycle cases, Step 7B.2b
-pixel-exact live-display mapping, buffering/reuse semantics, tearing and
-long-duration validation, Step 8 physical input, Step 9 physical audio, TAB5,
-ESP32-S31, and ESP32-S3 still require separate work. The portable emulator,
-host, and documentation work can continue independently.
+native diagnostic scope, and Step 7B.2b is complete through the bounded
+transform-reference and static physical-transform scope. Remaining Step 6B/6C
+lifecycle cases, live NP2 presentation-frame consumption, presentation-to-
+display latency, transform/display frame-dropping policy, animated tearing,
+measured refresh, framebuffer switching/reuse, a second DSI framebuffer,
+long-duration display stability, live-load PSRAM bandwidth, PPA acceleration,
+display plus SDMMC/audio concurrency, touch, LVGL, OSD, TAB5 physical display,
+ESP32-S31, and ESP32-S3 display backends remain FUTURE / UNVALIDATED. The
+portable emulator, host, and documentation work can continue independently.
 
 ## Step 8: USB HID / input — FUTURE, hardware required
 

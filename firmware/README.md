@@ -62,12 +62,36 @@ and completed the safe backlight lifecycle (`0x00` -> `0x40` -> OFF). Human
 inspection confirmed the native portrait pattern twice. This does not validate
 the later live emulator display pipeline.
 
-Step 7B.2b remains future work: a deterministic, byte-exact, host-testable
-fused transform from `640x400 RGB565` directly to `800x1280 RGB565`, equivalent
-to exact 2x, logical `1280x800` landscape, and 90-degree rotation without a
-temporary `1280x800` framebuffer. PPA is reserved for a later A/B step, and the
-ESP32-P4 revision-1 refresh callback is an observation hook rather than a true
-VSYNC guarantee.
+Step 7B.2b is COMPLETE for the bounded transform-reference and static physical
+diagnostic scope. Build either diagnostic candidate with:
+
+```bash
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano \
+  --display-transform-diagnostic --rotation cw
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano \
+  --display-transform-diagnostic --rotation ccw
+```
+
+The fused C++20 reference maps an immutable `640x400 RGB565` source through
+exact nearest-neighbor 2x and a logical `1280x800` landscape directly into one
+`800x1280 RGB565` native framebuffer. Every source pixel becomes four identical
+destination pixels. There is no `1280x800` intermediate, filtering, color
+conversion, PPA, DMA2D, live NP2 consumer, or per-frame transform allocation.
+The API retains both CW and CCW mappings; COUNTERCLOCKWISE is the canonical
+P4-NANO policy selected by human inspection as the natural upright orientation.
+
+Host reference CRCs are CW `0xdb938d53` and CCW `0x164584cf`. The separate
+physical diagnostic source CRC is `0x4291f7e5`, with transformed CRCs CW
+`0x37fd7262` and CCW `0xd98ce5d4`. The two physical candidates built and ran
+on the qualified ESP32-P4-NANO-KIT-D and passed human visual inspection. The
+CCW UART capture began after early boot; its terminal runtime/cleanup result
+was retained, but not a complete boot-to-cleanup transcript.
+
+Step 7B.2c is the next step: consume immutable acquired presentation frames
+from Step 7B.1 and feed actual NP2 output through the validated P4-NANO CCW
+transform to the physical LCD. Presentation cadence, ownership/reuse,
+tearing, refresh synchronization, sustained throughput, double buffering, PPA,
+and live-load PSRAM behavior remain unresolved design questions.
 
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare
