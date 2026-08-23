@@ -86,8 +86,8 @@ one mutable NP2 guest RGB565 framebuffer
         -> synchronous publication copy at scrnmng unlock
 portable two-slot presentation publisher
         -> immutable ACQUIRED presentation frame
-future platform/board display consumer (the Step 7B.2a native foundation is a
-diagnostic path only)
+platform/board display consumer (P4-NANO implemented in Step 7B.2c; other
+backends future)
 ```
 
 The publisher has one producer and one consumer, uses `FREE`, `WRITING`,

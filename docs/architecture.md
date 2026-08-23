@@ -254,19 +254,24 @@ portable np2_presentation publisher
 immutable ACQUIRED frame
         |
         v
-future platform / SoC presentation consumer
+platform / SoC presentation consumer
+  (P4-NANO implemented in Step 7B.2c; other backends future)
         |
         v
-future board display policy
+board display policy
+  (P4-NANO CCW/JD9365 implemented in Step 7B.2c; other boards future)
         |
         v
-future physical panel
+physical panel
+  (P4-NANO JD9365 reached in Step 7B.2c; other panels future)
 ```
 
 The first four stages are implemented and verified by Ubuntu-native tests and
-ESP32-P4 / FreeRTOS / `esp-emu` probes. The last three stages are the future
-physical-output path; the ESP32-P4 consumer probe validates ownership and
-concurrency behavior, not a display driver or panel.
+ESP32-P4 / FreeRTOS / `esp-emu` probes. For the P4-NANO target, the final three
+stages are implemented and physically validated by Step 7B.2c through the
+JD9365 panel. The ESP32-P4 consumer probe remains a separate ownership and
+concurrency regression; it is not the physical display driver or panel
+validation. Other boards, display policies, and panels remain future.
 
 The portable publisher has exactly two caller-owned presentation slots in the
 tested contract. It uses the states `FREE`, `WRITING`, `PENDING`, and

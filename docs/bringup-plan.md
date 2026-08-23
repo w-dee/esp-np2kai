@@ -619,7 +619,9 @@ The CPU reference transform timing was one sample: count=1, min=107,725 us,
 max=107,725 us, average=107,725 us (approximately 107.725 ms). This is a
 correctness baseline and future optimization input, not an achieved display
 framerate, LCD refresh measurement, or sustained workload result. The
-theoretical serial transform-only ceiling of approximately 9.28 transforms/s
+measured interval brackets `transform_to_native()` only; UART logging, source
+immutability re-checks, and framebuffer cache synchronization occur outside this
+interval. The theoretical serial transform-only ceiling of approximately 9.28 transforms/s
 must not be treated as an achieved FPS value.
 
 The backlight remained OFF until a valid frame had been acquired, transformed,
