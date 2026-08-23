@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
+import subprocess
+import sys
+import tempfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -19,6 +23,9 @@ SCRNDRAW = ROOT / "third_party/np2kai/src/vram/scrndraw.c"
 PATCH_SET = ROOT / "host/patches/np2kai/step4/patch-set.json"
 PCCORE_PATCH = ROOT / "host/patches/np2kai/step4/0001-pccore-non-fmgen-vol-midi.patch"
 SCRNDRAW_PATCH = ROOT / "host/patches/np2kai/step4/0008-pccore-phase-profiler-scrndraw.patch"
+VENDOR_ROOT = ROOT / "third_party/np2kai"
+IMPORT_MANIFEST = VENDOR_ROOT / "import-manifest.json"
+STEP4_PREPARER = ROOT / "host/tools/prepare_step4_sources.py"
 
 
 def read(path: pathlib.Path) -> str:
@@ -28,6 +35,107 @@ def read(path: pathlib.Path) -> str:
 def require(text: str, fragment: str, description: str) -> None:
     if fragment not in text:
         raise AssertionError(f"missing {description}: {fragment}")
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def eol_counts(value: bytes) -> tuple[int, int]:
+    crlf = value.count(b"\r\n")
+    bare_lf = value.count(b"\n") - crlf
+    return crlf, bare_lf
+
+
+def patch_payload_lines(value: bytes) -> list[bytes]:
+    """Return raw unified-diff hunk payload lines, excluding file headers."""
+
+    payload: list[bytes] = []
+    for line in value.splitlines(keepends=True):
+        if line.startswith((b"---", b"+++", b"\\ No newline")):
+            continue
+        if line[:1] in (b" ", b"+", b"-"):
+            payload.append(line)
+    return payload
+
+
+def verify_step4_patch_eol(entries: list[dict[str, object]]) -> None:
+    """Check EOL-sensitive patch bytes independently of the local Git version."""
+
+    styles: dict[str, bytes] = {}
+    for entry in entries:
+        logical_source = entry["logical_source"]
+        pristine_path = VENDOR_ROOT / "src" / pathlib.Path(str(entry["pristine_path"]))
+        patch_path = PATCH_SET.parent / pathlib.Path(str(entry["patch_path"]))
+        pristine = pristine_path.read_bytes()
+        patch = patch_path.read_bytes()
+        crlf, bare_lf = eol_counts(pristine)
+        if crlf and bare_lf:
+            continue
+        if not crlf and not bare_lf:
+            continue
+        expected_eol = b"\r\n" if crlf else b"\n"
+        styles[str(logical_source)] = expected_eol
+        payload = patch_payload_lines(patch)
+        if not payload:
+            raise AssertionError(f"missing patch payload for {logical_source}")
+        for index, line in enumerate(payload, start=1):
+            if expected_eol == b"\n":
+                compatible = line.endswith(b"\n") and not line.endswith(b"\r\n")
+            else:
+                compatible = line.endswith(b"\r\n")
+            if not compatible:
+                raise AssertionError(
+                    f"EOL mismatch in {logical_source} patch payload line {index}"
+                )
+
+    with tempfile.TemporaryDirectory(prefix="step7b2d-patch-eol-") as temporary:
+        output_root = pathlib.Path(temporary) / "step4-prepared"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(STEP4_PREPARER),
+                "--vendor-root",
+                str(VENDOR_ROOT),
+                "--import-manifest",
+                str(IMPORT_MANIFEST),
+                "--patch-set",
+                str(PATCH_SET),
+                "--output-root",
+                str(output_root),
+            ],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+        if completed.returncode:
+            raise AssertionError(
+                "fresh Step 4 preparation failed during EOL contract: "
+                f"{completed.stdout.strip()}"
+            )
+        for entry in entries:
+            logical_source = str(entry["logical_source"])
+            expected_eol = styles.get(logical_source)
+            if expected_eol is None:
+                continue
+            prepared = output_root / "patched-src" / pathlib.Path(logical_source)
+            prepared_bytes = prepared.read_bytes()
+            crlf, bare_lf = eol_counts(prepared_bytes)
+            if expected_eol == b"\r\n" and (not crlf or bare_lf):
+                raise AssertionError(
+                    f"prepared {logical_source} does not preserve CRLF bytes"
+                )
+            if expected_eol == b"\n" and crlf:
+                raise AssertionError(
+                    f"prepared {logical_source} unexpectedly contains CRLF bytes"
+                )
+            expected_hash = str(entry["patched_sha256"])
+            if sha256_bytes(prepared_bytes) != expected_hash:
+                raise AssertionError(
+                    f"prepared SHA-256 mismatch for {logical_source}"
+                )
 
 
 def main() -> int:
@@ -134,6 +242,8 @@ def main() -> int:
         raise AssertionError("scrndraw vendor hook is not in the established patch set")
     if "pccore.c" not in patched_sources:
         raise AssertionError("pccore vendor hook is not in the established patch set")
+
+    verify_step4_patch_eol(entries)
 
     print("Step 7B.2d pccore phase profiler source contract passed")
     return 0

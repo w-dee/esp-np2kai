@@ -1,8 +1,6 @@
 --- a/pccore.c
 +++ b/pccore.c
-@@ -65,8 +65,12 @@
- #include <calendar.h>
- #include <debugsub.h>
+@@ -67,6 +67,10 @@
  #include <keystat.h>
  #include <np2ver.h>
  #include <timing.h>
@@ -29,8 +27,7 @@
  #endif
        1,
        0x82,
-@@ -1880,5 +1880,9 @@
-   if (np2cfg.keyrepeat_enable) {
+@@ -1881,6 +1887,10 @@
      keyrepeat_proc();
    }
  
@@ -39,9 +36,9 @@
 +#endif
 +
    while (pcstat.screendispflag) {
-@@ -1978,6 +1978,10 @@
-   }
- #if defined(SUPPORT_ASYNC_CPU)
+ #if defined(TRACE)
+     resetcnt++;
+@@ -1980,6 +1990,10 @@
    asynccpu_lateflag = 0;
    asynccpu_fastflag = 0;
  #endif
@@ -50,7 +47,10 @@
 +  np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CALLBACKS);
 +#endif
    artic_callback();
-@@ -1988,5 +1994,12 @@
+   mpu98ii_callback();
+ #if defined(SUPPORT_SMPU98)
+@@ -1987,8 +2001,15 @@
+ #endif
    diskdrv_callback();
    calendar_inc();
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
@@ -63,3 +63,5 @@
 +  np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_SOUND);
 +#endif
    fdc_intdelay(); // FDC SEEK & RECALIBRATE, etc. np21w ver0.86 rev46
+ 
+   if (pcstat.hardwarereset) {
