@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -20,6 +20,8 @@ display_transform_diagnostic_variant=""
 display_transform_diagnostic_rotation=""
 live_display=0
 live_display_variant=""
+live_display_benchmark=0
+live_display_benchmark_variant=""
 esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
@@ -66,6 +68,10 @@ while (($# > 0)); do
             live_display=1
             shift
             ;;
+        --live-display-benchmark)
+            live_display_benchmark=1
+            shift
+            ;;
         --rotation)
             (($# >= 2)) || { usage >&2; exit 2; }
             display_transform_diagnostic_rotation="$2"
@@ -101,8 +107,8 @@ if (( display_foundation )) &&
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display > 1 )); then
-    printf 'ERROR: display foundation, transform diagnostic, and live display profiles are mutually exclusive\n' >&2
+if (( display_foundation + display_transform_diagnostic + live_display + live_display_benchmark > 1 )); then
+    printf 'ERROR: display foundation, transform diagnostic, live display, and live display benchmark profiles are mutually exclusive\n' >&2
     exit 2
 fi
 
@@ -112,6 +118,14 @@ if (( live_display )); then
         exit 2
     fi
     live_display_variant="${variant}"
+fi
+
+if (( live_display_benchmark )); then
+    if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --live-display-benchmark requires --variant p4-v1x --board p4-nano\n' >&2
+        exit 2
+    fi
+    live_display_benchmark_variant="${variant}"
 fi
 
 if (( display_transform_diagnostic )); then
@@ -154,6 +168,10 @@ fi
 
 if (( esp_emu_test && live_display )); then
     printf 'ERROR: --live-display cannot be combined with --esp-emu-test\n' >&2
+    exit 2
+fi
+if (( esp_emu_test && live_display_benchmark )); then
+    printf 'ERROR: --live-display-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
 fi
 
@@ -217,6 +235,10 @@ elif [[ -f "${build_dir}/CMakeCache.txt" ]]; then
 fi
 
 readonly NP2VIDEO_GOLDEN_HEADER="${build_dir}/generated/np2video_golden.h"
+np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video/golden.json"
+if (( live_display_benchmark )); then
+    np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video-live/golden.json"
+fi
 
 if (( display_foundation )); then
     display_foundation_variant="${variant}"
@@ -241,6 +263,10 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_PROFILE=${live_display}"
     -D "P4_NANO_LIVE_DISPLAY_BOARD=${live_display}"
     -D "P4_NANO_LIVE_DISPLAY_VARIANT=${live_display_variant}"
+    -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE=${live_display_benchmark}"
+    -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD=${live_display_benchmark}"
+    -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT=${live_display_benchmark_variant}"
+    -D "NP2VIDEO_BENCHMARK_PROFILE=${live_display_benchmark}"
     -D "NP2VIDEO_GOLDEN_HEADER=${NP2VIDEO_GOLDEN_HEADER}"
 )
 if (( display_foundation )); then
@@ -262,6 +288,18 @@ else
     unset P4_NANO_LIVE_DISPLAY_BOARD
     unset P4_NANO_LIVE_DISPLAY_VARIANT
 fi
+if (( live_display_benchmark )); then
+    export P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE=1
+    export P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD=1
+    export P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT="${live_display_benchmark_variant}"
+    export NP2VIDEO_BENCHMARK_PROFILE=1
+    export NP2VIDEO_GOLDEN_HEADER
+else
+    unset P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE
+    unset P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD
+    unset P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT
+    unset NP2VIDEO_BENCHMARK_PROFILE
+fi
 if (( display_transform_diagnostic )); then
     export P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE=1
     export P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_BOARD=1
@@ -282,10 +320,10 @@ fi
 if (( needs_initial_config )); then
     initial_cmake_args=("${cmake_args[@]}")
     initial_golden_header=""
-    if (( live_display )); then
+    if (( live_display || live_display_benchmark )); then
         initial_golden_header="$(mktemp "${TMPDIR:-/tmp}/np2video-golden-header.XXXXXX")"
         python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
-            --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+            --descriptor "${np2video_descriptor}" \
             --output "${initial_golden_header}"
         initial_cmake_args+=(
             -D "NP2VIDEO_GOLDEN_HEADER=${initial_golden_header}"
@@ -296,11 +334,15 @@ if (( needs_initial_config )); then
         rm -f -- "${initial_golden_header}"
         mkdir -p -- "$(dirname -- "${NP2VIDEO_GOLDEN_HEADER}")"
         python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
-            --descriptor "${REPOSITORY_ROOT}/tests/guest/np2video/golden.json" \
+            --descriptor "${np2video_descriptor}" \
             --output "${NP2VIDEO_GOLDEN_HEADER}"
     fi
 fi
-if (( live_display )); then
+if (( live_display || live_display_benchmark )); then
+    mkdir -p -- "$(dirname -- "${NP2VIDEO_GOLDEN_HEADER}")"
+    python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
+        --descriptor "${np2video_descriptor}" \
+        --output "${NP2VIDEO_GOLDEN_HEADER}"
     [[ -f "${NP2VIDEO_GOLDEN_HEADER}" ]] || {
         printf 'ERROR: generated NP2 video golden header is missing: %s\n' \
             "${NP2VIDEO_GOLDEN_HEADER}" >&2
@@ -326,9 +368,9 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+printf 'PRODUCTION_BUILD variant=%s board=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
     "${variant}" "${board}" "${display_foundation}" \
-    "${display_transform_diagnostic}" "${live_display}" \
+    "${display_transform_diagnostic}" "${live_display}" "${live_display_benchmark}" \
     "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \

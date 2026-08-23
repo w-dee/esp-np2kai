@@ -35,10 +35,12 @@ typedef struct {
     np2video_runner_output_fn output;
     void *output_context;
     np2video_runner_ready_fn ready;
+    np2video_runner_scene_ready_fn scene_ready;
     np2video_runner_stopping_fn stopping;
     np2video_runner_complete_fn complete;
     void *complete_context;
     void *lifecycle_context;
+    np2video_runner_stop_requested_fn stop_requested;
 } np2video_runner_task_state;
 
 static np2video_runner_task_state np2video_task_config;
@@ -306,7 +308,66 @@ static void np2video_task(void *argument)
                   (unsigned)np2video_golden_scene_id,
                   (unsigned)ready_generation,
                   (unsigned)ready_sequence);
+    if (state->scene_ready != NULL) {
+        state->scene_ready(ready_generation, ready_sequence,
+                           state->lifecycle_context);
+    }
 
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+    /* The benchmark producer is deliberately free-running.  The consumer
+     * requests termination asynchronously; this task observes that request
+     * only after pccore_exec(TRUE) returns at its normal screen/event slice. */
+    {
+        bool stop_observed = false;
+
+        for (slice = 0; slice < UINT32_C(1048576); ++slice) {
+            const char *control_failure;
+
+            pccore_exec(TRUE);
+            if (scrnmng_haserror()) {
+                failure = "framebuffer_failure";
+                goto cleanup;
+            }
+            control_failure = np2video_control_failure(
+                mem + NP2V_CONTROL_PHYSICAL_ADDRESS, &control);
+            if (control_failure != NULL && control_failure[0] != '\0') {
+                failure = control_failure;
+                goto cleanup;
+            }
+            if (control_failure == NULL) {
+                failure = "invalid_control_block";
+                goto cleanup;
+            }
+            scrnmng_get_surface_counters(&current_generation, &current_sequence);
+            if (current_generation != ready_generation) {
+                failure = "unexpected_resize";
+                goto cleanup;
+            }
+            if (current_sequence > ready_sequence) {
+                update_observed = true;
+            }
+            if (state->stop_requested != NULL &&
+                state->stop_requested(state->lifecycle_context)) {
+                stop_observed = true;
+                break;
+            }
+        }
+        if (!stop_observed) {
+            failure = "benchmark_stop_timeout";
+            goto cleanup;
+        }
+        if (!update_observed || scrnmng_snapshot(&final_snapshot) !=
+            SCRNMNG_SNAPSHOT_OK) {
+            failure = "benchmark_frame_not_observed";
+            goto cleanup;
+        }
+        np2video_emit(state,
+                      "NP2VIDEO_BENCHMARK_STOP observed=1 generation=%u "
+                      "surface_update_sequence=%u\n",
+                      (unsigned)final_snapshot.surface_generation,
+                      (unsigned)final_snapshot.surface_update_sequence);
+    }
+#else
     update_observed = false;
     for (slice = 0; slice < NP2VIDEO_POST_READY_SLICE_LIMIT; ++slice) {
         const char *control_failure;
@@ -379,6 +440,7 @@ static void np2video_task(void *argument)
             goto cleanup;
         }
     }
+#endif
 
 cleanup:
     if (fixture.fdd_attached) {
@@ -404,11 +466,20 @@ cleanup:
         result.bpp = final_snapshot.bpp;
         result.pitch = (uint32_t)final_snapshot.pitch;
         result.visible_bytes = (uint32_t)final_snapshot.visible_bytes;
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+        np2video_emit(state, "NP2VIDEO_BENCHMARK_RESULT=PASS\n");
+#else
         np2video_emit(state, "NP2VIDEO_GOLDEN_RESULT=PASS\n");
+#endif
     } else {
         result.status = ESP_FAIL;
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+        np2video_emit(state, "NP2VIDEO_BENCHMARK_RESULT=FAIL reason=%s\n",
+                      failure);
+#else
         np2video_emit(state, "NP2VIDEO_GOLDEN_RESULT=FAIL reason=%s\n",
                       failure);
+#endif
     }
     if (state->complete != NULL) {
         state->complete(&result, state->complete_context);
@@ -423,10 +494,12 @@ esp_err_t np2video_runner_start(np2video_runner_output_fn output,
         .output = output,
         .output_context = output_context,
         .ready = NULL,
+        .scene_ready = NULL,
         .stopping = NULL,
         .complete = NULL,
         .complete_context = NULL,
         .lifecycle_context = NULL,
+        .stop_requested = NULL,
     };
     return np2video_runner_start_ex(&config);
 }
@@ -444,10 +517,12 @@ esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
     np2video_task_config.output = config->output;
     np2video_task_config.output_context = config->output_context;
     np2video_task_config.ready = config->ready;
+    np2video_task_config.scene_ready = config->scene_ready;
     np2video_task_config.stopping = config->stopping;
     np2video_task_config.complete = config->complete;
     np2video_task_config.complete_context = config->complete_context;
     np2video_task_config.lifecycle_context = config->lifecycle_context;
+    np2video_task_config.stop_requested = config->stop_requested;
     task_result = xTaskCreate(np2video_task, "np2video_runner",
                               NP2VIDEO_RUNNER_STACK_BYTES,
                               &np2video_task_config,

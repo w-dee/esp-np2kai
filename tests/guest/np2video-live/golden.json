@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "fixture_id": "np2video-7b2d-live-vram",
+  "scene_id": 2,
+  "fixture_sha256": "81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604",
+  "image_size": 1261568,
+  "width": 640,
+  "height": 400,
+  "pixel_format": "rgb565le",
+  "bpp": 16,
+  "pitch": 1280,
+  "visible_bytes": 512000,
+  "crc_algorithm": "crc32_iso_hdlc",
+  "crc32": "0x8dadbf82",
+  "synchronization": {
+    "ready_state": "SCENE_READY",
+    "generation": "must_remain_stable",
+    "surface_update_sequence": "must_increase",
+    "frame_content": "must_change"
+  },
+  "animation_oracle": {
+    "kind": "moving_direct_vram_band",
+    "bar_start_byte": 8,
+    "bar_end_byte": 68,
+    "bar_step_bytes": 1,
+    "bar_width_bytes": 8,
+    "minimum_distinct_frames": 16
+  }
+}

@@ -30,16 +30,22 @@ typedef void (*np2video_runner_complete_fn)(
     const np2video_runner_result *result, void *context);
 
 typedef bool (*np2video_runner_ready_fn)(void *context);
+typedef void (*np2video_runner_scene_ready_fn)(uint32_t generation,
+                                               uint32_t update_sequence,
+                                               void *context);
 typedef void (*np2video_runner_stopping_fn)(void *context);
+typedef bool (*np2video_runner_stop_requested_fn)(void *context);
 
 typedef struct {
     np2video_runner_output_fn output;
     void *output_context;
     np2video_runner_ready_fn ready;
+    np2video_runner_scene_ready_fn scene_ready;
     np2video_runner_stopping_fn stopping;
     np2video_runner_complete_fn complete;
     void *complete_context;
     void *lifecycle_context;
+    np2video_runner_stop_requested_fn stop_requested;
 } np2video_runner_config;
 
 esp_err_t np2video_runner_start(np2video_runner_output_fn output,

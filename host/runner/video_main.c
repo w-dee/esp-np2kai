@@ -27,11 +27,12 @@
 #define VIDEO_POST_READY_SLICE_LIMIT UINT32_C(4)
 #define VIDEO_DEFAULT_FIXTURE_ID "np2video-7a3a-text"
 #define VIDEO_MAX_FIXTURE_ID_LENGTH 63U
+#define VIDEO_MULTIFRAME_MAX_UPDATES 64U
 
 static void print_usage(void)
 {
 	fprintf(stderr, "usage: video_runner <video-image> [--dump-framebuffer <path.bmp>] "
-			"[--fixture-id <id>] [--scene-id <id>]\n");
+			"[--fixture-id <id>] [--scene-id <id>] [--multi-frame <count>]\n");
 }
 
 static int valid_fixture_id(const char *fixture_id)
@@ -282,6 +283,7 @@ int main(int argc, char **argv)
 	char *bmp_path = NULL;
 	const char *fixture_id = VIDEO_DEFAULT_FIXTURE_ID;
 	uint16_t scene_id = NP2V_CONTROL_SCENE_ID;
+	uint32_t multi_frame_count = 0;
 	char temp_template[] = "/tmp/esp-np2kai-video-XXXXXX";
 	char *temp_dir = NULL;
 	const char *failure = "unknown";
@@ -321,6 +323,19 @@ int main(int argc, char **argv)
 		} else if (strcmp(argv[argument_index], "--scene-id") == 0) {
 			if (++argument_index >= argc ||
 					!parse_scene_id(argv[argument_index], &scene_id)) {
+				print_usage();
+				return 64;
+			}
+		} else if (strcmp(argv[argument_index], "--multi-frame") == 0) {
+			uint16_t multi_frame_value;
+			if (++argument_index >= argc ||
+					!parse_scene_id(argv[argument_index], &multi_frame_value)) {
+				print_usage();
+				return 64;
+			}
+			multi_frame_count = (uint32_t)multi_frame_value;
+			if (multi_frame_count == 0U ||
+					multi_frame_count > VIDEO_MULTIFRAME_MAX_UPDATES) {
 				print_usage();
 				return 64;
 			}
@@ -446,6 +461,54 @@ int main(int argc, char **argv)
 			!validate_framebuffer(&final_snapshot, ready_generation, ready_sequence)) {
 		failure = "no valid post-ready framebuffer update was observed";
 		goto cleanup;
+	}
+	if (multi_frame_count != 0U) {
+		uint32_t observed_updates = 0;
+		uint32_t distinct_frames = 0;
+		uint32_t last_sequence = final_snapshot.surface_update_sequence;
+		uint32_t frame_crc[VIDEO_MULTIFRAME_MAX_UPDATES];
+		uint32_t slice_limit = 0;
+
+		memset(frame_crc, 0, sizeof(frame_crc));
+		while (observed_updates < multi_frame_count &&
+				slice_limit++ < VIDEO_READY_SLICE_LIMIT) {
+			uint32_t index;
+
+			pccore_exec(TRUE);
+			if (scrnmng_haserror() ||
+					scrnmng_snapshot(&final_snapshot) != SCRNMNG_SNAPSHOT_OK) {
+				failure = "multi-frame framebuffer failure";
+				goto cleanup;
+			}
+			if (final_snapshot.surface_generation != ready_generation) {
+				failure = "multi-frame surface generation changed";
+				goto cleanup;
+			}
+			if (final_snapshot.surface_update_sequence <= last_sequence) {
+				continue;
+			}
+			last_sequence = final_snapshot.surface_update_sequence;
+			++observed_updates;
+			for (index = 0; index < distinct_frames; ++index) {
+				if (frame_crc[index] == final_snapshot.crc32) {
+					break;
+				}
+			}
+			if (index == distinct_frames) {
+				frame_crc[distinct_frames++] = final_snapshot.crc32;
+			}
+		}
+		fprintf(stdout,
+				"NP2VIDEO_MULTIFRAME updates=%u distinct=%u generation=%u "
+				"last_sequence=%u framebuffer_errors=%d\n",
+				(unsigned)observed_updates, (unsigned)distinct_frames,
+				(unsigned)final_snapshot.surface_generation,
+				(unsigned)final_snapshot.surface_update_sequence,
+				scrnmng_haserror() ? 1 : 0);
+		if (observed_updates < multi_frame_count || distinct_frames < 16U) {
+			failure = "multi-frame distinct-update proof failed";
+			goto cleanup;
+		}
 	}
 	print_framebuffer(fixture_id, scene_id, &final_snapshot);
 	if (bmp_path != NULL) {
