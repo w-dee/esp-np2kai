@@ -20,3 +20,8 @@ BOOL np2_host_taskmng_exit_requested(void)
 {
 	return headless_taskmng_exit_requested != 0 ? TRUE : FALSE;
 }
+
+void np2_host_taskmng_cooperate(void)
+{
+	/* Native/headless hosts already have an operating-system scheduler. */
+}

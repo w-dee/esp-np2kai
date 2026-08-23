@@ -28,6 +28,7 @@
 #include <compiler.h>
 #include "np2_presentation.h"
 #include "np2video_runner/np2video_runner.h"
+#include <taskmng.h>
 #include "p4_nano_board/p4_nano_board.hpp"
 #include "p4_nano_display/p4_nano_display.hpp"
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
@@ -280,6 +281,7 @@ struct BenchmarkState {
     std::uint32_t successful_submissions = 0;
     std::uint32_t submit_failures = 0;
     std::uint32_t acquisitions = 0;
+    std::uint32_t consumer_cooperate_calls = 0;
     std::uint32_t transforms_started = 0;
     std::uint32_t transforms_completed = 0;
     std::uint32_t cache_sync_success = 0;
@@ -587,6 +589,9 @@ int benchmark_consume_one(BenchmarkState *state)
         return 0;
     }
     ++state->acquisitions;
+    if (state->acquisitions == 1U) {
+        std::printf("P4_NANO_BENCHMARK_FIRST_ACQUIRE=1\n");
+    }
     const std::uint64_t acquired_at = service_start;
     const std::uint64_t sequence = view.published_sequence;
     BenchmarkTimestamp &entry =
@@ -652,6 +657,9 @@ int benchmark_consume_one(BenchmarkState *state)
         benchmark_release(state, &token);
         return -1;
     }
+    if (transform_index == 0U) {
+        std::printf("P4_NANO_BENCHMARK_FIRST_TRANSFORM_COMPLETE=1\n");
+    }
     if (correctness_sample) {
         const std::uint32_t source_crc_after = p4_nano_display::crc32(
             view.ptr, np2video_golden_visible_bytes);
@@ -682,6 +690,9 @@ int benchmark_consume_one(BenchmarkState *state)
     }
     ++state->cache_sync_success;
     ++state->native_framebuffer_updates;
+    if (transform_index == 0U) {
+        std::printf("P4_NANO_BENCHMARK_FIRST_CACHE_SYNC_COMPLETE=1\n");
+    }
     if (correctness_sample) {
         const std::uint32_t native_crc = p4_nano_display::crc32(
             reinterpret_cast<const std::uint8_t *>(state->display.framebuffer),
@@ -697,6 +708,9 @@ int benchmark_consume_one(BenchmarkState *state)
     if (transform_index == 0U && !benchmark_enable_backlight(state)) {
         benchmark_release(state, &token);
         return -1;
+    }
+    if (transform_index == 0U && state->visible) {
+        std::printf("P4_NANO_BENCHMARK_FIRST_VISIBLE=1\n");
     }
     benchmark_release(state, &token);
     const std::uint64_t service_us =
@@ -719,6 +733,10 @@ int benchmark_consume_one(BenchmarkState *state)
     if (state->transforms_completed == kBenchmarkTotalTransforms) {
         state->stop_requested.store(true, std::memory_order_release);
     }
+    /* Keep scheduler cooperation outside all isolated wall-clock intervals,
+     * sample storage, release semantics, and presentation backpressure. */
+    ++state->consumer_cooperate_calls;
+    np2_host_taskmng_cooperate();
     return 1;
 }
 
@@ -1304,6 +1322,13 @@ esp_err_t run_benchmark()
                 "consumer_service=%zu\n",
                 state.transform_stored, state.cache_stored,
                 state.service_stored);
+    std::printf("P4_NANO_BENCHMARK_COOPERATION producer_cooperate_calls=%" PRIu32
+                " consumer_cooperate_calls=%" PRIu32 "\n",
+                state.producer_result.cooperate_calls,
+                state.consumer_cooperate_calls);
+    std::printf("P4_NANO_BENCHMARK_TIMING timing_clock=esp_timer_wall_elapsed "
+                "preemption_may_be_included=1 "
+                "cooperation_delay_outside_isolated_metrics=1\n");
 #ifdef CONFIG_ESP_MAIN_TASK_AFFINITY
     std::printf("P4_NANO_BENCHMARK_TASK main_task_affinity=%d freertos_cores=%d "
                 "producer_creation=xTaskCreate producer_core=%d consumer_core=%d\n",

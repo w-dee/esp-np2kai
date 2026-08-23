@@ -24,6 +24,7 @@ typedef struct {
     uint32_t bpp;
     uint32_t pitch;
     uint32_t visible_bytes;
+    uint32_t cooperate_calls;
 } np2video_runner_result;
 
 typedef void (*np2video_runner_complete_fn)(

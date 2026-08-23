@@ -518,7 +518,7 @@ test-headless-taskmng:
 		"$(HEADLESS_TASKMNG_SOURCE)" "$(HEADLESS_TASKMNG_TEST_SOURCE)" \
 		-o "$(HEADLESS_TASKMNG_TEST_OUTPUT)"
 	@"$(HEADLESS_TASKMNG_TEST_OUTPUT)"
-	@printf '%s\n' 'Headless taskmng backend test passed (sticky cooperative exit request).'
+	@printf '%s\n' 'Headless taskmng backend test passed (exit state and no-op cooperation).'
 
 test-headless-dosio:
 	@mkdir -p "$(dir $(HEADLESS_DOSIO_TEST_OUTPUT))"

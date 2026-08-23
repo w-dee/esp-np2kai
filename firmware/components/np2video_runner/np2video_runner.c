@@ -18,6 +18,7 @@
 #include <scrnmng.h>
 
 #include <np2host/taskmng_esp.h>
+#include <taskmng.h>
 #include <stage1_machine_config.h>
 #include <video_control_v1.h>
 
@@ -209,6 +210,7 @@ static void np2video_task(void *argument)
     uint32_t ready_sequence = 0;
     uint32_t current_generation = 0;
     uint32_t current_sequence = 0;
+    uint32_t cooperate_calls = 0;
     uint32_t slice;
     bool core_initialized = false;
     bool framebuffer_initialized = false;
@@ -324,6 +326,10 @@ static void np2video_task(void *argument)
             const char *control_failure;
 
             pccore_exec(TRUE);
+            /* This benchmark-only cooperation point is after a complete NP2
+             * event/frame slice.  It is not presentation backpressure. */
+            np2_host_taskmng_cooperate();
+            ++cooperate_calls;
             if (scrnmng_haserror()) {
                 failure = "framebuffer_failure";
                 goto cleanup;
@@ -481,6 +487,7 @@ cleanup:
                       failure);
 #endif
     }
+    result.cooperate_calls = cooperate_calls;
     if (state->complete != NULL) {
         state->complete(&result, state->complete_context);
     }
