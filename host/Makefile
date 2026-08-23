@@ -7,6 +7,7 @@ VENDOR_SRC := $(VENDOR_ROOT)/src
 SOURCE_LIST := $(CURDIR)/probe/host_core_sources.txt
 HOST_BACKEND_SOURCE_LIST := $(CURDIR)/probe/host_backend_sources.txt
 HOST_BACKEND_SOURCE_ROOT := $(HOST_ROOT)
+NP2CORE_INCLUDE := $(HOST_ROOT)/firmware/components/np2core/include
 PROBE_SCRIPT := $(CURDIR)/probe/compile_probe.py
 LINK_PROBE_SCRIPT := $(CURDIR)/probe/link_probe.py
 PREPARER := $(CURDIR)/tools/prepare_step4_sources.py
@@ -18,6 +19,7 @@ PROBE_OUTPUT := $(BUILD_DIR)/compile
 PATCH_OUTPUT := $(BUILD_DIR)/patches
 MAPPED_PROBE_OUTPUT := $(BUILD_DIR)/compile-mapped
 LINK_PROBE_OUTPUT := $(BUILD_DIR)/link-mapped
+HOST_SOURCE_OVERLAY := $(PATCH_OUTPUT)/host-overlay
 HEADLESS_MOUSE_SOURCE := $(CURDIR)/backend/headless/mousemng.c
 HEADLESS_MOUSE_TEST_SOURCE := $(CURDIR)/tests/headless_mouse_test.c
 HEADLESS_MOUSE_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_mouse_test
@@ -135,8 +137,15 @@ PYTHON ?= python3
 CC ?= cc
 CXX ?= c++
 NM ?= nm
+FASTPATH ?= 0
+
+ifneq ($(filter 0 1,$(FASTPATH)),$(FASTPATH))
+$(error FASTPATH must be exactly 0 or 1)
+endif
+
 PROBE_INCLUDE_DIRS := \
 	$(CURDIR)/compat \
+	$(NP2CORE_INCLUDE) \
 	$(VENDOR_SRC) \
 	$(VENDOR_SRC)/i286c
 
@@ -149,7 +158,8 @@ PROBE_DEFINES := \
 	SUPPORT_16BPP \
 	BYTESEX_LITTLE \
 	OSLANG_UTF8 \
-	SUPPORT_UTF8
+	SUPPORT_UTF8 \
+	NP2_I286C_INLINE_MEM_FASTPATH=$(FASTPATH)
 PROBE_STRING_DEFINES := \
 	NP2KAI_GIT_TAG=0.86.0.22 \
 	NP2KAI_GIT_HASH=e2dc9046aa5c786fcfbfb87e883457e421026e31
@@ -194,6 +204,7 @@ phase1-config:
 	@mkdir -p "$(PROBE_OUTPUT)"
 	@{ \
 		printf '%s\n' 'compiler=$(CC)' 'source_root=$(VENDOR_SRC)' \
+			'NP2_I286C_INLINE_MEM_FASTPATH=$(FASTPATH)' \
 			'source_list=$(SOURCE_LIST)' 'compile_only=1' 'link_probe=0'; \
 		printf '%s\n' 'defines:'; \
 		$(foreach d,$(PROBE_DEFINES),printf '  -D%s\n' '$(d)';) \
@@ -224,6 +235,7 @@ phase1-probe-mapped: phase1-prepare-sources
 		--host-source-list "$(HOST_BACKEND_SOURCE_LIST)" \
 		--output-dir "$(MAPPED_PROBE_OUTPUT)" \
 		--source-map "$(PATCH_OUTPUT)/source-map.json" \
+		--source-overlay "$(HOST_SOURCE_OVERLAY)" \
 		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \
 		$(foreach d,$(PROBE_DEFINES),--define "$(d)") \
 		$(foreach d,$(PROBE_STRING_DEFINES),--string-define "$(d)") \
@@ -241,6 +253,7 @@ phase1-link-probe-mapped: phase1-prepare-sources
 		--host-source-root "$(HOST_BACKEND_SOURCE_ROOT)" \
 		--host-source-list "$(HOST_BACKEND_SOURCE_LIST)" \
 		--source-map "$(PATCH_OUTPUT)/source-map.json" \
+		--source-overlay "$(HOST_SOURCE_OVERLAY)" \
 		--output-dir "$(LINK_PROBE_OUTPUT)" \
 		$(foreach i,$(PROBE_INCLUDE_DIRS),--include "$(i)") \
 		$(foreach d,$(PROBE_DEFINES),--define "$(d)") \

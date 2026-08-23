@@ -22,6 +22,7 @@ from compile_probe import (
     forbidden_source_paths,
     parse_host_inputs,
     read_source_map,
+    read_source_overlay,
     read_sources,
     validate_host_sources,
     validate_logical_source,
@@ -203,6 +204,7 @@ def main() -> int:
     parser.add_argument("--host-source-root", type=Path)
     parser.add_argument("--host-source-list", type=Path)
     parser.add_argument("--source-map", type=Path, required=True)
+    parser.add_argument("--source-overlay", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--include", action="append", default=[])
     parser.add_argument("--define", action="append", default=[])
@@ -243,6 +245,8 @@ def main() -> int:
     for source in sources:
         validate_logical_source(source, "source-list entry")
     source_overrides = read_source_map(source_map, vendor_sources)
+    overlay_overrides = read_source_overlay(args.source_overlay, vendor_sources)
+    source_overrides = {**source_overrides, **overlay_overrides}
     source_paths = {
         **{source: (source_root / source).resolve(strict=False) for source in vendor_sources},
         **host_paths,
@@ -285,6 +289,9 @@ def main() -> int:
         if logical in host_sources:
             object_path = output_dir / "objects" / "host-owned" / relative_object
             ownership = "project-host"
+        elif logical in overlay_overrides:
+            object_path = output_dir / "objects" / relative_object
+            ownership = "vendor-overlay"
         elif logical in source_overrides:
             object_path = output_dir / "objects" / relative_object
             ownership = "vendor-mapped"
@@ -298,9 +305,22 @@ def main() -> int:
         object_path.parent.mkdir(parents=True, exist_ok=True)
         object_paths[logical] = object_path
         quote_flags = []
-        if logical in source_overrides:
+        overlay_flags = []
+        if logical in overlay_overrides:
+            quote_flags = ["-iquote", str(physical.parent)]
+            overlay_flags = ["-I", str(physical.parent)]
+        elif logical in source_overrides:
             quote_flags = ["-iquote", str((source_root / logical).parent.resolve())]
-        command = [args.compiler, *quote_flags, *common_flags, "-c", str(physical), "-o", str(object_path)]
+        command = [
+            args.compiler,
+            *quote_flags,
+            *overlay_flags,
+            *common_flags,
+            "-c",
+            str(physical),
+            "-o",
+            str(object_path),
+        ]
         object_commands.append(
             (logical, shlex.join([normalize_text(str(item), roots) for item in command]))
         )
@@ -377,6 +397,8 @@ def main() -> int:
     if host_source_root is not None and host_source_list is not None:
         base_summary["host_source_root"] = stable_path(host_source_root, roots)
         base_summary["host_source_list"] = stable_path(host_source_list, roots)
+    if args.source_overlay is not None:
+        base_summary["source_overlay"] = stable_path(args.source_overlay.resolve(), roots)
 
     if selected_forbidden["definitions"] or selected_forbidden["source_paths"]:
         message = "forbidden selector or source path appeared in probe inputs"

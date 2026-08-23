@@ -17,7 +17,12 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
-GENERATED_NAMES = {"patched-src", "patch-report.json", "source-map.json"}
+GENERATED_NAMES = {
+    "host-overlay",
+    "patched-src",
+    "patch-report.json",
+    "source-map.json",
+}
 
 
 class PreparationError(RuntimeError):
@@ -275,6 +280,33 @@ def install_atomically(stage: Path, output_root: Path) -> None:
         raise
 
 
+def prepare_i286_host_overlay(
+    vendor_root: Path, patched_root: Path, overlay_root: Path
+) -> None:
+    """Copy I286/V30 units beside the patched shared header for host probes."""
+
+    vendor_i286 = path_under(vendor_root, Path("src/i286c"), "I286 source overlay")
+    if vendor_i286.is_symlink() or not vendor_i286.is_dir():
+        fail(f"I286 source overlay directory is not real: {vendor_i286}")
+    overlay_i286 = overlay_root / "i286c"
+    overlay_i286.mkdir(parents=True, exist_ok=True)
+    for source in sorted(vendor_i286.iterdir()):
+        if source.is_symlink() or not source.is_file():
+            fail(f"I286 source overlay contains a non-regular file: {source}")
+        patched_source = patched_root / "i286c" / source.name
+        if patched_source.is_symlink():
+            fail(f"patched I286 overlay contains an unexpected symlink: {patched_source}")
+        if patched_source.exists():
+            if not patched_source.is_file():
+                fail(f"patched I286 overlay contains a non-regular file: {patched_source}")
+            source = patched_source
+        shutil.copyfile(source, overlay_i286 / source.name)
+    patched_header = patched_root / "i286c/i286c.h"
+    if patched_header.is_symlink() or not patched_header.is_file():
+        fail("patched I286 header is missing from the host overlay")
+    shutil.copyfile(patched_header, overlay_i286 / "i286c.h")
+
+
 def prepare(args: argparse.Namespace) -> None:
     vendor_argument = args.vendor_root.absolute()
     manifest_argument = args.import_manifest.absolute()
@@ -300,6 +332,17 @@ def prepare(args: argparse.Namespace) -> None:
         reports = []
         for entry in entries:
             reports.append(apply_entry(entry, vendor_root, patch_root, work_root, patched_root))
+        patched_headers = {
+            item["logical_source"]
+            for item in reports
+            if item["logical_source"].endswith(".h")
+        }
+        if "i286c/i286c.h" in patched_headers:
+            prepare_i286_host_overlay(
+                vendor_root,
+                patched_root,
+                stage / "host-overlay",
+            )
         shutil.rmtree(work_root)
         work_root = None  # type: ignore[assignment]
         report = {"entries": reports, "schema_version": SCHEMA_VERSION, "upstream_commit": commit}

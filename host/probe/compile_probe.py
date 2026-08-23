@@ -129,11 +129,49 @@ def read_source_map(path: Path, sources: list[str]) -> dict[str, Path]:
     return mapped
 
 
+def read_source_overlay(path: Path | None, vendor_sources: list[str]) -> dict[str, Path]:
+    """Map I286/V30 vendor units to the prepared host overlay, if supplied."""
+
+    if path is None:
+        return {}
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise SystemExit(f"source overlay contains an unexpected symlink: {current}")
+    if not absolute.is_dir():
+        raise SystemExit(f"source overlay is not a directory: {absolute}")
+    root = absolute.resolve()
+    mapped: dict[str, Path] = {}
+    for logical in vendor_sources:
+        if not logical.startswith("i286c/"):
+            continue
+        candidate = root / logical
+        current = root
+        for part in Path(logical).parts:
+            current /= part
+            if current.is_symlink():
+                raise SystemExit(f"source overlay contains an unexpected symlink: {current}")
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise SystemExit(f"source overlay escapes its directory: {candidate}") from exc
+        if not candidate.is_file():
+            raise SystemExit(f"source overlay is missing regular file: {logical}")
+        mapped[logical] = candidate
+    if not mapped:
+        raise SystemExit("source overlay contains no I286/V30 vendor units")
+    return mapped
+
+
 def include_inventory(
     include_dirs: list[Path],
     sources: list[str],
     source_roots: dict[str, Path],
     source_overrides: dict[str, Path],
+    overlay_sources: set[str],
 ) -> tuple[list[dict], list[dict]]:
     references = []
     unresolved = []
@@ -141,6 +179,7 @@ def include_inventory(
         source_root = source_roots[relative]
         source = source_overrides.get(relative, (source_root / relative).resolve())
         original_source = (source_root / relative).resolve()
+        include_source = source.resolve() if relative in overlay_sources else original_source
         if not source.is_file():
             continue
         for lineno, raw in enumerate(
@@ -152,7 +191,9 @@ def include_inventory(
             delimiter, include = match.groups()
             candidates = []
             if delimiter == '"':
-                candidates.append(original_source.parent / include)
+                candidates.append(include_source.parent / include)
+            if relative in overlay_sources:
+                candidates.append(include_source.parent / include)
             candidates.extend(include_dir / include for include_dir in include_dirs)
             resolved = next(
                 (candidate.resolve() for candidate in candidates if candidate.is_file()),
@@ -245,6 +286,7 @@ def main() -> int:
     parser.add_argument("--host-source-list", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--source-map", type=Path)
+    parser.add_argument("--source-overlay", type=Path)
     parser.add_argument("--include", action="append", default=[])
     parser.add_argument("--define", action="append", default=[])
     parser.add_argument("--string-define", action="append", default=[])
@@ -287,6 +329,8 @@ def main() -> int:
         if source_map_argument
         else {}
     )
+    overlay_overrides = read_source_overlay(args.source_overlay, vendor_sources)
+    source_overrides = {**source_overrides, **overlay_overrides}
     forbidden_definitions = {
         selector: [item for item in args.define if selector in item]
         for selector in FORBIDDEN_SELECTORS
@@ -303,7 +347,7 @@ def main() -> int:
 
     include_dirs = [Path(item).resolve() for item in args.include]
     include_references, unresolved_includes = include_inventory(
-        include_dirs, sources, source_roots, source_overrides
+        include_dirs, sources, source_roots, source_overrides, set(overlay_overrides)
     )
 
     common_flags = []
@@ -332,9 +376,20 @@ def main() -> int:
     for relative in sources:
         source = source_overrides.get(relative, source_paths[relative])
         quote_flags = []
-        if relative in source_overrides:
+        overlay_flags = []
+        if relative in overlay_overrides:
+            quote_flags = ["-iquote", str(source.parent)]
+            overlay_flags = ["-I", str(source.parent)]
+        elif relative in source_overrides:
             quote_flags = ["-iquote", str((source_root / relative).resolve().parent)]
-        command = [args.compiler, *quote_flags, *common_flags, "-fsyntax-only", str(source)]
+        command = [
+            args.compiler,
+            *quote_flags,
+            *overlay_flags,
+            *common_flags,
+            "-fsyntax-only",
+            str(source),
+        ]
         normalized_command = [normalize_text(str(item), roots) for item in command]
         command_lines.append(shlex.join(normalized_command))
         completed = subprocess.run(
@@ -346,7 +401,9 @@ def main() -> int:
             check=False,
         )
         output = normalize_text(completed.stdout, roots)
-        if relative in source_overrides:
+        if relative in overlay_overrides:
+            ownership = "vendor-overlay"
+        elif relative in source_overrides:
             ownership = "vendor-mapped"
         elif relative in vendor_stages:
             ownership = "vendor-pristine"
@@ -410,6 +467,8 @@ def main() -> int:
     }
     if source_map_argument:
         summary["source_map"] = stable_path(source_map_argument.resolve(), roots)
+    if args.source_overlay is not None:
+        summary["source_overlay"] = stable_path(args.source_overlay.resolve(), roots)
     if host_source_root is not None and host_source_list is not None:
         summary["host_source_root"] = stable_path(host_source_root, roots)
         summary["host_source_list"] = stable_path(host_source_list, roots)
