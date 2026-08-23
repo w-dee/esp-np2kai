@@ -6,6 +6,8 @@
 #include "esp_idf_version.h"
 #if defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
 #include "p4_nano_display/p4_nano_display.hpp"
+#elif defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
+#include "p4_nano_display/p4_nano_display_transform_diagnostic.hpp"
 #else
 #if defined(NP2_PRESENTATION_PROFILE)
 #include "np2presentation_probe.h"
@@ -67,7 +69,8 @@
 
 #endif
 
-#if !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
+#if !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE) && \
+    !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
 namespace {
 
 #if !defined(NP2_PRESENTATION_PROFILE)
@@ -109,6 +112,20 @@ extern "C" void app_main(void)
     const esp_err_t foundation_result = p4_nano_display::run_foundation();
     std::printf("P4_NANO_DISPLAY_FOUNDATION_RESULT=%s\n",
                 foundation_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
+#if defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_ROTATION_CW)
+    constexpr auto transform_rotation =
+        p4_nano_display::QuarterTurn::Clockwise;
+#else
+    constexpr auto transform_rotation =
+        p4_nano_display::QuarterTurn::CounterClockwise;
+#endif
+    const esp_err_t transform_result =
+        p4_nano_display::run_transform_diagnostic(transform_rotation);
+    std::printf("P4_NANO_TRANSFORM_DIAGNOSTIC_RESULT=%s\n",
+                transform_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(NP2_PRESENTATION_PROFILE)
