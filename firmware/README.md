@@ -87,11 +87,42 @@ on the qualified ESP32-P4-NANO-KIT-D and passed human visual inspection. The
 CCW UART capture began after early boot; its terminal runtime/cleanup result
 was retained, but not a complete boot-to-cleanup transcript.
 
-Step 7B.2c is the next step: consume immutable acquired presentation frames
-from Step 7B.1 and feed actual NP2 output through the validated P4-NANO CCW
-transform to the physical LCD. Presentation cadence, ownership/reuse,
-tearing, refresh synchronization, sustained throughput, double buffering, PPA,
-and live-load PSRAM behavior remain unresolved design questions.
+Step 7B.2c is COMPLETE for the bounded first live NP2-to-LCD integration. Build
+it with:
+
+```bash
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano --live-display
+```
+
+The existing Step 7A `np2video_runner` rendered the real
+`NP2 VIDEO FIXTURE 7A.3A` text scene through the synchronous scrnmng
+publication hook and the Step 7B.1 two-slot publisher. The P4-NANO consumer
+acquired only immutable `640x400 RGB565` frames, held the matching token through
+the exact fused 2x + canonical COUNTERCLOCKWISE transform, synchronized one
+native `800x1280 RGB565` framebuffer, and then released the token. Exactly two
+512,000-byte external-PSRAM presentation slots were used; neither aliases the
+mutable guest framebuffer or native DSI framebuffer. No `1280x800` intermediate,
+second native framebuffer, PPA, DMA2D, or SIMD path is involved.
+
+The selected source CRC was `0x0a280896`; both the host-derived and real native
+destination CRCs were `0xe623a22a`. The bounded hardware counters were
+submitted/acquired/transformed/released `1/1/1/1`, coalesced/dropped `0/0`, and
+the runtime completed with `P4_NANO_LIVE_RESULT=PASS` and cleanup/backlight OFF.
+The human operator saw the actual NP2 text scene on the physical LCD for
+approximately 30 seconds and reported `HUMAN_VISUAL_RESULT=PASS` with natural
+upright landscape mapping and no gross clipping, mirroring, reversal, or static
+corruption.
+
+The monochrome text fixture does not independently prove live-NP2 color
+ordering; that physical path has prior color-diagnostic evidence in Step 7B.2b.
+The saved UART capture began late and therefore does not retain the early
+immutability marker or all startup lines, although the bounded run completed
+with the immutability condition satisfied, correct CRCs/counters, PASS result,
+and cleanup. This is bounded validation evidence, not a general production
+display-pipeline claim. Sustained cadence, buffering/reuse, tearing, measured
+refresh, latency, long-duration stability, live-load PSRAM behavior, PPA, and
+display concurrency with SDMMC/audio remain future work; the next milestone is
+Step 7B.2d sustained live presentation cadence and transform performance.
 
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare

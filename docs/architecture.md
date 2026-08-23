@@ -440,29 +440,126 @@ the real 32 MiB PSRAM hardware, but its early telemetry lines were not retained.
 These static measurements do not establish double-buffer viability, sustained
 bandwidth, or live-emulator performance.
 
-Step 7B.2c is the next boundary:
+Step 7B.2c is COMPLETE for the bounded first live NP2-to-LCD integration:
+
+**IMPLEMENTED / END-TO-END BYTE-EXACT VALIDATED / REAL-HARDWARE LIVE
+PRESENTATION VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE**
+
+The completed boundary is:
 
 ```text
-mutable NP2 guest framebuffer
-    -> Step 7B.1 synchronous publication copy
-    -> immutable ACQUIRED 640x400 presentation frame
-    -> P4-NANO display consumer
-    -> Step 7B.2b exact 2x + canonical CCW transform
-    -> native 800x1280 framebuffer
-    -> physical LCD
+NP2 renderer
+    -> mutable 640x400 guest framebuffer
+    -> synchronous scrnmng publication hook
+    -> Step 7B.1 two-slot presentation publisher
+    -> immutable ACQUIRED 640x400 RGB565 frame
+    -> P4-NANO live display consumer
+    -> exact 2x + canonical COUNTERCLOCKWISE transform
+    -> one native 800x1280 RGB565 DSI framebuffer
+    -> physical JD9365 LCD
 ```
 
-Its smallest live integration must prove acquisition of actual NP2 frames,
-immutability while consumed, transform of each consumed frame, canonical P4-NANO
-CCW policy, and physical LCD output. Consumer/transform/panel cadence,
-ownership and reuse, tearing, refresh-boundary synchronization, double-buffer
-justification, CPU throughput, and PPA A/B remain unresolved. A revision-1
-refresh callback is not a universal true VSYNC guarantee; NP2 render cadence,
-publication cadence, transform cadence, and panel refresh cadence must not be
-treated as the same event. Live NP2 consumption, sustained throughput,
-presentation latency, frame dropping, long-duration stability, live-load PSRAM
-bandwidth, PPA, display+SDMMC/audio concurrency, touch, LVGL, OSD, TAB5,
-ESP32-S31, and ESP32-S3 remain FUTURE / UNVALIDATED.
+The bounded producer was the existing Step 7A `np2video_runner`, executing the
+real NP2 core through `pccore_exec()` and the real scrnmng render/publication
+path. It used the existing deterministic `NP2 VIDEO FIXTURE 7A.3A` text scene,
+whose source framebuffer golden is `0x0a280896`. This avoided introducing
+SDMMC, audio, input, or touch concurrency while providing a bounded first live
+producer; the synthetic `np2presentation_probe` was not the physical producer.
+
+The Step 7B.1 ownership boundary remains unchanged. Exactly two external-PSRAM
+presentation slots were used, 512,000 bytes each (1,024,000 bytes total), and
+the slots were disjoint from one another, the mutable guest framebuffer, and
+the native DSI framebuffer. The consumer reads only a frame returned by
+`np2_presentation_acquire()`. Its matching token remains held for the complete
+source validation and transform operation and is released only after the
+source is no longer read.
+
+The consumer sequence is:
+
+```text
+acquire immutable frame
+    -> validate 640x400 RGB565 metadata
+    -> calculate source CRC
+    -> exact fused 2x + CCW transform
+    -> native 800x1280 framebuffer
+    -> verify source immutability
+    -> full native framebuffer cache synchronization
+    -> release presentation token
+```
+
+The P4-NANO mapping remains:
+
+```text
+640x400 RGB565
+    -> exact nearest-neighbor 2x
+    -> logical 1280x800 landscape
+    -> 90-degree COUNTERCLOCKWISE
+    -> native 800x1280 RGB565
+```
+
+There is no `1280x800` intermediate framebuffer, second native framebuffer, PPA,
+DMA2D, SIMD optimization, or per-frame allocation. The native display remains
+`num_fbs=1` with one 2,048,000-byte framebuffer.
+
+The final NP2 source CRC was `0x0a280896`, matching the existing Step 7A
+golden. The host-derived expected CCW native CRC and the real P4-NANO final
+native CRC both were `0xe623a22a`:
+
+```text
+FINAL SOURCE GOLDEN RESULT: PASS
+FINAL NATIVE TRANSFORM GOLDEN RESULT: PASS
+```
+
+This is byte-exact evidence across the selected bounded scene's NP2 source,
+presentation copy, immutable acquisition, CPU reference transform, and native
+framebuffer. The physical LCD result is separate human evidence.
+
+The observed bounded hardware counters were submitted=1, acquired=1,
+transformed=1, released=1, coalesced=0, and dropped=0. They prove one complete
+producer-to-consumer lifecycle only; they do not characterize sustained
+multi-frame behavior or imply that coalescing/dropping will remain zero under a
+continuous workload. The integration retained the token during consumption and
+completed its source-before/after immutability condition with
+`P4_NANO_LIVE_FRAME_IMMUTABLE=PASS`. The saved UART transcript began late and
+does not retain that early marker or all startup lines; the final
+`P4_NANO_LIVE_RESULT=PASS`, CRCs, counters, and cleanup are retained. This is an
+evidence-capture limitation, not a runtime failure.
+
+The real-hardware scope was Waveshare ESP32-P4-NANO-KIT-D, ESP32-P4 revision
+v1.3, 32 MiB PSRAM, Waveshare 10.1-DSI-TOUCH-A/JD9365, and ESP-IDF v5.5.4.
+The CPU reference transform measured one sample: count=1, min/max/average
+107,725 microseconds (approximately 107.725 ms). This is a correctness
+baseline and optimization input, not an achieved frame rate, LCD refresh
+measurement, or sustained workload result. The display stayed backlight-OFF
+until a valid frame was transformed and cache-synchronized, then used the
+qualified `0x40` value, remained visible for approximately 30 seconds, and
+finished with `P4_NANO_LIVE_DISPLAY_RESULT=PASS` and backlight OFF.
+
+The operator separately inspected the physical LCD and reported
+`HUMAN_VISUAL_RESULT=PASS`: the actual NP2 text scene was naturally upright,
+mapped across the expected display area, and showed no gross clipping,
+mirroring, 180-degree reversal, or obvious static corruption. No tearing or
+corruption was reported during this bounded observation. The selected text
+fixture is essentially black/white, so this run did not independently visually
+re-demonstrate live-NP2 RGB component ordering. Step 7B.2b already supplied
+physical RGB-order evidence using a color diagnostic through the same transform
+and display path; this is prior path evidence, not a claim that colored live NP2
+content was validated here.
+
+The next display milestone is **Step 7B.2d: sustained live presentation cadence
+and transform performance**. It should characterize multiple NP2 frames,
+publication/acquisition/transform cadence, coalescing/dropping, latency,
+visible animation, tearing, PSRAM load, and whether optimization is needed.
+Potential loop/cache, SIMD, multicore, PPA A/B, and buffering work remains
+unselected. Keep one-framebuffer reuse, refresh-boundary synchronization,
+revision-1 refresh-callback semantics, and the relationship between NP2 render,
+publication, consumer, transform, and panel clocks as future questions. The
+following remain FUTURE / UNVALIDATED: sustained multi-frame display, arbitrary
+guest software, colored live NP2 visual validation, production framerate,
+transform throughput, long-duration stability, second native framebuffer,
+tearing elimination, measured panel refresh, live-load PSRAM bandwidth, PPA,
+display plus SDMMC/audio concurrency, touch, LVGL, OSD, TAB5, ESP32-S31, and
+ESP32-S3 display backends.
 
 ## Audio boundary
 

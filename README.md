@@ -131,13 +131,50 @@ source is `0x4291f7e5`, with transformed CRCs `0x37fd7262` (CW) and
 both were visually inspected successfully. The CCW capture began after early
 boot, so only its terminal runtime/cleanup result was retained.
 
-Step 7B.2c is the next bounded integration step: consume immutable acquired
-640x400 presentation frames from Step 7B.1 and feed the validated P4-NANO
-COUNTERCLOCKWISE transform to the physical display. Live NP2 consumption,
-buffering/reuse, tearing, measured refresh, long-duration stability, live-load
-PSRAM bandwidth/performance, PPA, and display concurrency with SDMMC/audio
-remain future work. This P4-NANO policy does not generalize to TAB5, ESP32-S31,
-or ESP32-S3 without an independent geometry/orientation decision.
+Step 7B.2c is COMPLETE for its bounded first live integration:
+**IMPLEMENTED / END-TO-END BYTE-EXACT VALIDATED / REAL-HARDWARE LIVE
+PRESENTATION VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE**. The existing
+Step 7A `np2video_runner` rendered the `NP2 VIDEO FIXTURE 7A.3A` text scene
+(source CRC `0x0a280896`) through the real NP2/scrnmng path. The resulting
+pipeline is:
+
+```text
+mutable NP2 framebuffer
+ -> synchronous scrnmng publication hook
+ -> two-slot presentation publisher
+ -> immutable acquired 640x400 RGB565 frame
+ -> P4-NANO live consumer
+ -> exact 2x + canonical CCW transform
+ -> one native 800x1280 RGB565 framebuffer
+ -> physical JD9365 LCD
+```
+
+The two PSRAM presentation slots are 512,000 bytes each (1,024,000 bytes
+total), external and disjoint from both the mutable guest framebuffer and the
+native framebuffer. The final source CRC matched `0x0a280896`; the host-derived
+and real native framebuffer CRC both matched `0xe623a22a`. The bounded hardware
+counters were submitted/acquired/transformed/released `1/1/1/1`, with
+coalesced/dropped `0/0`. The consumer held the acquired token through source
+validation and transformation, and the runtime completed with
+`P4_NANO_LIVE_RESULT=PASS` and cleanup/backlight OFF.
+
+The operator observed the actual NP2 text scene on the physical LCD for
+approximately 30 seconds and reported `HUMAN_VISUAL_RESULT=PASS`: natural
+upright landscape content, expected full mapping, and no gross clipping,
+mirroring, reversal, or static corruption. Because this selected fixture is
+essentially monochrome, Step 7B.2c does not independently re-demonstrate live
+NP2 color ordering; the same color-capable transform/display path has separate
+Step 7B.2b physical RGB-order evidence. The saved UART transcript began late,
+so its early immutability marker and startup lines are not retained; this is an
+evidence-capture limitation, not a runtime failure.
+
+This does not claim a general production emulator display pipeline. Sustained
+multi-frame cadence, buffering/reuse, tearing, measured refresh, latency,
+long-duration stability, live-load PSRAM bandwidth, PPA, and display concurrency
+with SDMMC/audio remain future work. The next display milestone is Step 7B.2d:
+sustained live presentation cadence and transform performance. The P4-NANO CCW
+policy does not generalize to TAB5, ESP32-S31, or ESP32-S3 without an
+independent geometry/orientation decision.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 
