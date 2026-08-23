@@ -11,3 +11,16 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
     -Wall -Wextra)
+
+set(P4_NANO_DISPLAY_TRANSFORM_OPT "debug" CACHE STRING
+    "Optimization mode for the P4-NANO transform translation unit")
+set_property(CACHE P4_NANO_DISPLAY_TRANSFORM_OPT PROPERTY STRINGS debug o2)
+if(P4_NANO_DISPLAY_TRANSFORM_OPT STREQUAL "o2")
+    set_source_files_properties(
+        p4_nano_display_transform.cpp
+        PROPERTIES COMPILE_OPTIONS "-O2")
+elseif(NOT P4_NANO_DISPLAY_TRANSFORM_OPT STREQUAL "debug")
+    message(FATAL_ERROR
+        "P4_NANO_DISPLAY_TRANSFORM_OPT must be debug or o2, got: "
+        "${P4_NANO_DISPLAY_TRANSFORM_OPT}")
+endif()

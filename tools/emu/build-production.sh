@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark | --live-display-transform-isolated-benchmark] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark | --live-display-transform-isolated-benchmark] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -14,6 +14,7 @@ variant=""
 board="generic"
 build_dir=""
 i286_inline_mem_fastpath=0
+transform_opt=debug
 display_foundation=0
 display_foundation_variant=""
 display_transform_diagnostic=0
@@ -62,6 +63,15 @@ while (($# > 0)); do
             ;;
         --i286-inline-mem-fastpath=*)
             i286_inline_mem_fastpath="${1#*=}"
+            shift
+            ;;
+        --transform-opt)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            transform_opt="$2"
+            shift 2
+            ;;
+        --transform-opt=*)
+            transform_opt="${1#*=}"
             shift
             ;;
         --esp-emu-test)
@@ -117,9 +127,24 @@ case "${i286_inline_mem_fastpath}" in
         ;;
 esac
 
+case "${transform_opt}" in
+    debug|o2)
+        ;;
+    *)
+        printf 'ERROR: --transform-opt requires exactly debug or o2\n' >&2
+        exit 2
+        ;;
+esac
+
 if (( live_display_transform_isolated_benchmark )) &&
    [[ "${i286_inline_mem_fastpath}" != "0" ]]; then
     printf 'ERROR: --live-display-transform-isolated-benchmark requires --i286-inline-mem-fastpath 0\n' >&2
+    exit 2
+fi
+
+if [[ "${transform_opt}" == "o2" ]] &&
+   (( ! live_display_transform_isolated_benchmark )); then
+    printf 'ERROR: --transform-opt o2 requires --live-display-transform-isolated-benchmark\n' >&2
     exit 2
 fi
 
@@ -314,6 +339,7 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant}"
     -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
+    -D "P4_NANO_DISPLAY_TRANSFORM_OPT=${transform_opt}"
     -D "NP2VIDEO_GOLDEN_HEADER=${NP2VIDEO_GOLDEN_HEADER}"
 )
 if (( display_foundation )); then
@@ -426,8 +452,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_benchmark}" \
     "${live_display_transform_isolated_benchmark}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
