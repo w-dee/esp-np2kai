@@ -43,6 +43,10 @@ typedef void (*np2video_runner_scene_ready_fn)(uint32_t generation,
                                                void *context);
 typedef void (*np2video_runner_stopping_fn)(void *context);
 typedef bool (*np2video_runner_stop_requested_fn)(void *context);
+typedef void (*np2video_runner_cooperate_fn)(uint32_t cooperate_calls,
+                                             void *context);
+typedef bool (*np2video_runner_pause_at_cooperate_fn)(
+    uint32_t cooperate_calls, void *context);
 
 typedef struct {
     np2video_runner_output_fn output;
@@ -54,6 +58,8 @@ typedef struct {
     void *complete_context;
     void *lifecycle_context;
     np2video_runner_stop_requested_fn stop_requested;
+    np2video_runner_cooperate_fn cooperate;
+    np2video_runner_pause_at_cooperate_fn pause_at_cooperate;
     bool task_scheduling_override;
     int task_core_id;
     uint32_t task_priority;

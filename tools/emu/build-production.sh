@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark | --live-display-transform-isolated-benchmark] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -23,6 +23,8 @@ live_display=0
 live_display_variant=""
 live_display_benchmark=0
 live_display_benchmark_variant=""
+live_display_transform_isolated_benchmark=0
+live_display_transform_isolated_benchmark_variant=""
 esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
@@ -82,6 +84,10 @@ while (($# > 0)); do
             live_display_benchmark=1
             shift
             ;;
+        --live-display-transform-isolated-benchmark)
+            live_display_transform_isolated_benchmark=1
+            shift
+            ;;
         --rotation)
             (($# >= 2)) || { usage >&2; exit 2; }
             display_transform_diagnostic_rotation="$2"
@@ -111,6 +117,12 @@ case "${i286_inline_mem_fastpath}" in
         ;;
 esac
 
+if (( live_display_transform_isolated_benchmark )) &&
+   [[ "${i286_inline_mem_fastpath}" != "0" ]]; then
+    printf 'ERROR: --live-display-transform-isolated-benchmark requires --i286-inline-mem-fastpath 0\n' >&2
+    exit 2
+fi
+
 case "${variant}" in
     p4-v1x|p4-v3x)
         ;;
@@ -126,8 +138,8 @@ if (( display_foundation )) &&
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display + live_display_benchmark > 1 )); then
-    printf 'ERROR: display foundation, transform diagnostic, live display, and live display benchmark profiles are mutually exclusive\n' >&2
+if (( display_foundation + display_transform_diagnostic + live_display + live_display_benchmark + live_display_transform_isolated_benchmark > 1 )); then
+    printf 'ERROR: display foundation, transform diagnostic, live display, live display benchmark, and isolated transform benchmark profiles are mutually exclusive\n' >&2
     exit 2
 fi
 
@@ -145,6 +157,14 @@ if (( live_display_benchmark )); then
         exit 2
     fi
     live_display_benchmark_variant="${variant}"
+fi
+
+if (( live_display_transform_isolated_benchmark )); then
+    if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --live-display-transform-isolated-benchmark requires --variant p4-v1x --board p4-nano\n' >&2
+        exit 2
+    fi
+    live_display_transform_isolated_benchmark_variant="${variant}"
 fi
 
 if (( display_transform_diagnostic )); then
@@ -191,6 +211,10 @@ if (( esp_emu_test && live_display )); then
 fi
 if (( esp_emu_test && live_display_benchmark )); then
     printf 'ERROR: --live-display-benchmark cannot be combined with --esp-emu-test\n' >&2
+    exit 2
+fi
+if (( esp_emu_test && live_display_transform_isolated_benchmark )); then
+    printf 'ERROR: --live-display-transform-isolated-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
 fi
 
@@ -255,7 +279,7 @@ fi
 
 readonly NP2VIDEO_GOLDEN_HEADER="${build_dir}/generated/np2video_golden.h"
 np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video/golden.json"
-if (( live_display_benchmark )); then
+if (( live_display_benchmark || live_display_transform_isolated_benchmark )); then
     np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video-live/golden.json"
 fi
 
@@ -285,7 +309,10 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE=${live_display_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD=${live_display_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT=${live_display_benchmark_variant}"
-    -D "NP2VIDEO_BENCHMARK_PROFILE=${live_display_benchmark}"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=${live_display_transform_isolated_benchmark}"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=${live_display_transform_isolated_benchmark}"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant}"
+    -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
     -D "NP2VIDEO_GOLDEN_HEADER=${NP2VIDEO_GOLDEN_HEADER}"
 )
@@ -320,6 +347,17 @@ else
     unset P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT
     unset NP2VIDEO_BENCHMARK_PROFILE
 fi
+if (( live_display_transform_isolated_benchmark )); then
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=1
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=1
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT="${live_display_transform_isolated_benchmark_variant}"
+    export NP2VIDEO_BENCHMARK_PROFILE=1
+    export NP2VIDEO_GOLDEN_HEADER
+else
+    unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE
+    unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD
+    unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT
+fi
 if (( display_transform_diagnostic )); then
     export P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE=1
     export P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_BOARD=1
@@ -340,7 +378,7 @@ fi
 if (( needs_initial_config )); then
     initial_cmake_args=("${cmake_args[@]}")
     initial_golden_header=""
-    if (( live_display || live_display_benchmark )); then
+    if (( live_display || live_display_benchmark || live_display_transform_isolated_benchmark )); then
         initial_golden_header="$(mktemp "${TMPDIR:-/tmp}/np2video-golden-header.XXXXXX")"
         python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
             --descriptor "${np2video_descriptor}" \
@@ -358,7 +396,7 @@ if (( needs_initial_config )); then
             --output "${NP2VIDEO_GOLDEN_HEADER}"
     fi
 fi
-if (( live_display || live_display_benchmark )); then
+if (( live_display || live_display_benchmark || live_display_transform_isolated_benchmark )); then
     mkdir -p -- "$(dirname -- "${NP2VIDEO_GOLDEN_HEADER}")"
     python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
         --descriptor "${np2video_descriptor}" \
@@ -388,10 +426,10 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
     "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_benchmark}" \
-    "${display_transform_diagnostic_rotation}" \
+    "${live_display_transform_isolated_benchmark}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
     "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \

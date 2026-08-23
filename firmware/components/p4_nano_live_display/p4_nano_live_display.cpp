@@ -23,6 +23,7 @@
 #include "esp_psram.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include <compiler.h>
@@ -202,7 +203,8 @@ void release_if_held(LiveState *state, np2_presentation_token *token)
     }
 }
 
-#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
 
 constexpr std::uint32_t kBenchmarkWarmupTransforms = 8U;
 constexpr std::uint32_t kBenchmarkMeasuredTransforms = 128U;
@@ -267,6 +269,9 @@ struct BenchmarkState {
     std::atomic<std::uint32_t> scene_update_sequence{0};
     std::atomic<int> producer_core{-1};
     std::atomic<std::uint32_t> producer_priority{0};
+    std::atomic<bool> producer_pause_requested{false};
+    std::atomic<bool> producer_pause_acknowledged{false};
+    std::atomic<std::uint32_t> producer_cooperate_calls{0};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> publish_failed{false};
     BenchmarkTimestamp timestamp_ring[kBenchmarkTimestampRingSize]{};
@@ -275,11 +280,20 @@ struct BenchmarkState {
     std::array<std::uint64_t, kBenchmarkMeasuredTransforms> transform_samples{};
     std::array<std::uint64_t, kBenchmarkMeasuredTransforms> cache_samples{};
     std::array<std::uint64_t, kBenchmarkMeasuredTransforms> service_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        isolated_transform_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        isolated_cache_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        isolated_service_samples{};
     std::size_t submit_stored = 0;
     std::size_t latency_stored = 0;
     std::size_t transform_stored = 0;
     std::size_t cache_stored = 0;
     std::size_t service_stored = 0;
+    std::size_t isolated_transform_stored = 0;
+    std::size_t isolated_cache_stored = 0;
+    std::size_t isolated_service_stored = 0;
     std::uint64_t submit_count = 0;
     std::uint64_t submit_total_us = 0;
     std::uint64_t submit_min_us = std::numeric_limits<std::uint64_t>::max();
@@ -316,6 +330,22 @@ struct BenchmarkState {
     std::uint32_t final_source_crc = 0;
     std::uint32_t first_native_crc = 0;
     std::uint32_t final_native_crc = 0;
+    std::uint32_t isolated_transforms_started = 0;
+    std::uint32_t isolated_transforms_completed = 0;
+    std::uint32_t isolated_cache_sync_success = 0;
+    std::uint32_t isolated_cache_sync_failures = 0;
+    std::uint32_t isolated_consumer_cooperate_calls = 0;
+    std::uint32_t isolated_correctness_pass = 0;
+    std::uint32_t isolated_correctness_fail = 0;
+    std::uint32_t isolated_source_crc = 0;
+    std::uint32_t isolated_source_crc_after = 0;
+    std::uint32_t isolated_first_native_crc = 0;
+    std::uint32_t isolated_final_native_crc = 0;
+    std::uint32_t isolated_pause_cooperate_calls = 0;
+    std::uint32_t isolated_cooperate_calls_at_end = 0;
+    std::uint32_t isolated_source_generation = 0;
+    std::uint32_t isolated_source_update_sequence = 0;
+    std::uint64_t isolated_source_published_sequence = 0;
     bool first_source_crc_captured = false;
     bool final_source_crc_captured = false;
     bool first_native_crc_captured = false;
@@ -337,6 +367,19 @@ struct BenchmarkState {
     bool backlight_off_failed = false;
     bool visible = false;
     bool timeout_reported = false;
+    bool isolated_source_held = false;
+    bool isolated_source_crc_captured = false;
+    bool isolated_first_native_crc_captured = false;
+    bool isolated_final_native_crc_captured = false;
+    bool isolated_pause_requested = false;
+    bool isolated_pause_acknowledged = false;
+    bool isolated_resumed = false;
+    np2_presentation_frame_view isolated_source_view{};
+    np2_presentation_token isolated_source_token{};
+    StaticSemaphore_t isolated_pause_ack_storage{};
+    StaticSemaphore_t isolated_pause_resume_storage{};
+    SemaphoreHandle_t isolated_pause_ack = nullptr;
+    SemaphoreHandle_t isolated_pause_resume = nullptr;
 };
 
 template <std::size_t N>
@@ -544,6 +587,314 @@ void benchmark_runner_complete(const np2video_runner_result *result, void *conte
         state->producer_done.store(true, std::memory_order_release);
     }
 }
+
+bool benchmark_enable_backlight(BenchmarkState *state);
+void benchmark_hold_visible(BenchmarkState *state);
+void benchmark_release(BenchmarkState *state, np2_presentation_token *token);
+
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+void benchmark_producer_cooperate(std::uint32_t cooperate_calls,
+                                  void *context)
+{
+    auto *state = static_cast<BenchmarkState *>(context);
+    if (state != nullptr) {
+        state->producer_cooperate_calls.store(cooperate_calls,
+                                              std::memory_order_release);
+    }
+}
+
+bool benchmark_pause_at_cooperate(std::uint32_t cooperate_calls, void *context)
+{
+    auto *state = static_cast<BenchmarkState *>(context);
+    if (state == nullptr ||
+        !state->producer_pause_requested.load(std::memory_order_acquire)) {
+        return true;
+    }
+    state->isolated_pause_cooperate_calls = cooperate_calls;
+    state->producer_pause_acknowledged.store(true, std::memory_order_release);
+    if (xSemaphoreGive(state->isolated_pause_ack) != pdTRUE) {
+        return false;
+    }
+    if (xSemaphoreTake(state->isolated_pause_resume, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    state->producer_pause_acknowledged.store(false, std::memory_order_release);
+    return true;
+}
+
+bool benchmark_hold_isolated_source(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return false;
+    }
+    for (;;) {
+        if (state->producer_done.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (!state->scene_ready.load(std::memory_order_acquire)) {
+            vTaskDelay(kConsumerPollDelayTicks);
+            continue;
+        }
+        np2_presentation_frame_view view{};
+        np2_presentation_token token{};
+        const np2_presentation_status acquire = np2_presentation_acquire(
+            &state->publisher, &view, &token);
+        if (acquire == NP2_PRESENTATION_NO_FRAME) {
+            vTaskDelay(kConsumerPollDelayTicks);
+            continue;
+        }
+        if (acquire != NP2_PRESENTATION_OK || !benchmark_validate_frame(view) ||
+            view.source_generation !=
+                state->scene_generation.load(std::memory_order_relaxed) ||
+            view.source_update_sequence <=
+                state->scene_update_sequence.load(std::memory_order_relaxed)) {
+            if (acquire == NP2_PRESENTATION_OK) {
+                benchmark_release(state, &token);
+            }
+            return false;
+        }
+        ++state->acquisitions;
+        state->isolated_source_view = view;
+        state->isolated_source_token = token;
+        state->isolated_source_held = true;
+        state->isolated_source_generation = view.source_generation;
+        state->isolated_source_update_sequence = view.source_update_sequence;
+        state->isolated_source_published_sequence = view.published_sequence;
+        state->isolated_source_crc = p4_nano_display::crc32(
+            view.ptr, np2video_golden_visible_bytes);
+        state->isolated_source_crc_captured = true;
+        return true;
+    }
+}
+
+bool benchmark_request_isolated_pause(BenchmarkState *state)
+{
+    if (state == nullptr || state->isolated_pause_ack == nullptr ||
+        state->isolated_pause_resume == nullptr) {
+        return false;
+    }
+    state->isolated_pause_requested = true;
+    state->producer_pause_requested.store(true, std::memory_order_release);
+    std::printf("PRODUCER_PAUSE_REQUESTED\n");
+    if (xSemaphoreTake(state->isolated_pause_ack,
+                       pdMS_TO_TICKS(5000)) != pdTRUE ||
+        !state->producer_pause_acknowledged.load(std::memory_order_acquire)) {
+        return false;
+    }
+    state->isolated_pause_acknowledged = true;
+    std::printf("PRODUCER_PAUSE_ACK cooperate_calls=%" PRIu32 "\n",
+                state->isolated_pause_cooperate_calls);
+    return true;
+}
+
+bool benchmark_run_isolated_samples(BenchmarkState *state)
+{
+    if (state == nullptr || !state->isolated_source_held ||
+        !state->isolated_source_crc_captured) {
+        return false;
+    }
+    const auto source = std::span<const std::uint16_t>(
+        reinterpret_cast<const std::uint16_t *>(state->isolated_source_view.ptr),
+        p4_nano_display::kTransformSourcePixelCount);
+    const auto destination = std::span<std::uint16_t>(
+        state->display.framebuffer,
+        p4_nano_display::kTransformDestinationPixelCount);
+    std::printf("ISOLATED_MEASUREMENT_BEGIN\n");
+    for (std::uint32_t transform_index = 0U;
+         transform_index < kBenchmarkTotalTransforms; ++transform_index) {
+        const bool correctness_sample = transform_index == 0U ||
+                                        transform_index + 1U ==
+                                            kBenchmarkTotalTransforms;
+        const std::uint64_t service_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        ++state->isolated_transforms_started;
+        const std::uint64_t transform_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const bool transformed = p4_nano_display::transform_to_native(
+            source, destination,
+            p4_nano_display::QuarterTurn::CounterClockwise);
+        const std::uint64_t transform_us =
+            static_cast<std::uint64_t>(esp_timer_get_time()) - transform_start;
+        if (!transformed) {
+            return false;
+        }
+        const std::uint64_t cache_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const esp_err_t sync_result =
+            p4_nano_display::display_session_sync_framebuffer(&state->display);
+        const std::uint64_t cache_us =
+            static_cast<std::uint64_t>(esp_timer_get_time()) - cache_start;
+        if (sync_result != ESP_OK) {
+            ++state->isolated_cache_sync_failures;
+            return false;
+        }
+        ++state->isolated_cache_sync_success;
+        ++state->native_framebuffer_updates;
+        if (correctness_sample) {
+            const std::uint32_t source_crc = p4_nano_display::crc32(
+                state->isolated_source_view.ptr,
+                np2video_golden_visible_bytes);
+            const std::uint32_t native_crc = p4_nano_display::crc32(
+                reinterpret_cast<const std::uint8_t *>(
+                    state->display.framebuffer),
+                p4_nano_display::kNativeFramebufferBytes);
+            if (source_crc == state->isolated_source_crc) {
+                ++state->isolated_correctness_pass;
+            } else {
+                ++state->isolated_correctness_fail;
+            }
+            state->isolated_source_crc_after = source_crc;
+            if (transform_index == 0U) {
+                state->isolated_first_native_crc = native_crc;
+                state->isolated_first_native_crc_captured = true;
+            } else {
+                state->isolated_final_native_crc = native_crc;
+                state->isolated_final_native_crc_captured = true;
+            }
+        }
+        if (transform_index == 0U && !benchmark_enable_backlight(state)) {
+            return false;
+        }
+        const std::uint64_t service_us =
+            static_cast<std::uint64_t>(esp_timer_get_time()) - service_start;
+        if (benchmark_is_measured_sample(transform_index)) {
+            const std::size_t measured_index =
+                transform_index - kBenchmarkWarmupTransforms;
+            state->isolated_transform_samples[measured_index] = transform_us;
+            state->isolated_cache_samples[measured_index] = cache_us;
+            state->isolated_service_samples[measured_index] = service_us;
+            state->isolated_transform_stored = measured_index + 1U;
+            state->isolated_cache_stored = measured_index + 1U;
+            state->isolated_service_stored = measured_index + 1U;
+        }
+        ++state->isolated_transforms_completed;
+        ++state->isolated_consumer_cooperate_calls;
+        /* Keep the real one-tick CPU0 cooperation outside every measured
+         * transform/cache interval, including warm-up and final validation. */
+        np2_host_taskmng_cooperate();
+    }
+    state->isolated_cooperate_calls_at_end =
+        state->producer_cooperate_calls.load(std::memory_order_acquire);
+    std::printf("ISOLATED_MEASUREMENT_END producer_cooperate_calls=%" PRIu32
+                " consumer_cooperate_calls=%" PRIu32 "\n",
+                state->isolated_cooperate_calls_at_end,
+                state->isolated_consumer_cooperate_calls);
+    return true;
+}
+
+esp_err_t run_isolated_benchmark_after_start(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool failed = false;
+    if (!benchmark_hold_isolated_source(state) ||
+        !benchmark_request_isolated_pause(state)) {
+        failed = true;
+    }
+    if (!failed && !benchmark_run_isolated_samples(state)) {
+        failed = true;
+    }
+    if (state->isolated_transforms_completed != kBenchmarkTotalTransforms) {
+        failed = true;
+    }
+    /* Always take the normal producer stop path, including an early
+     * acquisition/pause/transform failure; otherwise a failed isolated run
+     * could leave CPU1 free-running until its outer slice limit. */
+    state->stop_requested.store(true, std::memory_order_release);
+    const bool source_immutable =
+        state->isolated_source_crc_captured &&
+        state->isolated_source_crc == state->isolated_source_crc_after;
+    const bool native_stable =
+        state->isolated_first_native_crc_captured &&
+        state->isolated_final_native_crc_captured &&
+        state->isolated_first_native_crc == state->isolated_final_native_crc;
+    const bool pause_stable =
+        state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->isolated_cooperate_calls_at_end &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
+    if (state->publish_failed.load(std::memory_order_acquire) ||
+        !source_immutable || !native_stable || !pause_stable ||
+        state->isolated_correctness_fail != 0U ||
+        state->isolated_transform_stored != kBenchmarkMeasuredTransforms ||
+        state->isolated_cache_stored != kBenchmarkMeasuredTransforms ||
+        state->isolated_service_stored != kBenchmarkMeasuredTransforms ||
+        state->isolated_cache_sync_failures != 0U) {
+        failed = true;
+    }
+    benchmark_print_fixed_metric("isolated_transform_only_us",
+                                 state->isolated_transform_samples,
+                                 state->isolated_transform_stored);
+    benchmark_print_fixed_metric("isolated_cache_sync_us",
+                                 state->isolated_cache_samples,
+                                 state->isolated_cache_stored);
+    benchmark_print_fixed_metric("isolated_consumer_service_us",
+                                 state->isolated_service_samples,
+                                 state->isolated_service_stored);
+    std::printf("ISOLATED_TRANSFORM_CORRECTNESS source_crc_before=0x%08" PRIx32
+                " source_crc_after=0x%08" PRIx32
+                " first_native_crc=0x%08" PRIx32
+                " final_native_crc=0x%08" PRIx32 " result=%s\n",
+                state->isolated_source_crc, state->isolated_source_crc_after,
+                state->isolated_first_native_crc,
+                state->isolated_final_native_crc,
+                (!failed && source_immutable && native_stable) ? "PASS" : "FAIL");
+    std::printf("ISOLATED_TRANSFORM_SAMPLE_COUNTS transform=%zu cache_sync=%zu "
+                "consumer_service=%zu warmup=%u measured=%u final_validation=%u\n",
+                state->isolated_transform_stored,
+                state->isolated_cache_stored,
+                state->isolated_service_stored,
+                static_cast<unsigned>(kBenchmarkWarmupTransforms),
+                static_cast<unsigned>(kBenchmarkMeasuredTransforms),
+                static_cast<unsigned>(kBenchmarkFinalValidationTransforms));
+
+    /* Resume only after final CRC/counter capture and the isolated summary
+     * have completed.  The held presentation lease is released after the
+     * producer has left the pause protocol, then the normal visible-hold and
+     * cleanup lifecycle is used. */
+    state->producer_pause_requested.store(false, std::memory_order_release);
+    if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
+        (void)xSemaphoreGive(state->isolated_pause_resume);
+        state->isolated_resumed = true;
+        std::printf("PRODUCER_RESUMED\n");
+    }
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (state->isolated_source_held) {
+        benchmark_release(state, &state->isolated_source_token);
+        state->isolated_source_held = false;
+    }
+    benchmark_hold_visible(state);
+    const esp_err_t backlight_off_result =
+        p4_nano_board::display_backlight_set(0U);
+    state->backlight_off_failed = backlight_off_result != ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    if (state->producer_result.status != ESP_OK ||
+        state->publish_failed.load(std::memory_order_acquire) ||
+        state->producer_pause_acknowledged.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || state->backlight_off_failed ||
+        state->releases != state->acquisitions || !scheduling_contract) {
+        failed = true;
+    }
+    std::printf("P4_NANO_TRANSFORM_ISOLATED_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    return failed ? ESP_FAIL : ESP_OK;
+}
+#endif
 
 bool benchmark_stop_requested(void *context)
 {
@@ -796,13 +1147,15 @@ std::uint32_t benchmark_counter_delta(std::uint32_t final_value,
 
 namespace p4_nano_live_display {
 
-#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
 esp_err_t run_benchmark();
 #endif
 
 esp_err_t run()
 {
-#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
     return run_benchmark();
 #else
     LiveState state;
@@ -889,6 +1242,8 @@ esp_err_t run()
         .complete_context = &state,
         .lifecycle_context = &state,
         .stop_requested = nullptr,
+        .cooperate = nullptr,
+        .pause_at_cooperate = nullptr,
         .task_scheduling_override = false,
         .task_core_id = 0,
         .task_priority = 0,
@@ -1084,7 +1439,8 @@ esp_err_t run()
 #endif
 }
 
-#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
 
 esp_err_t run_benchmark()
 {
@@ -1105,6 +1461,16 @@ esp_err_t run_benchmark()
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(kBenchmarkMeasuredTransforms),
                 static_cast<unsigned>(kBenchmarkTotalTransforms));
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    std::printf("P4_NANO_TRANSFORM_ISOLATED_CONFIG producer_core=%d "
+                "producer_priority=%" PRIu32 " consumer_core=%d "
+                "consumer_priority=%" PRIu32 " num_fbs=1 fastpath=0 "
+                "source_memory=external destination_memory=external "
+                "dsi_scanout=active producer_pause_policy=post_pccore_block\n",
+                kBenchmarkProducerCore, kBenchmarkProducerPriority,
+                xPortGetCoreID(),
+                static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)));
+#endif
     report_memory("before_benchmark_slots");
 
     for (std::size_t index = 0; index < kSlotCount; ++index) {
@@ -1160,6 +1526,17 @@ esp_err_t run_benchmark()
         std::printf("P4_NANO_BENCHMARK_RESULT=FAIL reason=dsi_alias\n");
         return ESP_ERR_INVALID_STATE;
     }
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    if (!esp_ptr_external_ram(state.display.framebuffer)) {
+        (void)p4_nano_board::display_backlight_set(0U);
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("P4_NANO_TRANSFORM_ISOLATED_RESULT=FAIL "
+                    "reason=destination_not_external\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+#endif
     std::printf("P4_NANO_BENCHMARK_FRAMEBUFFER result=PASS native=800x1280 "
                 "bytes=%zu num_fbs=1 external=%d\n",
                 p4_nano_display::kNativeFramebufferBytes,
@@ -1177,6 +1554,21 @@ esp_err_t run_benchmark()
         return result;
     }
 
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    state.isolated_pause_ack =
+        xSemaphoreCreateBinaryStatic(&state.isolated_pause_ack_storage);
+    state.isolated_pause_resume =
+        xSemaphoreCreateBinaryStatic(&state.isolated_pause_resume_storage);
+    if (state.isolated_pause_ack == nullptr ||
+        state.isolated_pause_resume == nullptr) {
+        (void)p4_nano_board::display_backlight_set(0U);
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return ESP_ERR_NO_MEM;
+    }
+#endif
+
     /* Pinned default-priority scheduler A/B candidate.  The explicit
      * post-pccore one-tick cooperation remains mandatory; this is not a final
      * emulator-performance policy until physically validated. */
@@ -1190,6 +1582,13 @@ esp_err_t run_benchmark()
         .complete_context = &state,
         .lifecycle_context = &state,
         .stop_requested = benchmark_stop_requested,
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+        .cooperate = benchmark_producer_cooperate,
+        .pause_at_cooperate = benchmark_pause_at_cooperate,
+#else
+        .cooperate = nullptr,
+        .pause_at_cooperate = nullptr,
+#endif
         .task_scheduling_override = true,
         .task_core_id = kBenchmarkProducerCore,
         .task_priority = kBenchmarkProducerPriority,
@@ -1204,6 +1603,9 @@ esp_err_t run_benchmark()
     }
     state.producer_start_us = static_cast<std::uint64_t>(esp_timer_get_time());
 
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    return run_isolated_benchmark_after_start(&state);
+#else
     bool failed = false;
     while (!state.producer_done.load(std::memory_order_acquire)) {
         const int consumed = benchmark_consume_one(&state);
@@ -1560,6 +1962,7 @@ esp_err_t run_benchmark()
         return cleanup_result;
     }
     return failed ? ESP_FAIL : ESP_OK;
+#endif
 }
 
 #endif

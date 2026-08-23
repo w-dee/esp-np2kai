@@ -43,6 +43,8 @@ typedef struct {
     void *complete_context;
     void *lifecycle_context;
     np2video_runner_stop_requested_fn stop_requested;
+    np2video_runner_cooperate_fn cooperate;
+    np2video_runner_pause_at_cooperate_fn pause_at_cooperate;
 } np2video_runner_task_state;
 
 static np2video_runner_task_state np2video_task_config;
@@ -379,6 +381,19 @@ static void np2video_task(void *argument)
             if (current_sequence > ready_sequence) {
                 update_observed = true;
             }
+            /* The isolated benchmark pause is deliberately after the
+             * complete post-pccore validation/bookkeeping boundary.  By this
+             * point pccore publication and the synchronous frame checks have
+             * returned, so CPU1 cannot be stopped while a slot is writing. */
+            if (state->cooperate != NULL) {
+                state->cooperate(cooperate_calls, state->lifecycle_context);
+            }
+            if (state->pause_at_cooperate != NULL &&
+                !state->pause_at_cooperate(cooperate_calls,
+                                            state->lifecycle_context)) {
+                failure = "pause_callback_failed";
+                goto cleanup;
+            }
             if (state->stop_requested != NULL &&
                 state->stop_requested(state->lifecycle_context)) {
                 stop_observed = true;
@@ -548,6 +563,8 @@ esp_err_t np2video_runner_start(np2video_runner_output_fn output,
         .complete_context = NULL,
         .lifecycle_context = NULL,
         .stop_requested = NULL,
+        .cooperate = NULL,
+        .pause_at_cooperate = NULL,
         .task_scheduling_override = false,
         .task_core_id = 0,
         .task_priority = 0,
@@ -574,6 +591,8 @@ esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
     np2video_task_config.complete_context = config->complete_context;
     np2video_task_config.lifecycle_context = config->lifecycle_context;
     np2video_task_config.stop_requested = config->stop_requested;
+    np2video_task_config.cooperate = config->cooperate;
+    np2video_task_config.pause_at_cooperate = config->pause_at_cooperate;
     if (config->task_scheduling_override) {
         if (config->task_core_id < 0 ||
             config->task_core_id >= configNUMBER_OF_CORES ||
