@@ -143,8 +143,8 @@ if (( live_display_transform_isolated_benchmark )) &&
 fi
 
 if [[ "${transform_opt}" == "o2" ]] &&
-   (( ! live_display_transform_isolated_benchmark )); then
-    printf 'ERROR: --transform-opt o2 requires --live-display-transform-isolated-benchmark\n' >&2
+   (( ! live_display_benchmark && ! live_display_transform_isolated_benchmark )); then
+    printf 'ERROR: --transform-opt o2 requires --live-display-benchmark or --live-display-transform-isolated-benchmark\n' >&2
     exit 2
 fi
 
