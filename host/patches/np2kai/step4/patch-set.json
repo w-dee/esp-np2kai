@@ -7,8 +7,8 @@
       "pristine_path": "pccore.c",
       "pristine_sha256": "2733b227289fdb24d7f9770affba51a1f9209f2f00f080146fd29d54e1abf01d",
       "patch_path": "0001-pccore-non-fmgen-vol-midi.patch",
-      "patch_sha256": "81e8b76dcfef66eb938b294bdbbda1058abb7ea169ade1bf0dcdb0f749586a90",
-      "patched_sha256": "352ece3a20a0bc8e5e486b846a1b4f4387d2feba12593e98905a2ef89106136d"
+      "patch_sha256": "c674ec6dd14f54e84e9023e7485fcf1656920122ab2bdb4fcd35e9474bc8548a",
+      "patched_sha256": "478570e4d8ee6d716bdf938be42b84e983526564417e2080f699070475f59633"
     },
     {
       "logical_source": "bios/bios.c",

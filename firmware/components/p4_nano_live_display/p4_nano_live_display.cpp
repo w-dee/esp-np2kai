@@ -1402,6 +1402,48 @@ esp_err_t run_benchmark()
                        pccore_profile.phases[NP2_PCCORE_PHASE_SOUND]);
     print_pccore_phase("draw_nested",
                        pccore_profile.phases[NP2_PCCORE_PHASE_DRAW_NESTED]);
+    const std::uint64_t loop_iterations =
+        pccore_profile.counters[NP2_PCCORE_COUNTER_LOOP_ITERATION];
+    const std::uint64_t cpu_exec_i286 =
+        pccore_profile.counters[NP2_PCCORE_COUNTER_CPU_EXEC_I286];
+    const std::uint64_t cpu_exec_v30 =
+        pccore_profile.counters[NP2_PCCORE_COUNTER_CPU_EXEC_V30];
+    const std::uint64_t cpu_skipped_remclock =
+        pccore_profile.counters[NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK];
+    const std::uint64_t nevent_progress =
+        pccore_profile.counters[NP2_PCCORE_COUNTER_NEVENT_PROGRESS];
+    const std::uint64_t cpu_exec_total = cpu_exec_i286 + cpu_exec_v30;
+    const std::uint64_t iterations_per_pccore =
+        state.producer_result.pccore_exec_count == 0U
+            ? 0U
+            : loop_iterations / state.producer_result.pccore_exec_count;
+    const double cpu_exec_fraction =
+        loop_iterations == 0U
+            ? 0.0
+            : static_cast<double>(cpu_exec_total) /
+                  static_cast<double>(loop_iterations);
+    const double cpu_skip_fraction =
+        loop_iterations == 0U
+            ? 0.0
+            : static_cast<double>(cpu_skipped_remclock) /
+                  static_cast<double>(loop_iterations);
+    const std::uint64_t naive_v2_extra_timer_reads = loop_iterations * 4U;
+    const std::uint64_t transition_v2_extra_timer_reads =
+        cpu_exec_total * 3U + cpu_skipped_remclock * 2U;
+    std::printf("P4_NANO_PCCORE_COUNTERS loop_iterations=%" PRIu64
+                " cpu_exec_i286=%" PRIu64 " cpu_exec_v30=%" PRIu64
+                " cpu_exec_total=%" PRIu64
+                " cpu_skipped_remclock=%" PRIu64
+                " nevent_progress=%" PRIu64 "\n",
+                loop_iterations, cpu_exec_i286, cpu_exec_v30, cpu_exec_total,
+                cpu_skipped_remclock, nevent_progress);
+    std::printf("P4_NANO_PCCORE_COUNTER_DERIVED iterations_per_pccore=%" PRIu64
+                " cpu_exec_fraction=%.6f cpu_skip_fraction=%.6f"
+                " naive_v2_extra_timer_reads=%" PRIu64
+                " transition_v2_extra_timer_reads=%" PRIu64 "\n",
+                iterations_per_pccore, cpu_exec_fraction, cpu_skip_fraction,
+                naive_v2_extra_timer_reads,
+                transition_v2_extra_timer_reads);
     const std::uint64_t top_level_profiled_us =
         pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE].total_us +
         pccore_profile.phases[NP2_PCCORE_PHASE_CALLBACKS].total_us +

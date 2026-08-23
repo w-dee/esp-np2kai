@@ -478,6 +478,8 @@ static void np2video_task(void *argument)
 cleanup:
 #if defined(NP2VIDEO_BENCHMARK_PROFILE)
     np2_pccore_profiler_set_enabled(false);
+    /* The producer's benchmark work has stopped; single-writer counter state is stable for snapshot.
+     * The completion callback publishes this result after the read. */
     np2_pccore_profiler_snapshot(&result.pccore_profile);
 #endif
     if (fixture.fdd_attached) {

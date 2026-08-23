@@ -30,6 +30,16 @@ void np2_pccore_profiler_set_enabled(bool enabled)
     np2_pccore_profile_enabled = enabled;
 }
 
+#if defined(NP2_PCCORE_PHASE_PROFILER)
+void np2_pccore_profiler_count(np2_pccore_counter counter)
+{
+    if (!np2_pccore_profile_enabled || counter >= NP2_PCCORE_COUNTER_COUNT) {
+        return;
+    }
+    ++np2_pccore_profile_state.profile.counters[counter];
+}
+#endif
+
 void np2_pccore_profiler_snapshot(np2_pccore_profile *profile)
 {
     if (profile == NULL) {

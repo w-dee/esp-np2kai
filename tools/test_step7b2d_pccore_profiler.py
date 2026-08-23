@@ -166,10 +166,23 @@ def main() -> int:
         require(header, phase, f"phase enum {phase}")
     for field in ("count", "total_us", "max_single_us", "min_single_us"):
         require(header, field, f"phase statistic {field}")
+    for counter in (
+        "NP2_PCCORE_COUNTER_LOOP_ITERATION",
+        "NP2_PCCORE_COUNTER_CPU_EXEC_I286",
+        "NP2_PCCORE_COUNTER_CPU_EXEC_V30",
+        "NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK",
+        "NP2_PCCORE_COUNTER_NEVENT_PROGRESS",
+        "NP2_PCCORE_COUNTER_COUNT",
+    ):
+        require(header, counter, f"counter enum {counter}")
+    require(header, "uint64_t counters[NP2_PCCORE_COUNTER_COUNT];",
+            "counter snapshot storage")
     require(header, "void np2_pccore_profiler_phase_begin",
             "tokenless begin API")
     require(header, "void np2_pccore_profiler_phase_end(np2_pccore_phase phase)",
             "tokenless end API")
+    require(header, "void np2_pccore_profiler_count(np2_pccore_counter counter)",
+            "counter API")
     if "uint64_t np2_pccore_profiler_phase_begin" in header:
         raise AssertionError("begin API must not return a timing token")
     if "start_us" in header:
@@ -178,6 +191,8 @@ def main() -> int:
             "disabled begin no-op")
     require(header, "static inline void np2_pccore_profiler_phase_end",
             "disabled end no-op")
+    require(header, "static inline void np2_pccore_profiler_count",
+            "disabled counter no-op")
     require(source, "esp_timer_get_time()", "ESP wall-clock timing")
     require(source, "start_us[NP2_PCCORE_PHASE_COUNT]",
             "project-owned per-phase start storage")
@@ -185,6 +200,19 @@ def main() -> int:
             "project-owned per-phase active storage")
     require(source, "if (!np2_pccore_profile_state.active[phase])",
             "safe unmatched phase end")
+    require(source, "void np2_pccore_profiler_count(np2_pccore_counter counter)",
+            "counter implementation")
+    counter_start = source.index(
+        "void np2_pccore_profiler_count(np2_pccore_counter counter)")
+    counter_end = source.index("#endif", counter_start)
+    counter_hook = source[counter_start:counter_end]
+    if "esp_timer_get_time" in counter_hook:
+        raise AssertionError("counter hook must not read the timer")
+    for forbidden in ("printf", "ESP_LOG", "ets_printf", "fwrite",
+                      "vTaskDelay", "taskYIELD", "np2_host_taskmng_cooperate",
+                      "malloc", "calloc", "realloc", "free"):
+        if forbidden in counter_hook:
+            raise AssertionError(f"profiler hot path contains forbidden operation: {forbidden}")
     for forbidden in ("printf", "ESP_LOG", "ets_printf", "fwrite",
                       "vTaskDelay", "taskYIELD", "np2_host_taskmng_cooperate"):
         if forbidden in source or forbidden in pccore_patch or forbidden in scrndraw_patch:
@@ -192,6 +220,50 @@ def main() -> int:
 
     require(pccore_patch, "while (pcstat.screendispflag)", "LOOP boundary")
     require(pccore_patch, "NP2_PCCORE_PHASE_LOOP_INCLUSIVE", "LOOP hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_LOOP_ITERATION);") != 1:
+        raise AssertionError("LOOP_ITERATION must have one loop-body hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_I286);") != 1:
+        raise AssertionError("CPU_EXEC_I286 must have one invocation hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_V30);") != 1:
+        raise AssertionError("CPU_EXEC_V30 must have one invocation hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK);") != 1:
+        raise AssertionError("CPU skipped path must have one hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_NEVENT_PROGRESS);") != 1:
+        raise AssertionError("NEVENT_PROGRESS must have one invocation hook")
+    loop_hook = pccore_patch.index(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_LOOP_ITERATION);")
+    if loop_hook <= pccore_patch.index("while (pcstat.screendispflag)"):
+        raise AssertionError("LOOP counter must be inside the loop body")
+    if loop_hook >= pccore_patch.index("#if defined(TRACE)", loop_hook):
+        raise AssertionError("LOOP counter must be first loop-body hook")
+    i286_hook = pccore_patch.index(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_I286);")
+    if i286_hook >= pccore_patch.index("CPU_EXEC();", i286_hook):
+        raise AssertionError("I286 counter must precede CPU_EXEC")
+    v30_hook = pccore_patch.index(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_V30);")
+    if v30_hook >= pccore_patch.index("CPU_EXECV30();", v30_hook):
+        raise AssertionError("V30 counter must precede CPU_EXECV30")
+    skipped_hook = pccore_patch.index(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK);")
+    if skipped_hook <= pccore_patch.index("if (CPU_REMCLOCK > 0)"):
+        raise AssertionError("skipped counter must cover the zero-remclock else")
+    nevent_hook = pccore_patch.index(
+        "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_NEVENT_PROGRESS);")
+    if nevent_hook >= pccore_patch.index("nevent_progress();", nevent_hook):
+        raise AssertionError("NEVENT counter must precede nevent_progress")
+    if "NP2_PCCORE_PHASE_CPU_EXEC_NESTED" in header or \
+            "NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED" in header:
+        raise AssertionError("counter-only foundation must not add v2 timing phases")
+    if "phase_transition" in header or "phase_transition" in pccore_patch:
+        raise AssertionError("counter-only foundation must not add transitions")
+    if "start_us" in pccore_patch or "active" in pccore_patch:
+        raise AssertionError("vendor hook must not add profiler-owned locals/state")
     require(pccore_patch, "NP2_PCCORE_PHASE_CALLBACKS", "CALLBACKS hook")
     require(pccore_patch, "NP2_PCCORE_PHASE_SOUND", "SOUND hook")
     require(scrndraw_patch, "NP2_PCCORE_PHASE_DRAW_NESTED", "nested DRAW hook")
@@ -226,7 +298,23 @@ def main() -> int:
             "profile snapshot")
     require(runner_header, "np2_pccore_profile pccore_profile;",
             "runner profile result")
+    require(runner, "single-writer counter state is stable for snapshot",
+            "counter snapshot lifecycle")
     require(live, "P4_NANO_PCCORE_PHASE", "post-interval phase summaries")
+    require(live, "P4_NANO_PCCORE_COUNTERS", "counter summary output")
+    require(live, "loop_iterations=", "loop counter output")
+    require(live, "cpu_exec_i286=", "I286 counter output")
+    require(live, "cpu_exec_v30=", "V30 counter output")
+    require(live, "cpu_skipped_remclock=", "skipped counter output")
+    require(live, "nevent_progress=", "NEVENT counter output")
+    require(live, "P4_NANO_PCCORE_COUNTER_DERIVED",
+            "counter-derived output")
+    require(live, "iterations_per_pccore=", "iteration derivation")
+    require(live, "cpu_exec_fraction=", "CPU fraction derivation")
+    require(live, "cpu_skip_fraction=", "skip fraction derivation")
+    require(live, "naive_v2_extra_timer_reads=", "naive v2 read estimate")
+    require(live, "transition_v2_extra_timer_reads=",
+            "transition v2 read estimate")
     require(live, '"loop_inclusive",', "loop output")
     require(live, '"draw_nested",', "draw output")
     require(live, "nested_draw_excluded_from_top_level=1",

@@ -1,16 +1,16 @@
 --- a/pccore.c
 +++ b/pccore.c
-@@ -67,6 +67,10 @@
- #include <keystat.h>
+@@ -68,6 +68,10 @@
  #include <np2ver.h>
  #include <timing.h>
-+
+ 
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
 +#include "np2_pccore_profiler.h"
 +#endif
- 
++
  #if defined(SUPPORT_WAB)
  #include <wab/wab.h>
+ #endif
 @@ -207,6 +211,7 @@
      64,
      64,
@@ -27,7 +27,7 @@
  #endif
        1,
        0x82,
-@@ -1881,6 +1887,10 @@
+@@ -1881,7 +1887,14 @@
      keyrepeat_proc();
    }
  
@@ -36,9 +36,46 @@
 +#endif
 +
    while (pcstat.screendispflag) {
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++    np2_pccore_profiler_count(NP2_PCCORE_COUNTER_LOOP_ITERATION);
++#endif
  #if defined(TRACE)
      resetcnt++;
-@@ -1980,6 +1990,10 @@
+ #endif
+@@ -1948,11 +1961,22 @@
+ #if !defined(SINGLESTEPONLY)
+       if (CPU_REMCLOCK > 0) {
+         if (!(CPU_TYPE & CPUTYPE_V30)) {
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++          np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_I286);
++#endif
+           CPU_EXEC();
+         } else {
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++          np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_V30);
++#endif
+           CPU_EXECV30();
+         }
+       }
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++      else {
++        np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK);
++      }
++#endif
+ #else
+       while (CPU_REMCLOCK > 0) {
+         CPU_STEPEXEC();
+@@ -1971,6 +1995,9 @@
+     atapi_dataread_asyncwait(INFINITE);
+ #endif
+ #endif
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++    np2_pccore_profiler_count(NP2_PCCORE_COUNTER_NEVENT_PROGRESS);
++#endif
+     nevent_progress();
+ #if defined(SUPPORT_ASYNC_CPU)
+     pccore_asynccpu();
+@@ -1980,6 +2007,10 @@
    asynccpu_lateflag = 0;
    asynccpu_fastflag = 0;
  #endif
@@ -49,7 +86,7 @@
    artic_callback();
    mpu98ii_callback();
  #if defined(SUPPORT_SMPU98)
-@@ -1987,8 +2001,15 @@
+@@ -1987,8 +2018,15 @@
  #endif
    diskdrv_callback();
    calendar_inc();

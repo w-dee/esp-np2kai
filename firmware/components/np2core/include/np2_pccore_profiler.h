@@ -19,6 +19,15 @@ typedef enum {
     NP2_PCCORE_PHASE_COUNT = 4,
 } np2_pccore_phase;
 
+typedef enum {
+    NP2_PCCORE_COUNTER_LOOP_ITERATION = 0,
+    NP2_PCCORE_COUNTER_CPU_EXEC_I286 = 1,
+    NP2_PCCORE_COUNTER_CPU_EXEC_V30 = 2,
+    NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK = 3,
+    NP2_PCCORE_COUNTER_NEVENT_PROGRESS = 4,
+    NP2_PCCORE_COUNTER_COUNT = 5,
+} np2_pccore_counter;
+
 typedef struct {
     uint64_t count;
     uint64_t total_us;
@@ -28,6 +37,7 @@ typedef struct {
 
 typedef struct {
     np2_pccore_phase_stats phases[NP2_PCCORE_PHASE_COUNT];
+    uint64_t counters[NP2_PCCORE_COUNTER_COUNT];
 } np2_pccore_profile;
 
 void np2_pccore_profiler_reset(void);
@@ -37,6 +47,7 @@ void np2_pccore_profiler_snapshot(np2_pccore_profile *profile);
 #if defined(NP2_PCCORE_PHASE_PROFILER)
 void np2_pccore_profiler_phase_begin(np2_pccore_phase phase);
 void np2_pccore_profiler_phase_end(np2_pccore_phase phase);
+void np2_pccore_profiler_count(np2_pccore_counter counter);
 #else
 static inline void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 {
@@ -46,6 +57,11 @@ static inline void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 static inline void np2_pccore_profiler_phase_end(np2_pccore_phase phase)
 {
     (void)phase;
+}
+
+static inline void np2_pccore_profiler_count(np2_pccore_counter counter)
+{
+    (void)counter;
 }
 #endif
 
