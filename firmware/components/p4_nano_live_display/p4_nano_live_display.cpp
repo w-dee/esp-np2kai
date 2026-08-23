@@ -1364,6 +1364,49 @@ esp_err_t run_benchmark()
                 state.producer_result.pccore_exec_min_us,
                 state.producer_result.pccore_exec_max_us,
                 pccore_exec_average_us);
+    const auto print_pccore_phase = [](const char *name,
+                                       const np2_pccore_phase_stats &stats) {
+        const std::uint64_t average_us =
+            stats.count == 0U ? 0U : stats.total_us / stats.count;
+        std::printf("P4_NANO_PCCORE_PHASE phase=%s count=%" PRIu64
+                    " total_us=%" PRIu64 " min_single_us=%" PRIu64
+                    " max_single_us=%" PRIu64 " average_us=%" PRIu64
+                    "\n",
+                    name, stats.count, stats.total_us,
+                    stats.count == 0U ? 0U : stats.min_single_us,
+                    stats.max_single_us, average_us);
+    };
+    const np2_pccore_profile &pccore_profile =
+        state.producer_result.pccore_profile;
+    print_pccore_phase(
+        "loop_inclusive",
+        pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE]);
+    print_pccore_phase("callbacks",
+                       pccore_profile.phases[NP2_PCCORE_PHASE_CALLBACKS]);
+    print_pccore_phase("sound",
+                       pccore_profile.phases[NP2_PCCORE_PHASE_SOUND]);
+    print_pccore_phase("draw_nested",
+                       pccore_profile.phases[NP2_PCCORE_PHASE_DRAW_NESTED]);
+    const std::uint64_t top_level_profiled_us =
+        pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE].total_us +
+        pccore_profile.phases[NP2_PCCORE_PHASE_CALLBACKS].total_us +
+        pccore_profile.phases[NP2_PCCORE_PHASE_SOUND].total_us;
+    const std::uint64_t outer_total_us =
+        state.producer_result.pccore_exec_total_us;
+    const std::uint64_t unattributed_us =
+        outer_total_us >= top_level_profiled_us
+            ? outer_total_us - top_level_profiled_us
+            : 0U;
+    const std::uint64_t coverage_percent =
+        outer_total_us == 0U ? 0U :
+        (top_level_profiled_us * 100U) / outer_total_us;
+    std::printf("P4_NANO_PCCORE_PROFILE outer_total_us=%" PRIu64
+                " top_level_profiled_us=%" PRIu64
+                " unattributed_us=%" PRIu64
+                " coverage_percent=%" PRIu64
+                " nested_draw_excluded_from_top_level=1\n",
+                outer_total_us, top_level_profiled_us, unattributed_us,
+                coverage_percent);
     std::printf("P4_NANO_BENCHMARK_TIMING timing_clock=esp_timer_wall_elapsed "
                 "preemption_may_be_included=1 "
                 "cooperation_delay_outside_isolated_metrics=1\n");

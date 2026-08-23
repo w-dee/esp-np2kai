@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "np2_pccore_profiler.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,7 @@ typedef struct {
     uint64_t pccore_exec_min_us;
     uint64_t pccore_exec_max_us;
     uint64_t pccore_exec_total_us;
+    np2_pccore_profile pccore_profile;
 } np2video_runner_result;
 
 typedef void (*np2video_runner_complete_fn)(

@@ -39,7 +39,8 @@ idf_component_register(
         "${NP2VIDEO_RUNNER_HOST_RUNNER}/video_control_v1.c"
         "${NP2VIDEO_RUNNER_HOST_RUNNER}/stage1_machine_config.c"
     INCLUDE_DIRS ${NP2VIDEO_RUNNER_INCLUDE_DIRS}
-    PRIV_REQUIRES np2core np2host np2fixture esp_psram esp_hw_support heap
+    REQUIRES np2core
+    PRIV_REQUIRES np2host np2fixture esp_psram esp_hw_support heap
                  esp_timer)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE

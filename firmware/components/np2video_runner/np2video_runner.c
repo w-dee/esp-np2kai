@@ -330,6 +330,9 @@ static void np2video_task(void *argument)
     {
         bool stop_observed = false;
 
+        np2_pccore_profiler_reset();
+        np2_pccore_profiler_set_enabled(true);
+
         for (slice = 0; slice < UINT32_C(1048576); ++slice) {
             const char *control_failure;
             const uint64_t pccore_exec_start_us =
@@ -473,6 +476,10 @@ static void np2video_task(void *argument)
 #endif
 
 cleanup:
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+    np2_pccore_profiler_set_enabled(false);
+    np2_pccore_profiler_snapshot(&result.pccore_profile);
+#endif
     if (fixture.fdd_attached) {
         np2_fixture_detach_fdd(&fixture);
     }

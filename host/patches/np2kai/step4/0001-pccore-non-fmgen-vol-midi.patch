@@ -1,6 +1,19 @@
 --- a/pccore.c
 +++ b/pccore.c
-@@ -207,6 +207,7 @@
+@@ -65,8 +65,12 @@
+ #include <calendar.h>
+ #include <debugsub.h>
+ #include <keystat.h>
+ #include <np2ver.h>
+ #include <timing.h>
++
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++#include "np2_pccore_profiler.h"
++#endif
+ 
+ #if defined(SUPPORT_WAB)
+ #include <wab/wab.h>
+@@ -207,6 +211,7 @@
      64,
      64,
      64,
@@ -8,7 +21,7 @@
  #endif /* SUPPORT_FMGEN */
      1,
      0x82,
-@@ -678,6 +679,7 @@
+@@ -678,6 +683,7 @@
        64,
        64,
        64,
@@ -16,3 +29,52 @@
  #endif
        1,
        0x82,
+@@ -1850,4 +1850,8 @@
+ void pccore_exec(BOOL draw) {
+ 
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++  uint64_t np2_pccore_loop_start_us;
++#endif
++
+   // ここでローカル変数を使うとsetjmp周りの最適化で破壊される可能性があるので注意
+   static UINT32 baseclk = 0;
+@@ -1880,5 +1880,10 @@
+   if (np2cfg.keyrepeat_enable) {
+     keyrepeat_proc();
+   }
+ 
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++  np2_pccore_loop_start_us = np2_pccore_profiler_phase_begin(
++      NP2_PCCORE_PHASE_LOOP_INCLUSIVE);
++#endif
++
+   while (pcstat.screendispflag) {
+@@ -1978,6 +1978,12 @@
+   }
+ #if defined(SUPPORT_ASYNC_CPU)
+   asynccpu_lateflag = 0;
+   asynccpu_fastflag = 0;
+ #endif
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++  np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_LOOP_INCLUSIVE,
++                                np2_pccore_loop_start_us);
++  uint64_t np2_pccore_callbacks_start_us =
++      np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CALLBACKS);
++#endif
+   artic_callback();
+@@ -1988,5 +1994,15 @@
+   diskdrv_callback();
+   calendar_inc();
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++  np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_CALLBACKS,
++                                np2_pccore_callbacks_start_us);
++  uint64_t np2_pccore_sound_start_us =
++      np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_SOUND);
++#endif
+   S98_sync();
+   sound_sync();
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++  np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_SOUND,
++                                np2_pccore_sound_start_us);
++#endif
+   fdc_intdelay(); // FDC SEEK & RECALIBRATE, etc. np21w ver0.86 rev46

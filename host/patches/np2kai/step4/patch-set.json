@@ -7,8 +7,8 @@
       "pristine_path": "pccore.c",
       "pristine_sha256": "2733b227289fdb24d7f9770affba51a1f9209f2f00f080146fd29d54e1abf01d",
       "patch_path": "0001-pccore-non-fmgen-vol-midi.patch",
-      "patch_sha256": "d1db161d60ccba028b5921e132d9e514c1d79f155c55487ddd0dc1acce612d19",
-      "patched_sha256": "67886ad6e8ec32e6d1f4e35f1b991183993402d74dac5122513ea5ac91f13b1b"
+      "patch_sha256": "5230baeade1c838b3a905153a463d3383fce673397d04efbb8e4ce8dc3dbb799",
+      "patched_sha256": "d03af32aa7c3c21de9231912bb0841c358c888e4ec1a6947d310bafc3f52aa97"
     },
     {
       "logical_source": "bios/bios.c",
@@ -17,6 +17,14 @@
       "patch_path": "0002-bios-disable-sound-init.patch",
       "patch_sha256": "51eb140f2b69596f113be1e9c7ffd68934aed3e38f71d003e4872f7161328068",
       "patched_sha256": "2a6cf3918812e7ca72a9949c1f7bb6421527a36e09285d1ec864837320ae6b35"
+    },
+    {
+      "logical_source": "vram/scrndraw.c",
+      "pristine_path": "vram/scrndraw.c",
+      "pristine_sha256": "78ff68559e5456edc283285936feb29bdaf83beb099bd3319a17378f9f246049",
+      "patch_path": "0008-pccore-phase-profiler-scrndraw.patch",
+      "patch_sha256": "ee55bd544dd240d0a7ce178604d27b692bb2657120e2d3c54009ed71eab5bc36",
+      "patched_sha256": "f8b9e8986cc8cd1e69f6702648e140658e7663bc334ca81b87233c741f3a8ccc"
     },
     {
       "logical_source": "io/pit.c",

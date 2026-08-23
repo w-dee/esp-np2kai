@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(NP2_PCCORE_PHASE_PROFILER_ACTIVE FALSE)
+if(NP2VIDEO_BENCHMARK_PROFILE OR
+   "$ENV{NP2VIDEO_BENCHMARK_PROFILE}" STREQUAL "1")
+    set(NP2_PCCORE_PHASE_PROFILER_ACTIVE TRUE)
+endif()
+
 # Phase 1 consumes the Step 4 inventory and preparation contract directly.
 # The generated patched sources stay below the component build directory.
 get_filename_component(NP2CORE_REPO_ROOT
@@ -183,9 +189,11 @@ foreach(NP2CORE_LOGICAL_SOURCE IN LISTS NP2CORE_LOGICAL_SOURCES)
 endforeach()
 
 idf_component_register(
-    SRCS ${NP2CORE_SOURCES}
+    SRCS ${NP2CORE_SOURCES} "np2_pccore_profiler.c"
     LDFRAGMENTS linker.lf
+    REQUIRES esp_timer
     INCLUDE_DIRS
+        "include"
         "${NP2CORE_HOST_COMPAT}"
         "${NP2CORE_VENDOR_SRC}"
         "${NP2CORE_VENDOR_SRC}/i286c")
@@ -202,6 +210,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     NP2_FIRMWARE_DOSIO
     "NP2KAI_GIT_TAG=\"0.86.0.22\""
     "NP2KAI_GIT_HASH=\"e2dc9046aa5c786fcfbfb87e883457e421026e31\"")
+
+if(NP2_PCCORE_PHASE_PROFILER_ACTIVE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        NP2_PCCORE_PHASE_PROFILER=1)
+endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -std=c11
@@ -227,4 +240,5 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     "SHELL:-iquote ${NP2CORE_VENDOR_SRC}"
     "SHELL:-iquote ${NP2CORE_VENDOR_SRC}/bios"
     "SHELL:-iquote ${NP2CORE_VENDOR_SRC}/cbus"
-    "SHELL:-iquote ${NP2CORE_VENDOR_SRC}/io")
+    "SHELL:-iquote ${NP2CORE_VENDOR_SRC}/io"
+    "SHELL:-iquote ${NP2CORE_VENDOR_SRC}/vram")
