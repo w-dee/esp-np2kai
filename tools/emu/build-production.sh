@@ -6,13 +6,14 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-benchmark] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
 variant=""
 board="generic"
 build_dir=""
+i286_inline_mem_fastpath=0
 display_foundation=0
 display_foundation_variant=""
 display_transform_diagnostic=0
@@ -50,6 +51,15 @@ while (($# > 0)); do
             ;;
         --build-dir=*)
             build_dir="${1#*=}"
+            shift
+            ;;
+        --i286-inline-mem-fastpath)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            i286_inline_mem_fastpath="$2"
+            shift 2
+            ;;
+        --i286-inline-mem-fastpath=*)
+            i286_inline_mem_fastpath="${1#*=}"
             shift
             ;;
         --esp-emu-test)
@@ -91,6 +101,15 @@ while (($# > 0)); do
             ;;
     esac
 done
+
+case "${i286_inline_mem_fastpath}" in
+    0|1)
+        ;;
+    *)
+        printf 'ERROR: --i286-inline-mem-fastpath requires exactly 0 or 1\n' >&2
+        exit 2
+        ;;
+esac
 
 case "${variant}" in
     p4-v1x|p4-v3x)
@@ -267,6 +286,7 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD=${live_display_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT=${live_display_benchmark_variant}"
     -D "NP2VIDEO_BENCHMARK_PROFILE=${live_display_benchmark}"
+    -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
     -D "NP2VIDEO_GOLDEN_HEADER=${NP2VIDEO_GOLDEN_HEADER}"
 )
 if (( display_foundation )); then
@@ -368,8 +388,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_benchmark}" \
     "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"

@@ -65,6 +65,14 @@
       "patch_path": "0007-printif-iocore-adapters.patch",
       "patch_sha256": "b0008d3c6158ad4645dba87fe739dd4fcf68215c76bdc6b1414de56666e4e1a9",
       "patched_sha256": "a718f920011a5c60843609d3666f3773444d7626a5c753d9bb977dbd31abc68a"
+    },
+    {
+      "logical_source": "i286c/i286c.h",
+      "pristine_path": "i286c/i286c.h",
+      "pristine_sha256": "eae9ae889fecb8938da560db7f86c95418a75ad518e2e54f5e29d9dd09de07ad",
+      "patch_path": "0009-i286c-inline-normal-ram-fastpath.patch",
+      "patch_sha256": "da446ee392bdda5457780f14b5f50e269eb8dc26a2cce1493895f14ccf53952c",
+      "patched_sha256": "33c26c412a745192f9ee3311a8d4694596bcf8637d79162c1d2b94d580f6f3bb"
     }
   ]
 }

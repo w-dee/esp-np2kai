@@ -160,8 +160,8 @@ def load_inputs(
             fail("logical_source and pristine_path must identify the same source")
         destination = f"src/{pristine_text}"
         imported = allowlisted.get(destination)
-        if imported is None or imported.get("role") != "source":
-            fail(f"pristine source is not an allowlisted imported source: {pristine_text}")
+        if imported is None or imported.get("role") not in {"source", "header"}:
+            fail(f"pristine source/header is not an allowlisted imported file: {pristine_text}")
         source = path_under(vendor_root, Path("src") / pristine, "pristine source")
         if source.is_symlink() or not source.is_file():
             fail(f"pristine source does not exist as a regular file: {source}")
@@ -307,6 +307,7 @@ def prepare(args: argparse.Namespace) -> None:
             "entries": [
                 {"generated_path": item["generated_path"], "logical_source": item["logical_source"]}
                 for item in reports
+                if not item["logical_source"].endswith(".h")
             ],
             "schema_version": SCHEMA_VERSION,
             "upstream_commit": commit,

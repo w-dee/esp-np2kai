@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 
+if(NOT DEFINED NP2_I286C_INLINE_MEM_FASTPATH)
+    set(NP2_I286C_INLINE_MEM_FASTPATH "0")
+endif()
+if(NOT NP2_I286C_INLINE_MEM_FASTPATH STREQUAL "0" AND
+   NOT NP2_I286C_INLINE_MEM_FASTPATH STREQUAL "1")
+    message(FATAL_ERROR
+            "np2core: NP2_I286C_INLINE_MEM_FASTPATH must be exactly 0 or 1")
+endif()
+
 set(NP2_PCCORE_PHASE_PROFILER_ACTIVE FALSE)
 if(NP2VIDEO_BENCHMARK_PROFILE OR
    "$ENV{NP2VIDEO_BENCHMARK_PROFILE}" STREQUAL "1")
@@ -82,6 +91,7 @@ file(STRINGS "${NP2CORE_PATCH_SET}" NP2CORE_PATCH_SOURCE_LINES
 file(STRINGS "${NP2CORE_PATCH_SET}" NP2CORE_PATCH_PATH_LINES
      REGEX "\\\"patch_path\\\"")
 set(NP2CORE_PATCHED_SOURCES)
+set(NP2CORE_PATCHED_HEADERS)
 set(NP2CORE_PATCH_FILES)
 get_filename_component(NP2CORE_PATCH_ROOT "${NP2CORE_PATCH_SET}" DIRECTORY)
 foreach(NP2CORE_PATCH_SOURCE_LINE IN LISTS NP2CORE_PATCH_SOURCE_LINES)
@@ -93,18 +103,25 @@ foreach(NP2CORE_PATCH_SOURCE_LINE IN LISTS NP2CORE_PATCH_SOURCE_LINES)
                 "np2core: cannot parse logical_source from patch set")
     endif()
     set(NP2CORE_PATCH_LOGICAL_SOURCE "${CMAKE_MATCH_1}")
-    list(FIND NP2CORE_LOGICAL_SOURCES "${NP2CORE_PATCH_LOGICAL_SOURCE}"
-         NP2CORE_PATCH_SOURCE_INDEX)
-    if(NP2CORE_PATCH_SOURCE_INDEX LESS 0)
-        message(FATAL_ERROR
-                "np2core: patch-set source is outside the authoritative inventory: "
-                "${NP2CORE_PATCH_LOGICAL_SOURCE}")
-    endif()
     list(FIND NP2CORE_PATCHED_SOURCES "${NP2CORE_PATCH_LOGICAL_SOURCE}"
          NP2CORE_PATCH_DUPLICATE_INDEX)
     if(NP2CORE_PATCH_DUPLICATE_INDEX GREATER -1)
         message(FATAL_ERROR
                 "np2core: duplicate patch-set source: ${NP2CORE_PATCH_LOGICAL_SOURCE}")
+    endif()
+    list(FIND NP2CORE_LOGICAL_SOURCES "${NP2CORE_PATCH_LOGICAL_SOURCE}"
+         NP2CORE_PATCH_SOURCE_INDEX)
+    if(NP2CORE_PATCH_SOURCE_INDEX LESS 0)
+        if(NOT NP2CORE_PATCH_LOGICAL_SOURCE MATCHES "\\.h$")
+            message(FATAL_ERROR
+                    "np2core: patch-set source is outside the authoritative inventory: "
+                    "${NP2CORE_PATCH_LOGICAL_SOURCE}")
+        endif()
+        list(APPEND NP2CORE_PATCHED_SOURCES "${NP2CORE_PATCH_LOGICAL_SOURCE}")
+        list(APPEND NP2CORE_PATCHED_HEADERS "${NP2CORE_PATCH_LOGICAL_SOURCE}")
+        list(APPEND NP2CORE_VENDOR_INPUTS
+             "${NP2CORE_VENDOR_SRC}/${NP2CORE_PATCH_LOGICAL_SOURCE}")
+        continue()
     endif()
     list(APPEND NP2CORE_PATCHED_SOURCES "${NP2CORE_PATCH_LOGICAL_SOURCE}")
 endforeach()
@@ -171,6 +188,23 @@ if(NOT NP2CORE_PREPARE_RESULT EQUAL 0)
             "${NP2CORE_PREPARE_OUTPUT}\n${NP2CORE_PREPARE_ERROR}")
 endif()
 
+set(NP2CORE_PREPARED_COMPILE_ROOT
+    "${CMAKE_CURRENT_BINARY_DIR}/step4-compile-src")
+set(NP2CORE_I286C_HEADER_PATCH_INDEX)
+list(FIND NP2CORE_PATCHED_HEADERS "i286c/i286c.h"
+     NP2CORE_I286C_HEADER_PATCH_INDEX)
+if(NP2CORE_I286C_HEADER_PATCH_INDEX GREATER -1)
+    # A quoted include resolves relative to the source file before -iquote
+    # directories.  Compile generated copies of the I286 translation units
+    # beside the patched header so every shared i286c.h consumer sees the
+    # project-owned overlay without editing third_party in place.
+    file(MAKE_DIRECTORY "${NP2CORE_PREPARED_COMPILE_ROOT}/i286c")
+    configure_file(
+        "${NP2CORE_PREPARED_ROOT}/patched-src/i286c/i286c.h"
+        "${NP2CORE_PREPARED_COMPILE_ROOT}/i286c/i286c.h"
+        COPYONLY)
+endif()
+
 set(NP2CORE_SOURCES)
 foreach(NP2CORE_LOGICAL_SOURCE IN LISTS NP2CORE_LOGICAL_SOURCES)
     list(FIND NP2CORE_PATCHED_SOURCES "${NP2CORE_LOGICAL_SOURCE}"
@@ -182,6 +216,14 @@ foreach(NP2CORE_LOGICAL_SOURCE IN LISTS NP2CORE_LOGICAL_SOURCES)
             message(FATAL_ERROR
                     "np2core: prepared source is missing: ${NP2CORE_SOURCE}")
         endif()
+    elseif(NP2CORE_I286C_HEADER_PATCH_INDEX GREATER -1 AND
+           NP2CORE_LOGICAL_SOURCE MATCHES "^i286c/.*\\.c$")
+        set(NP2CORE_SOURCE
+            "${NP2CORE_PREPARED_COMPILE_ROOT}/${NP2CORE_LOGICAL_SOURCE}")
+        configure_file(
+            "${NP2CORE_VENDOR_SRC}/${NP2CORE_LOGICAL_SOURCE}"
+            "${NP2CORE_SOURCE}"
+            COPYONLY)
     else()
         set(NP2CORE_SOURCE "${NP2CORE_VENDOR_SRC}/${NP2CORE_LOGICAL_SOURCE}")
     endif()
@@ -208,6 +250,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     OSLANG_UTF8
     SUPPORT_UTF8
     NP2_FIRMWARE_DOSIO
+    "NP2_I286C_INLINE_MEM_FASTPATH=${NP2_I286C_INLINE_MEM_FASTPATH}"
     "NP2KAI_GIT_TAG=\"0.86.0.22\""
     "NP2KAI_GIT_HASH=\"e2dc9046aa5c786fcfbfb87e883457e421026e31\"")
 
