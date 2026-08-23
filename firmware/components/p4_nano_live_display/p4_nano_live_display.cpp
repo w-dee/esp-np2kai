@@ -196,8 +196,10 @@ void release_if_held(LiveState *state, np2_presentation_token *token)
 
 constexpr std::uint32_t kBenchmarkWarmupTransforms = 8U;
 constexpr std::uint32_t kBenchmarkMeasuredTransforms = 128U;
+constexpr std::uint32_t kBenchmarkFinalValidationTransforms = 1U;
 constexpr std::uint32_t kBenchmarkTotalTransforms =
-    kBenchmarkWarmupTransforms + kBenchmarkMeasuredTransforms;
+    kBenchmarkWarmupTransforms + kBenchmarkMeasuredTransforms +
+    kBenchmarkFinalValidationTransforms;
 constexpr std::size_t kBenchmarkSubmitSampleCapacity = 8192U;
 constexpr std::size_t kBenchmarkLatencySampleCapacity = 256U;
 constexpr std::size_t kBenchmarkTimestampRingSize = 1024U;
@@ -239,7 +241,14 @@ struct BenchmarkState {
     std::uint64_t latency_total_us = 0;
     std::uint64_t latency_min_us = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t latency_max_us = 0;
-    std::uint32_t guest_updates = 0;
+    std::uint32_t publish_hook_calls = 0;
+    std::uint32_t last_surface_update_sequence = 0;
+    std::uint32_t scene_ready_publish_hook_calls = 0;
+    std::uint32_t scene_ready_submit_attempts = 0;
+    std::uint32_t scene_ready_successful_submissions = 0;
+    std::uint32_t scene_ready_submit_failures = 0;
+    std::uint32_t scene_ready_coalesced = 0;
+    std::uint32_t scene_ready_dropped = 0;
     std::uint32_t submit_attempts = 0;
     std::uint32_t successful_submissions = 0;
     std::uint32_t submit_failures = 0;
@@ -251,22 +260,34 @@ struct BenchmarkState {
     std::uint32_t releases = 0;
     std::uint32_t native_framebuffer_updates = 0;
     std::uint32_t latency_valid = 0;
-    std::uint32_t latency_missing = 0;
+    std::uint32_t producer_latency_unavailable = 0;
+    std::uint32_t consumer_latency_lookup_missing = 0;
     std::uint32_t correctness_pass = 0;
     std::uint32_t correctness_fail = 0;
     std::uint32_t first_source_crc = 0;
     std::uint32_t final_source_crc = 0;
     std::uint32_t first_native_crc = 0;
     std::uint32_t final_native_crc = 0;
+    bool first_source_crc_captured = false;
+    bool final_source_crc_captured = false;
+    bool first_native_crc_captured = false;
+    bool final_native_crc_captured = false;
     std::uint32_t source_generation = 0;
     std::uint32_t last_source_update_sequence = 0;
+    std::uint32_t scene_ready_surface_update_sequence = 0;
+    std::uint32_t final_surface_update_sequence = 0;
     std::uint64_t final_published_sequence = 0;
     std::uint64_t producer_start_us = 0;
+    std::uint64_t visible_start_us = 0;
+    std::uint64_t visible_elapsed_us = 0;
     bool hook_registered = false;
     bool slots_initialized = false;
     bool immutable_pass = false;
     bool source_generation_initialized = false;
     bool source_sequence_initialized = false;
+    bool backlight_enable_failed = false;
+    bool backlight_off_failed = false;
+    bool visible = false;
     bool timeout_reported = false;
 };
 
@@ -355,9 +376,9 @@ void benchmark_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
     if (state == nullptr || view == nullptr) {
         return;
     }
+    ++state->publish_hook_calls;
+    state->last_surface_update_sequence = view->surface_update_sequence;
     ++state->submit_attempts;
-    state->guest_updates = std::max(state->guest_updates,
-                                    view->surface_update_sequence);
     const bool measurement_active =
         state->scene_ready.load(std::memory_order_acquire);
     const np2_presentation_source_view source{
@@ -373,6 +394,15 @@ void benchmark_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
     const std::uint64_t expected_sequence = state->publisher.published_sequence + 1U;
     const std::uint64_t submit_start =
         static_cast<std::uint64_t>(esp_timer_get_time());
+    if (measurement_active) {
+        /* Publish the timestamp before submit exposes PENDING to the
+         * consumer.  A failed submit leaves a provisional entry that a
+         * retry of the same expected sequence may safely replace. */
+        BenchmarkTimestamp &entry =
+            state->timestamp_ring[expected_sequence % kBenchmarkTimestampRingSize];
+        entry.submit_start_us.store(submit_start, std::memory_order_relaxed);
+        entry.sequence.store(expected_sequence, std::memory_order_release);
+    }
     const np2_presentation_status status = np2_presentation_submit(
         &state->publisher, &source);
     const std::uint64_t submit_end =
@@ -388,12 +418,10 @@ void benchmark_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
         const std::uint64_t published_sequence = state->publisher.published_sequence;
         if (measurement_active && published_sequence == expected_sequence &&
             published_sequence != 0U) {
-            BenchmarkTimestamp &entry =
-                state->timestamp_ring[published_sequence % kBenchmarkTimestampRingSize];
-            entry.submit_start_us.store(submit_start, std::memory_order_relaxed);
-            entry.sequence.store(published_sequence, std::memory_order_release);
-        } else {
-            ++state->latency_missing;
+            /* The entry was published before submit, so there is no
+             * producer/consumer publication window to lose here. */
+        } else if (measurement_active) {
+            ++state->producer_latency_unavailable;
         }
     } else if (status != NP2_PRESENTATION_DROPPED) {
         ++state->submit_failures;
@@ -411,6 +439,16 @@ void benchmark_scene_ready(std::uint32_t generation,
     state->scene_generation.store(generation, std::memory_order_relaxed);
     state->scene_update_sequence.store(update_sequence,
                                        std::memory_order_relaxed);
+    state->scene_ready_publish_hook_calls = state->publish_hook_calls;
+    state->scene_ready_submit_attempts = state->submit_attempts;
+    state->scene_ready_successful_submissions =
+        state->successful_submissions;
+    state->scene_ready_submit_failures = state->submit_failures;
+    state->scene_ready_coalesced =
+        np2_presentation_coalesced_count(&state->publisher);
+    state->scene_ready_dropped =
+        np2_presentation_dropped_count(&state->publisher);
+    state->scene_ready_surface_update_sequence = update_sequence;
     state->scene_ready.store(true, std::memory_order_release);
 }
 
@@ -474,6 +512,22 @@ void benchmark_release(BenchmarkState *state, np2_presentation_token *token)
     }
 }
 
+bool benchmark_enable_backlight(BenchmarkState *state)
+{
+    if (state == nullptr || state->visible) {
+        return true;
+    }
+    if (p4_nano_board::display_backlight_set(
+            p4_nano_board::kBacklightConservative) != ESP_OK) {
+        state->backlight_enable_failed = true;
+        return false;
+    }
+    state->visible = true;
+    state->visible_start_us =
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    return true;
+}
+
 int benchmark_consume_one(BenchmarkState *state)
 {
     np2_presentation_frame_view view{};
@@ -521,7 +575,7 @@ int benchmark_consume_one(BenchmarkState *state)
                              state->latency_total_us, state->latency_min_us,
                              state->latency_max_us);
     } else {
-        ++state->latency_missing;
+        ++state->consumer_latency_lookup_missing;
     }
     if (!benchmark_validate_frame(view)) {
         benchmark_release(state, &token);
@@ -549,14 +603,10 @@ int benchmark_consume_one(BenchmarkState *state)
     const std::uint32_t transform_index = state->transforms_completed;
     const bool correctness_sample = transform_index == 0U ||
                                     transform_index + 1U == kBenchmarkTotalTransforms;
-    std::uint64_t crc_time_us = 0U;
     std::uint32_t source_crc_before = 0U;
     if (correctness_sample) {
-        const std::uint64_t crc_start =
-            static_cast<std::uint64_t>(esp_timer_get_time());
         source_crc_before = p4_nano_display::crc32(
             view.ptr, np2video_golden_visible_bytes);
-        crc_time_us += static_cast<std::uint64_t>(esp_timer_get_time()) - crc_start;
     }
     ++state->transforms_started;
     const auto source = std::span<const std::uint16_t>(
@@ -576,11 +626,8 @@ int benchmark_consume_one(BenchmarkState *state)
         return -1;
     }
     if (correctness_sample) {
-        const std::uint64_t crc_start =
-            static_cast<std::uint64_t>(esp_timer_get_time());
         const std::uint32_t source_crc_after = p4_nano_display::crc32(
             view.ptr, np2video_golden_visible_bytes);
-        crc_time_us += static_cast<std::uint64_t>(esp_timer_get_time()) - crc_start;
         if (source_crc_before == source_crc_after) {
             ++state->correctness_pass;
         } else {
@@ -589,8 +636,10 @@ int benchmark_consume_one(BenchmarkState *state)
         state->immutable_pass = state->correctness_fail == 0U;
         if (transform_index == 0U) {
             state->first_source_crc = source_crc_before;
+            state->first_source_crc_captured = true;
         } else {
             state->final_source_crc = source_crc_before;
+            state->final_source_crc_captured = true;
         }
     }
     const std::uint64_t cache_start =
@@ -607,23 +656,24 @@ int benchmark_consume_one(BenchmarkState *state)
     ++state->cache_sync_success;
     ++state->native_framebuffer_updates;
     if (correctness_sample) {
-        const std::uint64_t crc_start =
-            static_cast<std::uint64_t>(esp_timer_get_time());
         const std::uint32_t native_crc = p4_nano_display::crc32(
             reinterpret_cast<const std::uint8_t *>(state->display.framebuffer),
             p4_nano_display::kNativeFramebufferBytes);
-        crc_time_us += static_cast<std::uint64_t>(esp_timer_get_time()) - crc_start;
         if (transform_index == 0U) {
             state->first_native_crc = native_crc;
+            state->first_native_crc_captured = true;
         } else {
             state->final_native_crc = native_crc;
+            state->final_native_crc_captured = true;
         }
+    }
+    if (transform_index == 0U && !benchmark_enable_backlight(state)) {
+        benchmark_release(state, &token);
+        return -1;
     }
     benchmark_release(state, &token);
     const std::uint64_t service_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - service_start;
-    const std::uint64_t adjusted_service_us = service_us > crc_time_us
-        ? service_us - crc_time_us : 0U;
     if (transform_index >= kBenchmarkWarmupTransforms) {
         /* The measured arrays have exactly 128 entries.  Statistics are
          * calculated only after the benchmark interval. */
@@ -631,17 +681,46 @@ int benchmark_consume_one(BenchmarkState *state)
             transform_index - kBenchmarkWarmupTransforms;
         state->transform_samples[measured_index] = transform_us;
         state->cache_samples[measured_index] = cache_us;
-        state->service_samples[measured_index] = adjusted_service_us;
+        state->service_samples[measured_index] = service_us;
         state->transform_stored = measured_index + 1U;
         state->cache_stored = measured_index + 1U;
         state->service_stored = measured_index + 1U;
     }
     ++state->transforms_completed;
     state->final_published_sequence = view.published_sequence;
+    state->final_surface_update_sequence = view.source_update_sequence;
     if (state->transforms_completed == kBenchmarkTotalTransforms) {
         state->stop_requested.store(true, std::memory_order_release);
     }
     return 1;
+}
+
+void benchmark_hold_visible(BenchmarkState *state)
+{
+    if (state == nullptr || !state->visible) {
+        return;
+    }
+    for (;;) {
+        const std::uint64_t now =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const std::uint64_t elapsed = now - state->visible_start_us;
+        if (elapsed >= kVisibleHoldUs) {
+            state->visible_elapsed_us = elapsed;
+            return;
+        }
+        const std::uint64_t remaining_us = kVisibleHoldUs - elapsed;
+        std::uint64_t delay_ms = (remaining_us + 999U) / 1000U;
+        if (delay_ms == 0U) {
+            delay_ms = 1U;
+        }
+        vTaskDelay(pdMS_TO_TICKS(static_cast<std::uint32_t>(delay_ms)));
+    }
+}
+
+std::uint32_t benchmark_counter_delta(std::uint32_t final_value,
+                                      std::uint32_t baseline)
+{
+    return final_value >= baseline ? final_value - baseline : 0U;
 }
 
 #endif
@@ -1004,6 +1083,7 @@ esp_err_t run_benchmark()
         ranges_overlap(state.slots[1].ptr, kSlotBytes,
                        state.display.framebuffer,
                        p4_nano_display::kNativeFramebufferBytes)) {
+        (void)p4_nano_board::display_backlight_set(0U);
         (void)p4_nano_display::display_session_cleanup(&state.display);
         heap_caps_free(state.slots[0].ptr);
         heap_caps_free(state.slots[1].ptr);
@@ -1016,11 +1096,11 @@ esp_err_t run_benchmark()
                 esp_ptr_external_ram(state.display.framebuffer) ? 1 : 0);
     report_memory("after_benchmark_framebuffer");
 
-    /* Backlight is enabled before the timed producer/consumer interval, so
-     * no per-frame display/logging side effect enters the hot path. */
-    result = p4_nano_board::display_backlight_set(
-        p4_nano_board::kBacklightConservative);
+    /* Keep the panel dark until the first complete transformed frame has
+     * reached the native framebuffer and its cache has been synchronized. */
+    result = p4_nano_board::display_backlight_set(0U);
     if (result != ESP_OK) {
+        (void)p4_nano_board::display_backlight_set(0U);
         (void)p4_nano_display::display_session_cleanup(&state.display);
         heap_caps_free(state.slots[0].ptr);
         heap_caps_free(state.slots[1].ptr);
@@ -1070,17 +1150,43 @@ esp_err_t run_benchmark()
          * released without another transform. */
     }
 
+    benchmark_hold_visible(&state);
+    const esp_err_t backlight_off_result =
+        p4_nano_board::display_backlight_set(0U);
+    state.backlight_off_failed = backlight_off_result != ESP_OK;
+
     const std::uint32_t coalesced =
         np2_presentation_coalesced_count(&state.publisher);
     const std::uint32_t dropped =
         np2_presentation_dropped_count(&state.publisher);
+    const std::uint32_t publish_hook_callbacks = benchmark_counter_delta(
+        state.publish_hook_calls, state.scene_ready_publish_hook_calls);
+    const std::uint32_t submit_attempts = benchmark_counter_delta(
+        state.submit_attempts, state.scene_ready_submit_attempts);
+    const std::uint32_t successful_submissions = benchmark_counter_delta(
+        state.successful_submissions, state.scene_ready_successful_submissions);
+    const std::uint32_t submit_failures = benchmark_counter_delta(
+        state.submit_failures, state.scene_ready_submit_failures);
+    const std::uint32_t coalesced_window = benchmark_counter_delta(
+        coalesced, state.scene_ready_coalesced);
+    const std::uint32_t dropped_window = benchmark_counter_delta(
+        dropped, state.scene_ready_dropped);
     if (state.producer_result.status != ESP_OK ||
         state.publish_failed.load(std::memory_order_acquire) ||
         state.transforms_completed != kBenchmarkTotalTransforms ||
         state.correctness_fail != 0U || state.correctness_pass < 2U ||
+        !state.immutable_pass ||
         state.cache_sync_failures != 0U || state.releases != state.acquisitions ||
         state.source_generation != state.producer_result.source_generation ||
-        state.first_source_crc == state.final_source_crc ||
+        state.final_surface_update_sequence <=
+            state.scene_ready_surface_update_sequence ||
+        state.transform_stored != kBenchmarkMeasuredTransforms ||
+        state.cache_stored != kBenchmarkMeasuredTransforms ||
+        state.service_stored != kBenchmarkMeasuredTransforms ||
+        !state.first_source_crc_captured || !state.final_source_crc_captured ||
+        !state.first_native_crc_captured || !state.final_native_crc_captured ||
+        !state.visible || state.visible_elapsed_us < kVisibleHoldUs ||
+        state.backlight_enable_failed || state.backlight_off_failed ||
         state.timeout_reported) {
         failed = true;
     }
@@ -1103,27 +1209,55 @@ esp_err_t run_benchmark()
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(std::min(
                     state.transforms_completed, kBenchmarkWarmupTransforms)));
-    std::printf("P4_NANO_BENCHMARK_COUNTERS guest_updates=%" PRIu32
+    std::printf("P4_NANO_BENCHMARK_COUNTERS publish_hook_callbacks=%" PRIu32
+                " guest_update_callbacks=%" PRIu32
                 " submit_attempts=%" PRIu32 " successful_submissions=%" PRIu32
                 " submit_failures=%" PRIu32 " coalesced=%" PRIu32
                 " dropped=%" PRIu32 " acquisitions=%" PRIu32
                 " transforms_started=%" PRIu32 " transforms_completed=%" PRIu32
                 " cache_sync_success=%" PRIu32 " cache_sync_failures=%" PRIu32
                 " releases=%" PRIu32 " native_framebuffer_updates=%" PRIu32
-                " latency_valid=%" PRIu32 " latency_missing=%" PRIu32
+                " latency_valid=%" PRIu32
+                " latency_producer_unavailable=%" PRIu32
+                " latency_consumer_lookup_missing=%" PRIu32
                 " correctness_pass=%" PRIu32 " correctness_fail=%" PRIu32 "\n",
-                state.guest_updates, state.submit_attempts,
-                state.successful_submissions, state.submit_failures, coalesced,
-                dropped, state.acquisitions, state.transforms_started,
+                publish_hook_callbacks, publish_hook_callbacks, submit_attempts,
+                successful_submissions,
+                submit_failures, coalesced_window, dropped_window,
+                state.acquisitions, state.transforms_started,
                 state.transforms_completed, state.cache_sync_success,
                 state.cache_sync_failures, state.releases,
                 state.native_framebuffer_updates, state.latency_valid,
-                state.latency_missing, state.correctness_pass,
-                state.correctness_fail);
+                state.producer_latency_unavailable,
+                state.consumer_latency_lookup_missing,
+                state.correctness_pass, state.correctness_fail);
+    std::printf("P4_NANO_BENCHMARK_PRELUDE publish_hook_callbacks=%" PRIu32
+                " submit_attempts=%" PRIu32 " successful_submissions=%" PRIu32
+                " submit_failures=%" PRIu32 " coalesced=%" PRIu32
+                " dropped=%" PRIu32 "\n",
+                state.scene_ready_publish_hook_calls,
+                state.scene_ready_submit_attempts,
+                state.scene_ready_successful_submissions,
+                state.scene_ready_submit_failures, state.scene_ready_coalesced,
+                state.scene_ready_dropped);
     std::printf("P4_NANO_BENCHMARK_SCENE_READY generation=%" PRIu32
                 " surface_update_sequence=%" PRIu32 "\n",
                 state.scene_generation.load(std::memory_order_relaxed),
                 state.scene_update_sequence.load(std::memory_order_relaxed));
+    std::printf("P4_NANO_BENCHMARK_GUEST publish_hook_calls=%" PRIu32
+                " last_surface_update_sequence=%" PRIu32
+                " scene_ready_surface_update_sequence=%" PRIu32
+                " final_surface_update_sequence=%" PRIu32
+                " delta_surface_update_sequence=%" PRIu32 "\n",
+                state.publish_hook_calls,
+                state.last_surface_update_sequence,
+                state.scene_ready_surface_update_sequence,
+                state.final_surface_update_sequence,
+                state.final_surface_update_sequence >=
+                        state.scene_ready_surface_update_sequence
+                    ? state.final_surface_update_sequence -
+                          state.scene_ready_surface_update_sequence
+                    : 0U);
     std::printf("P4_NANO_BENCHMARK_CORRECTNESS first_source_crc=0x%08" PRIx32
                 " final_source_crc=0x%08" PRIx32
                 " first_native_crc=0x%08" PRIx32
@@ -1134,6 +1268,15 @@ esp_err_t run_benchmark()
                 state.first_native_crc, state.final_native_crc,
                 state.immutable_pass ? "PASS" : "FAIL", state.source_generation,
                 state.final_published_sequence);
+    std::printf("P4_NANO_BENCHMARK_VISIBLE visible_start_us=%" PRIu64
+                " visible_elapsed_us=%" PRIu64 " backlight=OFF"
+                " backlight_off=%s\n",
+                state.visible_start_us, state.visible_elapsed_us,
+                state.backlight_off_failed ? "FAIL" : "PASS");
+    std::printf("P4_NANO_BENCHMARK_SAMPLE_COUNTS transform=%zu cache_sync=%zu "
+                "consumer_service=%zu\n",
+                state.transform_stored, state.cache_stored,
+                state.service_stored);
 #ifdef CONFIG_ESP_MAIN_TASK_AFFINITY
     std::printf("P4_NANO_BENCHMARK_TASK main_task_affinity=%d freertos_cores=%d "
                 "producer_creation=xTaskCreate producer_core=%d consumer_core=%d\n",
@@ -1154,7 +1297,6 @@ esp_err_t run_benchmark()
 
     const esp_err_t cleanup_result =
         p4_nano_display::display_session_cleanup(&state.display);
-    (void)p4_nano_board::display_backlight_set(0U);
     heap_caps_free(state.slots[0].ptr);
     heap_caps_free(state.slots[1].ptr);
     if (cleanup_result != ESP_OK) {
