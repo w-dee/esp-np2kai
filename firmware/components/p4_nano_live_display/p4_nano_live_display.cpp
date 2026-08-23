@@ -205,6 +205,9 @@ constexpr std::size_t kBenchmarkSubmitSampleCapacity = 8192U;
 constexpr std::size_t kBenchmarkLatencySampleCapacity = 256U;
 constexpr std::size_t kBenchmarkTimestampRingSize = 1024U;
 constexpr std::uint64_t kBenchmarkWatchdogUs = 120ULL * 1000ULL * 1000ULL;
+constexpr int kBenchmarkProducerCore = 1;
+constexpr std::uint32_t kBenchmarkProducerPriority =
+    static_cast<std::uint32_t>(tskIDLE_PRIORITY);
 
 constexpr bool benchmark_is_measured_sample(std::uint32_t transform_index)
 {
@@ -248,6 +251,7 @@ struct BenchmarkState {
     std::atomic<std::uint32_t> scene_generation{0};
     std::atomic<std::uint32_t> scene_update_sequence{0};
     std::atomic<int> producer_core{-1};
+    std::atomic<std::uint32_t> producer_priority{0};
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> publish_failed{false};
     BenchmarkTimestamp timestamp_ring[kBenchmarkTimestampRingSize]{};
@@ -498,6 +502,9 @@ bool benchmark_runner_ready(void *context)
         return false;
     }
     state->producer_core.store(xPortGetCoreID(), std::memory_order_relaxed);
+    state->producer_priority.store(
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)),
+        std::memory_order_relaxed);
     scrnmng_set_publish_hook(benchmark_publish_hook, state);
     state->hook_registered = true;
     std::printf("P4_NANO_BENCHMARK_PUBLISHER_READY slots=%zu slot_bytes=%zu\n",
@@ -867,6 +874,9 @@ esp_err_t run()
         .complete_context = &state,
         .lifecycle_context = &state,
         .stop_requested = nullptr,
+        .task_scheduling_override = false,
+        .task_core_id = 0,
+        .task_priority = 0,
     };
     result = np2video_runner_start_ex(&runner_config);
     if (result != ESP_OK) {
@@ -1152,6 +1162,9 @@ esp_err_t run_benchmark()
         return result;
     }
 
+    /* Provisional WDT-safe diagnostic policy: priority 0 shares CPU1 with
+     * IDLE1 so time slicing can preserve idle-task health during a long
+     * pccore_exec(TRUE).  This is not a final emulator-performance policy. */
     const np2video_runner_config runner_config{
         .output = benchmark_runner_output,
         .output_context = nullptr,
@@ -1162,6 +1175,9 @@ esp_err_t run_benchmark()
         .complete_context = &state,
         .lifecycle_context = &state,
         .stop_requested = benchmark_stop_requested,
+        .task_scheduling_override = true,
+        .task_core_id = kBenchmarkProducerCore,
+        .task_priority = kBenchmarkProducerPriority,
     };
     result = np2video_runner_start_ex(&runner_config);
     if (result != ESP_OK) {
@@ -1216,6 +1232,9 @@ esp_err_t run_benchmark()
         coalesced, state.scene_ready_coalesced);
     const std::uint32_t dropped_window = benchmark_counter_delta(
         dropped, state.scene_ready_dropped);
+    const int consumer_core = xPortGetCoreID();
+    const std::uint32_t consumer_priority =
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr));
     if (state.producer_result.status != ESP_OK ||
         state.publish_failed.load(std::memory_order_acquire) ||
         state.transforms_completed != kBenchmarkTotalTransforms ||
@@ -1232,7 +1251,12 @@ esp_err_t run_benchmark()
         !state.first_native_crc_captured || !state.final_native_crc_captured ||
         !state.visible || state.visible_elapsed_us < kVisibleHoldUs ||
         state.backlight_enable_failed || state.backlight_off_failed ||
-        state.timeout_reported) {
+        state.timeout_reported ||
+        state.producer_core.load(std::memory_order_relaxed) !=
+            kBenchmarkProducerCore ||
+        state.producer_priority.load(std::memory_order_relaxed) !=
+            kBenchmarkProducerPriority || consumer_core != 0 ||
+        consumer_priority != 1U) {
         failed = true;
     }
 
@@ -1326,22 +1350,45 @@ esp_err_t run_benchmark()
                 " consumer_cooperate_calls=%" PRIu32 "\n",
                 state.producer_result.cooperate_calls,
                 state.consumer_cooperate_calls);
+    const std::uint64_t pccore_exec_average_us =
+        state.producer_result.pccore_exec_count == 0U
+            ? 0U
+            : state.producer_result.pccore_exec_total_us /
+                  state.producer_result.pccore_exec_count;
+    std::printf("P4_NANO_BENCHMARK_EXEC_SLICE metric=pccore_exec_wall_us "
+                "count=%" PRIu64
+                " first_us=%" PRIu64 " min_us=%" PRIu64
+                " max_us=%" PRIu64 " average_us=%" PRIu64 "\n",
+                state.producer_result.pccore_exec_count,
+                state.producer_result.pccore_exec_first_us,
+                state.producer_result.pccore_exec_min_us,
+                state.producer_result.pccore_exec_max_us,
+                pccore_exec_average_us);
     std::printf("P4_NANO_BENCHMARK_TIMING timing_clock=esp_timer_wall_elapsed "
                 "preemption_may_be_included=1 "
                 "cooperation_delay_outside_isolated_metrics=1\n");
 #ifdef CONFIG_ESP_MAIN_TASK_AFFINITY
     std::printf("P4_NANO_BENCHMARK_TASK main_task_affinity=%d freertos_cores=%d "
-                "producer_creation=xTaskCreate producer_core=%d consumer_core=%d\n",
+                "producer_creation=xTaskCreatePinnedToCore "
+                "producer_core_policy=cpu1 producer_core=%d "
+                "producer_priority=%" PRIu32
+                " producer_priority_policy=provisional_wdt_safe "
+                "consumer_core=%d consumer_priority=%" PRIu32 "\n",
                 CONFIG_ESP_MAIN_TASK_AFFINITY, CONFIG_FREERTOS_NUMBER_OF_CORES,
                 state.producer_core.load(std::memory_order_relaxed),
-                xPortGetCoreID());
+                state.producer_priority.load(std::memory_order_relaxed),
+                consumer_core, consumer_priority);
 #else
     std::printf("P4_NANO_BENCHMARK_TASK main_task_affinity=unknown "
-                "freertos_cores=%d producer_creation=xTaskCreate "
-                "producer_core=%d consumer_core=%d\n",
+                "freertos_cores=%d producer_creation=xTaskCreatePinnedToCore "
+                "producer_core_policy=cpu1 producer_core=%d "
+                "producer_priority=%" PRIu32
+                " producer_priority_policy=provisional_wdt_safe "
+                "consumer_core=%d consumer_priority=%" PRIu32 "\n",
                 CONFIG_FREERTOS_NUMBER_OF_CORES,
                 state.producer_core.load(std::memory_order_relaxed),
-                xPortGetCoreID());
+                state.producer_priority.load(std::memory_order_relaxed),
+                consumer_core, consumer_priority);
 #endif
     std::printf("P4_NANO_BENCHMARK_PROFILE num_fbs=1 ppa=0 dma2d=0 simd=0 "
                 "second_framebuffer=0 uart_hot_path=0\n");

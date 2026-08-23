@@ -25,6 +25,11 @@ typedef struct {
     uint32_t pitch;
     uint32_t visible_bytes;
     uint32_t cooperate_calls;
+    uint64_t pccore_exec_count;
+    uint64_t pccore_exec_first_us;
+    uint64_t pccore_exec_min_us;
+    uint64_t pccore_exec_max_us;
+    uint64_t pccore_exec_total_us;
 } np2video_runner_result;
 
 typedef void (*np2video_runner_complete_fn)(
@@ -47,6 +52,9 @@ typedef struct {
     void *complete_context;
     void *lifecycle_context;
     np2video_runner_stop_requested_fn stop_requested;
+    bool task_scheduling_override;
+    int task_core_id;
+    uint32_t task_priority;
 } np2video_runner_config;
 
 esp_err_t np2video_runner_start(np2video_runner_output_fn output,

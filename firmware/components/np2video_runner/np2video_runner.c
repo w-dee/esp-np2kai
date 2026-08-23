@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_psram.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -216,6 +217,13 @@ static void np2video_task(void *argument)
     bool framebuffer_initialized = false;
     bool update_observed = false;
     esp_err_t fixture_error;
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+    uint64_t pccore_exec_count = 0;
+    uint64_t pccore_exec_first_us = 0;
+    uint64_t pccore_exec_min_us = UINT64_MAX;
+    uint64_t pccore_exec_max_us = 0;
+    uint64_t pccore_exec_total_us = 0;
+#endif
 
     np2_fixture_init(&fixture);
     memset(&control, 0, sizeof(control));
@@ -324,10 +332,26 @@ static void np2video_task(void *argument)
 
         for (slice = 0; slice < UINT32_C(1048576); ++slice) {
             const char *control_failure;
+            const uint64_t pccore_exec_start_us =
+                (uint64_t)esp_timer_get_time();
 
             pccore_exec(TRUE);
+            const uint64_t pccore_exec_wall_us =
+                (uint64_t)esp_timer_get_time() - pccore_exec_start_us;
+            if (pccore_exec_count == 0U) {
+                pccore_exec_first_us = pccore_exec_wall_us;
+            }
+            ++pccore_exec_count;
+            pccore_exec_total_us += pccore_exec_wall_us;
+            if (pccore_exec_wall_us < pccore_exec_min_us) {
+                pccore_exec_min_us = pccore_exec_wall_us;
+            }
+            if (pccore_exec_wall_us > pccore_exec_max_us) {
+                pccore_exec_max_us = pccore_exec_wall_us;
+            }
             /* This benchmark-only cooperation point is after a complete NP2
-             * event/frame slice.  It is not presentation backpressure. */
+             * event/frame slice.  It is not presentation backpressure and is
+             * outside the pccore_exec_wall_us interval above. */
             np2_host_taskmng_cooperate();
             ++cooperate_calls;
             if (scrnmng_haserror()) {
@@ -488,6 +512,14 @@ cleanup:
 #endif
     }
     result.cooperate_calls = cooperate_calls;
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
+    result.pccore_exec_count = pccore_exec_count;
+    result.pccore_exec_first_us = pccore_exec_first_us;
+    result.pccore_exec_min_us =
+        pccore_exec_count == 0U ? 0U : pccore_exec_min_us;
+    result.pccore_exec_max_us = pccore_exec_max_us;
+    result.pccore_exec_total_us = pccore_exec_total_us;
+#endif
     if (state->complete != NULL) {
         state->complete(&result, state->complete_context);
     }
@@ -507,6 +539,9 @@ esp_err_t np2video_runner_start(np2video_runner_output_fn output,
         .complete_context = NULL,
         .lifecycle_context = NULL,
         .stop_requested = NULL,
+        .task_scheduling_override = false,
+        .task_core_id = 0,
+        .task_priority = 0,
     };
     return np2video_runner_start_ex(&config);
 }
@@ -530,10 +565,22 @@ esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
     np2video_task_config.complete_context = config->complete_context;
     np2video_task_config.lifecycle_context = config->lifecycle_context;
     np2video_task_config.stop_requested = config->stop_requested;
-    task_result = xTaskCreate(np2video_task, "np2video_runner",
-                              NP2VIDEO_RUNNER_STACK_BYTES,
-                              &np2video_task_config,
-                              NP2VIDEO_RUNNER_PRIORITY, NULL);
+    if (config->task_scheduling_override) {
+        if (config->task_core_id < 0 ||
+            config->task_core_id >= configNUMBER_OF_CORES ||
+            config->task_priority >= (uint32_t)configMAX_PRIORITIES) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        task_result = xTaskCreatePinnedToCore(
+            np2video_task, "np2video_runner", NP2VIDEO_RUNNER_STACK_BYTES,
+            &np2video_task_config, (UBaseType_t)config->task_priority, NULL,
+            (BaseType_t)config->task_core_id);
+    } else {
+        task_result = xTaskCreate(np2video_task, "np2video_runner",
+                                  NP2VIDEO_RUNNER_STACK_BYTES,
+                                  &np2video_task_config,
+                                  NP2VIDEO_RUNNER_PRIORITY, NULL);
+    }
     if (task_result != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
