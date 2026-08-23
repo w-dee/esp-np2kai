@@ -205,6 +205,33 @@ constexpr std::size_t kBenchmarkLatencySampleCapacity = 256U;
 constexpr std::size_t kBenchmarkTimestampRingSize = 1024U;
 constexpr std::uint64_t kBenchmarkWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 
+constexpr bool benchmark_is_measured_sample(std::uint32_t transform_index)
+{
+    return transform_index >= kBenchmarkWarmupTransforms &&
+           transform_index <
+               kBenchmarkWarmupTransforms + kBenchmarkMeasuredTransforms;
+}
+
+constexpr std::size_t benchmark_measured_sample_count()
+{
+    std::size_t count = 0U;
+    for (std::uint32_t index = 0U; index < kBenchmarkTotalTransforms; ++index) {
+        if (benchmark_is_measured_sample(index)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static_assert(benchmark_measured_sample_count() == kBenchmarkMeasuredTransforms);
+static_assert(!benchmark_is_measured_sample(0U));
+static_assert(benchmark_is_measured_sample(kBenchmarkWarmupTransforms));
+static_assert(benchmark_is_measured_sample(
+    kBenchmarkWarmupTransforms + kBenchmarkMeasuredTransforms - 1U));
+static_assert(!benchmark_is_measured_sample(
+    kBenchmarkWarmupTransforms + kBenchmarkMeasuredTransforms));
+static_assert(!benchmark_is_measured_sample(kBenchmarkTotalTransforms - 1U));
+
 struct BenchmarkTimestamp {
     std::atomic<std::uint64_t> sequence{0};
     std::atomic<std::uint64_t> submit_start_us{0};
@@ -674,9 +701,9 @@ int benchmark_consume_one(BenchmarkState *state)
     benchmark_release(state, &token);
     const std::uint64_t service_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - service_start;
-    if (transform_index >= kBenchmarkWarmupTransforms) {
-        /* The measured arrays have exactly 128 entries.  Statistics are
-         * calculated only after the benchmark interval. */
+    if (benchmark_is_measured_sample(transform_index)) {
+        /* Only indices 8..135 may write the exactly 128-entry performance
+         * arrays.  The final validation transform (index 136) is excluded. */
         const std::size_t measured_index =
             transform_index - kBenchmarkWarmupTransforms;
         state->transform_samples[measured_index] = transform_us;
