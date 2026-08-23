@@ -90,6 +90,10 @@ typedef struct {
 typedef void (*SCRNMNG_PUBLISH_HOOK)(const SCRNMNG_PUBLISH_VIEW *view,
 	void *context);
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 const SCRNSURF *scrnmng_surflock(void);
 void scrnmng_surfunlock(const SCRNSURF *surf);
 void scrnmng_set_publish_hook(SCRNMNG_PUBLISH_HOOK hook, void *context);
@@ -111,5 +115,9 @@ RGB16 scrnmng_makepal16(RGB32 pal32);
 #define scrnmng_setextend(value) ((void)0)
 #define scrnmng_allflash() ((void)0)
 #define scrnmng_palchanged() ((void)0)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NP2_HOST_SCRNMNG_H */

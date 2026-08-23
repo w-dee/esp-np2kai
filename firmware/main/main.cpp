@@ -8,6 +8,8 @@
 #include "p4_nano_display/p4_nano_display.hpp"
 #elif defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
 #include "p4_nano_display/p4_nano_display_transform_diagnostic.hpp"
+#elif defined(P4_NANO_LIVE_DISPLAY_PROFILE)
+#include "p4_nano_live_display/p4_nano_live_display.hpp"
 #else
 #if defined(NP2_PRESENTATION_PROFILE)
 #include "np2presentation_probe.h"
@@ -70,7 +72,8 @@
 #endif
 
 #if !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE) && \
-    !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
+    !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE) && \
+    !defined(P4_NANO_LIVE_DISPLAY_PROFILE)
 namespace {
 
 #if !defined(NP2_PRESENTATION_PROFILE)
@@ -126,6 +129,12 @@ extern "C" void app_main(void)
         p4_nano_display::run_transform_diagnostic(transform_rotation);
     std::printf("P4_NANO_TRANSFORM_DIAGNOSTIC_RESULT=%s\n",
                 transform_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_LIVE_DISPLAY_PROFILE)
+    const esp_err_t live_result = p4_nano_live_display::run();
+    std::printf("P4_NANO_LIVE_DISPLAY_RESULT=%s\n",
+                live_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(NP2_PRESENTATION_PROFILE)

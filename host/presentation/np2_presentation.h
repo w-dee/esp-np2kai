@@ -1,10 +1,17 @@
 #ifndef NP2_PRESENTATION_H
 #define NP2_PRESENTATION_H
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+#include <atomic>
+#define NP2_PRESENTATION_ATOMIC(type) std::atomic<type>
+#else
+#include <stdatomic.h>
+#define NP2_PRESENTATION_ATOMIC(type) _Atomic type
+#endif
 
 #define NP2_PRESENTATION_SLOT_COUNT 2U
 
@@ -72,12 +79,12 @@ typedef enum {
  */
 typedef struct {
 	np2_presentation_slot_storage slots[NP2_PRESENTATION_SLOT_COUNT];
-	_Atomic uint32_t slot_state[NP2_PRESENTATION_SLOT_COUNT];
+	NP2_PRESENTATION_ATOMIC(uint32_t) slot_state[NP2_PRESENTATION_SLOT_COUNT];
 	uint32_t slot_lease[NP2_PRESENTATION_SLOT_COUNT];
 	np2_presentation_frame_view frame[NP2_PRESENTATION_SLOT_COUNT];
 	uint64_t published_sequence;
-	_Atomic uint32_t coalesced_count;
-	_Atomic uint32_t dropped_count;
+	NP2_PRESENTATION_ATOMIC(uint32_t) coalesced_count;
+	NP2_PRESENTATION_ATOMIC(uint32_t) dropped_count;
 	bool initialized;
 } np2_presentation_publisher;
 
@@ -87,6 +94,10 @@ typedef struct {
  * must be disjoint and remain valid for the publisher lifetime.  Reinitializing
  * while producer or consumer operations are active is unsupported.
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 np2_presentation_status np2_presentation_init(
 	np2_presentation_publisher *publisher,
 	const np2_presentation_slot_storage slots[NP2_PRESENTATION_SLOT_COUNT]);
@@ -108,5 +119,9 @@ uint32_t np2_presentation_coalesced_count(
 	const np2_presentation_publisher *publisher);
 uint32_t np2_presentation_dropped_count(
 	const np2_presentation_publisher *publisher);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NP2_PRESENTATION_H */

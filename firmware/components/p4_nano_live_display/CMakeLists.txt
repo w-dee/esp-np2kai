@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.16)
+
+get_filename_component(P4_NANO_LIVE_REPO_ROOT
+                       "${CMAKE_CURRENT_LIST_DIR}/../../.." REALPATH)
+
+set(P4_NANO_LIVE_PROFILE_ACTIVE FALSE)
+if(P4_NANO_LIVE_DISPLAY_PROFILE OR
+   "$ENV{P4_NANO_LIVE_DISPLAY_PROFILE}" STREQUAL "1")
+    set(P4_NANO_LIVE_PROFILE_ACTIVE TRUE)
+endif()
+
+set(P4_NANO_LIVE_INCLUDE_DIRS
+    "include"
+    "${P4_NANO_LIVE_REPO_ROOT}/host/compat"
+    "${P4_NANO_LIVE_REPO_ROOT}/host/presentation")
+if(DEFINED NP2VIDEO_GOLDEN_HEADER AND
+   EXISTS "${NP2VIDEO_GOLDEN_HEADER}")
+    get_filename_component(P4_NANO_LIVE_GOLDEN_DIR
+                           "${NP2VIDEO_GOLDEN_HEADER}" DIRECTORY)
+    list(APPEND P4_NANO_LIVE_INCLUDE_DIRS "${P4_NANO_LIVE_GOLDEN_DIR}")
+endif()
+
+idf_component_register(
+    SRCS "p4_nano_live_display.cpp"
+    INCLUDE_DIRS ${P4_NANO_LIVE_INCLUDE_DIRS}
+    PRIV_REQUIRES p4_nano_display np2video_runner np2presentation
+                 esp_psram esp_hw_support heap freertos esp_timer)
+
+target_compile_options(${COMPONENT_LIB} PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>"
+    "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
+    "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
+    -Wall -Wextra -Werror)
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    SUPPORT_16BPP
+    BYTESEX_LITTLE)

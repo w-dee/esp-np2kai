@@ -34,6 +34,11 @@
 typedef struct {
     np2video_runner_output_fn output;
     void *output_context;
+    np2video_runner_ready_fn ready;
+    np2video_runner_stopping_fn stopping;
+    np2video_runner_complete_fn complete;
+    void *complete_context;
+    void *lifecycle_context;
 } np2video_runner_task_state;
 
 static np2video_runner_task_state np2video_task_config;
@@ -195,6 +200,7 @@ static void np2video_task(void *argument)
     np2_fixture fixture;
     np2v_control control;
     SCRNMNG_SNAPSHOT final_snapshot;
+    np2video_runner_result result;
     const char *failure = NULL;
     char digest[65];
     uint32_t ready_generation = 0;
@@ -210,6 +216,7 @@ static void np2video_task(void *argument)
     np2_fixture_init(&fixture);
     memset(&control, 0, sizeof(control));
     memset(&final_snapshot, 0, sizeof(final_snapshot));
+    memset(&result, 0, sizeof(result));
     np2video_sha256_text(digest);
 
     np2video_emit(state,
@@ -238,6 +245,10 @@ static void np2video_task(void *argument)
     framebuffer_initialized = true;
     if (!np2video_verify_framebuffer_contract()) {
         failure = "framebuffer_not_external";
+        goto cleanup;
+    }
+    if (state->ready != NULL && !state->ready(state->lifecycle_context)) {
+        failure = "integration_ready_failed";
         goto cleanup;
     }
 
@@ -377,14 +388,30 @@ cleanup:
         pccore_term();
     }
     if (framebuffer_initialized) {
+        if (state->stopping != NULL) {
+            state->stopping(state->lifecycle_context);
+        }
         scrnmng_shutdown();
     }
     np2_fixture_release(&fixture);
     if (failure == NULL) {
+        result.status = ESP_OK;
+        result.source_generation = final_snapshot.surface_generation;
+        result.source_update_sequence = final_snapshot.surface_update_sequence;
+        result.source_crc32 = final_snapshot.crc32;
+        result.width = (uint32_t)final_snapshot.width;
+        result.height = (uint32_t)final_snapshot.height;
+        result.bpp = final_snapshot.bpp;
+        result.pitch = (uint32_t)final_snapshot.pitch;
+        result.visible_bytes = (uint32_t)final_snapshot.visible_bytes;
         np2video_emit(state, "NP2VIDEO_GOLDEN_RESULT=PASS\n");
     } else {
+        result.status = ESP_FAIL;
         np2video_emit(state, "NP2VIDEO_GOLDEN_RESULT=FAIL reason=%s\n",
                       failure);
+    }
+    if (state->complete != NULL) {
+        state->complete(&result, state->complete_context);
     }
     vTaskDelete(NULL);
 }
@@ -392,16 +419,35 @@ cleanup:
 esp_err_t np2video_runner_start(np2video_runner_output_fn output,
                                 void *output_context)
 {
+    const np2video_runner_config config = {
+        .output = output,
+        .output_context = output_context,
+        .ready = NULL,
+        .stopping = NULL,
+        .complete = NULL,
+        .complete_context = NULL,
+        .lifecycle_context = NULL,
+    };
+    return np2video_runner_start_ex(&config);
+}
+
+esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
+{
     BaseType_t task_result;
 
-    if (output == NULL) {
+    if (config == NULL || config->output == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (np2video_runner_started) {
         return ESP_ERR_INVALID_STATE;
     }
-    np2video_task_config.output = output;
-    np2video_task_config.output_context = output_context;
+    np2video_task_config.output = config->output;
+    np2video_task_config.output_context = config->output_context;
+    np2video_task_config.ready = config->ready;
+    np2video_task_config.stopping = config->stopping;
+    np2video_task_config.complete = config->complete;
+    np2video_task_config.complete_context = config->complete_context;
+    np2video_task_config.lifecycle_context = config->lifecycle_context;
     task_result = xTaskCreate(np2video_task, "np2video_runner",
                               NP2VIDEO_RUNNER_STACK_BYTES,
                               &np2video_task_config,
