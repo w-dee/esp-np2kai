@@ -35,22 +35,17 @@ void np2_pccore_profiler_set_enabled(bool enabled);
 void np2_pccore_profiler_snapshot(np2_pccore_profile *profile);
 
 #if defined(NP2_PCCORE_PHASE_PROFILER)
-uint64_t np2_pccore_profiler_phase_begin(np2_pccore_phase phase);
-void np2_pccore_profiler_phase_end(np2_pccore_phase phase,
-                                   uint64_t start_us);
+void np2_pccore_profiler_phase_begin(np2_pccore_phase phase);
+void np2_pccore_profiler_phase_end(np2_pccore_phase phase);
 #else
-static inline uint64_t np2_pccore_profiler_phase_begin(
-    np2_pccore_phase phase)
+static inline void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 {
     (void)phase;
-    return 0;
 }
 
-static inline void np2_pccore_profiler_phase_end(np2_pccore_phase phase,
-                                                  uint64_t start_us)
+static inline void np2_pccore_profiler_phase_end(np2_pccore_phase phase)
 {
     (void)phase;
-    (void)start_us;
 }
 #endif
 

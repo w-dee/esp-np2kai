@@ -10,18 +10,17 @@
  #include	<io/iocore.h>
  #include	<vram/scrndraw.h>
  #include	"sdraw.h"
-@@ -143,5 +146,10 @@
+@@ -143,5 +143,9 @@
  UINT8 scrndraw_draw(UINT8 redraw) {
  
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
-+	uint64_t np2_pccore_draw_start_us =
-+		np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_DRAW_NESTED);
++	np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_DRAW_NESTED);
 +#endif
 +
  	UINT8		ret;
  const SCRNSURF	*surf;
  const SDRAWFN	*sdrawfn;
-@@ -161,9 +169,13 @@
+@@ -161,9 +168,12 @@
  #ifdef SUPPORT_WAB
  	if(np2wab.relay & 0x3){
  		np2wab_drawframe(); 
@@ -29,20 +28,18 @@
  			// XXX: ウィンドウアクセラレータ動作中は内蔵グラフィックを描画しない
  			ret = 1;
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
-+			np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED,
-+				np2_pccore_draw_start_us);
++			np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED);
 +#endif
  			return(ret);
  		}
  	}
-@@ -298,6 +309,10 @@
+@@ -298,6 +307,9 @@
  sddr_exit2:
  	scrnmng_surfunlock(surf);
  
  sddr_exit1:
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
-+	np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED,
-+		np2_pccore_draw_start_us);
++	np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED);
 +#endif
  	return(ret);
  }

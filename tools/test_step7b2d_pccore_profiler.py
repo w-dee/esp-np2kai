@@ -58,11 +58,25 @@ def main() -> int:
         require(header, phase, f"phase enum {phase}")
     for field in ("count", "total_us", "max_single_us", "min_single_us"):
         require(header, field, f"phase statistic {field}")
-    require(header, "static inline uint64_t np2_pccore_profiler_phase_begin",
+    require(header, "void np2_pccore_profiler_phase_begin",
+            "tokenless begin API")
+    require(header, "void np2_pccore_profiler_phase_end(np2_pccore_phase phase)",
+            "tokenless end API")
+    if "uint64_t np2_pccore_profiler_phase_begin" in header:
+        raise AssertionError("begin API must not return a timing token")
+    if "start_us" in header:
+        raise AssertionError("timing start storage must stay project-owned")
+    require(header, "static inline void np2_pccore_profiler_phase_begin",
             "disabled begin no-op")
     require(header, "static inline void np2_pccore_profiler_phase_end",
             "disabled end no-op")
     require(source, "esp_timer_get_time()", "ESP wall-clock timing")
+    require(source, "start_us[NP2_PCCORE_PHASE_COUNT]",
+            "project-owned per-phase start storage")
+    require(source, "active[NP2_PCCORE_PHASE_COUNT]",
+            "project-owned per-phase active storage")
+    require(source, "if (!np2_pccore_profile_state.active[phase])",
+            "safe unmatched phase end")
     for forbidden in ("printf", "ESP_LOG", "ets_printf", "fwrite",
                       "vTaskDelay", "taskYIELD", "np2_host_taskmng_cooperate"):
         if forbidden in source or forbidden in pccore_patch or forbidden in scrndraw_patch:
@@ -73,6 +87,20 @@ def main() -> int:
     require(pccore_patch, "NP2_PCCORE_PHASE_CALLBACKS", "CALLBACKS hook")
     require(pccore_patch, "NP2_PCCORE_PHASE_SOUND", "SOUND hook")
     require(scrndraw_patch, "NP2_PCCORE_PHASE_DRAW_NESTED", "nested DRAW hook")
+    if "start_us" in pccore_patch or "start_us" in scrndraw_patch:
+        raise AssertionError("vendor hooks must not retain automatic start_us")
+    if pccore_patch.count(
+        "np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_LOOP_INCLUSIVE);") != 1:
+        raise AssertionError("LOOP must use one tokenless begin hook")
+    early_return = scrndraw_patch.split("ret = 1;", 1)[1]
+    require(
+        early_return,
+        "+\t\t\tnp2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED);\n+#endif\n \t\t\treturn(ret);",
+        "DRAW WAB early return closes phase",
+    )
+    if scrndraw_patch.count(
+        "np2_pccore_profiler_phase_end(NP2_PCCORE_PHASE_DRAW_NESTED);") != 2:
+        raise AssertionError("DRAW must close both early and common exits")
     require(pccore, "nevent_progress();", "event-loop call path")
     require(pccore, "drawscreen();", "screen event draw path")
     for semantic in ("CPU_EXEC();", "CPU_EXECV30();", "nevent_progress();",
