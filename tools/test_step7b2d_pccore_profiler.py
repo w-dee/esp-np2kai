@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract checks for the Step 7B.2d coarse pccore phase profiler."""
+"""Contract checks for the Step 7B.2d full-transition pccore profiler."""
 
 from __future__ import annotations
 
@@ -162,8 +162,20 @@ def main() -> int:
         "NP2_PCCORE_PHASE_CALLBACKS",
         "NP2_PCCORE_PHASE_SOUND",
         "NP2_PCCORE_PHASE_DRAW_NESTED",
+        "NP2_PCCORE_PHASE_CPU_EXEC_NESTED",
+        "NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED",
     ):
         require(header, phase, f"phase enum {phase}")
+    for identity in (
+        "NP2_PCCORE_PHASE_LOOP_INCLUSIVE = 0",
+        "NP2_PCCORE_PHASE_CALLBACKS = 1",
+        "NP2_PCCORE_PHASE_SOUND = 2",
+        "NP2_PCCORE_PHASE_DRAW_NESTED = 3",
+        "NP2_PCCORE_PHASE_CPU_EXEC_NESTED = 4",
+        "NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED = 5",
+        "NP2_PCCORE_PHASE_COUNT = 6",
+    ):
+        require(header, identity, f"stable phase identity {identity}")
     for field in ("count", "total_us", "max_single_us", "min_single_us"):
         require(header, field, f"phase statistic {field}")
     for counter in (
@@ -181,6 +193,8 @@ def main() -> int:
             "tokenless begin API")
     require(header, "void np2_pccore_profiler_phase_end(np2_pccore_phase phase)",
             "tokenless end API")
+    require(header, "void np2_pccore_profiler_phase_transition(",
+            "one-read transition API")
     require(header, "void np2_pccore_profiler_count(np2_pccore_counter counter)",
             "counter API")
     if "uint64_t np2_pccore_profiler_phase_begin" in header:
@@ -191,6 +205,8 @@ def main() -> int:
             "disabled begin no-op")
     require(header, "static inline void np2_pccore_profiler_phase_end",
             "disabled end no-op")
+    require(header, "static inline void np2_pccore_profiler_phase_transition",
+            "disabled transition no-op")
     require(header, "static inline void np2_pccore_profiler_count",
             "disabled counter no-op")
     require(source, "esp_timer_get_time()", "ESP wall-clock timing")
@@ -200,6 +216,23 @@ def main() -> int:
             "project-owned per-phase active storage")
     require(source, "if (!np2_pccore_profile_state.active[phase])",
             "safe unmatched phase end")
+    require(source, "static void np2_pccore_profiler_record_end_at",
+            "project-owned transition accounting helper")
+    transition_start = source.index(
+        "void np2_pccore_profiler_phase_transition(")
+    transition_end = source.index("\n}\n#endif", transition_start)
+    transition = source[transition_start:transition_end]
+    if transition.count("esp_timer_get_time()") != 1:
+        raise AssertionError("phase transition must read the timer exactly once")
+    require(transition, "np2_pccore_profiler_record_end_at(from, now_us)",
+            "transition FROM accounting")
+    require(transition, "from < 0 || to < 0", "transition lower-bound validation")
+    require(transition, "np2_pccore_profile_state.active[to]",
+            "transition rejects an already-active destination")
+    require(transition, "start_us[to] = now_us", "transition TO timestamp")
+    require(transition, "active[to] = true", "transition TO activation")
+    if "uint64_t start_us" in transition or "np2_pccore_phase_stats" in transition:
+        raise AssertionError("transition must keep timing state project-owned")
     require(source, "void np2_pccore_profiler_count(np2_pccore_counter counter)",
             "counter implementation")
     counter_start = source.index(
@@ -257,11 +290,6 @@ def main() -> int:
         "np2_pccore_profiler_count(NP2_PCCORE_COUNTER_NEVENT_PROGRESS);")
     if nevent_hook >= pccore_patch.index("nevent_progress();", nevent_hook):
         raise AssertionError("NEVENT counter must precede nevent_progress")
-    if "NP2_PCCORE_PHASE_CPU_EXEC_NESTED" in header or \
-            "NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED" in header:
-        raise AssertionError("counter-only foundation must not add v2 timing phases")
-    if "phase_transition" in header or "phase_transition" in pccore_patch:
-        raise AssertionError("counter-only foundation must not add transitions")
     if "start_us" in pccore_patch or "active" in pccore_patch:
         raise AssertionError("vendor hook must not add profiler-owned locals/state")
     require(pccore_patch, "NP2_PCCORE_PHASE_CALLBACKS", "CALLBACKS hook")
@@ -272,6 +300,39 @@ def main() -> int:
     if pccore_patch.count(
         "np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_LOOP_INCLUSIVE);") != 1:
         raise AssertionError("LOOP must use one tokenless begin hook")
+    if pccore_patch.count(
+        "np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CPU_EXEC_NESTED);") != 2:
+        raise AssertionError("both CPU execution branches must begin CPU timing")
+    if pccore_patch.count("np2_pccore_profiler_phase_transition(") != 2:
+        raise AssertionError("both CPU execution branches must use one transition")
+    if pccore_patch.count(
+        "+        np2_pccore_profiler_phase_begin(\n+            NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);") != 1:
+        raise AssertionError("CPU skip path must begin NEVENT timing")
+    if pccore_patch.count(
+        "+    np2_pccore_profiler_phase_end(\n+        NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);") != 1:
+        raise AssertionError("NEVENT timing must close once")
+    if pccore_patch.index("np2_pccore_profiler_phase_transition(") <= \
+            pccore_patch.index("CPU_EXEC();"):
+        raise AssertionError("I286 transition must follow CPU_EXEC")
+    v30_transition = pccore_patch.index(
+        "np2_pccore_profiler_phase_transition(",
+        pccore_patch.index("CPU_EXECV30();"))
+    if v30_transition <= pccore_patch.index("CPU_EXECV30();"):
+        raise AssertionError("V30 transition must follow CPU_EXECV30")
+    nevent_phase_end = pccore_patch.index(
+        "+    np2_pccore_profiler_phase_end(\n+        NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);")
+    if nevent_phase_end <= pccore_patch.index("nevent_progress();"):
+        raise AssertionError("NEVENT timing must surround nevent_progress")
+    if pccore_patch.index(
+            "np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CPU_EXEC_NESTED);") >= \
+            pccore_patch.index("CPU_EXEC();"):
+        raise AssertionError("CPU max_single sample must begin before CPU_EXEC")
+    if pccore_patch.index(
+            "np2_pccore_profiler_phase_begin(\n+            NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);") >= \
+            pccore_patch.index("nevent_progress();"):
+        raise AssertionError("NEVENT max_single sample must begin before nevent_progress")
+    require(pccore_patch, "phase_transition(\n+              NP2_PCCORE_PHASE_CPU_EXEC_NESTED",
+            "CPU sample closes at the CPU-to-NEVENT boundary")
     early_return = scrndraw_patch.split("ret = 1;", 1)[1]
     require(
         early_return,
@@ -319,6 +380,20 @@ def main() -> int:
     require(live, '"draw_nested",', "draw output")
     require(live, "nested_draw_excluded_from_top_level=1",
             "nested draw reconciliation metadata")
+    require(live, '"cpu_exec_nested",', "CPU nested phase output")
+    require(live, '"nevent_progress_nested",', "NEVENT nested phase output")
+    require(live, "P4_NANO_PCCORE_LOOP_BREAKDOWN", "loop breakdown output")
+    for field in (
+        "cpu_exec_us=", "nevent_us=", "loop_other_us=",
+        "cpu_fraction_percent=", "nevent_fraction_percent=",
+        "loop_other_fraction_percent=", "draw_fraction_of_nevent_percent=",
+        "draw_fraction_of_loop_percent=", "reconciliation=",
+    ):
+        require(live, field, f"loop breakdown field {field}")
+    require(live, "pccore_phase_counts_match", "dynamic phase/count validation")
+    require(live, "validated_cpu_exec_total", "CPU phase/counter relationship")
+    require(live, "NP2_PCCORE_COUNTER_NEVENT_PROGRESS];\n",
+            "NEVENT phase/counter relationship")
     require(live, "top_level_profiled_us =\n        pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE].total_us +\n        pccore_profile.phases[NP2_PCCORE_PHASE_CALLBACKS].total_us +\n        pccore_profile.phases[NP2_PCCORE_PHASE_SOUND].total_us",
             "top-level reconciliation excludes nested draw")
     if "NP2_PCCORE_PHASE_DRAW_NESTED].total_us +" in live:

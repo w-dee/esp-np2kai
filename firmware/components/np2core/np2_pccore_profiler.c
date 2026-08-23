@@ -16,6 +16,28 @@ typedef struct {
 static np2_pccore_profiler_state np2_pccore_profile_state;
 static bool np2_pccore_profile_enabled;
 
+#if defined(NP2_PCCORE_PHASE_PROFILER)
+static void np2_pccore_profiler_record_end_at(np2_pccore_phase phase,
+                                               uint64_t end_us)
+{
+    /* Each completed interval is one vendor-defined invocation sample. */
+    const uint64_t elapsed_us =
+        end_us - np2_pccore_profile_state.start_us[phase];
+    np2_pccore_phase_stats *stats =
+        &np2_pccore_profile_state.profile.phases[phase];
+
+    np2_pccore_profile_state.active[phase] = false;
+    ++stats->count;
+    stats->total_us += elapsed_us;
+    if (elapsed_us > stats->max_single_us) {
+        stats->max_single_us = elapsed_us;
+    }
+    if (elapsed_us < stats->min_single_us) {
+        stats->min_single_us = elapsed_us;
+    }
+}
+#endif
+
 void np2_pccore_profiler_reset(void)
 {
     memset(&np2_pccore_profile_state, 0, sizeof(np2_pccore_profile_state));
@@ -66,8 +88,7 @@ void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 
 void np2_pccore_profiler_phase_end(np2_pccore_phase phase)
 {
-    uint64_t elapsed_us;
-    np2_pccore_phase_stats *stats;
+    uint64_t end_us;
 
     if (!np2_pccore_profile_enabled || phase >= NP2_PCCORE_PHASE_COUNT) {
         return;
@@ -75,17 +96,26 @@ void np2_pccore_profiler_phase_end(np2_pccore_phase phase)
     if (!np2_pccore_profile_state.active[phase]) {
         return;
     }
-    np2_pccore_profile_state.active[phase] = false;
-    elapsed_us = (uint64_t)esp_timer_get_time() -
-                 np2_pccore_profile_state.start_us[phase];
-    stats = &np2_pccore_profile_state.profile.phases[phase];
-    ++stats->count;
-    stats->total_us += elapsed_us;
-    if (elapsed_us > stats->max_single_us) {
-        stats->max_single_us = elapsed_us;
+    end_us = (uint64_t)esp_timer_get_time();
+    np2_pccore_profiler_record_end_at(phase, end_us);
+}
+
+void np2_pccore_profiler_phase_transition(np2_pccore_phase from,
+                                          np2_pccore_phase to)
+{
+    uint64_t now_us;
+
+    if (!np2_pccore_profile_enabled ||
+        from < 0 || to < 0 || from >= NP2_PCCORE_PHASE_COUNT ||
+        to >= NP2_PCCORE_PHASE_COUNT ||
+        !np2_pccore_profile_state.active[from] ||
+        np2_pccore_profile_state.active[to]) {
+        return;
     }
-    if (elapsed_us < stats->min_single_us) {
-        stats->min_single_us = elapsed_us;
-    }
+    /* One wall-clock read closes FROM and opens TO at the same boundary. */
+    now_us = (uint64_t)esp_timer_get_time();
+    np2_pccore_profiler_record_end_at(from, now_us);
+    np2_pccore_profile_state.start_us[to] = now_us;
+    np2_pccore_profile_state.active[to] = true;
 }
 #endif

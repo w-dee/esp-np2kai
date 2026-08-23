@@ -9,14 +9,16 @@ extern "C" {
 
 /* The coarse LOOP/CALLBACKS/SOUND/DRAW model follows np2_espresso's
  * g_prof_loop/g_prof_cb/g_prof_snd/g_prof_draw prior art.  DRAW is explicitly
- * nested inside LOOP and is excluded from top-level reconciliation.  Guest
- * realtime-factor and CPU-cycle comparisons are intentionally future passes. */
+ * nested inside LOOP and is excluded from top-level reconciliation.  The
+ * CPU/NEVENT nested phases provide attribution without changing vendor state. */
 typedef enum {
     NP2_PCCORE_PHASE_LOOP_INCLUSIVE = 0,
     NP2_PCCORE_PHASE_CALLBACKS = 1,
     NP2_PCCORE_PHASE_SOUND = 2,
     NP2_PCCORE_PHASE_DRAW_NESTED = 3,
-    NP2_PCCORE_PHASE_COUNT = 4,
+    NP2_PCCORE_PHASE_CPU_EXEC_NESTED = 4,
+    NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED = 5,
+    NP2_PCCORE_PHASE_COUNT = 6,
 } np2_pccore_phase;
 
 typedef enum {
@@ -47,6 +49,8 @@ void np2_pccore_profiler_snapshot(np2_pccore_profile *profile);
 #if defined(NP2_PCCORE_PHASE_PROFILER)
 void np2_pccore_profiler_phase_begin(np2_pccore_phase phase);
 void np2_pccore_profiler_phase_end(np2_pccore_phase phase);
+void np2_pccore_profiler_phase_transition(np2_pccore_phase from,
+                                          np2_pccore_phase to);
 void np2_pccore_profiler_count(np2_pccore_counter counter);
 #else
 static inline void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
@@ -57,6 +61,13 @@ static inline void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 static inline void np2_pccore_profiler_phase_end(np2_pccore_phase phase)
 {
     (void)phase;
+}
+
+static inline void np2_pccore_profiler_phase_transition(
+    np2_pccore_phase from, np2_pccore_phase to)
+{
+    (void)from;
+    (void)to;
 }
 
 static inline void np2_pccore_profiler_count(np2_pccore_counter counter)

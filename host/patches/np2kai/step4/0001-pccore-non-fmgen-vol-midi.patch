@@ -42,30 +42,44 @@
  #if defined(TRACE)
      resetcnt++;
  #endif
-@@ -1948,11 +1961,22 @@
+@@ -1948,11 +1961,36 @@
  #if !defined(SINGLESTEPONLY)
        if (CPU_REMCLOCK > 0) {
          if (!(CPU_TYPE & CPUTYPE_V30)) {
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
 +          np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_I286);
++          np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CPU_EXEC_NESTED);
 +#endif
            CPU_EXEC();
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++          np2_pccore_profiler_phase_transition(
++              NP2_PCCORE_PHASE_CPU_EXEC_NESTED,
++              NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);
++#endif
          } else {
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
 +          np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_EXEC_V30);
++          np2_pccore_profiler_phase_begin(NP2_PCCORE_PHASE_CPU_EXEC_NESTED);
 +#endif
            CPU_EXECV30();
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++          np2_pccore_profiler_phase_transition(
++              NP2_PCCORE_PHASE_CPU_EXEC_NESTED,
++              NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);
++#endif
          }
        }
 +#if defined(NP2_PCCORE_PHASE_PROFILER)
 +      else {
 +        np2_pccore_profiler_count(NP2_PCCORE_COUNTER_CPU_SKIPPED_REMCLOCK);
++        np2_pccore_profiler_phase_begin(
++            NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);
 +      }
 +#endif
  #else
        while (CPU_REMCLOCK > 0) {
          CPU_STEPEXEC();
-@@ -1971,6 +1995,9 @@
+@@ -1971,6 +1995,13 @@
      atapi_dataread_asyncwait(INFINITE);
  #endif
  #endif
@@ -73,6 +87,10 @@
 +    np2_pccore_profiler_count(NP2_PCCORE_COUNTER_NEVENT_PROGRESS);
 +#endif
      nevent_progress();
++#if defined(NP2_PCCORE_PHASE_PROFILER)
++    np2_pccore_profiler_phase_end(
++        NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED);
++#endif
  #if defined(SUPPORT_ASYNC_CPU)
      pccore_asynccpu();
 @@ -1980,6 +2007,10 @@

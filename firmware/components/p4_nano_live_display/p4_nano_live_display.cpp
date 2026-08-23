@@ -1250,6 +1250,20 @@ esp_err_t run_benchmark()
     const int consumer_core = xPortGetCoreID();
     const std::uint32_t consumer_priority =
         static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr));
+    const np2_pccore_profile &validated_pccore_profile =
+        state.producer_result.pccore_profile;
+    const std::uint64_t validated_cpu_exec_total =
+        validated_pccore_profile.counters[NP2_PCCORE_COUNTER_CPU_EXEC_I286] +
+        validated_pccore_profile.counters[NP2_PCCORE_COUNTER_CPU_EXEC_V30];
+    const bool pccore_phase_counts_match =
+        validated_pccore_profile
+                .phases[NP2_PCCORE_PHASE_CPU_EXEC_NESTED]
+                .count == validated_cpu_exec_total &&
+        validated_pccore_profile
+                .phases[NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED]
+                .count ==
+            validated_pccore_profile
+                .counters[NP2_PCCORE_COUNTER_NEVENT_PROGRESS];
     if (state.producer_result.status != ESP_OK ||
         state.publish_failed.load(std::memory_order_acquire) ||
         state.transforms_completed != kBenchmarkTotalTransforms ||
@@ -1271,7 +1285,7 @@ esp_err_t run_benchmark()
             kBenchmarkProducerCore ||
         state.producer_priority.load(std::memory_order_relaxed) !=
             kBenchmarkProducerPriority || consumer_core != 0 ||
-        consumer_priority != 1U) {
+        consumer_priority != 1U || !pccore_phase_counts_match) {
         failed = true;
     }
 
@@ -1402,6 +1416,12 @@ esp_err_t run_benchmark()
                        pccore_profile.phases[NP2_PCCORE_PHASE_SOUND]);
     print_pccore_phase("draw_nested",
                        pccore_profile.phases[NP2_PCCORE_PHASE_DRAW_NESTED]);
+    print_pccore_phase(
+        "cpu_exec_nested",
+        pccore_profile.phases[NP2_PCCORE_PHASE_CPU_EXEC_NESTED]);
+    print_pccore_phase(
+        "nevent_progress_nested",
+        pccore_profile.phases[NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED]);
     const std::uint64_t loop_iterations =
         pccore_profile.counters[NP2_PCCORE_COUNTER_LOOP_ITERATION];
     const std::uint64_t cpu_exec_i286 =
@@ -1444,6 +1464,44 @@ esp_err_t run_benchmark()
                 iterations_per_pccore, cpu_exec_fraction, cpu_skip_fraction,
                 naive_v2_extra_timer_reads,
                 transition_v2_extra_timer_reads);
+    const np2_pccore_phase_stats &cpu_exec_stats =
+        pccore_profile.phases[NP2_PCCORE_PHASE_CPU_EXEC_NESTED];
+    const np2_pccore_phase_stats &nevent_stats =
+        pccore_profile.phases[NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED];
+    const np2_pccore_phase_stats &loop_stats =
+        pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE];
+    const np2_pccore_phase_stats &draw_stats =
+        pccore_profile.phases[NP2_PCCORE_PHASE_DRAW_NESTED];
+    const std::uint64_t loop_accounted_us =
+        cpu_exec_stats.total_us + nevent_stats.total_us;
+    const bool loop_reconciliation_valid =
+        loop_accounted_us <= loop_stats.total_us;
+    const std::uint64_t loop_other_us =
+        loop_reconciliation_valid
+            ? loop_stats.total_us - loop_accounted_us
+            : 0U;
+    const auto fraction_percent = [](std::uint64_t numerator,
+                                     std::uint64_t denominator) {
+        return denominator == 0U
+                   ? 0.0
+                   : static_cast<double>(numerator) * 100.0 /
+                         static_cast<double>(denominator);
+    };
+    std::printf(
+        "P4_NANO_PCCORE_LOOP_BREAKDOWN loop_total_us=%" PRIu64
+        " cpu_exec_us=%" PRIu64 " nevent_us=%" PRIu64
+        " loop_other_us=%" PRIu64 " cpu_fraction_percent=%.6f"
+        " nevent_fraction_percent=%.6f loop_other_fraction_percent=%.6f"
+        " draw_fraction_of_nevent_percent=%.6f"
+        " draw_fraction_of_loop_percent=%.6f reconciliation=%s\n",
+        loop_stats.total_us, cpu_exec_stats.total_us, nevent_stats.total_us,
+        loop_other_us, fraction_percent(cpu_exec_stats.total_us,
+                                        loop_stats.total_us),
+        fraction_percent(nevent_stats.total_us, loop_stats.total_us),
+        fraction_percent(loop_other_us, loop_stats.total_us),
+        fraction_percent(draw_stats.total_us, nevent_stats.total_us),
+        fraction_percent(draw_stats.total_us, loop_stats.total_us),
+        loop_reconciliation_valid ? "PASS" : "FAIL");
     const std::uint64_t top_level_profiled_us =
         pccore_profile.phases[NP2_PCCORE_PHASE_LOOP_INCLUSIVE].total_us +
         pccore_profile.phases[NP2_PCCORE_PHASE_CALLBACKS].total_us +
