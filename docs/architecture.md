@@ -338,27 +338,51 @@ physical display guarantee.
 
 Guest framebuffer geometry must not depend on P4-NANO's planned 1280x800
 panel, TAB5's 1280x720 panel, PPA, MIPI-DSI, LCD driver type, or board pin
-assignments. The opt-in Step 7B.2a foundation now provides a concrete native
-P4-NANO scanout path downstream of the immutable presentation frame, but it is
-not a live NP2 presentation consumer and has not been hardware-validated.
-PPA and MIPI-DSI/LCD APIs remain downstream implementation details.
+assignments. Step 7B.2a now provides a concrete native P4-NANO scanout path
+downstream of the immutable presentation frame. It is IMPLEMENTED, BUILD
+VALIDATED, REAL-HARDWARE UART VALIDATED, and REAL-LCD VISUALLY VALIDATED for
+the bounded native diagnostic scope, but it is not a live NP2 presentation
+consumer.
 
-The current P4-NANO live-display policy is a planned exact nearest-neighbor 2x
-mapping:
+The real run used a Waveshare ESP32-P4-NANO-KIT-D with ESP32-P4 rev v1.3,
+40 MHz crystal, 32 MiB PSRAM, and a JD9365 panel reporting ID `93 65 04`.
+The physical flash reported 16 MiB while the project intentionally retained
+the existing 8 MiB validation envelope. The production path completed shared
+I2C, panel power, LDO, DSI, DBI, panel, framebuffer, BLACK/cache, display-on,
+static-pattern/cache, and backlight stages without panic, watchdog, reset loop,
+DSI underrun, I2C error, or framebuffer allocation failure.
+
+The native diagnostic scanout is 800x1280 RGB565, stride 1600 bytes, one DSI/DPI
+framebuffer of 2,048,000 bytes, two lanes at 1500 Mbps/lane, and an 80 MHz DPI
+clock. The calculated refresh value is nominally approximately 68.66 Hz; it is
+not a measured refresh result. Runtime CRC32 `0x5383260a` matched the host
+golden. This proves byte-level agreement for the generated framebuffer, not
+physical LCD correctness; human inspection separately passed the LCD output
+twice with all four edge colors, corner markers, portrait geometry, RGB order,
+and no clipping or obvious static corruption.
+
+Measured PSRAM telemetry was 33,551,868 free / 33,030,144 largest block before
+display init and 31,502,616 free / 31,457,280 largest block after the one native
+framebuffer. The reported free-heap delta was 2,049,252 bytes versus the
+2,048,000-byte payload; allocator, alignment, and driver bookkeeping must not
+be inferred as double-buffer viability.
+
+The current P4-NANO live-display policy is the planned Step 7B.2b exact
+nearest-neighbor transform:
 
 ```text
 640x400 guest framebuffer -> exact 2x -> 1280x800 logical landscape
                            -> 90-degree rotation -> 800x1280 physical portrait
 ```
 
-The foundation's native diagnostic image is 800x1280 RGB565 with one DSI/DPI
-framebuffer, validated timing constants, and explicit shared GPIO7/GPIO8 I2C
-ownership. The live mapping, scaling/rotation, buffering policy, tearing,
-bandwidth, and PPA A/B remain future work. TAB5 requires a separate 1280x720
-viewport/scaling decision. The revision-1 refresh callback, when added, is not
-a true VSYNC signal. ESP32-S31 / S31 Korvo-1 remains a future portability
-target; Step 7B runtime evidence is limited to Ubuntu x86_64 and ESP32-P4
-RISC-V / `esp-emu`.
+Step 7B.2b should initially be a deterministic, byte-exact, host-testable
+software reference that fuses `640x400 RGB565` directly into the `800x1280
+RGB565` destination without allocating a temporary `1280x800` framebuffer.
+The live consumer, double buffering, framebuffer reuse/switch semantics,
+tearing under animation, measured refresh, long-duration stability, live-load
+PSRAM bandwidth/performance, PPA A/B, SDMMC/audio concurrency, touch, LVGL,
+OSD, TAB5, ESP32-S31, and ESP32-S3 remain future/unvalidated work. A revision-
+1 refresh callback is not a true VSYNC signal.
 
 ## Audio boundary
 

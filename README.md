@@ -51,18 +51,19 @@ with size `0x4BC000`, ending at `0x800000`. Phase 6 validated all relevant
 firmware profiles, video oracles, and presentation against the generated
 geometry; the largest measured profile was `storage-provider` at
 `0xFC2D0`, leaving `0x103D30` of factory headroom. This is measured current
-evidence, not a permanent firmware-size limit.
+evidence, not a permanent firmware-size limit. The validated P4-NANO hardware
+reported a 16 MiB physical flash device; the project intentionally retains the
+existing 8 MiB validation envelope.
 
 ### Step 7A: headless guest framebuffer and video oracles — COMPLETE
 
 Step 7A provides an implemented and verified headless RGB565LE guest
 framebuffer boundary. The guest framebuffer has dynamic geometry and the ESP32-P4
 implementation stores it in external PSRAM. The tested guest geometry is
-640x400; the opt-in Step 7B.2a P4-NANO production scanout foundation is
-compile-tested, but the production path itself has not yet been hardware-
-validated. The dedicated P4-NANO bring-up reference separately records scoped
-physical MIPI-DSI/JD9365 operation at native 800x1280 RGB565 with visible
-color, geometry, and border checks.
+640x400; the opt-in Step 7B.2a P4-NANO production scanout foundation is now
+IMPLEMENTED, BUILD VALIDATED, REAL-HARDWARE UART VALIDATED, and REAL-LCD
+VISUALLY VALIDATED for its bounded native diagnostic scope. It does not turn
+the headless guest framebuffer into a live display consumer.
 
 Three deterministic video oracles are approved and continuously checked:
 
@@ -108,15 +109,26 @@ slot size and memory telemetry are test evidence, not universal constants.
 ## Current hardware boundary
 
 The software-only headless video and presentation work through Step 7B.1c is
-complete. P4-NANO UART, SDMMC, and the production Host-to-Device File Transfer
-path now have scoped hardware evidence at 1.5 Mbps. The dedicated P4-NANO
-bring-up also validates the MIPI-DSI/JD9365 physical panel, native 800x1280
-RGB565 operation, and scoped visible color/geometry/border behavior; that
-evidence is separate from the new production Step 7B.2a path, which has not
-yet been hardware-validated and does not consume live NP2 presentation frames.
-Live NP2 presentation consumption, scaling/rotation, tearing behavior, measured
-refresh behavior, physical bandwidth/performance under real emulator load, and
-the PPA path remain unvalidated.
+complete. The Step 7B.2a production path was run on the Waveshare
+ESP32-P4-NANO-KIT-D with ESP32-P4 rev v1.3, 32 MiB PSRAM, and the JD9365
+10.1-inch panel. Its native 800x1280 RGB565 scanout, one-framebuffer policy,
+safe initialization, deterministic pattern, UART stages, and bounded
+backlight lifecycle all passed; human inspection separately confirmed the
+physical LCD output. This is scoped Step 7B.2a evidence, not blanket physical
+display completion.
+
+Live NP2 presentation consumption, 640x400-to-panel mapping, exact 2x scaling,
+90-degree rotation, double buffering, framebuffer reuse, tearing under
+animation, measured refresh, long-duration stability, live-load PSRAM
+bandwidth/performance, PPA, and display concurrency with SDMMC/audio remain
+future work.
+
+Step 7B.2b is the planned pixel-exact landscape-to-native transform reference:
+immutable 640x400 RGB565 -> exact nearest-neighbor 2x -> logical 1280x800
+landscape -> 90-degree rotation -> physical 800x1280 RGB565. The initial
+implementation should be deterministic, byte-exact, host-testable, and fused
+directly into the 800x1280 destination without a temporary 1280x800 framebuffer.
+PPA remains a later A/B performance experiment.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 
@@ -126,8 +138,8 @@ esp-emu v0.39.0 regressions and `--variant p4-v1x` for the compile-only v1.x
 production check. Revision selection is kept out of common defaults, and the
 variant-specific build trees and preflight checks prevent the two image
 families from being confused. The P4-NANO board profile has scoped production
-UART/SDMMC/File Transfer hardware validation; that does not imply complete
-validation of every production-firmware subsystem.
+display-foundation, UART/SDMMC, and File Transfer hardware validation; that
+does not imply complete validation of every production-firmware subsystem.
 
 The currently verified executable milestone is ESP32-P4-only. S31 Korvo-1 is
 not implemented, tested, or validated.

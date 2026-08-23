@@ -272,7 +272,11 @@ presentation contract, ESP log-validator self-test, profile-isolation check,
 and ESP presentation runtime contract. The CI configuration reuses the pinned
 ESP-IDF v5.5.4 and esp-emu v0.39.0 environment.
 
-### Step 7B.2a: P4-NANO native physical-display foundation — IMPLEMENTED / HARDWARE VALIDATION PENDING
+### Step 7B.2a: P4-NANO native physical-display foundation — COMPLETE
+
+Status: **IMPLEMENTED / BUILD VALIDATED / REAL-HARDWARE UART VALIDATED /
+REAL-LCD VISUALLY VALIDATED / COMPLETE** for the bounded native diagnostic
+scope.
 
 The opt-in production profile
 `tools/emu/build-production.sh --variant p4-v1x --board p4-nano --display-foundation`
@@ -285,35 +289,121 @@ conservative backlight enable. It logs chip revision, geometry, lane/bitrate,
 DPI, one-buffer size/pointer, PSRAM free/largest-block telemetry, stage
 outcomes, pattern CRC, and cleanup/backlight state.
 
+The profile was built with ESP-IDF v5.5.4 and run on a Waveshare
+ESP32-P4-NANO-KIT-D. The board reported ESP32-P4 revision v1.3, a 40 MHz
+crystal, a 16 MiB physical flash device, and 32 MiB PSRAM. The project
+intentionally retains the existing 8 MiB validation envelope; the larger
+physical flash capacity is not a Step 7B.2a failure. PSRAM initialization and
+the PSRAM memory test passed.
+
+The panel was the Waveshare 10.1-DSI-TOUCH-A with JD9365 ID `93 65 04`. The
+production scanout configuration was native 800x1280 RGB565, stride 1600
+bytes, framebuffer size 2,048,000 bytes, exactly one DSI/DPI framebuffer, two
+MIPI-DSI lanes at 1500 Mbps/lane, and an 80 MHz DPI clock. The approximately
+68.66 Hz value is a calculated nominal refresh, not a measured refresh result.
+
 The configuration follows the preserved known-good diagnostic record in
 [`hardware/bringup/esp32-p4/p4-nano/display/README.md`](../hardware/bringup/esp32-p4/p4-nano/display/README.md),
 including observed JD9365 ID `93 65 04`, two lanes at 1500 Mbps/lane, the
 0x95 `0x11 -> 0x17` control sequence, and conservative backlight value
 `0x40`. That bring-up directory and its safe adapter remain untouched.
 
-This is a native physical scanout diagnostic only: it does not consume live NP2
-presentation frames, apply the planned transform, use PPA, or claim measured
-refresh/performance. The exact future live mapping is
-`640x400 -> 2x -> 1280x800 logical -> 90-degree rotation -> 800x1280 physical`.
-The revision-1 refresh callback is not a true VSYNC guarantee. The foundation
-is compile-tested here; no physical flash, display observation, or hardware
-validation was performed in this step.
+The real production run completed every expected stage:
 
-The human hardware procedure is deliberately separate: confirm P4 revision and
-PSRAM, connect the known P4-NANO panel wiring, flash only the generated
-three-image set, capture UART logs and the full native pattern, then power down
-and record results. PPA A/B, live NP2 mapping, buffering, tearing, timing,
-bandwidth, and an approximately 30 displayed-fps target are later steps.
+- `shared_i2c_init`
+- `panel_control_power_on`
+- `dsi_phy_ldo`
+- `dsi_bus`
+- `dbi_io`
+- `jd9365_panel_create`
+- `dpi_framebuffer_acquire`
+- `black_cache_sync`
+- `panel_reset_init_display_on`
+- `static_pattern_cache_sync`
+- `backlight_enable`
+
+The validated backlight lifecycle was register `0x96 = 0x00` during setup,
+`0x96 = 0x40` for the bounded visible test, and OFF during cleanup. No
+`0x96 = 0xff` write was observed. No panic, watchdog, reset loop, DSI
+underrun, I2C error, or framebuffer allocation failure was observed. No
+unvalidated panel power-off register sequence was introduced.
+
+The runtime static-pattern CRC32 was `0x5383260a`, matching the host golden
+`0x5383260a`. This proves byte-level agreement between the host-generated
+reference pattern and the runtime framebuffer; CRC agreement alone does not
+prove physical LCD correctness.
+
+Measured PSRAM telemetry was:
+
+- before display init: free `33,551,868`, largest block `33,030,144` bytes;
+- after one native framebuffer acquisition: free `31,502,616`, largest block
+  `31,457,280` bytes.
+
+The reported free-heap delta was `2,049,252` bytes while the framebuffer
+payload was `2,048,000` bytes. The small difference may include allocator,
+alignment, and driver bookkeeping; it must not be extrapolated to double-
+buffer viability. One native DMA-capable framebuffer was successfully
+allocated on the real 32 MiB PSRAM hardware with substantial remaining
+capacity.
+
+The human operator visually inspected the physical LCD output twice and
+reported `HUMAN VISUAL RESULT: PASS`. The bounded approximately five-second
+pattern showed the expected native portrait image: top red, right green,
+bottom blue, left white; top-left yellow, top-right magenta, bottom-left cyan,
+and bottom-right orange. All four edges and corners, native portrait geometry,
+and RGB ordering were observed without clipping or obvious static corruption.
+This is not long-duration stability, tearing, measured-refresh, or performance
+validation.
+
+Step 7B.2a proves:
+
+```text
+production firmware
+ -> safe shared-I2C ownership
+ -> safe JD9365/P4-NANO initialization
+ -> one native 800x1280 RGB565 framebuffer
+ -> cache synchronization
+ -> deterministic static scanout
+ -> bounded backlight lifecycle
+ -> real physical LCD output
+```
+
+It does not implement or validate the later live emulator display pipeline.
+The following remain FUTURE / UNVALIDATED: live NP2 presentation consumption,
+640x400 guest-frame presentation to the LCD, exact 2x scaling, 90-degree
+rotation, double buffering, framebuffer switch/reuse semantics, tearing under
+animation, measured physical refresh, long-duration display stability, PSRAM
+bandwidth under live emulator load, PPA scaling/rotation, display plus SDMMC
+or audio concurrency, touch, LVGL, OSD, TAB5 physical display, ESP32-S31, and
+ESP32-S3 display backends.
+
+### Step 7B.2b: Pixel-exact landscape-to-native transform reference — FUTURE
+
+The next display step is a deterministic, byte-exact, host-testable software
+reference for:
+
+```text
+immutable 640x400 RGB565 presentation frame
+ -> exact nearest-neighbor 2x
+ -> logical 1280x800 landscape
+ -> rotate 90 degrees
+ -> physical 800x1280 RGB565 destination
+```
+
+The preferred implementation is a fused `640x400 RGB565 -> 800x1280 RGB565`
+transform that writes directly to the native destination without allocating a
+temporary 1280x800 framebuffer. PPA remains a later A/B performance experiment
+and is not the pixel-exact reference.
 
 ## Remaining hardware boundary
 
 The software-only portion through Step 7B.1c is complete, and Step 7B.2a is
-compile-tested as a native diagnostic foundation. P4-NANO UART, SDMMC, and
-Host-to-Device File Transfer now have hardware evidence. Remaining Step
-6B/6C lifecycle cases, Step 7B.2b live physical-display mapping and hardware
-validation, Step 8 physical input, Step 9 physical audio, and TAB5 still
-require separate hardware work. The portable emulator, host, and
-documentation work can continue independently.
+complete through real hardware UART and visual LCD validation for its bounded
+native diagnostic scope. Remaining Step 6B/6C lifecycle cases, Step 7B.2b
+pixel-exact live-display mapping, buffering/reuse semantics, tearing and
+long-duration validation, Step 8 physical input, Step 9 physical audio, TAB5,
+ESP32-S31, and ESP32-S3 still require separate work. The portable emulator,
+host, and documentation work can continue independently.
 
 ## Step 8: USB HID / input — FUTURE, hardware required
 

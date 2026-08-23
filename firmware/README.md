@@ -49,14 +49,25 @@ tools/emu/build-production.sh --variant p4-v1x --board p4-nano --display-foundat
 It is bounded to P4 revision 1.x and the P4-NANO board. The path owns the
 shared GPIO7/GPIO8 I2C service, safe JD9365 panel/power sequencing, one native
 800x1280 RGB565 MIPI-DSI/DPI framebuffer, cache priming, and a deterministic
-static geometry/color pattern. It does not consume the live NP2 presentation
-publisher and does not claim physical validation until a human performs the
-hardware procedure in [`docs/bringup-plan.md`](../docs/bringup-plan.md).
+static geometry/color pattern. Step 7B.2a is now IMPLEMENTED, BUILD VALIDATED,
+REAL-HARDWARE UART VALIDATED, and REAL-LCD VISUALLY VALIDATED on the
+Waveshare ESP32-P4-NANO-KIT-D (ESP32-P4 rev v1.3, 32 MiB PSRAM, JD9365 ID
+`93 65 04`). It remains a bounded diagnostic path and does not consume the
+live NP2 presentation publisher.
 
-The planned live mapping remains future work: `640x400 -> exact 2x ->
-1280x800 logical -> 90-degree rotation -> 800x1280 physical`. PPA is reserved
-for a later A/B step, and the ESP32-P4 revision-1 refresh callback is an
-observation hook rather than a true VSYNC guarantee.
+The physical device reported 16 MiB flash; the project intentionally retains
+the existing 8 MiB validation envelope. The production run used one
+2,048,000-byte framebuffer, matched CRC32 `0x5383260a` against the host golden,
+and completed the safe backlight lifecycle (`0x00` -> `0x40` -> OFF). Human
+inspection confirmed the native portrait pattern twice. This does not validate
+the later live emulator display pipeline.
+
+Step 7B.2b remains future work: a deterministic, byte-exact, host-testable
+fused transform from `640x400 RGB565` directly to `800x1280 RGB565`, equivalent
+to exact 2x, logical `1280x800` landscape, and 90-degree rotation without a
+temporary `1280x800` framebuffer. PPA is reserved for a later A/B step, and the
+ESP32-P4 revision-1 refresh callback is an observation hook rather than a true
+VSYNC guarantee.
 
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare
@@ -68,7 +79,7 @@ envelope, and production PSRAM settings. The revision selector is kept in the
 variant overlay rather than in the common defaults. `p4-v3x` is the variant
 used by esp-emu v0.39.0, which reports ESP32-P4 revision v3.1. Generic
 `p4-v1x` remains compile evidence in CI, while the explicit P4-NANO board
-profile has scoped production hardware evidence for UART, SDMMC, and
+profile has scoped production hardware evidence for display, UART, SDMMC, and
 Host-to-Device File Transfer at 1.5 Mbps. The wrapper
 names the build directory and checks the generated revision bounds before
 emulator or image use. The two binaries must not be treated as interchangeable.
