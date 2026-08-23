@@ -215,8 +215,14 @@ constexpr std::size_t kBenchmarkLatencySampleCapacity = 256U;
 constexpr std::size_t kBenchmarkTimestampRingSize = 1024U;
 constexpr std::uint64_t kBenchmarkWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 constexpr int kBenchmarkProducerCore = 1;
+/* Scheduler A/B candidate: the priority-0 baseline was deliberately
+ * conservative before pccore_exec(TRUE) had a measured bound.  The physical
+ * baseline measured a 266366 us maximum, well below the 5 s TWDT timeout, and
+ * the producer still blocks for one RTOS tick after every returned call.
+ * Priority 3 matches the existing default runner priority.  This remains a
+ * controlled diagnostic candidate, not a final production policy. */
 constexpr std::uint32_t kBenchmarkProducerPriority =
-    static_cast<std::uint32_t>(tskIDLE_PRIORITY);
+    static_cast<std::uint32_t>(tskIDLE_PRIORITY + 3);
 
 constexpr bool benchmark_is_measured_sample(std::uint32_t transform_index)
 {
@@ -1171,9 +1177,9 @@ esp_err_t run_benchmark()
         return result;
     }
 
-    /* Provisional WDT-safe diagnostic policy: priority 0 shares CPU1 with
-     * IDLE1 so time slicing can preserve idle-task health during a long
-     * pccore_exec(TRUE).  This is not a final emulator-performance policy. */
+    /* Pinned default-priority scheduler A/B candidate.  The explicit
+     * post-pccore one-tick cooperation remains mandatory; this is not a final
+     * emulator-performance policy until physically validated. */
     const np2video_runner_config runner_config{
         .output = benchmark_runner_output,
         .output_context = nullptr,
@@ -1424,7 +1430,7 @@ esp_err_t run_benchmark()
                 "producer_creation=xTaskCreatePinnedToCore "
                 "producer_core_policy=cpu1 producer_core=%d "
                 "producer_priority=%" PRIu32
-                " producer_priority_policy=provisional_wdt_safe "
+                " producer_priority_policy=provisional_pinned_default_priority "
                 "consumer_core=%d consumer_priority=%" PRIu32 "\n",
                 CONFIG_ESP_MAIN_TASK_AFFINITY, CONFIG_FREERTOS_NUMBER_OF_CORES,
                 state.producer_core.load(std::memory_order_relaxed),
@@ -1435,7 +1441,7 @@ esp_err_t run_benchmark()
                 "freertos_cores=%d producer_creation=xTaskCreatePinnedToCore "
                 "producer_core_policy=cpu1 producer_core=%d "
                 "producer_priority=%" PRIu32
-                " producer_priority_policy=provisional_wdt_safe "
+                " producer_priority_policy=provisional_pinned_default_priority "
                 "consumer_core=%d consumer_priority=%" PRIu32 "\n",
                 CONFIG_FREERTOS_NUMBER_OF_CORES,
                 state.producer_core.load(std::memory_order_relaxed),

@@ -129,12 +129,16 @@ def main() -> int:
             "benchmark scheduling override enabled")
     require(live, "kBenchmarkProducerCore = 1", "benchmark CPU1 policy")
     require(live, "kBenchmarkProducerPriority =",
-            "benchmark priority-zero policy")
+            "benchmark priority policy")
+    require(live, "static_cast<std::uint32_t>(tskIDLE_PRIORITY + 3)",
+            "benchmark priority-three candidate")
+    if "static_cast<std::uint32_t>(tskIDLE_PRIORITY);" in live:
+        raise AssertionError("benchmark producer must not use priority zero")
     require(live, "P4_NANO_BENCHMARK_EXEC_SLICE",
             "pccore wall-time summary")
     require(live, "metric=pccore_exec_wall_us",
             "unambiguous pccore wall-time metric name")
-    require(live, "producer_priority_policy=provisional_wdt_safe",
+    require(live, "producer_priority_policy=provisional_pinned_default_priority",
             "provisional scheduler policy metadata")
     require(live, "const std::uint32_t consumer_priority",
             "runtime consumer priority capture")
