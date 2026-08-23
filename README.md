@@ -58,8 +58,11 @@ evidence, not a permanent firmware-size limit.
 Step 7A provides an implemented and verified headless RGB565LE guest
 framebuffer boundary. The guest framebuffer has dynamic geometry and the ESP32-P4
 implementation stores it in external PSRAM. The tested guest geometry is
-640x400; the opt-in Step 7B.2a P4-NANO native scanout foundation is compile-
-tested, but no physical display backend is connected or hardware-validated.
+640x400; the opt-in Step 7B.2a P4-NANO production scanout foundation is
+compile-tested, but the production path itself has not yet been hardware-
+validated. The dedicated P4-NANO bring-up reference separately records scoped
+physical MIPI-DSI/JD9365 operation at native 800x1280 RGB565 with visible
+color, geometry, and border checks.
 
 Three deterministic video oracles are approved and continuously checked:
 
@@ -106,10 +109,14 @@ slot size and memory telemetry are test evidence, not universal constants.
 
 The software-only headless video and presentation work through Step 7B.1c is
 complete. P4-NANO UART, SDMMC, and the production Host-to-Device File Transfer
-path now have scoped hardware evidence at 1.5 Mbps; this does not validate the
-display path; Step 7B.2a does not consume live NP2 presentation frames.
-PPA, MIPI-DSI, a physical LCD panel, real display timing, tearing behavior,
-physical bandwidth, and real hardware performance have not been validated.
+path now have scoped hardware evidence at 1.5 Mbps. The dedicated P4-NANO
+bring-up also validates the MIPI-DSI/JD9365 physical panel, native 800x1280
+RGB565 operation, and scoped visible color/geometry/border behavior; that
+evidence is separate from the new production Step 7B.2a path, which has not
+yet been hardware-validated and does not consume live NP2 presentation frames.
+Live NP2 presentation consumption, scaling/rotation, tearing behavior, measured
+refresh behavior, physical bandwidth/performance under real emulator load, and
+the PPA path remain unvalidated.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 

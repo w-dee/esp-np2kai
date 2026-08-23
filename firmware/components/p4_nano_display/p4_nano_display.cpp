@@ -39,7 +39,7 @@ constexpr int kDsiLdoChannel = 3;
 constexpr int kDsiLdoMillivolts = 2500;
 constexpr std::size_t kFramebufferCount = 1;
 constexpr TickType_t kPanelStabilizationDelay = pdMS_TO_TICKS(200);
-constexpr TickType_t kStaticPatternHold = pdMS_TO_TICKS(1000);
+constexpr TickType_t kStaticPatternHold = pdMS_TO_TICKS(5000);
 
 struct Resources {
     esp_ldo_channel_handle_t ldo = nullptr;
