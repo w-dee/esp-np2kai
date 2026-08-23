@@ -75,6 +75,33 @@ def main() -> int:
     require(consume, "benchmark_release(state, &token);", "consumer release")
     require(consume, "const std::uint64_t service_us", "consumer timing stop")
     require(consume, "state->transform_samples[measured_index]", "measured sample storage")
+    require(live, "constexpr TickType_t kConsumerPollDelayTicks = 1;",
+            "explicit one-tick consumer poll delay")
+    require(live, "static_assert(kConsumerPollDelayTicks > 0);",
+            "non-zero consumer poll-delay guard")
+    require(live, "static_assert(pdMS_TO_TICKS(1) == 0",
+            "100 Hz one-millisecond conversion guard")
+    require(live, "CONFIG_FREERTOS_HZ may be 100",
+            "poll-delay tick-rate comment")
+    require(live, "pdMS_TO_TICKS(1) is zero",
+            "poll-delay conversion warning")
+    require(live, "provisional benchmark liveness policy",
+            "poll-delay policy comment")
+    if "kConsumerPollDelay = pdMS_TO_TICKS(1)" in live:
+        raise AssertionError("consumer poll delay must not use pdMS_TO_TICKS(1)")
+    if "vTaskDelay(kConsumerPollDelay);" in live:
+        raise AssertionError("consumer polling must use the explicit tick delay")
+    benchmark_start = live.index("esp_err_t run_benchmark()")
+    benchmark_loop_start = live.index("bool failed = false", benchmark_start)
+    benchmark_loop_end = live.index(
+        "while (benchmark_consume_one(&state) > 0)", benchmark_loop_start)
+    benchmark_loop = live[benchmark_loop_start:benchmark_loop_end]
+    require(benchmark_loop, "vTaskDelay(kConsumerPollDelayTicks);",
+            "non-frame consumer tick cooperation")
+    require(benchmark_loop, "else if (consumed == 0)",
+            "no-frame consumer polling branch")
+    if "pdMS_TO_TICKS(1)" in benchmark_loop:
+        raise AssertionError("benchmark polling must not convert one millisecond")
     if consume.count("std::printf(") != 4:
         raise AssertionError("consumer path must retain only four one-time markers")
     consumer_cooperate_index = consume.index("np2_host_taskmng_cooperate();")

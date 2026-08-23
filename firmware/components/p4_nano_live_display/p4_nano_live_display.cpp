@@ -44,7 +44,16 @@ constexpr std::size_t kSlotBytes =
     p4_nano_live_display::kPresentationSlotBytes;
 constexpr std::size_t kSlotCount =
     p4_nano_live_display::kPresentationSlotCount;
-constexpr TickType_t kConsumerPollDelay = pdMS_TO_TICKS(1);
+/* CONFIG_FREERTOS_HZ may be 100, where pdMS_TO_TICKS(1) is zero.  The
+ * no-frame path must block for at least one scheduler tick so CPU0 IDLE0 can
+ * run; this is provisional benchmark liveness policy, not final presentation
+ * pacing. */
+constexpr TickType_t kConsumerPollDelayTicks = 1;
+static_assert(kConsumerPollDelayTicks > 0);
+#if defined(CONFIG_FREERTOS_HZ) && CONFIG_FREERTOS_HZ == 100
+static_assert(pdMS_TO_TICKS(1) == 0,
+              "one millisecond is zero ticks at the benchmark's 100 Hz rate");
+#endif
 constexpr std::uint64_t kVisibleHoldUs = 30ULL * 1000ULL * 1000ULL;
 constexpr std::uint64_t kProducerWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 
@@ -990,7 +999,7 @@ esp_err_t run()
         if (consumed < 0) {
             failed = true;
         } else if (consumed == 0) {
-            vTaskDelay(kConsumerPollDelay);
+            vTaskDelay(kConsumerPollDelayTicks);
         }
         if (static_cast<std::uint64_t>(esp_timer_get_time()) -
                 producer_start_us > kProducerWatchdogUs &&
@@ -1196,7 +1205,7 @@ esp_err_t run_benchmark()
             failed = true;
             state.stop_requested.store(true, std::memory_order_release);
         } else if (consumed == 0) {
-            vTaskDelay(kConsumerPollDelay);
+            vTaskDelay(kConsumerPollDelayTicks);
         }
         const std::uint64_t elapsed =
             static_cast<std::uint64_t>(esp_timer_get_time()) - state.producer_start_us;
