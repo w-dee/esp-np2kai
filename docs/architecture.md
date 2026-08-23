@@ -338,21 +338,27 @@ physical display guarantee.
 
 Guest framebuffer geometry must not depend on P4-NANO's planned 1280x800
 panel, TAB5's 1280x720 panel, PPA, MIPI-DSI, LCD driver type, or board pin
-assignments. PPA and MIPI-DSI/LCD APIs are available in ESP-IDF v5.5.4, but this
-project has not integrated or validated them. They belong downstream of the
-immutable presentation frame.
+assignments. The opt-in Step 7B.2a foundation now provides a concrete native
+P4-NANO scanout path downstream of the immutable presentation frame, but it is
+not a live NP2 presentation consumer and has not been hardware-validated.
+PPA and MIPI-DSI/LCD APIs remain downstream implementation details.
 
-The current P4-NANO policy is a planned exact nearest-neighbor 2x mapping:
+The current P4-NANO live-display policy is a planned exact nearest-neighbor 2x
+mapping:
 
 ```text
-640x400 guest framebuffer -> 1280x800 physical output
+640x400 guest framebuffer -> exact 2x -> 1280x800 logical landscape
+                           -> 90-degree rotation -> 800x1280 physical portrait
 ```
 
-It is not implemented or validated. TAB5 requires a separate 1280x720
-viewport/scaling decision. Neither board has physical display, panel timing,
-tearing, bandwidth, PPA, or MIPI-DSI validation. ESP32-S31 / S31 Korvo-1
-remains a future portability target; Step 7B runtime evidence is limited to
-Ubuntu x86_64 and ESP32-P4 RISC-V / `esp-emu`.
+The foundation's native diagnostic image is 800x1280 RGB565 with one DSI/DPI
+framebuffer, validated timing constants, and explicit shared GPIO7/GPIO8 I2C
+ownership. The live mapping, scaling/rotation, buffering policy, tearing,
+bandwidth, and PPA A/B remain future work. TAB5 requires a separate 1280x720
+viewport/scaling decision. The revision-1 refresh callback, when added, is not
+a true VSYNC signal. ESP32-S31 / S31 Korvo-1 remains a future portability
+target; Step 7B runtime evidence is limited to Ubuntu x86_64 and ESP32-P4
+RISC-V / `esp-emu`.
 
 ## Audio boundary
 

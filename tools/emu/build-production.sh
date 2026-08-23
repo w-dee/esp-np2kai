@@ -6,13 +6,15 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--display-foundation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
 variant=""
 board="generic"
 build_dir=""
+display_foundation=0
+display_foundation_variant=""
 esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
@@ -47,6 +49,10 @@ while (($# > 0)); do
             esp_emu_test=1
             shift
             ;;
+        --display-foundation)
+            display_foundation=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -66,6 +72,12 @@ case "${variant}" in
         exit 2
         ;;
 esac
+
+if (( display_foundation )) &&
+   [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+    printf 'ERROR: --display-foundation requires --variant p4-v1x --board p4-nano\n' >&2
+    exit 2
+fi
 
 case "${board}" in
     generic)
@@ -148,13 +160,29 @@ fi
 
 mkdir -p -- "${build_dir}"
 
+if (( display_foundation )); then
+    display_foundation_variant="${variant}"
+fi
+
 cmake_args=(
     -B "${build_dir}"
     -D "SDKCONFIG=${SDKCONFIG_PATH}"
     -D "SDKCONFIG_DEFAULTS=${DEFAULTS}"
     -D IDF_TARGET=esp32p4
     -D "NP2_EMU_TEST=${esp_emu_test}"
+    -D "P4_NANO_DISPLAY_FOUNDATION_PROFILE=${display_foundation}"
+    -D "P4_NANO_DISPLAY_FOUNDATION_BOARD=${display_foundation}"
+    -D "P4_NANO_DISPLAY_FOUNDATION_VARIANT=${display_foundation_variant}"
 )
+if (( display_foundation )); then
+    export P4_NANO_DISPLAY_FOUNDATION_PROFILE=1
+    export P4_NANO_DISPLAY_FOUNDATION_BOARD=1
+    export P4_NANO_DISPLAY_FOUNDATION_VARIANT="${variant}"
+else
+    unset P4_NANO_DISPLAY_FOUNDATION_PROFILE
+    unset P4_NANO_DISPLAY_FOUNDATION_BOARD
+    unset P4_NANO_DISPLAY_FOUNDATION_VARIANT
+fi
 
 cd -- "${FIRMWARE_DIR}"
 if [[ ! -f "${SDKCONFIG_PATH}" || ! -f "${build_dir}/CMakeCache.txt" ]]; then
@@ -179,8 +207,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${build_dir}" "${SDKCONFIG_PATH}"
+printf 'PRODUCTION_BUILD variant=%s board=%s display_foundation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${display_foundation}" "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
     "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \
     "${build_dir}/partition_table/partition-table.bin" \

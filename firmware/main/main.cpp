@@ -4,6 +4,9 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
+#if defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
+#include "p4_nano_display/p4_nano_display.hpp"
+#else
 #if defined(NP2_PRESENTATION_PROFILE)
 #include "np2presentation_probe.h"
 #elif defined(NP2_VIDEO_PROFILE)
@@ -62,6 +65,9 @@
 #endif
 #endif
 
+#endif
+
+#if !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
 namespace {
 
 #if !defined(NP2_PRESENTATION_PROFILE)
@@ -92,13 +98,20 @@ storage_fatfs::StorageFatfs s_sd_np2test_storage(
 #endif
 
 } // namespace
+#endif
 
 extern "C" void app_main(void)
 {
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
 
-#if defined(NP2_PRESENTATION_PROFILE)
+#if defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
+    const esp_err_t foundation_result = p4_nano_display::run_foundation();
+    std::printf("P4_NANO_DISPLAY_FOUNDATION_RESULT=%s\n",
+                foundation_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(NP2_PRESENTATION_PROFILE)
     (void)np2presentation_probe_run();
     return;
 #elif defined(NP2_VIDEO_PROFILE)

@@ -39,6 +39,25 @@ tools/emu/build-production.sh --variant p4-v1x
 tools/emu/build-production.sh --variant p4-v1x --board p4-nano
 ```
 
+The Step 7B.2a P4-NANO display foundation is an explicit, compile-time opt-in
+profile:
+
+```bash
+tools/emu/build-production.sh --variant p4-v1x --board p4-nano --display-foundation
+```
+
+It is bounded to P4 revision 1.x and the P4-NANO board. The path owns the
+shared GPIO7/GPIO8 I2C service, safe JD9365 panel/power sequencing, one native
+800x1280 RGB565 MIPI-DSI/DPI framebuffer, cache priming, and a deterministic
+static geometry/color pattern. It does not consume the live NP2 presentation
+publisher and does not claim physical validation until a human performs the
+hardware procedure in [`docs/bringup-plan.md`](../docs/bringup-plan.md).
+
+The planned live mapping remains future work: `640x400 -> exact 2x ->
+1280x800 logical -> 90-degree rotation -> 800x1280 physical`. PPA is reserved
+for a later A/B step, and the ESP32-P4 revision-1 refresh callback is an
+observation hook rather than a true VSYNC guarantee.
+
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare
 ESP32-P4-NANO-KIT-D onboard CH343P path validated in the development

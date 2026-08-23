@@ -272,34 +272,48 @@ presentation contract, ESP log-validator self-test, profile-isolation check,
 and ESP presentation runtime contract. The CI configuration reuses the pinned
 ESP-IDF v5.5.4 and esp-emu v0.39.0 environment.
 
-### Step 7B.2: physical ESP32-P4 display output — NOT STARTED / READY FOR HARDWARE BRING-UP
+### Step 7B.2a: P4-NANO native physical-display foundation — IMPLEMENTED / HARDWARE VALIDATION PENDING
 
-P4-NANO hardware is available, but physical display bring-up has not started.
-The first tasks are:
+The opt-in production profile
+`tools/emu/build-production.sh --variant p4-v1x --board p4-nano --display-foundation`
+now provides the smallest bounded native scanout path. It is restricted to
+P4 revision 1.x and P4-NANO and leaves the existing bring-up application
+untouched. The path uses the shared GPIO7/GPIO8 modern I2C service, safe
+JD9365/power sequencing, one native 800x1280 RGB565 DSI/DPI framebuffer, cache
+priming, and a deterministic static edge/corner/geometry pattern before
+conservative backlight enable. It logs chip revision, geometry, lane/bitrate,
+DPI, one-buffer size/pointer, PSRAM free/largest-block telemetry, stage
+outcomes, pattern CRC, and cleanup/backlight state.
 
-- confirm the actual board revision;
-- verify actual PSRAM size and allocation behavior;
-- verify formal `EXTMEM=13` runtime on real 32 MiB PSRAM hardware;
-- inspect and bring up the actual LCD/panel wiring;
-- apply the planned PPA exact 640x400 -> 1280x800 2x policy;
-- choose the physical output-buffer strategy;
-- initialize MIPI-DSI and the panel;
-- verify cache/DMA coherency;
-- consume presentation slots asynchronously;
-- measure tearing behavior, timing, and bandwidth; and
-- pursue an approximately 30 displayed-fps bring-up target.
+The configuration follows the preserved known-good diagnostic record in
+[`hardware/bringup/esp32-p4/p4-nano/display/README.md`](../hardware/bringup/esp32-p4/p4-nano/display/README.md),
+including observed JD9365 ID `93 65 04`, two lanes at 1500 Mbps/lane, the
+0x95 `0x11 -> 0x17` control sequence, and conservative backlight value
+`0x40`. That bring-up directory and its safe adapter remain untouched.
 
-The 30 fps figure is a bring-up target, not a proven result. PPA, MIPI-DSI,
-panel operation, physical timing, tearing-free output, bandwidth, and hardware
-performance have not been validated.
+This is a native physical scanout diagnostic only: it does not consume live NP2
+presentation frames, apply the planned transform, use PPA, or claim measured
+refresh/performance. The exact future live mapping is
+`640x400 -> 2x -> 1280x800 logical -> 90-degree rotation -> 800x1280 physical`.
+The revision-1 refresh callback is not a true VSYNC guarantee. The foundation
+is compile-tested here; no physical flash, display observation, or hardware
+validation was performed in this step.
+
+The human hardware procedure is deliberately separate: confirm P4 revision and
+PSRAM, connect the known P4-NANO panel wiring, flash only the generated
+three-image set, capture UART logs and the full native pattern, then power down
+and record results. PPA A/B, live NP2 mapping, buffering, tearing, timing,
+bandwidth, and an approximately 30 displayed-fps target are later steps.
 
 ## Remaining hardware boundary
 
-The software-only portion through Step 7B.1c is complete. P4-NANO UART, SDMMC,
-and Host-to-Device File Transfer now have hardware evidence. Remaining Step
-6B/6C lifecycle cases, Step 7B.2 physical display, Step 8 physical input, Step
-9 physical audio, and TAB5 still require separate hardware work. The portable
-emulator, host, and documentation work can continue independently.
+The software-only portion through Step 7B.1c is complete, and Step 7B.2a is
+compile-tested as a native diagnostic foundation. P4-NANO UART, SDMMC, and
+Host-to-Device File Transfer now have hardware evidence. Remaining Step
+6B/6C lifecycle cases, Step 7B.2b live physical-display mapping and hardware
+validation, Step 8 physical input, Step 9 physical audio, and TAB5 still
+require separate hardware work. The portable emulator, host, and
+documentation work can continue independently.
 
 ## Step 8: USB HID / input — FUTURE, hardware required
 
