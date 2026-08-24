@@ -88,16 +88,25 @@ public:
     bool finish_cleanup() noexcept;
 
 private:
+    enum class TerminalOutcome : std::uint8_t {
+        OpenNone,
+        OpenExternal,
+        FatalPending,
+        FinalizedStoppedNone,
+        FinalizedStoppedExternal,
+        FinalizedFailed,
+    };
+
     static bool active_state(State state) noexcept;
-    static int stop_reason_rank(StopReason reason) noexcept;
-    bool promote_stop_reason(StopReason reason) noexcept;
-    void lock_terminalization() noexcept;
-    void unlock_terminalization() noexcept;
+    TerminalOutcome terminal_outcome() const noexcept;
+    bool claim_external_stop() noexcept;
+    bool claim_fatal() noexcept;
 
     std::atomic<State> state_{State::Created};
-    std::atomic<StopReason> stop_reason_{StopReason::None};
-    std::atomic<bool> failure_{false};
-    std::atomic_flag terminalization_lock_ = ATOMIC_FLAG_INIT;
+    /* A word-sized atomic keeps the terminal protocol naturally aligned on
+     * embedded targets while carrying both pending and finalized outcomes. */
+    std::atomic<std::uint32_t> terminal_outcome_{
+        static_cast<std::uint32_t>(TerminalOutcome::OpenNone)};
 };
 
 /* Runtime owns only NP2 core state in Slice A.  The caller supplies the task

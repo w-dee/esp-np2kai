@@ -9,15 +9,25 @@ State Lifecycle::state() const noexcept
 
 StopReason Lifecycle::stop_reason() const noexcept
 {
-    if (failure()) {
+    switch (terminal_outcome()) {
+    case TerminalOutcome::OpenExternal:
+    case TerminalOutcome::FinalizedStoppedExternal:
+        return StopReason::External;
+    case TerminalOutcome::FatalPending:
+    case TerminalOutcome::FinalizedFailed:
         return StopReason::Fatal;
+    case TerminalOutcome::OpenNone:
+    case TerminalOutcome::FinalizedStoppedNone:
+        return StopReason::None;
     }
-    return stop_reason_.load(std::memory_order_acquire);
+    return StopReason::None;
 }
 
 bool Lifecycle::failure() const noexcept
 {
-    return failure_.load(std::memory_order_acquire);
+    const TerminalOutcome outcome = terminal_outcome();
+    return outcome == TerminalOutcome::FatalPending ||
+           outcome == TerminalOutcome::FinalizedFailed;
 }
 
 bool Lifecycle::stop_requested() const noexcept
@@ -34,43 +44,55 @@ bool Lifecycle::active_state(const State current) noexcept
            current == State::StopRequested;
 }
 
-int Lifecycle::stop_reason_rank(const StopReason reason) noexcept
+Lifecycle::TerminalOutcome Lifecycle::terminal_outcome() const noexcept
 {
-    switch (reason) {
-    case StopReason::None:
-        return 0;
-    case StopReason::External:
-        return 1;
-    case StopReason::Fatal:
-        return 2;
-    }
-    return 0;
+    return static_cast<TerminalOutcome>(
+        terminal_outcome_.load(std::memory_order_acquire));
 }
 
-bool Lifecycle::promote_stop_reason(const StopReason requested) noexcept
+bool Lifecycle::claim_external_stop() noexcept
 {
-    StopReason current = stop_reason_.load(std::memory_order_acquire);
+    std::uint32_t expected = static_cast<std::uint32_t>(
+        TerminalOutcome::OpenNone);
+    const std::uint32_t desired = static_cast<std::uint32_t>(
+        TerminalOutcome::OpenExternal);
     for (;;) {
-        if (stop_reason_rank(current) >= stop_reason_rank(requested)) {
+        const TerminalOutcome current = static_cast<TerminalOutcome>(expected);
+        if (current == TerminalOutcome::OpenExternal) {
             return true;
         }
-        if (stop_reason_.compare_exchange_weak(
-                current, requested, std::memory_order_acq_rel,
+        if (current != TerminalOutcome::OpenNone) {
+            return false;
+        }
+        if (terminal_outcome_.compare_exchange_weak(
+                expected, desired, std::memory_order_acq_rel,
                 std::memory_order_acquire)) {
             return true;
         }
     }
 }
 
-void Lifecycle::lock_terminalization() noexcept
+bool Lifecycle::claim_fatal() noexcept
 {
-    while (terminalization_lock_.test_and_set(std::memory_order_acquire)) {
+    std::uint32_t expected = terminal_outcome_.load(
+        std::memory_order_acquire);
+    const std::uint32_t desired = static_cast<std::uint32_t>(
+        TerminalOutcome::FatalPending);
+    for (;;) {
+        const TerminalOutcome current = static_cast<TerminalOutcome>(expected);
+        if (current == TerminalOutcome::FatalPending) {
+            return true;
+        }
+        if (current != TerminalOutcome::OpenNone &&
+            current != TerminalOutcome::OpenExternal) {
+            return false;
+        }
+        if (terminal_outcome_.compare_exchange_weak(
+                expected, desired, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return true;
+        }
     }
-}
-
-void Lifecycle::unlock_terminalization() noexcept
-{
-    terminalization_lock_.clear(std::memory_order_release);
 }
 
 bool Lifecycle::begin_initialization() noexcept
@@ -111,12 +133,7 @@ bool Lifecycle::request_stop() noexcept
         if (!active_state(current)) {
             return false;
         }
-        /* Fatal is a monotonic upgrade.  If mark_failure() wins the race,
-         * this helper leaves Fatal intact; if it loses, mark_failure() will
-         * still promote External to Fatal before returning. */
-        if (!failure()) {
-            (void)promote_stop_reason(StopReason::External);
-        }
+        (void)claim_external_stop();
         if (state_.compare_exchange_weak(current, State::StopRequested,
                                           std::memory_order_acq_rel,
                                           std::memory_order_acquire)) {
@@ -127,32 +144,29 @@ bool Lifecycle::request_stop() noexcept
 
 bool Lifecycle::mark_failure() noexcept
 {
-    /* Serialize the only two operations that can decide a terminal result.
-     * This keeps a Stopping->Stopped CAS from racing with a fatal update. */
-    lock_terminalization();
+    /* FatalPending is the linearization point for this failure.  Cleanup can
+     * publish Stopped only from OpenNone/OpenExternal, so it cannot publish
+     * Stopped after this CAS succeeds. */
+    if (!claim_fatal()) {
+        return false;
+    }
 
     State current = state();
     for (;;) {
         if (current == State::Stopped || current == State::Failed) {
-            unlock_terminalization();
-            return false;
+            /* This call already claimed FatalPending.  Cleanup may have
+             * finalized it before this thread observed the state. */
+            return true;
         }
-
-        (void)promote_stop_reason(StopReason::Fatal);
-        failure_.store(true, std::memory_order_release);
-
         if (current == State::Stopping || current == State::StopRequested) {
-            unlock_terminalization();
             return true;
         }
         if (!active_state(current)) {
-            unlock_terminalization();
             return false;
         }
         if (state_.compare_exchange_weak(current, State::StopRequested,
                                           std::memory_order_acq_rel,
                                           std::memory_order_acquire)) {
-            unlock_terminalization();
             return true;
         }
     }
@@ -179,15 +193,54 @@ bool Lifecycle::begin_stopping() noexcept
 
 bool Lifecycle::finish_cleanup() noexcept
 {
-    lock_terminalization();
+    if (state() != State::Stopping) {
+        return false;
+    }
 
-    State expected = State::Stopping;
-    const State final_state = failure() ? State::Failed : State::Stopped;
-    const bool completed = state_.compare_exchange_strong(
-        expected, final_state, std::memory_order_acq_rel,
+    std::uint32_t expected = terminal_outcome_.load(
         std::memory_order_acquire);
-    unlock_terminalization();
-    return completed;
+    for (;;) {
+        const TerminalOutcome current = static_cast<TerminalOutcome>(expected);
+        TerminalOutcome desired = TerminalOutcome::FinalizedFailed;
+        State final_state = State::Failed;
+        switch (current) {
+        case TerminalOutcome::OpenNone:
+            desired = TerminalOutcome::FinalizedStoppedNone;
+            final_state = State::Stopped;
+            break;
+        case TerminalOutcome::OpenExternal:
+            desired = TerminalOutcome::FinalizedStoppedExternal;
+            final_state = State::Stopped;
+            break;
+        case TerminalOutcome::FatalPending:
+            desired = TerminalOutcome::FinalizedFailed;
+            final_state = State::Failed;
+            break;
+        case TerminalOutcome::FinalizedStoppedNone:
+        case TerminalOutcome::FinalizedStoppedExternal:
+        case TerminalOutcome::FinalizedFailed:
+            return false;
+        default:
+            return false;
+        }
+
+        const std::uint32_t desired_raw = static_cast<std::uint32_t>(desired);
+        if (!terminal_outcome_.compare_exchange_weak(
+                expected, desired_raw, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            continue;
+        }
+
+        /* The outcome CAS above is the terminalization linearization point.
+         * No other operation can leave Stopping: request_stop() rejects it,
+         * mark_failure() only claims FatalPending.  This is therefore the
+         * sole state publication from Stopping to its matching terminal
+         * state. */
+        State state_expected = State::Stopping;
+        return state_.compare_exchange_strong(
+            state_expected, final_state, std::memory_order_acq_rel,
+            std::memory_order_acquire);
+    }
 }
 
 } // namespace np2runtime
