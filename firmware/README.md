@@ -121,8 +121,21 @@ with the immutability condition satisfied, correct CRCs/counters, PASS result,
 and cleanup. This is bounded validation evidence, not a general production
 display-pipeline claim. Sustained cadence, buffering/reuse, tearing, measured
 refresh, latency, long-duration stability, live-load PSRAM behavior, PPA, and
-display concurrency with SDMMC/audio remain future work; the next milestone is
-Step 7B.2d sustained live presentation cadence and transform performance.
+display concurrency with SDMMC/audio remain future work.
+
+Step 7B.2d is now complete for the reviewed P4-NANO path. The physical
+automated motion profile `--live-display-motion-validation` ran on ESP32-P4
+v1.3 with the unchanged `np2video-7b2d-live-vram` fixture (SHA256
+`81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604`) using the
+production-default `-O2` CCW 2x transform and emitted
+`MOTION_VALIDATION_RESULT=PASS`. It acquired 60 frames, accepted 16 clean and
+16 distinct positions, passed all 16 native mappings, dropped 0 frames, and
+returned from `app_main()` without watchdog, panic, or reset failure. The 44
+transitional acquisitions were skipped as expected asynchronous guest-plane
+states, not interpreted as a performance or displayed-frame ratio. This proves
+software-visible motion through the synchronized native framebuffer, not
+physical scanout of every frame; refresh/tearing, DSI/GDMA temporal behavior,
+and panel timing remain future characterization.
 
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare

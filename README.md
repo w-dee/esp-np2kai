@@ -174,23 +174,48 @@ default for transform-using P4-NANO profiles (normal live display, live
 benchmark, isolated benchmark, and the transform diagnostic); explicit
 `--transform-opt debug` retains the validated `-Og` reference escape hatch.
 The physical evidence measured approximately 39.3% isolated and 49.9% LIVE
-transform improvement, with producer-associated shared execution/memory
+transform improvement (`-Og`/`-O2`: approximately 107.7/65.4 ms isolated and
+186.3/93.4 ms LIVE), with producer-associated shared execution/memory
 contention falling from approximately 78.6 ms to 28.0 ms. Correctness,
 scheduler/TWDT safety, and host CRC regressions passed; the LIVE benchmark app
-grew by 16 bytes. These results describe transform processing capacity, not
-guest FPS, displayed FPS, or a measured raw-PSRAM-bandwidth gain. Sustained
-tearing/refresh characterization, long-duration stability, PPA, and display
-concurrency with SDMMC/audio remain future work. The P4-NANO CCW policy does
-not generalize to TAB5, ESP32-S31, or ESP32-S3 without an independent
-geometry/orientation decision.
-Motion validation remains separate and follows an **AUTOMATED PROBE FIRST**
-sequence. The dedicated `--live-display-motion-validation` profile checks
-guest multi-frame content, presentation sequence/content progression,
-moving-bar ROI, and native-framebuffer ROI with bounded machine-readable
-evidence. Camera/video analysis and human visual confirmation remain fallback-
-only; a software PASS is not a physical-panel frame-display claim.
-Physical-media removal/durability, input, audio, and TAB5 integration remain
-future hardware-dependent work.
+grew by approximately 16 bytes. These results describe transform processing
+capacity, not guest FPS, displayed FPS, or a measured raw-PSRAM-bandwidth gain.
+
+The dedicated `--live-display-motion-validation` profile is now physically
+validated on the ESP32-P4 v1.3 P4-NANO using fixture
+`np2video-7b2d-live-vram` (SHA256
+`81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604`) with
+the production-default `-O2`, CCW 2x transform. It emitted
+`MOTION_VALIDATION_RESULT=PASS`: 60 acquisitions yielded 16 clean and 16
+distinct bar positions, with 16/16 native mapping passes, 0 native failures,
+0 dropped frames, and `Returned from app_main()`. The independent coordinate
+checks were `guest_x_start = guest_bar_pos * 8`,
+`native_y_min = 1152 - 16 * guest_bar_pos`, and
+`native_y_max = 1279 - 16 * guest_bar_pos`.
+
+The 44 non-clean/transitional acquisitions were expected consequences of
+sequential guest graphics-plane updates and asynchronous presentation; only
+clean frames were accepted as motion evidence, and this ratio is not a
+performance or displayed-frame metric. The validator intentionally accepts
+the detected uniform nonzero RGB565 color rather than one fixed palette value;
+multiple colors were observed. This proves spatial/structural motion and
+same-frame native mapping, not final palette or RGB-order correctness.
+
+This closes Step 7B.2d for the reviewed P4-NANO path. The PASS proves
+software-visible motion through the guest framebuffer, immutable presentation
+lease, transform, cache synchronization, and native framebuffer. It does not
+prove that every native frame was scanned out by DSI/GDMA, tear-free behavior,
+refresh-boundary coherence, panel refresh rate, or physical display of every
+sample. There is currently no independent reproducible evidence that the
+panel is frozen, so a scanout-debug milestone is not opened solely because an
+earlier human observation missed the animation. Long-duration stability,
+tear-free/refresh characterization, a second native framebuffer, PPA,
+additional transform structural optimization, display concurrency with
+SDMMC/audio, arbitrary guest applications, TAB5, ESP32-S31, ESP32-S3,
+touch/LVGL/OSD, and physical-media durability remain FUTURE / UNVALIDATED.
+The project policy remains **AUTOMATED PROBE FIRST**; camera automation is
+unimplemented and unnecessary for this PASS, while human visual confirmation
+is fallback-only.
 
 Production firmware now has explicit `p4-v1x` and `p4-v3x` build variants.
 Use `tools/emu/build-production.sh --variant p4-v3x` for the existing

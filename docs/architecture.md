@@ -555,21 +555,50 @@ Step 7B.2d sustained live presentation and transform validation is complete for
 the reviewed P4-NANO path. Transform processing is `-O2` by default for
 transform-using profiles, while explicit `--transform-opt debug` preserves the
 validated `-Og` reference path. Isolated transform improvement was
-approximately 39.3%; LIVE improvement was approximately 49.9%, and the
-producer-associated shared execution/memory contention decreased from roughly
-78.6 ms to 28.0 ms. Correctness, scheduler/TWDT safety, and host CRC
-regressions passed with a 16-byte LIVE benchmark app increase. This is
-transform processing capacity evidence, not guest/display FPS or a measured
-raw-PSRAM-bandwidth improvement. Long-duration stability, refresh/tearing
-characterization, PPA, display plus SDMMC/audio concurrency, touch, LVGL, OSD,
-TAB5, ESP32-S31, and ESP32-S3 display backends remain FUTURE / UNVALIDATED.
-Motion validation remains a separate correctness track with the automated
-`--live-display-motion-validation` profile. Its bounded software probe checks
-guest multi-frame content, presentation sequence/content progression,
-moving-bar ROI, and native-framebuffer ROI first; camera/video analysis and
-human visual confirmation remain fallback-only. A PASS proves software-visible
-motion through the synchronized native framebuffer, not physical panel display
-of every frame.
+approximately 39.3% (`-Og`/`-O2`: 107.7/65.4 ms); LIVE improvement was
+approximately 49.9% (186.3/93.4 ms), and producer-associated shared
+execution/memory contention decreased from roughly 78.6 ms to 28.0 ms.
+Correctness, scheduler/TWDT safety, and host CRC regressions passed with an
+approximately 16-byte LIVE benchmark app increase. These are transform
+processing-capacity results, not guest/display FPS or a measured raw-PSRAM-
+bandwidth improvement.
+
+The `--live-display-motion-validation` profile is also physically validated on
+the ESP32-P4 v1.3 P4-NANO with fixture `np2video-7b2d-live-vram`, SHA256
+`81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604`, and the
+production-default `-O2` CCW 2x transform. The authoritative result was
+`MOTION_VALIDATION_RESULT=PASS` with `acquired=60`, `clean=16`, `distinct=16`,
+`repeated=0`, `transitional=44`, `invalid_position=0`, `native_pass=16`,
+`native_fail=0`, `submitted=61`, `released=61`, `coalesced=0`, `dropped=0`,
+published/source sequences `1..60`, and `reason=NONE`; the run returned from
+`app_main()` without TWDT, idle starvation, panic, Guru Meditation, or reset.
+Sixteen distinct positions were detected from genuine acquired presentation
+frames, and every corresponding native framebuffer band passed the same-frame
+CCW mapping. The independent oracle was
+`guest_x_start = guest_bar_pos * 8`,
+`native_y_min = 1152 - 16 * guest_bar_pos`, and
+`native_y_max = 1279 - 16 * guest_bar_pos`.
+
+The 44 transitional/non-clean samples are expected from sequential guest
+graphics-plane updates and asynchronous presentation. They were skipped, not
+treated as failures or performance/displayed-frame ratios. The validator
+propagates each sample's detected uniform nonzero RGB565 color and does not
+require one fixed palette value; multiple colors were observed. This is a
+spatial/structural motion proof, not final palette or RGB-order evidence.
+
+The motion PASS proves software-visible motion through the guest framebuffer,
+immutable presentation lease, transform, cache synchronization, and native
+framebuffer. It does not prove that every native frame was physically scanned
+out, tear-free behavior, refresh-boundary coherence, panel refresh rate, or
+DSI/GDMA temporal behavior. There is no independent reproducible evidence that
+the panel is frozen, so an earlier missed human observation does not open a
+scanout-debug milestone. Long-duration stability, refresh/tearing
+characterization, second native framebuffer, PPA, further transform structural
+optimization, display plus SDMMC/audio concurrency, arbitrary guest
+applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
+remain FUTURE / UNVALIDATED. The policy remains **AUTOMATED PROBE FIRST**;
+camera automation is unimplemented and unnecessary for this PASS, with human
+visual confirmation retained as fallback-only.
 
 ## Audio boundary
 

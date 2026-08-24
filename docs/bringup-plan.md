@@ -665,21 +665,69 @@ the reviewed P4-NANO path. The transform TU is promoted to `-O2` by default for
 normal live, LIVE benchmark, isolated benchmark, and transform-diagnostic
 profiles; explicit `--transform-opt debug` remains the `-Og` reference escape
 hatch. Physical evidence measured approximately 39.3% isolated and 49.9% LIVE
-transform improvement, while producer-associated shared execution/memory
+transform improvement (`-Og`/`-O2`: approximately 107.7/65.4 ms isolated and
+186.3/93.4 ms LIVE), while producer-associated shared execution/memory
 contention decreased from approximately 78.6 ms to 28.0 ms. Correctness,
-scheduler/TWDT safety, and host CRC checks passed, with a 16-byte LIVE
-benchmark app increase. These are transform processing capacity results, not
-guest/display FPS or raw-PSRAM-bandwidth measurements. Long-duration stability,
-refresh/tearing characterization, PPA, and display plus SDMMC/audio concurrency
-remain future work; the Step 7B.2b CPU-fused implementation remains the
-correctness oracle.
-Motion validation is intentionally separate and now has the automated
-`--live-display-motion-validation` profile. It uses **AUTOMATED PROBE FIRST**:
-guest multi-frame content, presentation sequence/content progression,
-moving-bar ROI, and native-framebuffer ROI are checked in a bounded one-shot
-run; camera/video analysis and human visual confirmation remain fallback-only.
-This software profile does not claim that a physical panel displayed every
-frame.
+scheduler/TWDT safety, and host CRC checks passed, with an approximately
+16-byte LIVE benchmark app increase. These are transform processing capacity
+results, not guest/display FPS or raw-PSRAM-bandwidth measurements. The
+Step 7B.2b CPU-fused implementation remains the correctness oracle.
+
+The authoritative physical automated motion validation used
+`--live-display-motion-validation` on ESP32-P4 v1.3 P4-NANO with the unchanged
+`np2video-7b2d-live-vram` fixture (SHA256
+`81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604`) and the
+production-default `-O2` CCW 2x transform. It emitted
+`MOTION_VALIDATION_RESULT=PASS` and `result=PASS reason=NONE` with:
+
+```text
+acquired=60 clean=16 distinct=16 repeated=0 transitional=44
+invalid_position=0 native_pass=16 native_fail=0
+submitted=61 released=61 coalesced=0 dropped=0
+first_published_sequence=1 last_published_sequence=60
+first_source_update_sequence=1 last_source_update_sequence=60
+```
+
+Sixteen distinct moving-bar positions came from genuine acquired presentation
+frames, and all 16 corresponding native framebuffer ROIs passed. The
+independently verified mapping oracle was
+`guest_x_start = guest_bar_pos * 8`,
+`native_y_min = 1152 - 16 * guest_bar_pos`, and
+`native_y_max = 1279 - 16 * guest_bar_pos`. The 44 transitional/non-clean
+acquisitions are expected because the guest updates graphics planes
+sequentially while presentation is asynchronous; they were skipped rather
+than counted as failures, and the ratio is not a performance or displayed-
+frame metric. The validator accepts the detected uniform nonzero RGB565 color
+and propagated it through the same-frame transform; multiple colors were
+observed, so this experiment does not claim final palette or RGB-order
+correctness.
+
+The run returned from `app_main()` with no TWDT, IDLE starvation, panic, Guru
+Meditation, or unexpected reset. Therefore:
+
+```text
+SOFTWARE_VISIBLE_MOTION=PROVEN_THROUGH_SYNCHRONIZED_NATIVE_FRAMEBUFFER
+```
+
+The proof path is guest framebuffer -> immutable presentation lease -> exact
+transform -> cache synchronization -> native framebuffer. It does not prove
+that every native frame was physically scanned out, tear-free behavior,
+refresh-boundary coherence, measured panel refresh, DSI/GDMA temporal
+behavior, or physical display of every sample. There is no independent
+reproducible evidence that the panel is frozen, so an earlier missed human
+observation does not open a scanout-debug milestone. The project policy remains
+**AUTOMATED PROBE FIRST**; camera automation is unimplemented and unnecessary
+for this PASS, with human visual confirmation fallback-only.
+
+This closes Step 7B.2d for the reviewed P4-NANO path. Its evidence set covers
+sustained LIVE presentation, scheduler/profiler characterization, optional
+I286 inline-memory fastpath A/B, transform producer-contention A-B-A, isolated
+and LIVE transform `-Og`/`-O2` A-B-A, production `-O2` promotion, and automated
+physical moving-bar validation. Long-duration stability, tear-free/refresh
+characterization, second native framebuffer, PPA, further transform structural
+optimization, display plus SDMMC/audio concurrency, arbitrary guest
+applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
+remain FUTURE / UNVALIDATED and are not blockers for this closeout.
 
 ## Remaining hardware boundary
 
