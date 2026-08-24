@@ -27,11 +27,14 @@ States are monotonic: `UNINITIALIZED=0`, `READY=1`, `MAKE_OBSERVED=2`,
 immutable. Failure reasons are `NONE=0`, `PRECONDITION_DATA_READY=1`,
 `STATUS_OVERFLOW=2`, `MAKE_MISMATCH=3`, and `BREAK_MISMATCH=4`.
 
-The state byte is the publication commit marker. Before the first committed
-state, raw `UNINITIALIZED=0` is a precommit window: all-zero memory, partial
-magic/header/body, and a complete state-zero body are transient/not-yet-
-committed observations. A tracker may defer deciding whether that window is
-fatal until its timeout guard; an out-of-domain state is still invalid.
+The state byte is the publication commit marker. Before the first accepted
+state, the tracker applies the stateless parser but does not independently
+validate the raw state domain. `PRE_PROTOCOL`, `UNINITIALIZED`, `TRANSIENT`,
+and stateless `INVALID` observations (including erased/random bytes,
+out-of-domain raw states, and malformed or incomplete candidates) are
+transient/not-yet-committed observations. A fully valid `READY` is accepted;
+a fully valid `FAIL` is accepted as a terminal result. A fully valid
+`MAKE_OBSERVED` or `BREAK_OBSERVED` before `READY` is invalid.
 
 After a nonterminal state has been accepted, a raw state equal to that state
 is accepted only when the complete snapshot is byte-identical. Any changed

@@ -42,18 +42,78 @@ static void test_parser(void)
 static void test_tracker(void)
 {
 	uint8_t p[64]; np2kbd_control_v1_tracker tracker;
-	/* State zero is an uncommitted/precommit window, regardless of how much
-	 * of the body is already visible. */
-	np2kbd_control_v1_tracker_init(&tracker);
-	memset(p, 0, sizeof(p));
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "zero precommit transient");
-	memcpy(p, "NP2", 3);
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "partial magic precommit transient");
-	control(p, NP2KBD_CONTROL_V1_STATE_UNINITIALIZED);
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "complete state-zero precommit transient");
-	p[60] = 0xff;
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "unsupported precommit state rejected");
+	np2kbd_control_v1_result result;
 
+	/* A: erased/all-FF storage is pre-protocol, not an invalid state. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	memset(p, 0xff, sizeof(p));
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_PRE_PROTOCOL, "all-FF pre-protocol");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "all-FF precommit transient");
+
+	/* B: arbitrary non-magic bytes, including an out-of-domain raw state,
+	 * remain retryable before the first accepted state. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	memset(p, 0x5a, sizeof(p)); p[60] = 0xfe;
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_PRE_PROTOCOL, "random pre-protocol");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "random precommit transient");
+
+	/* C: a partial magic/header publication is also transient. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	memset(p, 0x5a, sizeof(p)); memcpy(p, "NP2", 3); p[60] = 0xfe;
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_PRE_PROTOCOL, "partial magic pre-protocol");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "partial magic precommit transient");
+
+	/* D: recognizable magic with an incomplete header/body is not fatal
+	 * while the first state is still unpublished. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	memset(p, 0xff, sizeof(p)); memcpy(p, "NP2K", 4); p[60] = NP2KBD_CONTROL_V1_STATE_READY;
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_INVALID, "incomplete header invalid stateless");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "incomplete header precommit transient");
+
+	/* E: a complete READY candidate with a stale CRC is transient. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_READY); p[22] = NP2KBD_CONTROL_V1_EXPECTED_MAKE;
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_TRANSIENT, "stale READY CRC transient stateless");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "stale READY CRC precommit transient");
+
+	/* F: READY is the first ordinary accepted publication. */
+	control(p, NP2KBD_CONTROL_V1_STATE_READY);
+	np2kbd_control_v1_tracker_init(&tracker);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "ready accepted");
+
+	/* K: the next body may be fully valid while the old READY state byte is
+	 * still visible; this is a publication race, not an invalid transition. */
+	p[22] = NP2KBD_CONTROL_V1_EXPECTED_MAKE;
+	crc(p);
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_INVALID, "READY body semantic mismatch stateless");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "ready changed body valid CRC transient");
+
+	/* The stale-CRC version of the same race is transient too. */
+	p[60] = NP2KBD_CONTROL_V1_STATE_READY;
+	p[56] ^= 0x01;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "ready changed body stale CRC transient");
+
+	/* MAKE and BREAK are invalid as the first accepted state. */
+	/* H */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED);
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_MAKE_OBSERVED, "make parses first");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "make first invalid");
+	/* I */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED);
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_BREAK_OBSERVED, "break parses first");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "break first invalid");
+
+	/* G: FAIL is allowed as a first accepted terminal publication. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_FAIL);
+	put16(p, 24, NP2KBD_CONTROL_V1_FAILURE_MAKE_MISMATCH); crc(p);
+	expect(np2kbd_control_v1_parse(p, sizeof(p), &result) == NP2KBD_CONTROL_V1_FAIL, "fail parses first");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "fail first accepted");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "fail terminal identical accepted");
+
+	/* Existing post-READY strict transition checks. */
 	control(p, NP2KBD_CONTROL_V1_STATE_READY);
 	np2kbd_control_v1_tracker_init(&tracker);
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "ready accepted");
@@ -75,6 +135,13 @@ static void test_tracker(void)
 	p[22] = 0;
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "terminal immutable");
 
+	/* J: once READY is accepted, an out-of-domain raw state is invalid. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_READY);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "post-READY setup accepted");
+	memset(p, 0xff, sizeof(p));
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "post-READY all-FF invalid");
+
 	/* A terminal FAIL may be published while a nonterminal state remains
 	 * visible; the body change is transient until FAIL is committed. */
 	np2kbd_control_v1_tracker_init(&tracker);
@@ -95,6 +162,20 @@ static void test_tracker(void)
 	np2kbd_control_v1_tracker_init(&tracker);
 	control(p, NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED);
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "skipped state rejected");
+
+	/* L: terminal BREAK remains immutable, including an identical replay. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED);
+	/* Reach BREAK through the required READY -> MAKE -> BREAK sequence. */
+	control(p, NP2KBD_CONTROL_V1_STATE_READY);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "terminal path ready accepted");
+	control(p, NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "terminal path make accepted");
+	control(p, NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "terminal path break accepted");
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "terminal path identical accepted");
+	p[22] = 0; crc(p);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "terminal path mutation invalid");
 }
 
 int main(void) { test_parser(); test_tracker(); return failures != 0; }

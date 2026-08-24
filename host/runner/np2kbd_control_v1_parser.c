@@ -172,27 +172,30 @@ np2kbd_control_v1_track_result np2kbd_control_v1_tracker_observe(
 		return NP2KBD_CONTROL_V1_TRACK_INVALID;
 	}
 	raw_state = (np2kbd_control_v1_state)snapshot[NP2KBD_CONTROL_V1_STATE_OFFSET];
-	if (raw_state > NP2KBD_CONTROL_V1_STATE_FAIL) {
-		return NP2KBD_CONTROL_V1_TRACK_INVALID;
-	}
 	/* State is the publication commit marker.  Do not parse the body before
 	 * deciding whether this is a precommit or same-state publication race. */
 	if (!tracker->have_state) {
-		if (raw_state == NP2KBD_CONTROL_V1_STATE_UNINITIALIZED) {
-			/* IPL body/header/CRC writes may be visible before the first
-			 * committed state.  State zero is therefore not a failure. */
-			return NP2KBD_CONTROL_V1_TRACK_TRANSIENT;
-		}
 		observation = np2kbd_control_v1_parse(snapshot, snapshot_size, &parsed);
-		if (observation != NP2KBD_CONTROL_V1_READY &&
-			observation != NP2KBD_CONTROL_V1_FAIL) {
+		if (observation == NP2KBD_CONTROL_V1_READY ||
+			observation == NP2KBD_CONTROL_V1_FAIL) {
+			tracker->have_state = 1;
+			tracker->state = raw_state;
+			tracker->terminal = raw_state == NP2KBD_CONTROL_V1_STATE_FAIL;
+			memcpy(tracker->accepted_snapshot, snapshot, snapshot_size);
+			return NP2KBD_CONTROL_V1_TRACK_ACCEPTED;
+		}
+		if (observation == NP2KBD_CONTROL_V1_MAKE_OBSERVED ||
+			observation == NP2KBD_CONTROL_V1_BREAK_OBSERVED) {
+			/* A fully valid later state before READY is a protocol violation,
+			 * not an incomplete publication. */
 			return NP2KBD_CONTROL_V1_TRACK_INVALID;
 		}
-		tracker->have_state = 1;
-		tracker->state = raw_state;
-		tracker->terminal = raw_state == NP2KBD_CONTROL_V1_STATE_FAIL;
-		memcpy(tracker->accepted_snapshot, snapshot, snapshot_size);
-		return NP2KBD_CONTROL_V1_TRACK_ACCEPTED;
+		/* PRE_PROTOCOL, UNINITIALIZED, TRANSIENT, and malformed/partial
+		 * candidates remain retryable until the first committed state. */
+		return NP2KBD_CONTROL_V1_TRACK_TRANSIENT;
+	}
+	if (raw_state > NP2KBD_CONTROL_V1_STATE_FAIL) {
+		return NP2KBD_CONTROL_V1_TRACK_INVALID;
 	}
 	if (tracker->terminal) {
 		return memcmp(tracker->accepted_snapshot, snapshot, snapshot_size) == 0 ?

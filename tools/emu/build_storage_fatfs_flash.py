@@ -19,6 +19,9 @@ import partition_geometry
 
 EXPECTED_FIXTURE_SIZE = partition_geometry.EXPECTED_NP2TEST_SIZE
 EXPECTED_FIXTURE_SHA256 = "3b73667d235615e89205fbdab04d3e6cf9c2f9a1f3a1de82cdb2b3862aa394b3"
+EXPECTED_NP2KBD_FIXTURE_SIZE = 1_261_568
+EXPECTED_NP2KBD_FIXTURE_SHA256 = "65445b14b67b0ff94b5751d05fe87fb7acadfa3a6ce41f60c764ca11c58e7eca"
+NP2KBD_FIXTURE_DESTINATION = "fixtures/np2kbdtest-fd1232.hdm"
 EXPECTED_FLASH_SIZE = partition_geometry.EXPECTED_FLASH_SIZE
 HIGH_ADDRESS_SCAN_START = 0x400000
 HIGH_ADDRESS_MARKER = b"STEP6A1-HIGH-ADDRESS-RAW-PROOF-v1"
@@ -90,6 +93,20 @@ def verify_fixture(repository_root: Path) -> Path:
     return fixture
 
 
+def verify_np2kbd_fixture(repository_root: Path) -> Path:
+    fixture = repository_root / "tests/guest/np2kbdtest/golden/np2kbdtest-fd1232.image"
+    if not fixture.is_file():
+        fail(f"keyboard fixture is missing: {fixture}")
+    size = fixture.stat().st_size
+    if size != EXPECTED_NP2KBD_FIXTURE_SIZE:
+        fail(f"keyboard fixture size mismatch: {size}")
+    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    if digest != EXPECTED_NP2KBD_FIXTURE_SHA256:
+        fail(f"keyboard fixture SHA-256 mismatch: {digest}")
+    print(f"STORAGEFATFS_NP2KBD_GOLDEN size={size} sha256={digest}")
+    return fixture
+
+
 def verify_partition_table(partitions) -> tuple[object, object]:
     try:
         geometry = partition_geometry.extract_geometry(partitions)
@@ -110,13 +127,16 @@ def verify_partition_table(partitions) -> tuple[object, object]:
 
 def populate_source(source: Path, fixture: Path,
                     high_address_prefill_bytes: int = 0,
-                    nospace_prefill_bytes: int = 0) -> None:
+                    nospace_prefill_bytes: int = 0,
+                    *, keyboard_fixture: Path | None = None) -> None:
     (source / "files/seed").mkdir(parents=True)
     (source / "files/upload").mkdir(parents=True)
     (source / "files/long").mkdir(parents=True)
     (source / "fixtures").mkdir(parents=True)
     (source / ".np2-staging").mkdir(parents=True)
     (source / "fixtures/np2test-fd1232.hdm").write_bytes(fixture.read_bytes())
+    if keyboard_fixture is not None:
+        (source / NP2KBD_FIXTURE_DESTINATION).write_bytes(keyboard_fixture.read_bytes())
     (source / "files/seed/existing.bin").write_bytes(bytes(range(0xA0, 0xA0 + 37)))
     (source / "files/seed/page-00.bin").write_bytes(b"step6a1-seed\n")
     (source / "files/upload/.keep").write_bytes(b"keep\n")
@@ -295,6 +315,11 @@ def main() -> int:
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--include-np2kbdtest",
+        action="store_true",
+        help="include the opt-in deterministic keyboard guest fixture in FATFS",
+    )
     parser.add_argument("--verify-state", type=Path)
     parser.add_argument(
         "--high-address-prefill-bytes",
@@ -346,6 +371,9 @@ def main() -> int:
         fail("IDF_PATH is not set")
     idf_path = Path(idf_path_value).resolve()
     fixture = verify_fixture(repository_root)
+    keyboard_fixture = (
+        verify_np2kbd_fixture(repository_root) if args.include_np2kbdtest else None
+    )
     partitions = load_partitions(idf_path, build_dir / "partition_table/partition-table.bin")
     fixture_partition, storage = verify_partition_table(partitions)
     options, images = read_flash_images(build_dir)
@@ -372,7 +400,7 @@ def main() -> int:
         if args.nospace_derived:
             base_source = temporary_path / "base-source"
             base_source.mkdir()
-            populate_source(base_source, fixture)
+            populate_source(base_source, fixture, keyboard_fixture=keyboard_fixture)
             base_image = temporary_path / "base-storage.bin"
             generate_storage_image(generator, base_source, base_image, storage.size)
             base_measurement = measure_fat_image(base_image, storage.size)
@@ -422,7 +450,14 @@ def main() -> int:
             fixture,
             args.high_address_prefill_bytes,
             nospace_prefill_bytes,
+            keyboard_fixture=keyboard_fixture,
         )
+        if keyboard_fixture is not None:
+            print(
+                "STORAGEFATFS_NP2KBD_POPULATED "
+                f"path=/{NP2KBD_FIXTURE_DESTINATION} "
+                f"size={keyboard_fixture.stat().st_size}"
+            )
         if args.high_address_prefill_bytes:
             print(
                 "STORAGEFATFS_HIGH_ADDRESS_PREFILL "

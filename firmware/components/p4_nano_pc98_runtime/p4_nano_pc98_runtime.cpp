@@ -135,6 +135,7 @@ struct Composition final {
     np2_keyboard_validation::CounterSnapshot proof_counters{};
     bool keyboard_ready_reported = false;
     bool keyboard_proof_terminal_reported = false;
+    bool keyboard_control_invalid_reported = false;
 #endif
 };
 
@@ -224,6 +225,56 @@ np2_keyboard_validation::ResultObservation keyboard_result_observation(
     return np2_keyboard_validation::ResultObservation::Invalid;
 }
 
+const char *keyboard_control_observation_name(
+    const np2kbd_control_v1_observation observation) noexcept
+{
+    switch (observation) {
+    case NP2KBD_CONTROL_V1_PRE_PROTOCOL:
+        return "PRE_PROTOCOL";
+    case NP2KBD_CONTROL_V1_UNINITIALIZED:
+        return "UNINITIALIZED";
+    case NP2KBD_CONTROL_V1_READY:
+        return "READY";
+    case NP2KBD_CONTROL_V1_MAKE_OBSERVED:
+        return "MAKE_OBSERVED";
+    case NP2KBD_CONTROL_V1_BREAK_OBSERVED:
+        return "BREAK_OBSERVED";
+    case NP2KBD_CONTROL_V1_FAIL:
+        return "FAIL";
+    case NP2KBD_CONTROL_V1_TRANSIENT:
+        return "TRANSIENT";
+    case NP2KBD_CONTROL_V1_INVALID:
+        return "INVALID";
+    }
+    return "UNKNOWN";
+}
+
+void emit_keyboard_control_invalid(
+    Composition *composition, const std::uint8_t have_state,
+    const np2kbd_control_v1_state tracker_state,
+    const std::uint8_t *snapshot,
+    const np2kbd_control_v1_observation parsed_observation) noexcept
+{
+    if (composition == nullptr || snapshot == nullptr ||
+        composition->keyboard_control_invalid_reported) {
+        return;
+    }
+    composition->keyboard_control_invalid_reported = true;
+
+    char encoded[NP2KBD_CONTROL_V1_SIZE * 2U + 1U]{};
+    constexpr char kHex[] = "0123456789abcdef";
+    for (std::size_t index = 0U; index < NP2KBD_CONTROL_V1_SIZE; ++index) {
+        encoded[index * 2U] = kHex[snapshot[index] >> 4U];
+        encoded[index * 2U + 1U] = kHex[snapshot[index] & 0x0fU];
+    }
+    emit("P4_NANO_KEYBOARD_CONTROL_INVALID have_state=%u "
+         "tracker_state=%u raw_state=0x%02x parse=%s snapshot=%s\n",
+         static_cast<unsigned>(have_state),
+         static_cast<unsigned>(tracker_state),
+         static_cast<unsigned>(snapshot[NP2KBD_CONTROL_V1_STATE_OFFSET]),
+         keyboard_control_observation_name(parsed_observation), encoded);
+}
+
 np2_keyboard_validation::CounterSnapshot keyboard_counters(
     const np2_keyboard_input_bridge::BridgeCounters &counters) noexcept
 {
@@ -283,10 +334,18 @@ void snapshot_keyboard_protocol(
     std::uint8_t control_snapshot[NP2KBD_CONTROL_V1_SIZE];
     std::memcpy(control_snapshot, mem + kControlPhysicalAddress,
                 sizeof(control_snapshot));
+    const auto tracker_have_state = composition->control_tracker.have_state;
+    const auto tracker_state = composition->control_tracker.state;
     const auto tracked = np2kbd_control_v1_tracker_observe(
         &composition->control_tracker, control_snapshot,
         sizeof(control_snapshot));
     if (tracked == NP2KBD_CONTROL_V1_TRACK_INVALID) {
+        np2kbd_control_v1_result parsed{};
+        const auto parsed_observation = np2kbd_control_v1_parse(
+            control_snapshot, sizeof(control_snapshot), &parsed);
+        emit_keyboard_control_invalid(composition, tracker_have_state,
+                                       tracker_state, control_snapshot,
+                                       parsed_observation);
         sample->control_observation =
             np2_keyboard_validation::ControlObservation::Invalid;
     } else if (tracked == NP2KBD_CONTROL_V1_TRACK_TRANSIENT) {
@@ -768,7 +827,15 @@ esp_err_t run_composition(const ValidationKind validation_kind,
                           const bool emu_backend) noexcept
 {
     const bool validation_profile = validation_kind != ValidationKind::None;
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    /* The keyboard validation firmware is a one-shot application entry.  Keep
+     * its large composition in static storage so the main task stack remains
+     * the production-sized 3584 bytes; the owner task still receives the same
+     * composition for the full validation lifetime. */
+    static Composition composition(validation_kind, emu_backend);
+#else
     Composition composition(validation_kind, emu_backend);
+#endif
     const auto &media = composition.media;
 
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
