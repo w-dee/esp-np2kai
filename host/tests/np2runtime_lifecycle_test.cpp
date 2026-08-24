@@ -26,6 +26,10 @@ int main()
     assert(lifecycle.begin_stopping());
     assert(lifecycle.finish_cleanup());
     assert(lifecycle.state() == State::Stopped);
+    assert(!lifecycle.mark_failure());
+    assert(lifecycle.state() == State::Stopped);
+    assert(!lifecycle.failure());
+    assert(lifecycle.stop_reason() == StopReason::External);
     assert(!lifecycle.request_stop());
 
     Lifecycle stop_before_init;
@@ -46,6 +50,9 @@ int main()
     assert(init_failure.state() == State::Failed);
     assert(init_failure.failure());
     assert(!init_failure.request_stop());
+    assert(!init_failure.mark_failure());
+    assert(init_failure.state() == State::Failed);
+    assert(init_failure.failure());
     assert(init_failure.stop_reason() == StopReason::Fatal);
 
     Lifecycle external_then_fatal;
@@ -99,6 +106,48 @@ int main()
         assert(concurrent.begin_stopping());
         assert(concurrent.finish_cleanup());
         assert(concurrent.state() == State::Failed);
+    }
+
+    for (int iteration = 0; iteration < 512; ++iteration) {
+        Lifecycle terminal_race;
+        assert(terminal_race.begin_initialization());
+        assert(terminal_race.request_stop());
+        assert(terminal_race.begin_stopping());
+
+        std::barrier start_line(2);
+        bool marked_failure = false;
+        bool finished_cleanup = false;
+        std::thread marker([&]() {
+            start_line.arrive_and_wait();
+            marked_failure = terminal_race.mark_failure();
+        });
+        std::thread finisher([&]() {
+            start_line.arrive_and_wait();
+            finished_cleanup = terminal_race.finish_cleanup();
+        });
+        marker.join();
+        finisher.join();
+
+        assert(marked_failure || finished_cleanup);
+        if (marked_failure) {
+            assert(terminal_race.state() == State::Failed);
+            assert(terminal_race.failure());
+            assert(terminal_race.stop_reason() == StopReason::Fatal);
+        } else {
+            assert(finished_cleanup);
+            assert(terminal_race.state() == State::Stopped);
+            assert(!terminal_race.failure());
+            assert(terminal_race.stop_reason() == StopReason::External);
+        }
+
+        if (terminal_race.state() == State::Stopped) {
+            assert(!terminal_race.failure());
+            assert(terminal_race.stop_reason() != StopReason::Fatal);
+        } else {
+            assert(terminal_race.state() == State::Failed);
+            assert(terminal_race.failure());
+            assert(terminal_race.stop_reason() == StopReason::Fatal);
+        }
     }
 
     return 0;

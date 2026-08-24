@@ -91,10 +91,13 @@ private:
     static bool active_state(State state) noexcept;
     static int stop_reason_rank(StopReason reason) noexcept;
     bool promote_stop_reason(StopReason reason) noexcept;
+    void lock_terminalization() noexcept;
+    void unlock_terminalization() noexcept;
 
     std::atomic<State> state_{State::Created};
     std::atomic<StopReason> stop_reason_{StopReason::None};
     std::atomic<bool> failure_{false};
+    std::atomic_flag terminalization_lock_ = ATOMIC_FLAG_INIT;
 };
 
 /* Runtime owns only NP2 core state in Slice A.  The caller supplies the task
