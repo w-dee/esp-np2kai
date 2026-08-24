@@ -1,7 +1,17 @@
 #include "np2_keyboard_input_bridge/keyboard_input_bridge.hpp"
 
-#include <compiler.h>
-#include <keystat.h>
+#include <cstdint>
+
+/* Keep the project-owned bridge boundary narrow.  These are the three C ABI
+ * entry points consumed from the NP2 keystat provider; REG8 is uint8_t in
+ * compiler_base.h.  Including the broad compiler.h/keystat.h headers here
+ * would make ESP-IDF infer a direct np2core include dependency and perturb
+ * the existing np2core/np2host archive closure. */
+extern "C" {
+void keystat_keydown(std::uint8_t ref);
+void keystat_keyup(std::uint8_t ref);
+void keystat_allrelease(void);
+}
 
 namespace np2_keyboard_input_bridge {
 
@@ -204,14 +214,14 @@ void KeyboardInputBridge::sink_press(void *context,
                                      const FrontendKeyId key) noexcept
 {
     (void)context;
-    keystat_keydown(static_cast<REG8>(key));
+    keystat_keydown(static_cast<std::uint8_t>(key));
 }
 
 void KeyboardInputBridge::sink_release(void *context,
                                        const FrontendKeyId key) noexcept
 {
     (void)context;
-    keystat_keyup(static_cast<REG8>(key));
+    keystat_keyup(static_cast<std::uint8_t>(key));
 }
 
 void KeyboardInputBridge::sink_all_release(void *context) noexcept
