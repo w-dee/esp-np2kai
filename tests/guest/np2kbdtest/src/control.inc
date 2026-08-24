@@ -1,5 +1,7 @@
 ; SPDX-License-Identifier: BSD-2-Clause
 ; NP2 keyboard control-v1 wire contract.
+; The state byte is the only commit marker.  Host observers tolerate body/CRC
+; publication races while the previous nonterminal state remains visible.
 
 %define CONTROL_SEG                 0x27fc
 %define CONTROL_SIZE                64

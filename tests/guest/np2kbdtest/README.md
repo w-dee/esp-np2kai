@@ -14,7 +14,13 @@ controller directly:
 5. Publish `BREAK_OBSERVED`, then result-v1 PASS at physical `0x29000`.
 
 Both control-v1 and result-v1 use CRC-32/ISO-HDLC with the state byte written
-last. The fixture never flushes a stale keyboard byte and never enables IRQs.
+last. For control-v1, state zero is an uncommitted precommit window, and a
+changed body (with either stale or newly valid CRC) while an old nonterminal
+state remains visible is a publication transient; only the committed state
+advances the tracker. For result-v1, `RUNNING` is likewise a live publication
+state: dynamic counters, diagnostics, reserved bytes, and CRC are authoritative
+only after terminal `PASS`/`FAIL` is committed. The fixture never flushes a
+stale keyboard byte and never enables IRQs.
 
 Build and verify it with:
 

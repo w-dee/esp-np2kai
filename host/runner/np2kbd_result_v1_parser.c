@@ -31,11 +31,14 @@ np2kbd_result_v1_observation np2kbd_result_v1_parse(
 	result->first_failed_id = u16(snapshot + 28);
 	result->diagnostic_length = u16(snapshot + 30);
 	memcpy(result->diagnostic, snapshot + 32, sizeof(result->diagnostic));
+	/* RUNNING is a live publication state.  The guest may be between any
+	 * dynamic body write and its CRC write, so only the fixed protocol header
+	 * and state are authoritative until a terminal state is committed. */
+	if (state == 1) { result->observation = NP2KBD_RESULT_V1_RUNNING; return result->observation; }
 	if (result->diagnostic_length > sizeof(result->diagnostic) ||
 		!zero(result->diagnostic + result->diagnostic_length, sizeof(result->diagnostic) - result->diagnostic_length) ||
 		!zero(snapshot + 96, 24) || !zero(snapshot + 125, 3) ||
 		u32(snapshot + NP2KBD_RESULT_V1_CRC_OFFSET) != np2_crc32_iso_hdlc(snapshot, NP2KBD_RESULT_V1_CRC_END)) return result->observation;
-	if (state == 1) { result->observation = NP2KBD_RESULT_V1_RUNNING; return result->observation; }
 	if (state == 2 && result->completed_count == 1 && result->passed_count == 1 && result->failed_count == 0 &&
 		result->first_failed_id == NP2KBD_RESULT_V1_NO_FAILED_ID && result->diagnostic_length == 0) {
 		result->observation = NP2KBD_RESULT_V1_PASS; return result->observation;

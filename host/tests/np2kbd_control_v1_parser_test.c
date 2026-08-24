@@ -42,22 +42,56 @@ static void test_parser(void)
 static void test_tracker(void)
 {
 	uint8_t p[64]; np2kbd_control_v1_tracker tracker;
+	/* State zero is an uncommitted/precommit window, regardless of how much
+	 * of the body is already visible. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	memset(p, 0, sizeof(p));
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "zero precommit transient");
+	memcpy(p, "NP2", 3);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "partial magic precommit transient");
+	control(p, NP2KBD_CONTROL_V1_STATE_UNINITIALIZED);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "complete state-zero precommit transient");
+	p[60] = 0xff;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "unsupported precommit state rejected");
+
 	control(p, NP2KBD_CONTROL_V1_STATE_READY);
 	np2kbd_control_v1_tracker_init(&tracker);
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "ready accepted");
-	p[22] = 0x1e;
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "same-state partial accepted");
-	control(p, NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED);
+	p[22] = NP2KBD_CONTROL_V1_EXPECTED_MAKE;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "ready changed body stale CRC transient");
+	crc(p);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "ready changed body valid CRC transient");
+	p[60] = NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED;
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "make accepted");
-	p[23] = 0x9e;
-	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "make same-state partial accepted");
-	control(p, NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED);
+	p[23] = NP2KBD_CONTROL_V1_EXPECTED_BREAK;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "make changed body stale CRC transient");
+	crc(p);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "make changed body valid CRC transient");
+	p[60] = NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED;
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "break accepted");
+	put16(p, 24, NP2KBD_CONTROL_V1_FAILURE_MAKE_MISMATCH); crc(p);
+	p[60] = NP2KBD_CONTROL_V1_STATE_FAIL;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "terminal state change immutable");
 	p[22] = 0;
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "terminal immutable");
+
+	/* A terminal FAIL may be published while a nonterminal state remains
+	 * visible; the body change is transient until FAIL is committed. */
+	np2kbd_control_v1_tracker_init(&tracker);
+	control(p, NP2KBD_CONTROL_V1_STATE_READY);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "fail path ready accepted");
+	p[22] = NP2KBD_CONTROL_V1_EXPECTED_MAKE; crc(p);
+	p[60] = NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "fail path make accepted");
+	put16(p, 24, NP2KBD_CONTROL_V1_FAILURE_MAKE_MISMATCH); crc(p);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_TRANSIENT, "fail body valid CRC old state transient");
+	p[60] = NP2KBD_CONTROL_V1_STATE_FAIL;
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_ACCEPTED, "fail committed accepted");
+	p[22] = 0; crc(p);
+	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "fail terminal immutable");
+
 	control(p, NP2KBD_CONTROL_V1_STATE_READY);
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "backward rejected");
-	control(p, NP2KBD_CONTROL_V1_STATE_READY);
 	np2kbd_control_v1_tracker_init(&tracker);
 	control(p, NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED);
 	expect(np2kbd_control_v1_tracker_observe(&tracker, p, sizeof(p)) == NP2KBD_CONTROL_V1_TRACK_INVALID, "skipped state rejected");

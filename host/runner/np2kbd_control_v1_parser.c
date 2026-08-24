@@ -168,21 +168,22 @@ np2kbd_control_v1_track_result np2kbd_control_v1_tracker_observe(
 	np2kbd_control_v1_state raw_state;
 
 	if (tracker == NULL || snapshot == NULL ||
-		snapshot_size != NP2KBD_CONTROL_V1_SIZE ||
-		!has_magic(snapshot)) {
+		snapshot_size != NP2KBD_CONTROL_V1_SIZE) {
 		return NP2KBD_CONTROL_V1_TRACK_INVALID;
 	}
 	raw_state = (np2kbd_control_v1_state)snapshot[NP2KBD_CONTROL_V1_STATE_OFFSET];
 	if (raw_state > NP2KBD_CONTROL_V1_STATE_FAIL) {
 		return NP2KBD_CONTROL_V1_TRACK_INVALID;
 	}
-	observation = np2kbd_control_v1_parse(snapshot, snapshot_size, &parsed);
+	/* State is the publication commit marker.  Do not parse the body before
+	 * deciding whether this is a precommit or same-state publication race. */
 	if (!tracker->have_state) {
 		if (raw_state == NP2KBD_CONTROL_V1_STATE_UNINITIALIZED) {
-			return observation == NP2KBD_CONTROL_V1_UNINITIALIZED ?
-				NP2KBD_CONTROL_V1_TRACK_ACCEPTED :
-				NP2KBD_CONTROL_V1_TRACK_INVALID;
+			/* IPL body/header/CRC writes may be visible before the first
+			 * committed state.  State zero is therefore not a failure. */
+			return NP2KBD_CONTROL_V1_TRACK_TRANSIENT;
 		}
+		observation = np2kbd_control_v1_parse(snapshot, snapshot_size, &parsed);
 		if (observation != NP2KBD_CONTROL_V1_READY &&
 			observation != NP2KBD_CONTROL_V1_FAIL) {
 			return NP2KBD_CONTROL_V1_TRACK_INVALID;
@@ -193,24 +194,24 @@ np2kbd_control_v1_track_result np2kbd_control_v1_tracker_observe(
 		memcpy(tracker->accepted_snapshot, snapshot, snapshot_size);
 		return NP2KBD_CONTROL_V1_TRACK_ACCEPTED;
 	}
+	if (tracker->terminal) {
+		return memcmp(tracker->accepted_snapshot, snapshot, snapshot_size) == 0 ?
+			NP2KBD_CONTROL_V1_TRACK_ACCEPTED :
+			NP2KBD_CONTROL_V1_TRACK_INVALID;
+	}
 	if (raw_state < tracker->state) {
 		return NP2KBD_CONTROL_V1_TRACK_INVALID;
 	}
 	if (raw_state == tracker->state) {
-		if (tracker->terminal) {
-			return memcmp(tracker->accepted_snapshot, snapshot, snapshot_size) == 0 ?
-				NP2KBD_CONTROL_V1_TRACK_ACCEPTED :
-				NP2KBD_CONTROL_V1_TRACK_INVALID;
-		}
-		if (observation == NP2KBD_CONTROL_V1_TRANSIENT) {
+		if (memcmp(tracker->accepted_snapshot, snapshot, snapshot_size) != 0) {
+			/* A body change while the old nonterminal state is still visible
+			 * is always a publication race, even with a self-consistent CRC
+			 * or a semantically incomplete body. */
 			return NP2KBD_CONTROL_V1_TRACK_TRANSIENT;
 		}
-		if (observation == NP2KBD_CONTROL_V1_INVALID) {
-			return NP2KBD_CONTROL_V1_TRACK_INVALID;
-		}
-		memcpy(tracker->accepted_snapshot, snapshot, snapshot_size);
 		return NP2KBD_CONTROL_V1_TRACK_ACCEPTED;
 	}
+	observation = np2kbd_control_v1_parse(snapshot, snapshot_size, &parsed);
 	if (raw_state == NP2KBD_CONTROL_V1_STATE_FAIL) {
 		if (observation != NP2KBD_CONTROL_V1_FAIL) {
 			return NP2KBD_CONTROL_V1_TRACK_INVALID;

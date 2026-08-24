@@ -1,5 +1,7 @@
 ; SPDX-License-Identifier: BSD-2-Clause
 ; NP2 keyboard fixture result-v1 wire contract.
+; RUNNING is live: dynamic body/CRC integrity is authoritative only after the
+; terminal PASS or FAIL state is committed.
 
 %define RESULT_SEG                   0x2900
 %define RESULT_SIZE                  128

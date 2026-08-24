@@ -20,9 +20,35 @@ int main(void)
 {
 	uint8_t p[128]; np2kbd_result_v1_result result;
 	memset(p, 0, sizeof(p)); expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_PRE_PROTOCOL, "pre protocol");
-	header(p); p[124] = 1; finish(p); expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running");
-	header(p); put16(p, 22, 1); put16(p, 24, 1); p[124] = 2; finish(p); expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_PASS, "pass 1/1");
-	header(p); put16(p, 22, 1); put16(p, 26, 1); put16(p, 28, NP2KBD_RESULT_V1_TEST_ID); put16(p, 30, 4); memcpy(p + 32, "KBD1", 4); p[124] = 3; finish(p); expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_FAIL, "fail KBD1");
-	p[12] ^= 1; expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_INVALID, "wrong suite rejected");
+	/* RUNNING only commits the fixed header.  Both a partially written body
+	 * with a stale CRC and a complete new body with a fresh CRC remain live. */
+	header(p); p[124] = 1;
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running stale CRC");
+	put16(p, 22, 1); put16(p, 24, 1);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running partial body");
+	finish(p);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running complete body valid CRC");
+	/* The same body becomes authoritative only after PASS is written. */
+	p[124] = 2;
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_PASS, "pass 1/1");
+
+	/* Repeat the live publication sequence for a terminal FAIL body. */
+	header(p); p[124] = 1;
+	put16(p, 22, 1); put16(p, 26, 1); put16(p, 28, NP2KBD_RESULT_V1_TEST_ID);
+	put16(p, 30, 4); memcpy(p + 32, "KBD1", 4);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running partial fail body");
+	finish(p);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_RUNNING, "running complete fail body valid CRC");
+	p[124] = 3;
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_FAIL, "fail KBD1");
+
+	/* Once terminal, integrity and semantic checks are mandatory. */
+	p[120] ^= 1;
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_INVALID, "terminal bad CRC");
+	header(p); put16(p, 22, 1); put16(p, 24, 1); p[124] = 2; p[96] = 1; finish(p);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_INVALID, "terminal reserved byte");
+	header(p); put16(p, 22, 2); put16(p, 24, 1); p[124] = 2; finish(p);
+	expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_INVALID, "terminal malformed counts");
+	p[12] ^= 1; finish(p); expect(np2kbd_result_v1_parse(p, sizeof(p), &result) == NP2KBD_RESULT_V1_INVALID, "wrong suite rejected");
 	return failures != 0;
 }

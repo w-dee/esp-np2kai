@@ -27,6 +27,19 @@ States are monotonic: `UNINITIALIZED=0`, `READY=1`, `MAKE_OBSERVED=2`,
 immutable. Failure reasons are `NONE=0`, `PRECONDITION_DATA_READY=1`,
 `STATUS_OVERFLOW=2`, `MAKE_MISMATCH=3`, and `BREAK_MISMATCH=4`.
 
-A tracker treats a bad CRC while the raw state equals the last accepted state
-as a publication transient. A higher state must have a complete valid block,
-must not skip a state (except terminal FAIL), and a lower state is invalid.
+The state byte is the publication commit marker. Before the first committed
+state, raw `UNINITIALIZED=0` is a precommit window: all-zero memory, partial
+magic/header/body, and a complete state-zero body are transient/not-yet-
+committed observations. A tracker may defer deciding whether that window is
+fatal until its timeout guard; an out-of-domain state is still invalid.
+
+After a nonterminal state has been accepted, a raw state equal to that state
+is accepted only when the complete snapshot is byte-identical. Any changed
+body is a publication transient, regardless of whether its CRC is stale or
+valid and regardless of its intermediate semantic contents. This covers the
+window in which the next state's body and CRC are visible while the old state
+byte remains visible. A higher state is parsed strictly only after its state
+byte is observed: it must be the next state, except terminal `FAIL` may be
+published from any nonterminal state. Lower states and skipped nonterminal
+states are invalid. Once `BREAK_OBSERVED` or `FAIL` is accepted, the snapshot
+is immutable and any mutation is invalid.
