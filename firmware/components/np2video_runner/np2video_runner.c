@@ -325,18 +325,21 @@ static void np2video_task(void *argument)
                            state->lifecycle_context);
     }
 
-#if defined(NP2VIDEO_BENCHMARK_PROFILE)
-    /* The benchmark producer is deliberately free-running.  The consumer
-     * requests termination asynchronously; this task observes that request
-     * only after pccore_exec(TRUE) returns at its normal screen/event slice. */
+#if defined(NP2VIDEO_CONTINUOUS_PROFILE)
+    /* Benchmark and motion-validation producers are deliberately
+     * free-running.  The motion profile shares this stop/cooperation boundary
+     * but deliberately does not enable the PCCORE profiler. */
     {
         bool stop_observed = false;
 
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
         np2_pccore_profiler_reset();
         np2_pccore_profiler_set_enabled(true);
+#endif
 
         for (slice = 0; slice < UINT32_C(1048576); ++slice) {
             const char *control_failure;
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
             const uint64_t pccore_exec_start_us =
                 (uint64_t)esp_timer_get_time();
 
@@ -354,9 +357,11 @@ static void np2video_task(void *argument)
             if (pccore_exec_wall_us > pccore_exec_max_us) {
                 pccore_exec_max_us = pccore_exec_wall_us;
             }
-            /* This benchmark-only cooperation point is after a complete NP2
-             * event/frame slice.  It is not presentation backpressure and is
-             * outside the pccore_exec_wall_us interval above. */
+#else
+            pccore_exec(TRUE);
+#endif
+            /* This cooperation point is after a complete NP2 event/frame
+             * slice.  It is outside benchmark timing when timing is enabled. */
             np2_host_taskmng_cooperate();
             ++cooperate_calls;
             if (scrnmng_haserror()) {
@@ -401,9 +406,14 @@ static void np2video_task(void *argument)
             }
         }
         if (!stop_observed) {
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
             failure = "benchmark_stop_timeout";
+#else
+            failure = "continuous_stop_timeout";
+#endif
             goto cleanup;
         }
+#if defined(NP2VIDEO_BENCHMARK_PROFILE)
         if (!update_observed || scrnmng_snapshot(&final_snapshot) !=
             SCRNMNG_SNAPSHOT_OK) {
             failure = "benchmark_frame_not_observed";
@@ -414,6 +424,12 @@ static void np2video_task(void *argument)
                       "surface_update_sequence=%u\n",
                       (unsigned)final_snapshot.surface_generation,
                       (unsigned)final_snapshot.surface_update_sequence);
+#else
+        if (!update_observed) {
+            failure = "motion_frame_not_observed";
+            goto cleanup;
+        }
+#endif
     }
 #else
     update_observed = false;

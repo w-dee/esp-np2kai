@@ -563,11 +563,13 @@ transform processing capacity evidence, not guest/display FPS or a measured
 raw-PSRAM-bandwidth improvement. Long-duration stability, refresh/tearing
 characterization, PPA, display plus SDMMC/audio concurrency, touch, LVGL, OSD,
 TAB5, ESP32-S31, and ESP32-S3 display backends remain FUTURE / UNVALIDATED.
-Motion validation remains a separate future task with an **AUTOMATED PROBE
-FIRST** order: guest update progression, guest multi-frame content,
-presentation sequence/content progression, moving-bar ROI, native-framebuffer
-ROI, camera/video analysis if needed, and human visual confirmation only as a
-fallback.
+Motion validation remains a separate correctness track with the automated
+`--live-display-motion-validation` profile. Its bounded software probe checks
+guest multi-frame content, presentation sequence/content progression,
+moving-bar ROI, and native-framebuffer ROI first; camera/video analysis and
+human visual confirmation remain fallback-only. A PASS proves software-visible
+motion through the synchronized native framebuffer, not physical panel display
+of every frame.
 
 ## Audio boundary
 

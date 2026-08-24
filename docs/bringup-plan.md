@@ -673,11 +673,13 @@ guest/display FPS or raw-PSRAM-bandwidth measurements. Long-duration stability,
 refresh/tearing characterization, PPA, and display plus SDMMC/audio concurrency
 remain future work; the Step 7B.2b CPU-fused implementation remains the
 correctness oracle.
-Motion validation is intentionally separate and will use **AUTOMATED PROBE
-FIRST**: guest update progression, guest multi-frame content, presentation
-sequence/content progression, moving-bar ROI, native-framebuffer ROI,
-camera/video analysis if needed, and human visual confirmation only as a
-fallback.
+Motion validation is intentionally separate and now has the automated
+`--live-display-motion-validation` profile. It uses **AUTOMATED PROBE FIRST**:
+guest multi-frame content, presentation sequence/content progression,
+moving-bar ROI, and native-framebuffer ROI are checked in a bounded one-shot
+run; camera/video analysis and human visual confirmation remain fallback-only.
+This software profile does not claim that a physical panel displayed every
+frame.
 
 ## Remaining hardware boundary
 

@@ -175,9 +175,10 @@ def check_source_contract() -> None:
         fail("selector validation is incomplete")
     if "--transform-opt o2 requires a P4-NANO transform profile" not in build:
         fail("o2 profile restriction is missing")
-    if "display_transform_diagnostic || live_display || live_display_benchmark" not in build:
+    if "display_transform_diagnostic || live_display || live_display_motion_validation || live_display_benchmark" not in build:
         fail("transform profile default set is incomplete")
-    for profile in ("--live-display", "--live-display-benchmark",
+    for profile in ("--live-display", "--live-display-motion-validation",
+                    "--live-display-benchmark",
                     "--live-display-transform-isolated-benchmark",
                     "--display-transform-diagnostic"):
         if profile not in build:

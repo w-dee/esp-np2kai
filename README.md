@@ -184,10 +184,11 @@ concurrency with SDMMC/audio remain future work. The P4-NANO CCW policy does
 not generalize to TAB5, ESP32-S31, or ESP32-S3 without an independent
 geometry/orientation decision.
 Motion validation remains separate and follows an **AUTOMATED PROBE FIRST**
-sequence: guest update progression, guest multi-frame content, presentation
-sequence/content progression, moving-bar ROI, native-framebuffer ROI,
-camera/video analysis if needed, and human visual confirmation only as a
-fallback.
+sequence. The dedicated `--live-display-motion-validation` profile checks
+guest multi-frame content, presentation sequence/content progression,
+moving-bar ROI, and native-framebuffer ROI with bounded machine-readable
+evidence. Camera/video analysis and human visual confirmation remain fallback-
+only; a software PASS is not a physical-panel frame-display claim.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 

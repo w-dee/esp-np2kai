@@ -29,6 +29,7 @@
 #include <compiler.h>
 #include "np2_presentation.h"
 #include "np2video_runner/np2video_runner.h"
+#include "np2video_motion_oracle.h"
 #include <taskmng.h>
 #include "p4_nano_board/p4_nano_board.hpp"
 #include "p4_nano_display/p4_nano_display.hpp"
@@ -202,6 +203,521 @@ void release_if_held(LiveState *state, np2_presentation_token *token)
         state->publish_failed.store(true, std::memory_order_release);
     }
 }
+
+#if defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE)
+
+constexpr std::uint32_t kMotionMaximumAcquisitions = 64U;
+constexpr std::uint32_t kMotionDistinctTarget = 16U;
+constexpr std::uint64_t kMotionWatchdogUs = 120ULL * 1000ULL * 1000ULL;
+constexpr int kMotionProducerCore = 1;
+constexpr std::uint32_t kMotionProducerPriority =
+    static_cast<std::uint32_t>(tskIDLE_PRIORITY + 3);
+
+struct MotionState {
+    np2_presentation_publisher publisher{};
+    np2_presentation_slot_storage slots[kSlotCount]{};
+    p4_nano_display::DisplaySession display{};
+    np2video_runner_result producer_result{};
+    std::atomic<bool> producer_done{false};
+    std::atomic<bool> publish_failed{false};
+    std::atomic<bool> stop_requested{false};
+    std::atomic<bool> scene_ready{false};
+    std::uint32_t scene_generation = 0U;
+    std::uint32_t scene_update_sequence = 0U;
+    std::uint32_t acquired = 0U;
+    std::uint32_t clean = 0U;
+    std::uint32_t distinct = 0U;
+    std::uint32_t repeated = 0U;
+    std::uint32_t transitional = 0U;
+    std::uint32_t invalid_position = 0U;
+    std::uint32_t native_pass = 0U;
+    std::uint32_t native_fail = 0U;
+    std::uint32_t submitted = 0U;
+    std::uint32_t released = 0U;
+    std::uint64_t last_published_sequence = 0U;
+    std::uint64_t first_published_sequence = 0U;
+    std::uint64_t final_published_sequence = 0U;
+    std::uint32_t first_source_update_sequence = 0U;
+    std::uint32_t final_source_update_sequence = 0U;
+    std::uint32_t last_source_update_sequence = 0U;
+    bool source_sequence_initialized = false;
+    bool generation_initialized = false;
+    bool immutable_pass = true;
+    bool visible = false;
+    bool hook_registered = false;
+    bool slots_initialized = false;
+    bool failed = false;
+    const char *failure_reason = nullptr;
+    bool positions[NP2VIDEO_MOTION_BAR_MAX_POS -
+                   NP2VIDEO_MOTION_BAR_MIN_POS + 1U]{};
+};
+
+bool motion_runner_output(void *, const char *data, std::size_t length)
+{
+    if (data == nullptr || length == 0U) {
+        return false;
+    }
+    const bool complete = std::fwrite(data, 1, length, stdout) == length;
+    std::fflush(stdout);
+    return complete;
+}
+
+void motion_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    if (state == nullptr || view == nullptr) {
+        return;
+    }
+    const np2_presentation_source_view source{
+        .ptr = view->ptr,
+        .width = static_cast<std::uint32_t>(view->width),
+        .height = static_cast<std::uint32_t>(view->height),
+        .pitch = view->pitch,
+        .bpp = view->bpp,
+        .pixel_format = NP2_PRESENTATION_PIXEL_FORMAT_RGB565LE,
+        .source_generation = view->surface_generation,
+        .source_update_sequence = view->surface_update_sequence,
+    };
+    const np2_presentation_status status = np2_presentation_submit(
+        &state->publisher, &source);
+    if (status == NP2_PRESENTATION_OK) {
+        ++state->submitted;
+    } else if (status != NP2_PRESENTATION_DROPPED) {
+        state->publish_failed.store(true, std::memory_order_release);
+        state->failure_reason = "PUBLISHER_ERROR";
+    }
+}
+
+bool motion_runner_ready(void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    if (state == nullptr || !state->slots_initialized) {
+        return false;
+    }
+    scrnmng_set_publish_hook(motion_publish_hook, state);
+    state->hook_registered = true;
+    std::printf("MOTION_PUBLISHER_READY slots=%zu slot_bytes=%zu\n",
+                kSlotCount, kSlotBytes);
+    return true;
+}
+
+void motion_scene_ready(std::uint32_t generation,
+                        std::uint32_t update_sequence, void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    if (state == nullptr) {
+        return;
+    }
+    state->scene_generation = generation;
+    state->scene_update_sequence = update_sequence;
+    state->scene_ready.store(true, std::memory_order_release);
+}
+
+void motion_runner_stopping(void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    if (state != nullptr && state->hook_registered) {
+        scrnmng_set_publish_hook(nullptr, nullptr);
+        state->hook_registered = false;
+    }
+}
+
+void motion_runner_complete(const np2video_runner_result *result, void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    if (state != nullptr && result != nullptr) {
+        state->producer_result = *result;
+        state->producer_done.store(true, std::memory_order_release);
+    }
+}
+
+bool motion_stop_requested(void *context)
+{
+    auto *state = static_cast<MotionState *>(context);
+    return state != nullptr && state->stop_requested.load(
+        std::memory_order_acquire);
+}
+
+void motion_release(MotionState *state, np2_presentation_token *token)
+{
+    if (state == nullptr || token == nullptr || token->lease == 0U) {
+        return;
+    }
+    if (np2_presentation_release(&state->publisher, token) ==
+        NP2_PRESENTATION_OK) {
+        ++state->released;
+    } else {
+        state->publish_failed.store(true, std::memory_order_release);
+        state->failure_reason = "LEASE_ERROR";
+    }
+}
+
+bool motion_guest_same(const np2video_motion_guest_sample &before,
+                       const np2video_motion_guest_sample &after)
+{
+    return before.status == NP2VIDEO_MOTION_GUEST_VALID &&
+           after.status == NP2VIDEO_MOTION_GUEST_VALID &&
+           before.bar_pos == after.bar_pos &&
+           before.x_start == after.x_start && before.x_end == after.x_end &&
+           before.bar_color == after.bar_color;
+}
+
+int motion_consume_one(MotionState *state)
+{
+    np2_presentation_frame_view view{};
+    np2_presentation_token token{};
+    np2video_motion_guest_sample guest_before{};
+    np2video_motion_guest_sample guest_after{};
+    np2video_motion_native_sample native_sample{};
+    const np2_presentation_status acquire = np2_presentation_acquire(
+        &state->publisher, &view, &token);
+    if (acquire == NP2_PRESENTATION_NO_FRAME) {
+        return 0;
+    }
+    if (acquire != NP2_PRESENTATION_OK) {
+        state->failure_reason = "PRESENTATION_SEQUENCE_FROZEN";
+        state->failed = true;
+        state->publish_failed.store(true, std::memory_order_release);
+        return -1;
+    }
+    ++state->acquired;
+    if (state->acquired > kMotionMaximumAcquisitions) {
+        state->failure_reason = "INSUFFICIENT_CLEAN_MOTION_SAMPLES";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (!validate_frame(view)) {
+        state->failure_reason = "INVALID_GEOMETRY";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (!state->generation_initialized) {
+        state->scene_generation = view.source_generation;
+        state->generation_initialized = true;
+    } else if (view.source_generation != state->scene_generation) {
+        state->failure_reason = "STALE_GENERATION";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (view.source_update_sequence <= state->scene_update_sequence ||
+        (state->source_sequence_initialized &&
+         view.source_update_sequence <= state->last_source_update_sequence) ||
+        (state->last_published_sequence != 0U &&
+         view.published_sequence <= state->last_published_sequence)) {
+        state->failure_reason = "PRESENTATION_SEQUENCE_FROZEN";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (state->first_published_sequence == 0U) {
+        state->first_published_sequence = view.published_sequence;
+        state->first_source_update_sequence = view.source_update_sequence;
+    }
+    state->last_published_sequence = view.published_sequence;
+    state->last_source_update_sequence = view.source_update_sequence;
+    state->source_sequence_initialized = true;
+
+    const bool guest_clean = np2video_motion_guest_detect(
+        view.ptr, view.pitch, &guest_before);
+    if (!guest_clean) {
+        ++state->transitional;
+        switch (guest_before.status) {
+            case NP2VIDEO_MOTION_GUEST_MULTIPLE_RUNS:
+            case NP2VIDEO_MOTION_GUEST_WRONG_WIDTH:
+            case NP2VIDEO_MOTION_GUEST_INVALID_ALIGNMENT:
+            case NP2VIDEO_MOTION_GUEST_ROW_MISMATCH:
+            case NP2VIDEO_MOTION_GUEST_INVALID_GEOMETRY:
+                ++state->invalid_position;
+                break;
+            default:
+                break;
+        }
+    }
+    const auto source = std::span<const std::uint16_t>(
+        reinterpret_cast<const std::uint16_t *>(view.ptr),
+        p4_nano_display::kTransformSourcePixelCount);
+    const auto destination = std::span<std::uint16_t>(
+        state->display.framebuffer,
+        p4_nano_display::kTransformDestinationPixelCount);
+    if (!p4_nano_display::transform_to_native(
+            source, destination,
+            p4_nano_display::QuarterTurn::CounterClockwise)) {
+        state->failure_reason = "TRANSFORM_ERROR";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (p4_nano_display::display_session_sync_framebuffer(&state->display) !=
+        ESP_OK) {
+        state->failure_reason = "CACHE_SYNC_ERROR";
+        state->failed = true;
+        motion_release(state, &token);
+        return -1;
+    }
+    if (!state->visible) {
+        if (p4_nano_board::display_backlight_set(
+                p4_nano_board::kBacklightConservative) != ESP_OK) {
+            state->failure_reason = "BACKLIGHT_ERROR";
+            state->failed = true;
+            motion_release(state, &token);
+            return -1;
+        }
+        state->visible = true;
+    }
+    if (guest_clean) {
+        if (!np2video_motion_native_detect(
+                state->display.framebuffer, p4_nano_display::kNativeWidth,
+                &guest_before, &native_sample)) {
+            ++state->native_fail;
+            state->failure_reason =
+                native_sample.status == NP2VIDEO_MOTION_NATIVE_NO_BAR
+                    ? "NATIVE_CONTENT_FROZEN" : "NATIVE_MAPPING_MISMATCH";
+            state->failed = true;
+        } else {
+            ++state->native_pass;
+        }
+    }
+    const bool guest_clean_after = np2video_motion_guest_detect(
+        view.ptr, view.pitch, &guest_after);
+    if (guest_clean && guest_clean_after &&
+        !motion_guest_same(guest_before, guest_after)) {
+        state->immutable_pass = false;
+        state->failure_reason = "IMMUTABLE_SOURCE_CHANGED";
+        state->failed = true;
+    }
+    if (guest_clean && !guest_clean_after) {
+        ++state->transitional;
+    }
+    if (guest_clean && guest_clean_after && !state->failed) {
+        ++state->clean;
+        const std::size_t position_index =
+            guest_before.bar_pos - NP2VIDEO_MOTION_BAR_MIN_POS;
+        if (state->positions[position_index]) {
+            ++state->repeated;
+        } else {
+            state->positions[position_index] = true;
+            ++state->distinct;
+            if (state->distinct <= kMotionDistinctTarget) {
+                std::uint32_t native_y_start = 0U;
+                std::uint32_t native_y_end = 0U;
+                (void)np2video_motion_expected_native_band(
+                    guest_before.bar_pos, &native_y_start, &native_y_end);
+                std::printf(
+                    "MOTION_SAMPLE index=%" PRIu32
+                    " published_sequence=%" PRIu64
+                    " source_update_sequence=%" PRIu32
+                    " guest_bar_pos=%" PRIu32 " guest_x_start=%" PRIu32
+                    " bar_color=0x%04" PRIx16
+                    " expected_native_y_min=%" PRIu32
+                    " expected_native_y_max=%" PRIu32
+                    " native_result=PASS\n",
+                    state->distinct, view.published_sequence,
+                    view.source_update_sequence, guest_before.bar_pos,
+                    guest_before.x_start, guest_before.bar_color,
+                    native_y_start, native_y_end);
+            }
+        }
+    }
+    state->final_published_sequence = view.published_sequence;
+    state->final_source_update_sequence = view.source_update_sequence;
+    motion_release(state, &token);
+    np2_host_taskmng_cooperate();
+    if (state->failed) {
+        return -1;
+    }
+    if (state->distinct >= kMotionDistinctTarget &&
+        state->native_pass >= kMotionDistinctTarget) {
+        state->stop_requested.store(true, std::memory_order_release);
+    } else if (state->acquired >= kMotionMaximumAcquisitions) {
+        state->failure_reason = "INSUFFICIENT_CLEAN_MOTION_SAMPLES";
+        state->failed = true;
+        state->stop_requested.store(true, std::memory_order_release);
+        return -1;
+    }
+    return 1;
+}
+
+esp_err_t run_motion_validation()
+{
+    MotionState state;
+    esp_chip_info_t chip_info{};
+    esp_chip_info(&chip_info);
+    std::printf("P4_NANO_LIVE_MOTION_VALIDATION rotation=CCW chip_revision=%d "
+                "max_acquired=%" PRIu32 " distinct_target=%" PRIu32
+                " profiler=OFF pause=OFF\n",
+                chip_info.revision, kMotionMaximumAcquisitions,
+                kMotionDistinctTarget);
+    report_memory("before_motion_slots");
+    for (std::size_t index = 0; index < kSlotCount; ++index) {
+        state.slots[index].ptr = static_cast<std::uint8_t *>(heap_caps_calloc(
+            1, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        state.slots[index].capacity = kSlotBytes;
+        if (state.slots[index].ptr == nullptr) {
+            for (std::size_t release = 0; release < index; ++release) {
+                heap_caps_free(state.slots[release].ptr);
+            }
+            std::printf("MOTION_VALIDATION_RESULT=FAIL reason=slot_alloc\n");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (!esp_ptr_external_ram(state.slots[0].ptr) ||
+        !esp_ptr_external_ram(state.slots[1].ptr) ||
+        ranges_overlap(state.slots[0].ptr, kSlotBytes,
+                       state.slots[1].ptr, kSlotBytes)) {
+        std::printf("MOTION_VALIDATION_RESULT=FAIL reason=slot_layout\n");
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (np2_presentation_init(&state.publisher, state.slots) !=
+        NP2_PRESENTATION_OK) {
+        std::printf("MOTION_VALIDATION_RESULT=FAIL reason=publisher_init\n");
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return ESP_ERR_INVALID_STATE;
+    }
+    state.slots_initialized = true;
+    esp_err_t result = p4_nano_display::display_session_initialize(
+        &state.display);
+    if (result != ESP_OK) {
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return result;
+    }
+    if (!esp_ptr_external_ram(state.display.framebuffer)) {
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("MOTION_VALIDATION_RESULT=FAIL reason=destination_not_external\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    (void)p4_nano_board::display_backlight_set(0U);
+    const np2video_runner_config runner_config{
+        .output = motion_runner_output,
+        .output_context = nullptr,
+        .ready = motion_runner_ready,
+        .scene_ready = motion_scene_ready,
+        .stopping = motion_runner_stopping,
+        .complete = motion_runner_complete,
+        .complete_context = &state,
+        .lifecycle_context = &state,
+        .stop_requested = motion_stop_requested,
+        .cooperate = nullptr,
+        .pause_at_cooperate = nullptr,
+        .task_scheduling_override = true,
+        .task_core_id = kMotionProducerCore,
+        .task_priority = kMotionProducerPriority,
+    };
+    result = np2video_runner_start_ex(&runner_config);
+    if (result != ESP_OK) {
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("MOTION_VALIDATION_RESULT=FAIL reason=producer_start\n");
+        return result;
+    }
+    const std::uint64_t start_us = static_cast<std::uint64_t>(esp_timer_get_time());
+    while (!state.producer_done.load(std::memory_order_acquire) &&
+           !state.stop_requested.load(std::memory_order_acquire)) {
+        const int consumed = motion_consume_one(&state);
+        if (consumed < 0) {
+            state.stop_requested.store(true, std::memory_order_release);
+        } else if (consumed == 0) {
+            vTaskDelay(kConsumerPollDelayTicks);
+        }
+        if (static_cast<std::uint64_t>(esp_timer_get_time()) - start_us >
+            kMotionWatchdogUs) {
+            state.failure_reason = "MOTION_VALIDATION_TIMEOUT";
+            state.failed = true;
+            state.stop_requested.store(true, std::memory_order_release);
+            break;
+        }
+    }
+    state.stop_requested.store(true, std::memory_order_release);
+    while (!state.producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+        if (static_cast<std::uint64_t>(esp_timer_get_time()) - start_us >
+            kMotionWatchdogUs * 2U) {
+            state.failure_reason = "PRODUCER_STOP_TIMEOUT";
+            state.failed = true;
+            break;
+        }
+    }
+    for (;;) {
+        np2_presentation_frame_view pending_view{};
+        np2_presentation_token pending_token{};
+        if (np2_presentation_acquire(&state.publisher, &pending_view,
+                                     &pending_token) != NP2_PRESENTATION_OK) {
+            break;
+        }
+        motion_release(&state, &pending_token);
+    }
+    if (state.producer_result.status != ESP_OK ||
+        state.publish_failed.load(std::memory_order_acquire)) {
+        state.failed = true;
+        if (state.failure_reason == nullptr) {
+            state.failure_reason = "PUBLISHER_ERROR";
+        }
+    }
+    if (!state.failed && state.distinct < kMotionDistinctTarget) {
+        if (state.invalid_position > 0U && state.clean == 0U) {
+            state.failure_reason = "PRESENTATION_POSITION_INVALID";
+        } else if (state.acquired == kMotionMaximumAcquisitions &&
+            state.transitional > 0U) {
+            state.failure_reason = "INSUFFICIENT_CLEAN_MOTION_SAMPLES";
+        } else if (state.clean > 0U && state.distinct <= 1U) {
+            state.failure_reason = "GUEST_MOTION_FROZEN";
+        } else {
+            state.failure_reason = "PRESENTATION_CONTENT_FROZEN";
+        }
+        state.failed = true;
+    }
+    if (p4_nano_board::display_backlight_set(0U) != ESP_OK) {
+        state.failed = true;
+        state.failure_reason = "BACKLIGHT_ERROR";
+    }
+    const std::uint32_t coalesced =
+        np2_presentation_coalesced_count(&state.publisher);
+    const std::uint32_t dropped =
+        np2_presentation_dropped_count(&state.publisher);
+    std::printf(
+        "MOTION_VALIDATION_SUMMARY acquired=%" PRIu32 " clean=%" PRIu32
+        " distinct=%" PRIu32 " repeated=%" PRIu32
+        " transitional=%" PRIu32 " invalid_position=%" PRIu32
+        " native_pass=%" PRIu32
+        " native_fail=%" PRIu32 " submitted=%" PRIu32
+        " released=%" PRIu32 " coalesced=%" PRIu32 " dropped=%" PRIu32
+        " first_published_sequence=%" PRIu64
+        " last_published_sequence=%" PRIu64
+        " first_source_update_sequence=%" PRIu32
+        " last_source_update_sequence=%" PRIu32 " result=%s reason=%s\n",
+        state.acquired, state.clean, state.distinct, state.repeated,
+        state.transitional, state.invalid_position, state.native_pass,
+        state.native_fail, state.submitted, state.released, coalesced, dropped,
+        state.first_published_sequence, state.final_published_sequence,
+        state.first_source_update_sequence, state.final_source_update_sequence,
+        state.failed ? "FAIL" : "PASS",
+        state.failed ? (state.failure_reason == nullptr ? "UNKNOWN" :
+                        state.failure_reason) : "NONE");
+    std::printf("MOTION_VALIDATION_RESULT=%s%s%s\n",
+                state.failed ? "FAIL reason=" : "PASS",
+                state.failed && state.failure_reason != nullptr
+                    ? state.failure_reason : "",
+                state.failed ? "" : "");
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state.display);
+    heap_caps_free(state.slots[0].ptr);
+    heap_caps_free(state.slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    return state.failed ? ESP_FAIL : ESP_OK;
+}
+
+#endif
 
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
@@ -1154,7 +1670,9 @@ esp_err_t run_benchmark();
 
 esp_err_t run()
 {
-#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
+#if defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE)
+    return run_motion_validation();
+#elif defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
     return run_benchmark();
 #else
