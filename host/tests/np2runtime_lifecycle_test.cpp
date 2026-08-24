@@ -1,4 +1,6 @@
 #include <cassert>
+#include <barrier>
+#include <thread>
 
 #include "np2runtime/np2runtime.hpp"
 
@@ -44,6 +46,29 @@ int main()
     assert(init_failure.state() == State::Failed);
     assert(init_failure.failure());
     assert(!init_failure.request_stop());
+    assert(init_failure.stop_reason() == StopReason::Fatal);
+
+    Lifecycle external_then_fatal;
+    assert(external_then_fatal.begin_initialization());
+    assert(external_then_fatal.request_stop());
+    assert(external_then_fatal.stop_reason() == StopReason::External);
+    assert(external_then_fatal.mark_failure());
+    assert(external_then_fatal.stop_reason() == StopReason::Fatal);
+    assert(external_then_fatal.begin_stopping());
+    assert(external_then_fatal.finish_cleanup());
+    assert(external_then_fatal.state() == State::Failed);
+
+    Lifecycle fatal_then_external;
+    assert(fatal_then_external.begin_initialization());
+    assert(fatal_then_external.mark_failure());
+    assert(fatal_then_external.stop_reason() == StopReason::Fatal);
+    assert(fatal_then_external.request_stop());
+    assert(fatal_then_external.stop_reason() == StopReason::Fatal);
+    assert(fatal_then_external.begin_stopping());
+    assert(fatal_then_external.finish_cleanup());
+    assert(fatal_then_external.state() == State::Failed);
+    assert(!fatal_then_external.request_stop());
+    assert(fatal_then_external.stop_reason() == StopReason::Fatal);
 
     Lifecycle repeated_failure;
     assert(repeated_failure.begin_initialization());
@@ -52,6 +77,29 @@ int main()
     assert(repeated_failure.begin_stopping());
     assert(repeated_failure.finish_cleanup());
     assert(repeated_failure.state() == State::Failed);
+
+    for (int iteration = 0; iteration < 256; ++iteration) {
+        Lifecycle concurrent;
+        assert(concurrent.begin_initialization());
+        std::barrier start_line(2);
+        std::thread external([&]() {
+            start_line.arrive_and_wait();
+            (void)concurrent.request_stop();
+        });
+        std::thread fatal([&]() {
+            start_line.arrive_and_wait();
+            (void)concurrent.mark_failure();
+        });
+        external.join();
+        fatal.join();
+
+        assert(concurrent.failure());
+        assert(concurrent.stop_reason() == StopReason::Fatal);
+        assert(concurrent.state() == State::StopRequested);
+        assert(concurrent.begin_stopping());
+        assert(concurrent.finish_cleanup());
+        assert(concurrent.state() == State::Failed);
+    }
 
     return 0;
 }

@@ -9,6 +9,9 @@ State Lifecycle::state() const noexcept
 
 StopReason Lifecycle::stop_reason() const noexcept
 {
+    if (failure()) {
+        return StopReason::Fatal;
+    }
     return stop_reason_.load(std::memory_order_acquire);
 }
 
@@ -29,6 +32,34 @@ bool Lifecycle::active_state(const State current) noexcept
     return current == State::Created || current == State::Initializing ||
            current == State::Ready || current == State::Running ||
            current == State::StopRequested;
+}
+
+int Lifecycle::stop_reason_rank(const StopReason reason) noexcept
+{
+    switch (reason) {
+    case StopReason::None:
+        return 0;
+    case StopReason::External:
+        return 1;
+    case StopReason::Fatal:
+        return 2;
+    }
+    return 0;
+}
+
+bool Lifecycle::promote_stop_reason(const StopReason requested) noexcept
+{
+    StopReason current = stop_reason_.load(std::memory_order_acquire);
+    for (;;) {
+        if (stop_reason_rank(current) >= stop_reason_rank(requested)) {
+            return true;
+        }
+        if (stop_reason_.compare_exchange_weak(
+                current, requested, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            return true;
+        }
+    }
 }
 
 bool Lifecycle::begin_initialization() noexcept
@@ -69,7 +100,12 @@ bool Lifecycle::request_stop() noexcept
         if (!active_state(current)) {
             return false;
         }
-        stop_reason_.store(StopReason::External, std::memory_order_release);
+        /* Fatal is a monotonic upgrade.  If mark_failure() wins the race,
+         * this helper leaves Fatal intact; if it loses, mark_failure() will
+         * still promote External to Fatal before returning. */
+        if (!failure()) {
+            (void)promote_stop_reason(StopReason::External);
+        }
         if (state_.compare_exchange_weak(current, State::StopRequested,
                                           std::memory_order_acq_rel,
                                           std::memory_order_acquire)) {
@@ -80,8 +116,8 @@ bool Lifecycle::request_stop() noexcept
 
 bool Lifecycle::mark_failure() noexcept
 {
+    (void)promote_stop_reason(StopReason::Fatal);
     failure_.store(true, std::memory_order_release);
-    stop_reason_.store(StopReason::Fatal, std::memory_order_release);
 
     State current = state();
     for (;;) {

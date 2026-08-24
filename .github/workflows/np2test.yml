@@ -82,6 +82,9 @@ jobs:
       - name: Test execution controller
         run: make -C host test-execution-controller
 
+      - name: Test NP2 runtime lifecycle and configuration
+        run: make -C host test-np2runtime
+
       - name: Run Ubuntu-native headless NP2TEST
         run: make -C host test-headless-runner-np2test
 

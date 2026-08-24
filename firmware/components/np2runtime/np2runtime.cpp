@@ -26,13 +26,18 @@ Runtime::~Runtime()
 
 Result Runtime::initialize() noexcept
 {
+    /* An external stop received before initialization is a valid, no-op
+     * cancellation.  Finalize it without touching the NP2 core. */
+    if (lifecycle_.state() == State::StopRequested && !core_initialized_) {
+        return cleanup();
+    }
+
     if (!lifecycle_.begin_initialization()) {
         return Result::InvalidState;
     }
 
     if (lifecycle_.stop_requested()) {
-        (void)cleanup();
-        return Result::Stopped;
+        return cleanup();
     }
 
     apply_production_machine_config();

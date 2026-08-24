@@ -89,6 +89,8 @@ public:
 
 private:
     static bool active_state(State state) noexcept;
+    static int stop_reason_rank(StopReason reason) noexcept;
+    bool promote_stop_reason(StopReason reason) noexcept;
 
     std::atomic<State> state_{State::Created};
     std::atomic<StopReason> stop_reason_{StopReason::None};
