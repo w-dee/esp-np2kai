@@ -24,9 +24,13 @@ void clear_disk_paths() noexcept
 
 } // namespace
 
-void apply_production_machine_config() noexcept
+void apply_production_machine_config(
+    const std::optional<std::uint8_t> fddequip_override) noexcept
 {
-    const ProductionMachineConfig config = production_machine_config();
+    ProductionMachineConfig config = production_machine_config();
+    if (fddequip_override.has_value()) {
+        config.fddequip_override = fddequip_override;
+    }
 
     /* This gives a deterministic baseline for fields not used by Slice A;
      * only the values below are production policy. */

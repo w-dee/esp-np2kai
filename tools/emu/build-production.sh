@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --real-runtime | --runtime-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -28,6 +28,9 @@ live_display_benchmark=0
 live_display_benchmark_variant=""
 live_display_transform_isolated_benchmark=0
 live_display_transform_isolated_benchmark_variant=""
+real_runtime=0
+real_runtime_variant=""
+runtime_validation=0
 esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
@@ -104,6 +107,14 @@ while (($# > 0)); do
             live_display_transform_isolated_benchmark=1
             shift
             ;;
+        --real-runtime)
+            real_runtime=1
+            shift
+            ;;
+        --runtime-validation)
+            runtime_validation=1
+            shift
+            ;;
         --rotation)
             (($# >= 2)) || { usage >&2; exit 2; }
             display_transform_diagnostic_rotation="$2"
@@ -163,8 +174,8 @@ if (( display_foundation )) &&
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark > 1 )); then
-    printf 'ERROR: display foundation, transform diagnostic, live display, motion validation, live display benchmark, and isolated transform benchmark profiles are mutually exclusive\n' >&2
+if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + real_runtime + runtime_validation > 1 )); then
+    printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
 fi
 
@@ -198,6 +209,21 @@ if (( live_display_transform_isolated_benchmark )); then
         exit 2
     fi
     live_display_transform_isolated_benchmark_variant="${variant}"
+fi
+
+if (( real_runtime )); then
+    if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --real-runtime requires --variant p4-v1x --board p4-nano\n' >&2
+        exit 2
+    fi
+    real_runtime_variant="${variant}"
+fi
+
+if (( runtime_validation )); then
+    if [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ]]; then
+        printf 'ERROR: --runtime-validation requires the generic p4-v3x emulator build\n' >&2
+        exit 2
+    fi
 fi
 
 if (( display_transform_diagnostic )); then
@@ -369,6 +395,10 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=${live_display_transform_isolated_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=${live_display_transform_isolated_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant}"
+    -D "P4_NANO_REAL_RUNTIME_PROFILE=${real_runtime}"
+    -D "P4_NANO_REAL_RUNTIME_BOARD=${real_runtime}"
+    -D "P4_NANO_REAL_RUNTIME_VARIANT=${real_runtime_variant}"
+    -D "P4_NANO_RUNTIME_VALIDATION_PROFILE=${runtime_validation}"
     -D "NP2VIDEO_CONTINUOUS_PROFILE=$((live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
@@ -383,6 +413,20 @@ else
     unset P4_NANO_DISPLAY_FOUNDATION_PROFILE
     unset P4_NANO_DISPLAY_FOUNDATION_BOARD
     unset P4_NANO_DISPLAY_FOUNDATION_VARIANT
+fi
+if (( real_runtime )); then
+    export P4_NANO_REAL_RUNTIME_PROFILE=1
+    export P4_NANO_REAL_RUNTIME_BOARD=1
+    export P4_NANO_REAL_RUNTIME_VARIANT="${real_runtime_variant}"
+else
+    unset P4_NANO_REAL_RUNTIME_PROFILE
+    unset P4_NANO_REAL_RUNTIME_BOARD
+    unset P4_NANO_REAL_RUNTIME_VARIANT
+fi
+if (( runtime_validation )); then
+    export P4_NANO_RUNTIME_VALIDATION_PROFILE=1
+else
+    unset P4_NANO_RUNTIME_VALIDATION_PROFILE
 fi
 if (( live_display )); then
     export P4_NANO_LIVE_DISPLAY_PROFILE=1
@@ -496,10 +540,10 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s real_runtime=%s runtime_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
     "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
-    "${live_display_transform_isolated_benchmark}" "${display_transform_diagnostic_rotation}" \
+    "${live_display_transform_isolated_benchmark}" "${real_runtime}" "${runtime_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
     "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \

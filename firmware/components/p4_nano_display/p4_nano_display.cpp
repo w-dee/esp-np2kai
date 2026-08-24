@@ -17,6 +17,7 @@
 #include "esp_chip_info.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_lcd_jd9365_10_1.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_io.h"
@@ -61,15 +62,24 @@ esp_err_t sync_framebuffer(std::uint16_t *framebuffer)
         ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
 
+#if !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
 void remember_first_error(esp_err_t *first_error, esp_err_t candidate)
 {
     if (*first_error == ESP_OK && candidate != ESP_OK) {
         *first_error = candidate;
     }
 }
+#endif
 
 esp_err_t cleanup(p4_nano_display::DisplaySession *resources)
 {
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    if (resources->framebuffer != nullptr) {
+        heap_caps_free(resources->framebuffer);
+        resources->framebuffer = nullptr;
+    }
+    return ESP_OK;
+#else
     esp_err_t first_error = ESP_OK;
 
     /* Backlight-off is intentionally attempted before tearing down hardware. */
@@ -102,6 +112,7 @@ esp_err_t cleanup(p4_nano_display::DisplaySession *resources)
     }
     resources->framebuffer = nullptr;
     return first_error;
+#endif
 }
 
 esp_err_t fail_stage(p4_nano_display::DisplaySession *resources,
@@ -126,6 +137,21 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     if (resources == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    /* esp-emu has no MIPI-DSI panel model.  The bounded validation profile
+     * keeps the real Session transform and external native framebuffer while
+     * leaving the production hardware path untouched. */
+    resources->framebuffer = static_cast<std::uint16_t *>(heap_caps_calloc(
+        1U, kNativeFramebufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (resources->framebuffer == nullptr ||
+        !esp_ptr_external_ram(resources->framebuffer)) {
+        (void)cleanup(resources);
+        return ESP_ERR_NO_MEM;
+    }
+    std::fill_n(resources->framebuffer, kNativePixelCount,
+                static_cast<std::uint16_t>(0x0000));
+    return ESP_OK;
+#else
     esp_err_t ret = p4_nano_board::display_control_init();
     if (ret != ESP_OK) {
         return fail_stage(resources, "shared_i2c_init", ret);
@@ -236,6 +262,7 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     }
     ESP_LOGI(kTag, "foundation stage=panel_reset_init_display_on result=PASS");
     return ESP_OK;
+#endif
 }
 
 esp_err_t display_session_sync_framebuffer(DisplaySession *session)

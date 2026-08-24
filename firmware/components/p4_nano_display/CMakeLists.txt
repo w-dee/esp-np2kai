@@ -12,6 +12,11 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
     -Wall -Wextra)
 
+if(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_RUNTIME_VALIDATION_PROFILE=1)
+endif()
+
 set(P4_NANO_DISPLAY_TRANSFORM_OPT "debug" CACHE STRING
     "Optimization mode for the P4-NANO transform translation unit")
 set_property(CACHE P4_NANO_DISPLAY_TRANSFORM_OPT PROPERTY STRINGS debug o2)

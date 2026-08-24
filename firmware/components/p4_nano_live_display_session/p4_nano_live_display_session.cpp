@@ -322,12 +322,16 @@ ConsumeResult Session::consume_one(FrameObserver observer,
     }
 
     if (!first_frame_.visible) {
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+        (void)first_frame_.mark_valid_frame();
+#else
         if (p4_nano_board::display_backlight_set(
                 p4_nano_board::kBacklightConservative) != ESP_OK) {
             fail(ESP_ERR_INVALID_STATE);
             return ConsumeResult::Failed;
         }
         (void)first_frame_.mark_valid_frame();
+#endif
     }
     return ConsumeResult::Consumed;
 }

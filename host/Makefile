@@ -131,6 +131,9 @@ NP2RUNTIME_MACHINE_CONFIG_TEST_SOURCE := $(CURDIR)/tests/np2runtime_machine_conf
 NP2RUNTIME_MACHINE_CONFIG_TEST_OUTPUT := $(BUILD_DIR)/tests/np2runtime_machine_config_test
 NP2RUNTIME_RUNTIME_TEST_SOURCE := $(CURDIR)/tests/np2runtime_runtime_test.cpp
 NP2RUNTIME_RUNTIME_TEST_OUTPUT := $(BUILD_DIR)/tests/np2runtime_runtime_test
+P4_NANO_PC98_RUNTIME_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_pc98_runtime/include
+P4_NANO_PC98_RUNTIME_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_pc98_runtime_contract_test.cpp
+P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_pc98_runtime_contract_test
 SCRNMNG_PRESENTATION_TEST_SOURCE := $(CURDIR)/tests/headless_scrnmng_presentation_test.c
 SCRNMNG_PRESENTATION_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_scrnmng_presentation_test
 HEADLESS_BMP_SOURCE := $(CURDIR)/backend/headless/scrnmng_bmp.c
@@ -196,7 +199,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-p4-nano-pc98-runtime-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -649,8 +652,16 @@ test-np2runtime-machine-config:
 		-o "$(NP2RUNTIME_MACHINE_CONFIG_TEST_OUTPUT)"
 	@"$(NP2RUNTIME_MACHINE_CONFIG_TEST_OUTPUT)"
 
-test-np2runtime: test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime
+test-np2runtime: test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-p4-nano-pc98-runtime-contract
 	@printf '%s\n' 'NP2 runtime lifecycle and machine configuration tests passed.'
+
+test-p4-nano-pc98-runtime-contract:
+	@mkdir -p "$(dir $(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT))"
+	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
+		-I"$(P4_NANO_PC98_RUNTIME_HEADER_DIR)" \
+		"$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_SOURCE)" \
+		-o "$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT)"
+	@"$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT)"
 
 test-np2runtime-runtime: phase1-link-probe-mapped
 	@mkdir -p "$(dir $(NP2RUNTIME_RUNTIME_TEST_OUTPUT))"

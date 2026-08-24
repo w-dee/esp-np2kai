@@ -64,7 +64,8 @@ constexpr ProductionMachineConfig production_machine_config() noexcept
 
 /* Applies pccore_setdefault() followed by the explicit production overrides.
  * No disk path is attached by this function. */
-void apply_production_machine_config() noexcept;
+void apply_production_machine_config(
+    std::optional<std::uint8_t> fddequip_override = std::nullopt) noexcept;
 
 /* Small atomic state machine shared by Runtime and host lifecycle tests.  It
  * contains no fixture, timeout, result-block, or platform resource policy. */
@@ -114,13 +115,17 @@ private:
  * by this class. */
 class Runtime final {
 public:
+    using StopObserver = bool (*)(void *) noexcept;
+
     Runtime() noexcept = default;
     Runtime(const Runtime &) = delete;
     Runtime &operator=(const Runtime &) = delete;
     ~Runtime();
 
-    Result initialize() noexcept;
+    Result initialize(
+        std::optional<std::uint8_t> fddequip_override = std::nullopt) noexcept;
     Result run() noexcept;
+    Result run(StopObserver observer, void *observer_context) noexcept;
     bool request_stop() noexcept;
 
     State state() const noexcept { return lifecycle_.state(); }

@@ -24,7 +24,8 @@ Runtime::~Runtime()
     }
 }
 
-Result Runtime::initialize() noexcept
+Result Runtime::initialize(
+    const std::optional<std::uint8_t> fddequip_override) noexcept
 {
     /* An external stop received before initialization is a valid, no-op
      * cancellation.  Finalize it without touching the NP2 core. */
@@ -40,7 +41,7 @@ Result Runtime::initialize() noexcept
         return cleanup();
     }
 
-    apply_production_machine_config();
+    apply_production_machine_config(fddequip_override);
     np2_host_taskmng_reset();
     pccore_init();
     core_initialized_ = true;
@@ -55,6 +56,12 @@ Result Runtime::initialize() noexcept
 
 Result Runtime::run() noexcept
 {
+    return run(nullptr, nullptr);
+}
+
+Result Runtime::run(const StopObserver observer,
+                    void *const observer_context) noexcept
+{
     if (!lifecycle_.begin_running()) {
         if (lifecycle_.state() == State::StopRequested) {
             return cleanup();
@@ -63,6 +70,14 @@ Result Runtime::run() noexcept
     }
 
     while (!lifecycle_.stop_requested()) {
+        /* The owner task uses this display-agnostic hook to detach a borrowed
+         * producer before requesting the core stop.  It is sampled on the
+         * same task that calls pccore_exec(), so no new publish can race the
+         * detach operation. */
+        if (observer != nullptr && observer(observer_context)) {
+            (void)lifecycle_.request_stop();
+            break;
+        }
         pccore_exec(TRUE);
         np2_host_taskmng_cooperate();
 

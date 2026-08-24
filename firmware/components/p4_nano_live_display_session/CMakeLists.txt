@@ -10,7 +10,8 @@ idf_component_register(
                  "${P4_NANO_LIVE_SESSION_REPO_ROOT}/host/presentation"
                  "${P4_NANO_LIVE_SESSION_REPO_ROOT}/third_party/np2kai/src"
                  "${P4_NANO_LIVE_SESSION_REPO_ROOT}/third_party/np2kai/src/i286c"
-    PRIV_REQUIRES p4_nano_board p4_nano_display np2presentation
+    REQUIRES p4_nano_display
+    PRIV_REQUIRES p4_nano_board np2presentation
                  esp_psram esp_hw_support heap freertos esp_timer)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
@@ -22,3 +23,8 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     SUPPORT_16BPP
     BYTESEX_LITTLE)
+
+if(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_RUNTIME_VALIDATION_PROFILE=1)
+endif()

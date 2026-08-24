@@ -13,6 +13,9 @@
     defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
 #include "p4_nano_live_display/p4_nano_live_display.hpp"
+#elif defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#include "p4_nano_pc98_runtime/p4_nano_pc98_runtime.hpp"
 #else
 #if defined(NP2_PRESENTATION_PROFILE)
 #include "np2presentation_probe.h"
@@ -79,7 +82,9 @@
     !defined(P4_NANO_LIVE_DISPLAY_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
-    !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_REAL_RUNTIME_PROFILE) && \
+    !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
 namespace {
 
 #if !defined(NP2_PRESENTATION_PROFILE)
@@ -144,6 +149,18 @@ extern "C" void app_main(void)
     const esp_err_t live_result = p4_nano_live_display::run();
     std::printf("P4_NANO_LIVE_DISPLAY_RESULT=%s\n",
                 live_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    const esp_err_t runtime_result = p4_nano_pc98_runtime::run_production();
+    std::printf("P4_NANO_RUNTIME_PRODUCTION_RESULT=%s\n",
+                runtime_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    const esp_err_t runtime_result = p4_nano_pc98_runtime::run_validation();
+    std::printf("P4_NANO_RUNTIME_VALIDATION_EXIT=%s\n",
+                runtime_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(NP2_PRESENTATION_PROFILE)

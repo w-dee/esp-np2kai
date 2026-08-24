@@ -19,6 +19,17 @@ int np2_dosio_attach_vfs_file(const char *logical_path,
                               const char *physical_path);
 void np2_dosio_detach_vfs_file(void);
 
+/* Read-only diagnostics for a composed runtime.  These counters are
+ * monotonic until reset and do not expose media contents. */
+typedef struct np2_dosio_stats {
+    uint64_t open_count;
+    uint64_t read_calls;
+    uint64_t read_bytes;
+} np2_dosio_stats;
+
+void np2_dosio_stats_reset(void);
+void np2_dosio_stats_get(np2_dosio_stats *stats);
+
 #ifdef __cplusplus
 }
 #endif

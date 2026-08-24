@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include <sys/stat.h>
@@ -45,6 +46,29 @@ static size_t np2_dosio_fixture_size;
 static OEMCHAR np2_dosio_vfs_logical_path[MAX_PATH];
 static char np2_dosio_vfs_physical_path[MAX_PATH];
 static NP2_DOSIO_HANDLE np2_dosio_fixture_handle;
+static atomic_uint_fast64_t np2_dosio_open_count;
+static atomic_uint_fast64_t np2_dosio_read_calls;
+static atomic_uint_fast64_t np2_dosio_read_bytes;
+
+void np2_dosio_stats_reset(void)
+{
+	atomic_store_explicit(&np2_dosio_open_count, 0U, memory_order_relaxed);
+	atomic_store_explicit(&np2_dosio_read_calls, 0U, memory_order_relaxed);
+	atomic_store_explicit(&np2_dosio_read_bytes, 0U, memory_order_relaxed);
+}
+
+void np2_dosio_stats_get(np2_dosio_stats *stats)
+{
+	if (stats == NULL) {
+		return;
+	}
+	stats->open_count = atomic_load_explicit(&np2_dosio_open_count,
+			memory_order_relaxed);
+	stats->read_calls = atomic_load_explicit(&np2_dosio_read_calls,
+			memory_order_relaxed);
+	stats->read_bytes = atomic_load_explicit(&np2_dosio_read_bytes,
+			memory_order_relaxed);
+}
 
 static int np2_dosio_copy_path(char *destination, const char *source)
 {
@@ -335,6 +359,8 @@ FILEH file_open_rb(const OEMCHAR *path)
 		np2_dosio_fixture_handle.backend.raw.size = np2_dosio_fixture_size;
 		np2_dosio_fixture_handle.backend.raw.position = 0;
 		np2_dosio_fixture_handle.active = 1;
+		atomic_fetch_add_explicit(&np2_dosio_open_count, 1U,
+			memory_order_relaxed);
 		return (FILEH)&np2_dosio_fixture_handle;
 	}
 	if (!np2_dosio_is_vfs_path(path)) {
@@ -352,6 +378,8 @@ FILEH file_open_rb(const OEMCHAR *path)
 	np2_dosio_fixture_handle.backend.vfs.position = 0;
 	np2_dosio_fixture_handle.backend.vfs.last_error = 0;
 	np2_dosio_fixture_handle.active = 1;
+	atomic_fetch_add_explicit(&np2_dosio_open_count, 1U,
+		memory_order_relaxed);
 	return (FILEH)&np2_dosio_fixture_handle;
 }
 
@@ -393,6 +421,8 @@ UINT file_read(FILEH handle, void *data, UINT length)
 	if ((dosio == NULL) || ((data == NULL) && (length != 0))) {
 		return 0;
 	}
+	atomic_fetch_add_explicit(&np2_dosio_read_calls, 1U,
+		memory_order_relaxed);
 	if (dosio->kind == NP2_DOSIO_HANDLE_RAW_MEMORY) {
 		remaining = dosio->backend.raw.size - dosio->backend.raw.position;
 		if ((size_t)length > remaining) {
@@ -402,6 +432,8 @@ UINT file_read(FILEH handle, void *data, UINT length)
 			memcpy(data, dosio->backend.raw.data +
 						dosio->backend.raw.position, length);
 			dosio->backend.raw.position += length;
+			atomic_fetch_add_explicit(&np2_dosio_read_bytes, length,
+				memory_order_relaxed);
 		}
 		return length;
 	}
@@ -431,6 +463,8 @@ UINT file_read(FILEH handle, void *data, UINT length)
 			dosio->backend.vfs.last_error = errno;
 			break;
 		}
+		atomic_fetch_add_explicit(&np2_dosio_read_bytes, total,
+			memory_order_relaxed);
 		return total;
 	}
 	return 0;
