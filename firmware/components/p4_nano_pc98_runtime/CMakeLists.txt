@@ -19,6 +19,7 @@ idf_component_register(
                  "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/compat"
                  "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner"
     PRIV_REQUIRES np2runtime np2host p4_nano_live_display_session
+                 np2_keyboard_input_bridge
                  storage_sdmmc storage_fatfs freertos esp_timer)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

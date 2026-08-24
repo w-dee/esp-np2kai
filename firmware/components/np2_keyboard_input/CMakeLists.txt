@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "keyboard_input.cpp"
+    SRCS "keyboard_input.cpp" "ownership.cpp"
     INCLUDE_DIRS "include")
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

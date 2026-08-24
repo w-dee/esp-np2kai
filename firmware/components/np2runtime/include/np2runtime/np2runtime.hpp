@@ -110,12 +110,15 @@ private:
         static_cast<std::uint32_t>(TerminalOutcome::OpenNone)};
 };
 
-/* Runtime owns only NP2 core state in Slice A.  The caller supplies the task
- * on which initialize() and run() execute; no task or heap object is created
- * by this class. */
+/* Runtime owns only NP2 core state.  The caller supplies the task on which
+ * initialize() and run() execute; no task, input queue, or heap object is
+ * created by this class. */
 class Runtime final {
 public:
-    using StopObserver = bool (*)(void *) noexcept;
+    using OwnerIterationObserver = bool (*)(void *) noexcept;
+    /* Source compatibility for existing callers; the hook is now a neutral
+     * owner-iteration/pre-cleanup callback rather than a stop-only observer. */
+    using StopObserver = OwnerIterationObserver;
 
     Runtime() noexcept = default;
     Runtime(const Runtime &) = delete;
@@ -125,7 +128,7 @@ public:
     Result initialize(
         std::optional<std::uint8_t> fddequip_override = std::nullopt) noexcept;
     Result run() noexcept;
-    Result run(StopObserver observer, void *observer_context) noexcept;
+    Result run(OwnerIterationObserver observer, void *observer_context) noexcept;
     bool request_stop() noexcept;
 
     State state() const noexcept { return lifecycle_.state(); }
@@ -133,10 +136,13 @@ public:
     bool failure() const noexcept { return lifecycle_.failure(); }
 
 private:
-    Result cleanup() noexcept;
+    Result cleanup(OwnerIterationObserver observer = nullptr,
+                   void *observer_context = nullptr) noexcept;
 
     Lifecycle lifecycle_;
     bool core_initialized_ = false;
+    OwnerIterationObserver owner_observer_ = nullptr;
+    void *owner_observer_context_ = nullptr;
 };
 
 } // namespace np2runtime

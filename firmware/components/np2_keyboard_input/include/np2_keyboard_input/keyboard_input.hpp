@@ -124,6 +124,9 @@ enum class Key : std::uint8_t {
     Stop,
     Copy,
 
+    // Sentinel for fixed-size ownership state; it is not a producer key.
+    Count,
+
     // Names used by PC-98 documentation remain available without making
     // their spelling part of the mapping implementation.
     STOP = Stop,

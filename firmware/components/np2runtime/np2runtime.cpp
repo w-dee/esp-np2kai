@@ -59,21 +59,22 @@ Result Runtime::run() noexcept
     return run(nullptr, nullptr);
 }
 
-Result Runtime::run(const StopObserver observer,
+Result Runtime::run(const OwnerIterationObserver observer,
                     void *const observer_context) noexcept
 {
+    owner_observer_ = observer;
+    owner_observer_context_ = observer_context;
     if (!lifecycle_.begin_running()) {
         if (lifecycle_.state() == State::StopRequested) {
-            return cleanup();
+            return cleanup(observer, observer_context);
         }
         return Result::InvalidState;
     }
 
     while (!lifecycle_.stop_requested()) {
-        /* The owner task uses this display-agnostic hook to detach a borrowed
-         * producer before requesting the core stop.  It is sampled on the
-         * same task that calls pccore_exec(), so no new publish can race the
-         * detach operation. */
+        /* The caller owns this task-affine pre-exec boundary.  It is sampled
+         * on the same task that calls pccore_exec(), so producer state can be
+         * drained and any stop-time cleanup can be serialized with the core. */
         if (observer != nullptr && observer(observer_context)) {
             (void)lifecycle_.request_stop();
             break;
@@ -91,7 +92,7 @@ Result Runtime::run(const StopObserver observer,
         }
     }
 
-    return cleanup();
+    return cleanup(observer, observer_context);
 }
 
 bool Runtime::request_stop() noexcept
@@ -99,7 +100,8 @@ bool Runtime::request_stop() noexcept
     return lifecycle_.request_stop();
 }
 
-Result Runtime::cleanup() noexcept
+Result Runtime::cleanup(const OwnerIterationObserver observer,
+                        void *const observer_context) noexcept
 {
     if (!lifecycle_.begin_stopping()) {
         if (lifecycle_.state() == State::Stopped) {
@@ -112,9 +114,18 @@ Result Runtime::cleanup() noexcept
     }
 
     if (core_initialized_) {
+        const OwnerIterationObserver cleanup_observer =
+            observer != nullptr ? observer : owner_observer_;
+        void *const cleanup_context =
+            observer != nullptr ? observer_context : owner_observer_context_;
+        if (cleanup_observer != nullptr) {
+            (void)cleanup_observer(cleanup_context);
+        }
         pccore_term();
         core_initialized_ = false;
     }
+    owner_observer_ = nullptr;
+    owner_observer_context_ = nullptr;
     (void)lifecycle_.finish_cleanup();
     return lifecycle_.failure() ? Result::RuntimeFailed : Result::Stopped;
 }

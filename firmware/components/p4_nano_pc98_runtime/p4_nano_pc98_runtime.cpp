@@ -25,6 +25,7 @@ extern "C" {
 }
 
 #include "np2host/dosio_esp.h"
+#include "np2_keyboard_input_bridge/keyboard_input_bridge.hpp"
 #include "np2runtime/np2runtime.hpp"
 #include "p4_nano_live_display_session/session.hpp"
 #include "p4_nano_pc98_runtime/runtime_contract.hpp"
@@ -73,6 +74,7 @@ struct Composition final {
     storage_fatfs::MountProvider persist_provider{};
     storage_fatfs::FatfsMountBackend *mount_backend = nullptr;
     p4_nano_live_display_session::Session session{};
+    np2_keyboard_input_bridge::KeyboardInputBridge keyboard{};
     np2runtime::Runtime runtime{};
     SemaphoreHandle_t ready_semaphore = nullptr;
     SemaphoreHandle_t stopped_semaphore = nullptr;
@@ -86,6 +88,7 @@ struct Composition final {
     bool dosio_attached = false;
     bool fdd_attached = false;
     bool ready_signaled = false;
+    bool keyboard_status_reported = false;
 };
 
 void emit(const char *format, ...)
@@ -135,7 +138,7 @@ void observe_guest_completion(Composition *composition) noexcept
 }
 #endif
 
-bool stop_observer(void *context) noexcept
+bool owner_iteration(void *context) noexcept
 {
     auto *composition = static_cast<Composition *>(context);
     if (composition == nullptr) {
@@ -150,18 +153,31 @@ bool stop_observer(void *context) noexcept
 #else
     constexpr bool guest_terminal = false;
 #endif
-    if (!composition->stop_requested.load(std::memory_order_acquire) &&
-        !guest_terminal) {
-        return false;
+    if (composition->stop_requested.load(std::memory_order_acquire) ||
+        guest_terminal || composition->runtime.failure()) {
+        /* Runtime invokes this boundary before pccore_term(), including its
+         * fatal cleanup path.  Release keyboard state before core cleanup,
+         * then detach display publication and request the stop. */
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
     }
-    /* Runtime calls this on the owner task immediately before its next
-     * pccore_exec().  Detaching here is the synchronization boundary that
-     * prevents a new scrnmng publish from entering Session after stop.  The
-     * FDD remains attached until Runtime::run() returns and pccore_term()
-     * has completed; the composition then ejects it before DOSIO/unmount. */
-    composition->session.detach_source();
-    (void)composition->runtime.request_stop();
-    return true;
+
+    const auto input_result = composition->keyboard.owner_iteration();
+    if ((input_result ==
+             np2_keyboard_input_bridge::OwnerIterationResult::Recovered ||
+         input_result ==
+             np2_keyboard_input_bridge::OwnerIterationResult::Quarantined) &&
+        !composition->keyboard_status_reported) {
+        composition->keyboard_status_reported = true;
+        const auto counters = composition->keyboard.counters();
+        emit("P4_NANO_KEYBOARD=QUARANTINED queue_overflows=%" PRIu32
+             " recoveries=%" PRIu32 "\n",
+             counters.queue_overflows,
+             counters.ownership.global_recoveries);
+    }
+    return false;
 }
 
 void signal_ready(Composition *composition, esp_err_t result) noexcept
@@ -203,6 +219,16 @@ void cleanup_after_owner_join(Composition *composition) noexcept
     }
 }
 
+void stop_runtime_after_setup_failure(Composition *composition) noexcept
+{
+    if (composition == nullptr) {
+        return;
+    }
+    composition->keyboard.shutdown();
+    (void)composition->runtime.request_stop();
+    (void)composition->runtime.run();
+}
+
 void owner_task(void *context)
 {
     auto *composition = static_cast<Composition *>(context);
@@ -211,21 +237,29 @@ void owner_task(void *context)
         return;
     }
 
+    const bool keyboard_initialized = composition->keyboard.initialize();
     const np2runtime::Result runtime_init =
-        composition->runtime.initialize(
-            p4_nano_pc98_runtime::kFdd0OnlyEquipment);
+        keyboard_initialized
+            ? composition->runtime.initialize(
+                  p4_nano_pc98_runtime::kFdd0OnlyEquipment)
+            : np2runtime::Result::InitializationFailed;
+    if (!keyboard_initialized) {
+        emit("P4_NANO_RUNTIME_RESULT=FAIL reason=KEYBOARD_INIT_FAILED\n");
+        signal_ready(composition, ESP_FAIL);
+        goto done;
+    }
     if (runtime_init != np2runtime::Result::Ok) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=RUNTIME_INIT_FAILED\n");
         signal_ready(composition, ESP_FAIL);
         composition->owner_result = ESP_FAIL;
         goto done;
     }
+    composition->keyboard.set_core_active(true);
 
     if (!scrnmng_initialize()) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=SCRNMNG_INIT_FAILED\n");
         signal_ready(composition, ESP_FAIL);
-        (void)composition->runtime.request_stop();
-        (void)composition->runtime.run();
+        stop_runtime_after_setup_failure(composition);
         composition->owner_result = ESP_FAIL;
         goto done;
     }
@@ -234,8 +268,7 @@ void owner_task(void *context)
     if (composition->session.attach_source() != ESP_OK) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=DISPLAY_PUBLISH_FAILED\n");
         signal_ready(composition, ESP_FAIL);
-        (void)composition->runtime.request_stop();
-        (void)composition->runtime.run();
+        stop_runtime_after_setup_failure(composition);
         composition->owner_result = ESP_FAIL;
         goto done;
     }
@@ -244,8 +277,7 @@ void owner_task(void *context)
                                    composition->media.physical_path.data())) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=DOSIO_MAP_FAILED\n");
         signal_ready(composition, ESP_FAIL);
-        (void)composition->runtime.request_stop();
-        (void)composition->runtime.run();
+        stop_runtime_after_setup_failure(composition);
         composition->owner_result = ESP_FAIL;
         goto done;
     }
@@ -261,8 +293,7 @@ void owner_task(void *context)
         !fdd_diskready(composition->media.fdd_unit)) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=FDD_ATTACH_FAILED\n");
         signal_ready(composition, ESP_FAIL);
-        (void)composition->runtime.request_stop();
-        (void)composition->runtime.run();
+        stop_runtime_after_setup_failure(composition);
         composition->owner_result = ESP_FAIL;
         goto done;
     }
@@ -275,7 +306,8 @@ void owner_task(void *context)
     if (!composition->validation) {
         emit("P4_NANO_RUNTIME_RESULT=RUNNING\n");
     }
-    (void)composition->runtime.run(stop_observer, composition);
+    (void)composition->runtime.run(owner_iteration, composition);
+    composition->keyboard.set_core_active(false);
     if (composition->runtime.failure()) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=RUNTIME_FATAL\n");
         composition->owner_result = ESP_FAIL;
@@ -284,6 +316,25 @@ void owner_task(void *context)
     }
 
 done:
+    composition->keyboard.set_core_active(false);
+    composition->keyboard.shutdown();
+    {
+        const auto counters = composition->keyboard.counters();
+        emit("P4_NANO_KEYBOARD_COUNTERS enqueued=%" PRIu32
+             " dequeued=%" PRIu32 " queue_overflows=%" PRIu32
+             " rejected=%" PRIu32 " blocked=%" PRIu32
+             " press=%" PRIu32 " release=%" PRIu32
+             " duplicate=%" PRIu32 " invalid=%" PRIu32
+             " disconnects=%" PRIu32 " recoveries=%" PRIu32 "\n",
+             counters.enqueued, counters.dequeued, counters.queue_overflows,
+             counters.queue_rejected, counters.blocked_events,
+             counters.ownership.press_injected,
+             counters.ownership.release_injected,
+             counters.ownership.duplicate_suppressed,
+             counters.ownership.invalid_rejected,
+             counters.ownership.source_disconnects,
+             counters.ownership.global_recoveries);
+    }
     composition->owner_done.store(true, std::memory_order_release);
     if (composition->stopped_semaphore != nullptr) {
         (void)xSemaphoreGive(composition->stopped_semaphore);

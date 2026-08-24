@@ -207,6 +207,7 @@ std::optional<FrontendKeyId> to_frontend_key_id(Key key) noexcept
     case Key::Copy:
         return FrontendKeyId::Copy;
     case Key::Unknown:
+    case Key::Count:
         return std::nullopt;
     }
     return std::nullopt;

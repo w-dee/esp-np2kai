@@ -1,5 +1,6 @@
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <thread>
 
@@ -99,5 +100,20 @@ int main()
     assert(run_result == np2runtime::Result::Stopped);
     assert(runtime.state() == np2runtime::State::Stopped);
     assert(!runtime.failure());
+
+    struct OwnerObserverContext {
+        std::uint32_t calls = 0;
+    } observer_context;
+    const auto stop_before_exec = [](void *context) noexcept {
+        auto *observer = static_cast<OwnerObserverContext *>(context);
+        ++observer->calls;
+        return true;
+    };
+    np2runtime::Runtime observed_runtime;
+    assert(observed_runtime.initialize() == np2runtime::Result::Ok);
+    assert(observed_runtime.run(stop_before_exec, &observer_context) ==
+           np2runtime::Result::Stopped);
+    assert(observer_context.calls >= 1U);
+    assert(observed_runtime.state() == np2runtime::State::Stopped);
     return 0;
 }
