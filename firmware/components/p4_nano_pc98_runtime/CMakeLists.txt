@@ -20,6 +20,9 @@ endif()
 set(P4_NANO_PC98_RUNTIME_REQUIRES
     np2runtime np2host p4_nano_live_display_session np2_keyboard_input_bridge
     storage_sdmmc storage_fatfs freertos esp_timer)
+if(P4_NANO_REAL_RUNTIME_PROFILE)
+    list(APPEND P4_NANO_PC98_RUNTIME_REQUIRES p4_nano_usb_keyboard)
+endif()
 set(P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
     "include"
     "${P4_NANO_PC98_RUNTIME_VENDOR_SRC}"
@@ -29,6 +32,10 @@ set(P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
 if(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     list(APPEND P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
          "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/np2_keyboard_validation/include")
+endif()
+if(P4_NANO_REAL_RUNTIME_PROFILE)
+    list(APPEND P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/p4_nano_usb_keyboard/include")
 endif()
 
 idf_component_register(
@@ -49,9 +56,16 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     DISABLE_SOUND SUPPORT_KAI_IMAGES SUPPORT_FAST_MEMORYCHECK SUPPORT_16BPP
     BYTESEX_LITTLE OSLANG_UTF8 SUPPORT_UTF8 NP2_FIRMWARE_DOSIO)
+if(P4_NANO_REAL_RUNTIME_PROFILE)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE idf::p4_nano_usb_keyboard)
+endif()
 if(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_RUNTIME_VALIDATION_PROFILE=1)
+endif()
+if(P4_NANO_REAL_RUNTIME_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_REAL_RUNTIME_PROFILE=1)
 endif()
 if(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE

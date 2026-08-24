@@ -38,6 +38,9 @@ extern "C" {
 #include "np2_keyboard_validation/validation_controller.hpp"
 #endif
 #include "np2runtime/np2runtime.hpp"
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#include "p4_nano_usb_keyboard/producer.hpp"
+#endif
 #include "p4_nano_live_display_session/session.hpp"
 #include "p4_nano_pc98_runtime/runtime_contract.hpp"
 #include "storage_fatfs/storage_fatfs.hpp"
@@ -110,6 +113,9 @@ struct Composition final {
     storage_fatfs::FatfsMountBackend *mount_backend = nullptr;
     p4_nano_live_display_session::Session session{};
     np2_keyboard_input_bridge::KeyboardInputBridge keyboard{};
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    p4_nano_usb_keyboard::Producer usb_keyboard{};
+#endif
     np2runtime::Runtime runtime{};
     SemaphoreHandle_t ready_semaphore = nullptr;
     SemaphoreHandle_t stopped_semaphore = nullptr;
@@ -402,6 +408,9 @@ bool owner_iteration_keyboard(Composition *composition) noexcept
         return false;
     }
     if (composition->stop_requested.load(std::memory_order_acquire)) {
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+        composition->usb_keyboard.stop();
+#endif
         if (composition->keyboard_validation.state() !=
                 np2_keyboard_validation::State::Complete &&
             composition->keyboard_validation.state() !=
@@ -416,6 +425,9 @@ bool owner_iteration_keyboard(Composition *composition) noexcept
         return true;
     }
     if (composition->runtime.failure()) {
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+        composition->usb_keyboard.request_stop();
+#endif
         const auto failure = composition->keyboard_validation.fail(
             np2_keyboard_validation::FailureReason::RuntimeFatal);
         emit_keyboard_proof_failure(composition, failure);
@@ -598,6 +610,9 @@ bool owner_iteration(void *context) noexcept
         /* Runtime invokes this boundary before pccore_term(), including its
          * fatal cleanup path.  Release keyboard state before core cleanup,
          * then detach display publication and request the stop. */
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+        composition->usb_keyboard.stop();
+#endif
         composition->keyboard.shutdown();
         composition->session.detach_source();
         (void)composition->runtime.request_stop();
@@ -758,6 +773,9 @@ void owner_task(void *context)
         emit("P4_NANO_RUNTIME_RESULT=RUNNING\n");
     }
     (void)composition->runtime.run(owner_iteration, composition);
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    composition->usb_keyboard.stop();
+#endif
     composition->keyboard.set_core_active(false);
     if (composition->runtime.failure()) {
         emit("P4_NANO_RUNTIME_RESULT=FAIL reason=RUNTIME_FATAL\n");
@@ -768,6 +786,9 @@ void owner_task(void *context)
 
 done:
     composition->keyboard.set_core_active(false);
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    composition->usb_keyboard.stop();
+#endif
     composition->keyboard.shutdown();
     {
         const auto counters = composition->keyboard.counters();
@@ -919,6 +940,12 @@ esp_err_t run_composition(const ValidationKind validation_kind,
         composition.stop_requested.store(true, std::memory_order_release);
     }
 
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    if (!composition.stop_requested.load(std::memory_order_acquire)) {
+        (void)composition.usb_keyboard.start(composition.keyboard);
+    }
+#endif
+
     bool visible_reported = false;
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
     defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
@@ -958,6 +985,10 @@ esp_err_t run_composition(const ValidationKind validation_kind,
         vTaskDelete(composition.owner_task);
         composition.owner_task = nullptr;
     }
+
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+    composition.usb_keyboard.stop();
+#endif
 
     cleanup_after_owner_join(&composition);
 
