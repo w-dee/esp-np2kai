@@ -62,7 +62,7 @@ esp_err_t sync_framebuffer(std::uint16_t *framebuffer)
         ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
 
-#if !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if !defined(P4_NANO_RUNTIME_EMU_BACKEND)
 void remember_first_error(esp_err_t *first_error, esp_err_t candidate)
 {
     if (*first_error == ESP_OK && candidate != ESP_OK) {
@@ -73,7 +73,7 @@ void remember_first_error(esp_err_t *first_error, esp_err_t candidate)
 
 esp_err_t cleanup(p4_nano_display::DisplaySession *resources)
 {
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_EMU_BACKEND)
     if (resources->framebuffer != nullptr) {
         heap_caps_free(resources->framebuffer);
         resources->framebuffer = nullptr;
@@ -137,7 +137,7 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     if (resources == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_EMU_BACKEND)
     /* esp-emu has no MIPI-DSI panel model.  The bounded validation profile
      * keeps the real Session transform and external native framebuffer while
      * leaving the production hardware path untouched. */

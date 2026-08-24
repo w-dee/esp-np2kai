@@ -322,7 +322,7 @@ ConsumeResult Session::consume_one(FrameObserver observer,
     }
 
     if (!first_frame_.visible) {
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_EMU_BACKEND)
         (void)first_frame_.mark_valid_frame();
 #else
         if (p4_nano_board::display_backlight_set(

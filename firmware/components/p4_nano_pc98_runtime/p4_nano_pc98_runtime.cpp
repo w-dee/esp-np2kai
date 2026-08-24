@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <sys/stat.h>
 
@@ -15,6 +16,10 @@
 
 extern "C" {
 #include <compiler.h>
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#include <cpumem.h>
+#include <result_v1_parser.h>
+#endif
 #include <diskimage/fddfile.h>
 #include <scrnmng.h>
 }
@@ -35,17 +40,34 @@ constexpr TickType_t kStartupTimeoutTicks = pdMS_TO_TICKS(30000U) == 0U
                                                  ? 1U
                                                  : pdMS_TO_TICKS(30000U);
 constexpr TickType_t kConsumerDelayTicks = 1U;
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+constexpr std::uintptr_t kResultPhysicalAddress = 0x29000U;
+#endif
+
+enum class GuestCompletion : std::uint8_t {
+    Unknown,
+    Pass,
+    Fail,
+};
 
 struct Composition final {
-    explicit Composition(bool validation_profile) noexcept
+    explicit Composition(bool validation_profile, bool emu_backend) noexcept
         : validation(validation_profile),
+          emu(emu_backend),
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
           media(validation_profile
-                    ? p4_nano_pc98_runtime::validation_media_config()
+                    ? (emu_backend
+                           ? p4_nano_pc98_runtime::validation_media_config()
+                           : p4_nano_pc98_runtime::hardware_validation_media_config())
                     : p4_nano_pc98_runtime::production_media_config())
+#else
+          media(p4_nano_pc98_runtime::production_media_config())
+#endif
     {
     }
 
     bool validation;
+    bool emu;
     p4_nano_pc98_runtime::MediaConfig media;
     storage_sdmmc::SdmmcMountProvider sd_provider{};
     storage_fatfs::MountProvider persist_provider{};
@@ -57,6 +79,7 @@ struct Composition final {
     TaskHandle_t owner_task = nullptr;
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> owner_done{false};
+    std::atomic<GuestCompletion> guest_completion{GuestCompletion::Unknown};
     esp_err_t owner_result = ESP_FAIL;
     bool mounted = false;
     bool scrnmng_initialized = false;
@@ -74,11 +97,61 @@ void emit(const char *format, ...)
     std::fflush(stdout);
 }
 
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+void observe_guest_completion(Composition *composition) noexcept
+{
+    if (composition == nullptr || !composition->validation) {
+        return;
+    }
+
+    /* The guest publishes CRC-protected result-v1 with state last.  A local
+     * snapshot prevents the parser from observing a moving memory window;
+     * the parser's CRC and reserved-field checks reject torn snapshots. */
+    std::uint8_t snapshot[NP2_RESULT_V1_SIZE];
+    std::memcpy(snapshot, mem + kResultPhysicalAddress, sizeof(snapshot));
+    np2_result_v1_result parsed{};
+    const np2_result_v1_observation observation = np2_result_v1_parse(
+        snapshot, sizeof(snapshot), &parsed);
+    GuestCompletion completion = GuestCompletion::Unknown;
+    if (observation == NP2_RESULT_V1_PASS) {
+        completion = GuestCompletion::Pass;
+    } else if (observation == NP2_RESULT_V1_FAIL) {
+        completion = GuestCompletion::Fail;
+    }
+    if (completion == GuestCompletion::Unknown) {
+        return;
+    }
+    if (composition->guest_completion.exchange(completion,
+                                               std::memory_order_acq_rel) ==
+        completion) {
+        return;
+    }
+    emit("P4_NANO_RUNTIME_GUEST_COMPLETION=%s completed=%u passed=%u "
+         "failed=%u\n",
+         completion == GuestCompletion::Pass ? "PASS" : "FAIL",
+         static_cast<unsigned>(parsed.completed_count),
+         static_cast<unsigned>(parsed.passed_count),
+         static_cast<unsigned>(parsed.failed_count));
+}
+#endif
+
 bool stop_observer(void *context) noexcept
 {
     auto *composition = static_cast<Composition *>(context);
-    if (composition == nullptr ||
-        !composition->stop_requested.load(std::memory_order_acquire)) {
+    if (composition == nullptr) {
+        return false;
+    }
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    observe_guest_completion(composition);
+    const GuestCompletion guest_completion =
+        composition->guest_completion.load(std::memory_order_acquire);
+    const bool guest_terminal =
+        guest_completion != GuestCompletion::Unknown;
+#else
+    constexpr bool guest_terminal = false;
+#endif
+    if (!composition->stop_requested.load(std::memory_order_acquire) &&
+        !guest_terminal) {
         return false;
     }
     /* Runtime calls this on the owner task immediately before its next
@@ -243,18 +316,30 @@ void destroy_sync(Composition *composition) noexcept
     }
 }
 
-esp_err_t run_composition(bool validation_profile) noexcept
+esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
 {
-    Composition composition(validation_profile);
+    Composition composition(validation_profile, emu_backend);
     const auto &media = composition.media;
 
-    if (validation_profile) {
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    if (validation_profile && !emu_backend) {
+        if (composition.sd_provider.mount() != ESP_OK) {
+            emit("P4_NANO_RUNTIME_SD_MOUNT=FAIL reason=SD_MOUNT_FAILED\n");
+            return ESP_FAIL;
+        }
+        composition.mount_backend = &composition.sd_provider;
+    } else if (validation_profile) {
         if (composition.persist_provider.mount() != ESP_OK) {
             emit("P4_NANO_RUNTIME_RESULT=FAIL reason=SPI_NOR_MOUNT_FAILED\n");
             return ESP_FAIL;
         }
         composition.mount_backend = &composition.persist_provider;
-    } else {
+    } else
+#else
+    (void)validation_profile;
+    (void)emu_backend;
+#endif
+    {
         if (composition.sd_provider.mount() != ESP_OK) {
             emit("P4_NANO_RUNTIME_SD_MOUNT=FAIL reason=SD_MOUNT_FAILED\n");
             return ESP_FAIL;
@@ -263,8 +348,9 @@ esp_err_t run_composition(bool validation_profile) noexcept
     }
     composition.mounted = true;
     emit("P4_NANO_RUNTIME_SD_MOUNT=PASS mount=%s\n",
-         validation_profile ? storage_fatfs::kMountPath
-                            : storage_sdmmc::kMountPath);
+         composition.mount_backend == &composition.persist_provider
+             ? storage_fatfs::kMountPath
+             : storage_sdmmc::kMountPath);
 
     if (!media_exists(media)) {
         emit("P4_NANO_RUNTIME_MEDIA result=NOT_FOUND path=%s\n",
@@ -316,9 +402,10 @@ esp_err_t run_composition(bool validation_profile) noexcept
     }
 
     bool visible_reported = false;
-    bool validation_stop = false;
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     const std::int64_t validation_deadline =
         esp_timer_get_time() + 30LL * 1000LL * 1000LL;
+#endif
     while (!composition.owner_done.load(std::memory_order_acquire)) {
         const auto consume = composition.session.consume_one();
         if (consume == p4_nano_live_display_session::ConsumeResult::Failed) {
@@ -332,16 +419,12 @@ esp_err_t run_composition(bool validation_profile) noexcept
 
         np2_dosio_stats stats{};
         np2_dosio_stats_get(&stats);
-        const auto &counters = composition.session.counters();
-        if (validation_profile && stats.read_bytes > 0U &&
-            counters.transformed > 0U) {
-            validation_stop = true;
-            composition.stop_requested.store(true, std::memory_order_release);
-        }
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
         if (validation_profile && esp_timer_get_time() >= validation_deadline) {
             emit("P4_NANO_RUNTIME_RESULT=FAIL reason=VALIDATION_TIMEOUT\n");
             composition.stop_requested.store(true, std::memory_order_release);
         }
+#endif
         vTaskDelay(kConsumerDelayTicks);
     }
 
@@ -359,10 +442,15 @@ esp_err_t run_composition(bool validation_profile) noexcept
     np2_dosio_stats stats{};
     np2_dosio_stats_get(&stats);
     const auto &counters = composition.session.counters();
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     const bool validation_pass =
-        validation_profile && validation_stop && !composition.session.failed() &&
+        validation_profile &&
+        composition.guest_completion.load(std::memory_order_acquire) ==
+            GuestCompletion::Pass &&
+        !composition.session.failed() &&
         stats.read_bytes > 0U && counters.submitted > 0U &&
         counters.transformed > 0U && counters.released > 0U;
+#endif
 
     (void)composition.session.shutdown();
     if (composition.mounted && composition.mount_backend != nullptr) {
@@ -377,13 +465,19 @@ esp_err_t run_composition(bool validation_profile) noexcept
          "\n",
          counters.submitted, counters.acquired, counters.transformed,
          counters.released, counters.dropped);
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     if (validation_profile) {
         emit("P4_NANO_RUNTIME_VALIDATION_RESULT=%s\n",
              validation_pass ? "PASS" : "FAIL");
     }
+#endif
     destroy_sync(&composition);
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     return validation_profile ? (validation_pass ? ESP_OK : ESP_FAIL)
                               : composition.owner_result;
+#else
+    return composition.owner_result;
+#endif
 }
 
 } // namespace
@@ -392,12 +486,18 @@ namespace p4_nano_pc98_runtime {
 
 esp_err_t run_production() noexcept
 {
-    return run_composition(false);
+    return run_composition(false, false);
 }
 
 esp_err_t run_validation() noexcept
 {
-    return run_composition(true);
+    return run_composition(true,
+#if defined(P4_NANO_RUNTIME_EMU_BACKEND)
+                           true
+#else
+                           false
+#endif
+    );
 }
 
 } // namespace p4_nano_pc98_runtime

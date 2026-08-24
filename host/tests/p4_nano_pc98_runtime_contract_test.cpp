@@ -9,13 +9,22 @@ int main()
         p4_nano_pc98_runtime::production_media_config();
     const auto validation =
         p4_nano_pc98_runtime::validation_media_config();
+    const auto hardware_validation =
+        p4_nano_pc98_runtime::hardware_validation_media_config();
     assert(production.physical_path == "/sdcard/files/pc98/fdd/boot.hdm");
     assert(production.logical_path == "./runtime-fdd0.hdm");
     assert(production.fdd_unit == 0U);
     assert(validation.physical_path == "/persist/fixtures/np2test-fd1232.hdm");
     assert(validation.logical_path == "./runtime-validation-fdd0.hdm");
     assert(validation.fdd_unit == 0U);
+    assert(hardware_validation.physical_path ==
+           "/sdcard/files/pc98/fdd/runtime-validation.hdm");
+    assert(hardware_validation.logical_path ==
+           "./runtime-validation-fdd0.hdm");
+    assert(hardware_validation.fdd_unit == 0U);
     assert(production.physical_path != validation.physical_path);
+    assert(production.physical_path != hardware_validation.physical_path);
+    assert(validation.physical_path != hardware_validation.physical_path);
     assert(p4_nano_pc98_runtime::kFdd0OnlyEquipment == 1U);
 
     using p4_nano_pc98_runtime::CleanupStage;

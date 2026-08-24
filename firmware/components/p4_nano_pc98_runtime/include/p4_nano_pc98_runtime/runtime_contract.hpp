@@ -24,6 +24,12 @@ inline constexpr MediaConfig validation_media_config() noexcept
             "./runtime-validation-fdd0.hdm", 0U};
 }
 
+inline constexpr MediaConfig hardware_validation_media_config() noexcept
+{
+    return {"/sdcard/files/pc98/fdd/runtime-validation.hdm",
+            "./runtime-validation-fdd0.hdm", 0U};
+}
+
 /* Runtime::cleanup() terminates pccore on the owner task before that task is
  * joined; only then can the composition eject the drive and tear down VFS.
  * This is the dependency-safe realization of the public cleanup contract. */

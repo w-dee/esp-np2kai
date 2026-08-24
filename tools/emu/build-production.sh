@@ -31,6 +31,9 @@ live_display_transform_isolated_benchmark_variant=""
 real_runtime=0
 real_runtime_variant=""
 runtime_validation=0
+runtime_validation_board=""
+runtime_validation_variant=""
+runtime_emu_backend=0
 esp_emu_test=0
 while (($# > 0)); do
     case "$1" in
@@ -220,8 +223,16 @@ if (( real_runtime )); then
 fi
 
 if (( runtime_validation )); then
-    if [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ]]; then
-        printf 'ERROR: --runtime-validation requires the generic p4-v3x emulator build\n' >&2
+    runtime_validation_board=1
+    runtime_validation_variant="${variant}"
+    if (( esp_emu_test )); then
+        if [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ]]; then
+            printf 'ERROR: --runtime-validation --esp-emu-test requires generic p4-v3x\n' >&2
+            exit 2
+        fi
+        runtime_emu_backend=1
+    elif [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: hardware --runtime-validation requires p4-v1x p4-nano\n' >&2
         exit 2
     fi
 fi
@@ -399,6 +410,9 @@ cmake_args=(
     -D "P4_NANO_REAL_RUNTIME_BOARD=${real_runtime}"
     -D "P4_NANO_REAL_RUNTIME_VARIANT=${real_runtime_variant}"
     -D "P4_NANO_RUNTIME_VALIDATION_PROFILE=${runtime_validation}"
+    -D "P4_NANO_RUNTIME_VALIDATION_BOARD=${runtime_validation_board}"
+    -D "P4_NANO_RUNTIME_VALIDATION_VARIANT=${runtime_validation_variant}"
+    -D "P4_NANO_RUNTIME_EMU_BACKEND=${runtime_emu_backend}"
     -D "NP2VIDEO_CONTINUOUS_PROFILE=$((live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
@@ -425,8 +439,17 @@ else
 fi
 if (( runtime_validation )); then
     export P4_NANO_RUNTIME_VALIDATION_PROFILE=1
+    export P4_NANO_RUNTIME_VALIDATION_BOARD=1
+    export P4_NANO_RUNTIME_VALIDATION_VARIANT="${runtime_validation_variant}"
 else
     unset P4_NANO_RUNTIME_VALIDATION_PROFILE
+    unset P4_NANO_RUNTIME_VALIDATION_BOARD
+    unset P4_NANO_RUNTIME_VALIDATION_VARIANT
+fi
+if (( runtime_emu_backend )); then
+    export P4_NANO_RUNTIME_EMU_BACKEND=1
+else
+    unset P4_NANO_RUNTIME_EMU_BACKEND
 fi
 if (( live_display )); then
     export P4_NANO_LIVE_DISPLAY_PROFILE=1

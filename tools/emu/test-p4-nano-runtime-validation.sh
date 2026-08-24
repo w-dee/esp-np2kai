@@ -44,6 +44,7 @@ grep -Fq 'P4_NANO_RUNTIME_DOSIO=READY logical=./runtime-validation-fdd0.hdm' "${
 grep -Fq 'P4_NANO_RUNTIME_FDD0=ATTACHED type=autodetect readonly=1 fddequip=0x01' "${EMULATOR_LOG}" || fail 'FDD0 attach proof missing'
 grep -Fq 'P4_NANO_RUNTIME_CORE=RUNNING' "${EMULATOR_LOG}" || fail 'runtime start proof missing'
 grep -Fq 'P4_NANO_RUNTIME_DISPLAY=VISIBLE' "${EMULATOR_LOG}" || fail 'display/session proof missing'
+grep -Eq 'P4_NANO_RUNTIME_GUEST_COMPLETION=PASS completed=13 passed=13 failed=0' "${EMULATOR_LOG}" || fail 'guest completion proof missing'
 grep -Eq 'P4_NANO_RUNTIME_DISK_READS opens=[1-9][0-9]* calls=[1-9][0-9]* bytes=[1-9][0-9]*' "${EMULATOR_LOG}" || fail 'disk read proof missing'
 grep -Eq 'P4_NANO_RUNTIME_SESSION submitted=[1-9][0-9]* acquired=[1-9][0-9]* transformed=[1-9][0-9]* released=[1-9][0-9]*' "${EMULATOR_LOG}" || fail 'session counter proof missing'
 grep -Fq 'P4_NANO_RUNTIME_VALIDATION_RESULT=PASS' "${EMULATOR_LOG}" || fail 'validation did not pass'
