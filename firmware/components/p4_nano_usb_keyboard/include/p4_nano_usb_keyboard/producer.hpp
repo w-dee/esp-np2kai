@@ -29,6 +29,12 @@ enum class State : std::uint8_t {
     Ready,
     Disabled,
     Stopping,
+    TeardownFailed,
+};
+
+enum class StopResult : std::uint8_t {
+    Clean,
+    Failed,
 };
 
 enum class RawEventKind : std::uint8_t {
@@ -78,7 +84,7 @@ public:
     void request_stop() noexcept;
 
     /* Wait for producer-owned tasks and USB/HID teardown with bounded waits. */
-    void stop() noexcept;
+    StopResult stop() noexcept;
 
     State state() const noexcept
     {
@@ -120,10 +126,11 @@ private:
     void disable_for_fault(const char *reason,
                            bool source_cleanup) noexcept;
     void stop_active_device() noexcept;
-    void teardown_usb_and_hid() noexcept;
+    bool teardown_usb_and_hid() noexcept;
     void emit_disabled_once(const char *reason) noexcept;
     void emit_counters_once() noexcept;
     void increment_fatal_once(const char *reason) noexcept;
+    void mark_teardown_failed(const char *reason) noexcept;
 
     np2_keyboard_input_bridge::KeyboardInputBridge *bridge_ = nullptr;
     QueueHandle_t raw_queue_ = nullptr;
@@ -144,11 +151,15 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> accepting_{false};
     std::atomic<bool> producer_done_flag_{false};
+    std::atomic<bool> hid_done_flag_{false};
+    std::atomic<bool> usb_done_flag_{false};
     std::atomic<bool> start_result_{false};
     std::atomic<bool> fault_latched_{false};
     std::atomic<bool> source_cleanup_requested_{false};
     std::atomic<bool> bridge_failure_{false};
     std::atomic<bool> bridge_calls_allowed_{false};
+    std::atomic<bool> teardown_failed_{false};
+    std::atomic<bool> teardown_failure_reported_{false};
     std::atomic<State> state_{State::Stopped};
     std::atomic<std::uint32_t> reports_received_{0U};
     std::atomic<std::uint32_t> reports_clean_{0U};

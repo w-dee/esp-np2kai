@@ -155,6 +155,8 @@ USB_HID_KEYBOARD_ADAPTER_TEST_OUTPUT := $(BUILD_DIR)/tests/usb_hid_keyboard_adap
 P4_NANO_PC98_RUNTIME_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_pc98_runtime/include
 P4_NANO_PC98_RUNTIME_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_pc98_runtime_contract_test.cpp
 P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_pc98_runtime_contract_test
+P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_usb_keyboard_teardown_contract_test.cpp
+P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_usb_keyboard_teardown_contract_test
 NP2_KEYBOARD_VALIDATION_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2_keyboard_validation/include
 NP2_KEYBOARD_VALIDATION_SOURCE := $(HOST_ROOT)/firmware/components/np2_keyboard_validation/validation_controller.cpp
 NP2_KEYBOARD_VALIDATION_TEST_SOURCE := $(CURDIR)/tests/np2_keyboard_validation_test.cpp
@@ -224,7 +226,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-p4-nano-pc98-runtime-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -700,13 +702,20 @@ test-np2runtime-machine-config:
 test-np2runtime: test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-p4-nano-pc98-runtime-contract
 	@printf '%s\n' 'NP2 runtime lifecycle and machine configuration tests passed.'
 
-test-p4-nano-pc98-runtime-contract:
+test-p4-nano-pc98-runtime-contract: test-p4-nano-usb-keyboard-teardown-contract
 	@mkdir -p "$(dir $(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT))"
 	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
 		-I"$(P4_NANO_PC98_RUNTIME_HEADER_DIR)" \
 		"$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_SOURCE)" \
 		-o "$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT)"
 	@"$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT)"
+
+test-p4-nano-usb-keyboard-teardown-contract:
+	@mkdir -p "$(dir $(P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_OUTPUT))"
+	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
+		"$(P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_SOURCE)" \
+		-o "$(P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_OUTPUT)"
+	@cd "$(CURDIR)" && "$(P4_NANO_USB_KEYBOARD_TEARDOWN_CONTRACT_TEST_OUTPUT)"
 
 test-np2-keyboard-validation:
 	@mkdir -p "$(dir $(NP2_KEYBOARD_VALIDATION_TEST_OUTPUT))"

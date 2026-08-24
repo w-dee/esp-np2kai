@@ -114,11 +114,15 @@ bool Producer::start(np2_keyboard_input_bridge::KeyboardInputBridge &bridge) noe
     stop_requested_.store(false, std::memory_order_release);
     accepting_.store(true, std::memory_order_release);
     producer_done_flag_.store(false, std::memory_order_release);
+    hid_done_flag_.store(false, std::memory_order_release);
+    usb_done_flag_.store(false, std::memory_order_release);
     start_result_.store(false, std::memory_order_release);
     fault_latched_.store(false, std::memory_order_release);
     source_cleanup_requested_.store(false, std::memory_order_release);
     bridge_failure_.store(false, std::memory_order_release);
     bridge_calls_allowed_.store(true, std::memory_order_release);
+    teardown_failed_.store(false, std::memory_order_release);
+    teardown_failure_reported_.store(false, std::memory_order_release);
     disabled_reported_.store(false, std::memory_order_release);
     fatal_reported_.store(false, std::memory_order_release);
     counters_reported_.store(false, std::memory_order_release);
@@ -146,20 +150,24 @@ bool Producer::start(np2_keyboard_input_bridge::KeyboardInputBridge &bridge) noe
         producer_task_ == nullptr) {
         emit_disabled_once("TASK_CREATE_FAILED");
         request_stop();
-        stop();
-        state_.store(State::Disabled, std::memory_order_release);
+        if (stop() == StopResult::Clean) {
+            state_.store(State::Disabled, std::memory_order_release);
+        }
         return false;
     }
 
     if (xSemaphoreTake(producer_ready_, kStartupTimeout) != pdTRUE) {
         emit_disabled_once("START_TIMEOUT");
         request_stop();
-        stop();
-        state_.store(State::Disabled, std::memory_order_release);
+        if (stop() == StopResult::Clean) {
+            state_.store(State::Disabled, std::memory_order_release);
+        }
         return false;
     }
     if (!start_result_.load(std::memory_order_acquire)) {
-        state_.store(State::Disabled, std::memory_order_release);
+        if (!teardown_failed_.load(std::memory_order_acquire)) {
+            state_.store(State::Disabled, std::memory_order_release);
+        }
         return false;
     }
     state_.store(State::Ready, std::memory_order_release);
@@ -189,20 +197,40 @@ void Producer::request_stop() noexcept
     }
 }
 
-void Producer::stop() noexcept
+StopResult Producer::stop() noexcept
 {
     if (state_.load(std::memory_order_acquire) == State::Stopped) {
-        return;
+        return StopResult::Clean;
     }
     state_.store(State::Stopping, std::memory_order_release);
     request_stop();
-    if (producer_done_ != nullptr &&
-        xSemaphoreTake(producer_done_, kShutdownTimeout) != pdTRUE) {
-        increment_fatal_once("PRODUCER_STOP_TIMEOUT");
+    bool clean = !teardown_failed_.load(std::memory_order_acquire);
+    if (producer_task_ != nullptr) {
+        if (producer_done_ == nullptr ||
+            xSemaphoreTake(producer_done_, kShutdownTimeout) != pdTRUE ||
+            !producer_done_flag_.load(std::memory_order_acquire)) {
+            clean = false;
+            mark_teardown_failed("PRODUCER_STOP_TIMEOUT");
+        }
     }
-    if (usb_done_ != nullptr &&
-        xSemaphoreTake(usb_done_, kShutdownTimeout) != pdTRUE) {
-        increment_fatal_once("USB_TASK_STOP_TIMEOUT");
+    if (usb_task_ != nullptr) {
+        if (usb_done_ == nullptr ||
+            xSemaphoreTake(usb_done_, kShutdownTimeout) != pdTRUE ||
+            !usb_done_flag_.load(std::memory_order_acquire)) {
+            clean = false;
+            mark_teardown_failed("USB_TASK_STOP_TIMEOUT");
+        }
+    }
+    if (teardown_failed_.load(std::memory_order_acquire)) {
+        clean = false;
+    }
+    if (!clean) {
+        /* Do not clear task handles, queues, or the bridge on failure.  The
+         * Producer and its static task storage remain alive so a late task
+         * cannot dereference a destroyed Composition. */
+        state_.store(State::TeardownFailed, std::memory_order_release);
+        emit_counters_once();
+        return StopResult::Failed;
     }
     producer_task_ = nullptr;
     hid_task_ = nullptr;
@@ -215,6 +243,7 @@ void Producer::stop() noexcept
     emit_counters_once();
     marker("P4_NANO_USB_KEYBOARD_HOST=STOPPED");
     state_.store(State::Stopped, std::memory_order_release);
+    return StopResult::Clean;
 }
 
 Counters Producer::counters() const noexcept
@@ -270,6 +299,7 @@ void Producer::usb_library_task() noexcept
             (void)xSemaphoreGive(usb_ready_);
         }
         if (usb_done_ != nullptr) {
+            usb_done_flag_.store(true, std::memory_order_release);
             (void)xSemaphoreGive(usb_done_);
         }
         vTaskDelete(nullptr);
@@ -329,6 +359,7 @@ void Producer::usb_library_task() noexcept
     }
     usb_host_installed_.store(false, std::memory_order_release);
     if (usb_done_ != nullptr) {
+        usb_done_flag_.store(true, std::memory_order_release);
         (void)xSemaphoreGive(usb_done_);
     }
     vTaskDelete(nullptr);
@@ -341,6 +372,7 @@ void Producer::hid_event_task() noexcept
     }
     if (!hid_installed_.load(std::memory_order_acquire)) {
         if (hid_done_ != nullptr) {
+            hid_done_flag_.store(true, std::memory_order_release);
             (void)xSemaphoreGive(hid_done_);
         }
         vTaskDelete(nullptr);
@@ -356,6 +388,7 @@ void Producer::hid_event_task() noexcept
         }
     }
     if (hid_done_ != nullptr) {
+        hid_done_flag_.store(true, std::memory_order_release);
         (void)xSemaphoreGive(hid_done_);
     }
     vTaskDelete(nullptr);
@@ -680,6 +713,10 @@ void Producer::process_input_report(const RawEvent &event) noexcept
         if (!accepting_.load(std::memory_order_acquire)) {
             return;
         }
+        if (!bridge_calls_allowed_.load(std::memory_order_acquire) ||
+            bridge_ == nullptr) {
+            return;
+        }
         const auto enqueue_result = bridge_->enqueue(neutral_events[index]);
         if (enqueue_result ==
             np2_keyboard_input_bridge::EnqueueResult::Enqueued) {
@@ -803,8 +840,9 @@ void Producer::stop_active_device() noexcept
     active_handle_.store(nullptr, std::memory_order_release);
 }
 
-void Producer::teardown_usb_and_hid() noexcept
+bool Producer::teardown_usb_and_hid() noexcept
 {
+    bool clean = true;
     accepting_.store(false, std::memory_order_release);
     if (source_cleanup_requested_.load(std::memory_order_acquire) &&
         bridge_calls_allowed_.load(std::memory_order_acquire) &&
@@ -819,24 +857,45 @@ void Producer::teardown_usb_and_hid() noexcept
     if (hid_start_ != nullptr) {
         (void)xSemaphoreGive(hid_start_);
     }
-    if (hid_done_ != nullptr && hid_task_ != nullptr) {
-        (void)xSemaphoreTake(hid_done_, kShutdownTimeout);
+    if (hid_task_ != nullptr &&
+        (hid_done_ == nullptr ||
+         xSemaphoreTake(hid_done_, kShutdownTimeout) != pdTRUE ||
+         !hid_done_flag_.load(std::memory_order_acquire))) {
+        mark_teardown_failed("HID_TASK_STOP_TIMEOUT");
+        return false;
     }
     if (hid_installed_.exchange(false, std::memory_order_acq_rel)) {
         const esp_err_t result = hid_host_uninstall();
         if (result != ESP_OK) {
-            increment_fatal_once("HID_UNINSTALL_FAILED");
+            mark_teardown_failed("HID_UNINSTALL_FAILED");
+            clean = false;
         }
     }
     const auto client = usb_client_.exchange(nullptr, std::memory_order_acq_rel);
     if (client != nullptr) {
         const esp_err_t result = usb_host_client_deregister(client);
         if (result != ESP_OK) {
-            increment_fatal_once("USB_CLIENT_DEREGISTER_FAILED");
+            mark_teardown_failed("USB_CLIENT_DEREGISTER_FAILED");
+            clean = false;
         }
     }
     if (usb_host_installed_.load(std::memory_order_acquire)) {
         (void)xTaskNotifyGive(usb_task_);
+    }
+    return clean && !teardown_failed_.load(std::memory_order_acquire);
+}
+
+void Producer::mark_teardown_failed(const char *reason) noexcept
+{
+    teardown_failed_.store(true, std::memory_order_release);
+    state_.store(State::TeardownFailed, std::memory_order_release);
+    increment_fatal_once(reason);
+    bool expected = false;
+    if (teardown_failure_reported_.compare_exchange_strong(
+            expected, true, std::memory_order_acq_rel)) {
+        std::printf("P4_NANO_USB_KEYBOARD_STATE=TEARDOWN_FAILED reason=%s\n",
+                    reason == nullptr ? "UNKNOWN" : reason);
+        std::fflush(stdout);
     }
 }
 

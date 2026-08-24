@@ -75,6 +75,12 @@ enum class GuestCompletion : std::uint8_t {
     Fail,
 };
 
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+/* The producer owns static task/queue storage.  Keep the object itself alive
+ * if a bounded teardown ever fails and a USB/HID task is still unwinding. */
+p4_nano_usb_keyboard::Producer s_usb_keyboard{};
+#endif
+
 constexpr p4_nano_pc98_runtime::MediaConfig media_config_for(
     const ValidationKind validation_kind, const bool emu_backend) noexcept
 {
@@ -114,7 +120,7 @@ struct Composition final {
     p4_nano_live_display_session::Session session{};
     np2_keyboard_input_bridge::KeyboardInputBridge keyboard{};
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-    p4_nano_usb_keyboard::Producer usb_keyboard{};
+    p4_nano_usb_keyboard::Producer *usb_keyboard = &s_usb_keyboard;
 #endif
     np2runtime::Runtime runtime{};
     SemaphoreHandle_t ready_semaphore = nullptr;
@@ -409,7 +415,7 @@ bool owner_iteration_keyboard(Composition *composition) noexcept
     }
     if (composition->stop_requested.load(std::memory_order_acquire)) {
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-        composition->usb_keyboard.stop();
+        composition->usb_keyboard->request_stop();
 #endif
         if (composition->keyboard_validation.state() !=
                 np2_keyboard_validation::State::Complete &&
@@ -426,7 +432,7 @@ bool owner_iteration_keyboard(Composition *composition) noexcept
     }
     if (composition->runtime.failure()) {
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-        composition->usb_keyboard.request_stop();
+        composition->usb_keyboard->request_stop();
 #endif
         const auto failure = composition->keyboard_validation.fail(
             np2_keyboard_validation::FailureReason::RuntimeFatal);
@@ -611,7 +617,7 @@ bool owner_iteration(void *context) noexcept
          * fatal cleanup path.  Release keyboard state before core cleanup,
          * then detach display publication and request the stop. */
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-        composition->usb_keyboard.stop();
+        composition->usb_keyboard->request_stop();
 #endif
         composition->keyboard.shutdown();
         composition->session.detach_source();
@@ -774,7 +780,7 @@ void owner_task(void *context)
     }
     (void)composition->runtime.run(owner_iteration, composition);
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-    composition->usb_keyboard.stop();
+    composition->usb_keyboard->request_stop();
 #endif
     composition->keyboard.set_core_active(false);
     if (composition->runtime.failure()) {
@@ -787,7 +793,7 @@ void owner_task(void *context)
 done:
     composition->keyboard.set_core_active(false);
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-    composition->usb_keyboard.stop();
+    composition->usb_keyboard->request_stop();
 #endif
     composition->keyboard.shutdown();
     {
@@ -942,7 +948,7 @@ esp_err_t run_composition(const ValidationKind validation_kind,
 
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
     if (!composition.stop_requested.load(std::memory_order_acquire)) {
-        (void)composition.usb_keyboard.start(composition.keyboard);
+        (void)composition.usb_keyboard->start(composition.keyboard);
     }
 #endif
 
@@ -986,8 +992,14 @@ esp_err_t run_composition(const ValidationKind validation_kind,
         composition.owner_task = nullptr;
     }
 
+    bool usb_stop_clean = true;
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE)
-    composition.usb_keyboard.stop();
+    usb_stop_clean = composition.usb_keyboard->stop() ==
+                     p4_nano_usb_keyboard::StopResult::Clean;
+    if (!usb_stop_clean) {
+        emit("P4_NANO_USB_KEYBOARD_RESULT=FAIL reason=TEARDOWN_FAILED\n");
+        composition.owner_result = ESP_FAIL;
+    }
 #endif
 
     cleanup_after_owner_join(&composition);
@@ -1001,6 +1013,7 @@ esp_err_t run_composition(const ValidationKind validation_kind,
         composition.guest_completion.load(std::memory_order_acquire) ==
             GuestCompletion::Pass &&
         !composition.session.failed() &&
+        usb_stop_clean &&
         stats.read_bytes > 0U && counters.submitted > 0U &&
         counters.transformed > 0U && counters.released > 0U;
 #elif defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
@@ -1010,6 +1023,7 @@ esp_err_t run_composition(const ValidationKind validation_kind,
             np2_keyboard_validation::State::Complete &&
         keyboard_proof_counters_valid(&composition) &&
         !composition.session.failed() &&
+        usb_stop_clean &&
         stats.read_bytes > 0U && counters.submitted > 0U &&
         counters.transformed > 0U && counters.released > 0U;
 #endif
