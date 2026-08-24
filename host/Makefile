@@ -119,8 +119,10 @@ P4_NANO_TRANSFORM_PATTERN_SOURCE := $(HOST_ROOT)/firmware/components/p4_nano_dis
 P4_NANO_TRANSFORM_PATTERN_TEST_SOURCE := $(CURDIR)/tests/p4_nano_display_transform_diagnostic_test.cpp
 P4_NANO_TRANSFORM_PATTERN_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_display_transform_diagnostic_test
 P4_NANO_LIVE_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
+P4_NANO_LIVE_SESSION_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display_session/include
 P4_NANO_LIVE_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_live_display_contract_test.cpp
 P4_NANO_LIVE_CONTRACT_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_live_display_contract_test
+P4_NANO_LIVE_CONTRACT_PRESENTATION_OBJECT := $(BUILD_DIR)/tests/np2_presentation_for_live_contract.o
 NP2RUNTIME_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2runtime/include
 NP2RUNTIME_LIFECYCLE_SOURCE := $(HOST_ROOT)/firmware/components/np2runtime/np2runtime_lifecycle.cpp
 NP2RUNTIME_LIFECYCLE_TEST_SOURCE := $(CURDIR)/tests/np2runtime_lifecycle_test.cpp
@@ -618,9 +620,14 @@ test-p4-nano-display-transform-diagnostic:
 
 test-p4-nano-live-display-contract:
 	@mkdir -p "$(dir $(P4_NANO_LIVE_CONTRACT_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/presentation" "$(PRESENTATION_SOURCE)" \
+		-c -o "$(P4_NANO_LIVE_CONTRACT_PRESENTATION_OBJECT)"
 	@$(CXX) -std=c++20 -Wall -Wextra -Werror \
 		-I"$(CURDIR)/presentation" -I"$(P4_NANO_LIVE_CONTRACT_HEADER_DIR)" \
+		-I"$(P4_NANO_LIVE_SESSION_CONTRACT_HEADER_DIR)" \
 		"$(P4_NANO_LIVE_CONTRACT_TEST_SOURCE)" \
+		"$(P4_NANO_LIVE_CONTRACT_PRESENTATION_OBJECT)" \
 		-o "$(P4_NANO_LIVE_CONTRACT_TEST_OUTPUT)"
 	@"$(P4_NANO_LIVE_CONTRACT_TEST_OUTPUT)"
 

@@ -3,21 +3,29 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "p4_nano_live_display_session/session_contract.hpp"
+
 namespace p4_nano_live_display {
 
-/* The immutable source/slot/native geometry is deliberately shared with the
- * host contract test so a live build cannot silently drift from the tested
- * presentation boundary. */
-inline constexpr std::uint32_t kSourceWidth = 640U;
-inline constexpr std::uint32_t kSourceHeight = 400U;
+/* Compatibility aliases for the bounded fixture wrapper.  The canonical
+ * production contract lives in the reusable session component. */
+inline constexpr std::uint32_t kSourceWidth =
+    p4_nano_live_display_session::kSourceWidth;
+inline constexpr std::uint32_t kSourceHeight =
+    p4_nano_live_display_session::kSourceHeight;
 inline constexpr std::size_t kSourceBytes =
-    static_cast<std::size_t>(kSourceWidth) * kSourceHeight * sizeof(std::uint16_t);
-inline constexpr std::size_t kPresentationSlotCount = 2U;
-inline constexpr std::size_t kPresentationSlotBytes = kSourceBytes;
-inline constexpr std::uint32_t kNativeWidth = 800U;
-inline constexpr std::uint32_t kNativeHeight = 1280U;
+    p4_nano_live_display_session::kSourceBytes;
+inline constexpr std::size_t kPresentationSlotCount =
+    p4_nano_live_display_session::kPresentationSlotCount;
+inline constexpr std::size_t kPresentationSlotBytes =
+    p4_nano_live_display_session::kPresentationSlotBytes;
+inline constexpr std::uint32_t kNativeWidth =
+    p4_nano_live_display_session::kNativeWidth;
+inline constexpr std::uint32_t kNativeHeight =
+    p4_nano_live_display_session::kNativeHeight;
 inline constexpr std::size_t kNativeFramebufferBytes =
-    static_cast<std::size_t>(kNativeWidth) * kNativeHeight * sizeof(std::uint16_t);
-inline constexpr char kCanonicalRotation[] = "CCW";
+    p4_nano_live_display_session::kNativeFramebufferBytes;
+inline constexpr auto &kCanonicalRotation =
+    p4_nano_live_display_session::kCanonicalRotation;
 
 } // namespace p4_nano_live_display

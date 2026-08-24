@@ -36,6 +36,7 @@
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #include "p4_nano_live_display/p4_nano_live_display_contract.hpp"
+#include "p4_nano_live_display_session/session.hpp"
 #include "scrnmng.h"
 
 #include "np2video_golden.h"
@@ -60,30 +61,22 @@ constexpr std::uint64_t kVisibleHoldUs = 30ULL * 1000ULL * 1000ULL;
 constexpr std::uint64_t kProducerWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 
 struct LiveState {
-    np2_presentation_publisher publisher{};
-    np2_presentation_slot_storage slots[kSlotCount]{};
-    p4_nano_display::DisplaySession display{};
+    p4_nano_live_display_session::Session session{};
     np2video_runner_result producer_result{};
     std::atomic<bool> producer_done{false};
-    std::atomic<bool> publish_failed{false};
-    std::uint32_t submitted = 0;
-    std::uint32_t acquired = 0;
-    std::uint32_t transformed = 0;
-    std::uint32_t released = 0;
-    bool hook_registered = false;
-    bool slots_initialized = false;
     bool immutable_checked = false;
     bool immutable_pass = false;
-    bool visible = false;
     std::uint32_t final_source_generation = 0;
     std::uint32_t final_source_update_sequence = 0;
     std::uint64_t final_published_sequence = 0;
     std::uint32_t final_source_crc = 0;
     std::uint32_t final_native_crc = 0;
+    std::uint32_t timeout_reported = 0;
+    std::uint32_t current_source_crc = 0;
+    std::int64_t transform_start_us = 0;
     std::uint64_t min_transform_us = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t max_transform_us = 0;
     std::uint64_t total_transform_us = 0;
-    std::uint32_t timeout_reported = 0;
 };
 
 void report_memory(const char *phase)
@@ -117,42 +110,13 @@ bool runner_output(void *, const char *data, std::size_t length)
     return complete;
 }
 
-void publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
-{
-    auto *state = static_cast<LiveState *>(context);
-    if (state == nullptr || view == nullptr) {
-        return;
-    }
-
-    const np2_presentation_source_view source{
-        .ptr = view->ptr,
-        .width = static_cast<std::uint32_t>(view->width),
-        .height = static_cast<std::uint32_t>(view->height),
-        .pitch = view->pitch,
-        .bpp = view->bpp,
-        .pixel_format = NP2_PRESENTATION_PIXEL_FORMAT_RGB565LE,
-        .source_generation = view->surface_generation,
-        .source_update_sequence = view->surface_update_sequence,
-    };
-    const np2_presentation_status status = np2_presentation_submit(
-        &state->publisher, &source);
-    if (status == NP2_PRESENTATION_OK) {
-        ++state->submitted;
-    } else if (status != NP2_PRESENTATION_DROPPED) {
-        std::printf("P4_NANO_LIVE_PUBLISH result=FAIL status=%d\n",
-                    static_cast<int>(status));
-        state->publish_failed.store(true, std::memory_order_release);
-    }
-}
-
 bool runner_ready(void *context)
 {
     auto *state = static_cast<LiveState *>(context);
-    if (state == nullptr || !state->slots_initialized) {
+    if (state == nullptr ||
+        state->session.attach_source() != ESP_OK) {
         return false;
     }
-    scrnmng_set_publish_hook(publish_hook, state);
-    state->hook_registered = true;
     std::printf("P4_NANO_LIVE_PUBLISHER_READY slots=%zu slot_bytes=%zu\n",
                 kSlotCount, kSlotBytes);
     return true;
@@ -161,9 +125,8 @@ bool runner_ready(void *context)
 void runner_stopping(void *context)
 {
     auto *state = static_cast<LiveState *>(context);
-    if (state != nullptr && state->hook_registered) {
-        scrnmng_set_publish_hook(nullptr, nullptr);
-        state->hook_registered = false;
+    if (state != nullptr) {
+        state->session.detach_source();
     }
 }
 
@@ -191,17 +154,57 @@ bool validate_frame(const np2_presentation_frame_view &view)
                              sizeof(std::uint16_t);
 }
 
-void release_if_held(LiveState *state, np2_presentation_token *token)
+bool normal_frame_observer(
+    const p4_nano_live_display_session::FrameObservation &observation,
+    void *context)
 {
-    if (state == nullptr || token == nullptr || token->lease == 0U) {
-        return;
+    auto *state = static_cast<LiveState *>(context);
+    if (state == nullptr || observation.source.ptr == nullptr) {
+        return false;
     }
-    if (np2_presentation_release(&state->publisher, token) ==
-        NP2_PRESENTATION_OK) {
-        ++state->released;
-    } else {
-        state->publish_failed.store(true, std::memory_order_release);
+    if (!esp_ptr_external_ram(observation.source.ptr)) {
+        return false;
     }
+    if (observation.stage ==
+        p4_nano_live_display_session::FrameStage::Acquired) {
+        state->transform_start_us = esp_timer_get_time();
+        state->current_source_crc = p4_nano_display::crc32(
+            observation.source.ptr,
+            p4_nano_live_display_session::kSourceBytes);
+        return true;
+    }
+
+    const std::uint32_t after_crc = p4_nano_display::crc32(
+        observation.source.ptr, p4_nano_live_display_session::kSourceBytes);
+    const std::uint64_t transform_us = static_cast<std::uint64_t>(
+        esp_timer_get_time() - state->transform_start_us);
+    if (transform_us < state->min_transform_us) {
+        state->min_transform_us = transform_us;
+    }
+    if (transform_us > state->max_transform_us) {
+        state->max_transform_us = transform_us;
+    }
+    state->total_transform_us += transform_us;
+    if (!state->immutable_checked) {
+        state->immutable_checked = true;
+        state->immutable_pass = state->current_source_crc == after_crc;
+        std::printf("P4_NANO_LIVE_FRAME_IMMUTABLE=%s before=0x%08" PRIx32
+                    " after=0x%08" PRIx32 "\n",
+                    state->immutable_pass ? "PASS" : "FAIL",
+                    state->current_source_crc, after_crc);
+    }
+    if (!state->immutable_pass || observation.native_framebuffer == nullptr) {
+        return false;
+    }
+    state->final_source_generation = observation.source.source_generation;
+    state->final_source_update_sequence =
+        observation.source.source_update_sequence;
+    state->final_published_sequence = observation.source.published_sequence;
+    state->final_source_crc = state->current_source_crc;
+    state->final_native_crc = p4_nano_display::crc32(
+        reinterpret_cast<const std::uint8_t *>(observation.native_framebuffer),
+        observation.native_framebuffer_bytes);
+    return true;
 }
 
 #if defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE)
@@ -1689,65 +1692,22 @@ esp_err_t run()
                 static_cast<unsigned>(np2video_golden_height),
                 np2video_golden_crc32);
     report_memory("before_presentation_slots");
+    std::printf("P4_NANO_LIVE_DISPLAY_INIT backlight=OFF num_fbs=1\n");
 
-    for (std::size_t index = 0; index < kSlotCount; ++index) {
-        state.slots[index].ptr = static_cast<std::uint8_t *>(heap_caps_calloc(
-            1, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        state.slots[index].capacity = kSlotBytes;
-        if (state.slots[index].ptr == nullptr) {
-            std::printf("P4_NANO_LIVE_SLOTS result=FAIL index=%zu\n", index);
-            for (std::size_t release = 0; release < index; ++release) {
-                heap_caps_free(state.slots[release].ptr);
-            }
-            return ESP_ERR_NO_MEM;
-        }
+    esp_err_t result = state.session.initialize();
+    if (result != ESP_OK) {
+        std::printf("P4_NANO_LIVE_SESSION result=FAIL initialize=%s\n",
+                    esp_err_to_name(result));
+        return result;
     }
-    if (!esp_ptr_external_ram(state.slots[0].ptr) ||
-        !esp_ptr_external_ram(state.slots[1].ptr) ||
-        ranges_overlap(state.slots[0].ptr, kSlotBytes,
-                       state.slots[1].ptr, kSlotBytes)) {
-        std::printf("P4_NANO_LIVE_SLOTS result=FAIL external_or_disjoint\n");
-        heap_caps_free(state.slots[0].ptr);
-        heap_caps_free(state.slots[1].ptr);
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (np2_presentation_init(&state.publisher, state.slots) !=
-        NP2_PRESENTATION_OK) {
-        std::printf("P4_NANO_LIVE_SLOTS result=FAIL publisher_init\n");
-        heap_caps_free(state.slots[0].ptr);
-        heap_caps_free(state.slots[1].ptr);
-        return ESP_ERR_INVALID_STATE;
-    }
-    state.slots_initialized = true;
     std::printf("P4_NANO_LIVE_SLOTS result=PASS count=%zu bytes_each=%zu "
                 "bytes_total=%zu external=1 disjoint=1\n",
                 kSlotCount, kSlotBytes, kSlotCount * kSlotBytes);
     report_memory("after_presentation_slots");
-
-    std::printf("P4_NANO_LIVE_DISPLAY_INIT backlight=OFF num_fbs=1\n");
-    esp_err_t result = p4_nano_display::display_session_initialize(
-        &state.display);
-    if (result != ESP_OK) {
-        heap_caps_free(state.slots[0].ptr);
-        heap_caps_free(state.slots[1].ptr);
-        return result;
-    }
-    if (ranges_overlap(state.slots[0].ptr, kSlotBytes,
-                       state.display.framebuffer,
-                       p4_nano_display::kNativeFramebufferBytes) ||
-        ranges_overlap(state.slots[1].ptr, kSlotBytes,
-                       state.display.framebuffer,
-                       p4_nano_display::kNativeFramebufferBytes)) {
-        std::printf("P4_NANO_LIVE_SLOTS result=FAIL dsi_alias\n");
-        (void)p4_nano_display::display_session_cleanup(&state.display);
-        heap_caps_free(state.slots[0].ptr);
-        heap_caps_free(state.slots[1].ptr);
-        return ESP_ERR_INVALID_STATE;
-    }
     std::printf("P4_NANO_LIVE_FRAMEBUFFER result=PASS native=800x1280 "
                 "bytes=%zu num_fbs=1 external=%d\n",
                 p4_nano_display::kNativeFramebufferBytes,
-                esp_ptr_external_ram(state.display.framebuffer) ? 1 : 0);
+                state.session.native_framebuffer_external() ? 1 : 0);
     report_memory("after_native_framebuffer");
 
     const np2video_runner_config runner_config{
@@ -1770,102 +1730,27 @@ esp_err_t run()
     if (result != ESP_OK) {
         std::printf("P4_NANO_LIVE_PRODUCER result=FAIL start=%s\n",
                     esp_err_to_name(result));
-        (void)p4_nano_display::display_session_cleanup(&state.display);
-        heap_caps_free(state.slots[0].ptr);
-        heap_caps_free(state.slots[1].ptr);
+        (void)state.session.shutdown();
         return result;
     }
     std::printf("P4_NANO_LIVE_PRODUCER result=STARTED\n");
 
-    std::uint64_t visible_start_us = 0;
     const std::uint64_t producer_start_us =
         static_cast<std::uint64_t>(esp_timer_get_time());
+    std::uint64_t visible_start_us = 0U;
     bool failed = false;
     bool final_drain = false;
 
     auto consume_one = [&]() -> int {
-        np2_presentation_frame_view view{};
-        np2_presentation_token token{};
-        const np2_presentation_status acquire = np2_presentation_acquire(
-            &state.publisher, &view, &token);
-        if (acquire == NP2_PRESENTATION_NO_FRAME) {
+        const p4_nano_live_display_session::ConsumeResult consumed =
+            state.session.consume_one(normal_frame_observer, &state);
+        if (consumed == p4_nano_live_display_session::ConsumeResult::NoFrame) {
             return 0;
         }
-        if (acquire != NP2_PRESENTATION_OK) {
-            state.publish_failed.store(true, std::memory_order_release);
+        if (consumed == p4_nano_live_display_session::ConsumeResult::Failed) {
             return -1;
         }
-        ++state.acquired;
-        if (!validate_frame(view)) {
-            std::printf("P4_NANO_LIVE_FRAME result=FAIL unsupported_geometry\n");
-            release_if_held(&state, &token);
-            return -1;
-        }
-
-        const std::uint32_t source_crc = p4_nano_display::crc32(
-            view.ptr, np2video_golden_visible_bytes);
-        const auto source = std::span<const std::uint16_t>(
-            reinterpret_cast<const std::uint16_t *>(view.ptr),
-            p4_nano_display::kTransformSourcePixelCount);
-        const auto destination = std::span<std::uint16_t>(
-            state.display.framebuffer,
-            p4_nano_display::kTransformDestinationPixelCount);
-        const std::int64_t transform_start = esp_timer_get_time();
-        const bool transformed = p4_nano_display::transform_to_native(
-            source, destination,
-            p4_nano_display::QuarterTurn::CounterClockwise);
-        const std::uint64_t transform_us = static_cast<std::uint64_t>(
-            esp_timer_get_time() - transform_start);
-        if (!transformed) {
-            release_if_held(&state, &token);
-            return -1;
-        }
-        if (!state.immutable_checked) {
-            const std::uint32_t after_crc = p4_nano_display::crc32(
-                view.ptr, np2video_golden_visible_bytes);
-            state.immutable_checked = true;
-            state.immutable_pass = source_crc == after_crc;
-            std::printf("P4_NANO_LIVE_FRAME_IMMUTABLE=%s before=0x%08" PRIx32
-                        " after=0x%08" PRIx32 "\n",
-                        state.immutable_pass ? "PASS" : "FAIL",
-                        source_crc, after_crc);
-            if (!state.immutable_pass) {
-                release_if_held(&state, &token);
-                return -1;
-            }
-        }
-        result = p4_nano_display::display_session_sync_framebuffer(
-            &state.display);
-        if (result != ESP_OK) {
-            release_if_held(&state, &token);
-            return -1;
-        }
-        const std::uint32_t native_crc = p4_nano_display::crc32(
-            reinterpret_cast<const std::uint8_t *>(state.display.framebuffer),
-            p4_nano_display::kNativeFramebufferBytes);
-        release_if_held(&state, &token);
-        if (state.min_transform_us == std::numeric_limits<std::uint64_t>::max()) {
-            state.min_transform_us = transform_us;
-        } else if (transform_us < state.min_transform_us) {
-            state.min_transform_us = transform_us;
-        }
-        if (transform_us > state.max_transform_us) {
-            state.max_transform_us = transform_us;
-        }
-        state.total_transform_us += transform_us;
-        ++state.transformed;
-        state.final_source_generation = view.source_generation;
-        state.final_source_update_sequence = view.source_update_sequence;
-        state.final_published_sequence = view.published_sequence;
-        state.final_source_crc = source_crc;
-        state.final_native_crc = native_crc;
-        if (!state.visible) {
-            result = p4_nano_board::display_backlight_set(
-                p4_nano_board::kBacklightConservative);
-            if (result != ESP_OK) {
-                return -1;
-            }
-            state.visible = true;
+        if (visible_start_us == 0U && state.session.visible()) {
             visible_start_us = static_cast<std::uint64_t>(esp_timer_get_time());
             std::printf("P4_NANO_LIVE_VISIBLE rotation=CCW backlight=0x40 "
                         "hold_seconds=30\n");
@@ -1898,15 +1783,16 @@ esp_err_t run()
         }
     }
 
+    const auto &counters = state.session.counters();
     if (state.producer_result.status != ESP_OK ||
-        state.publish_failed.load(std::memory_order_acquire) ||
-        state.transformed == 0U || !state.immutable_pass ||
+        state.session.failed() || counters.transformed == 0U ||
+        !state.immutable_pass ||
         state.final_source_crc != np2video_golden_crc32 ||
         state.final_source_crc != state.producer_result.source_crc32) {
         failed = true;
     }
 
-    if (!failed && state.visible) {
+    if (!failed && state.session.visible()) {
         const std::uint64_t elapsed =
             static_cast<std::uint64_t>(esp_timer_get_time()) - visible_start_us;
         if (elapsed < kVisibleHoldUs) {
@@ -1919,16 +1805,14 @@ esp_err_t run()
                 " acquired=%" PRIu32 " transformed=%" PRIu32
                 " released=%" PRIu32 " coalesced=%" PRIu32
                 " dropped=%" PRIu32 "\n",
-                state.submitted, state.acquired, state.transformed,
-                state.released,
-                np2_presentation_coalesced_count(&state.publisher),
-                np2_presentation_dropped_count(&state.publisher));
-    const std::uint64_t average = state.transformed == 0U ? 0U :
-        state.total_transform_us / state.transformed;
+                counters.submitted, counters.acquired, counters.transformed,
+                counters.released, counters.coalesced, counters.dropped);
+    const std::uint64_t average = counters.transformed == 0U ? 0U :
+        state.total_transform_us / counters.transformed;
     std::printf("P4_NANO_LIVE_TRANSFORM_TIMING count=%" PRIu32
                 " min_us=%" PRIu64 " max_us=%" PRIu64
                 " average_us=%" PRIu64 " total_us=%" PRIu64 "\n",
-                state.transformed,
+                counters.transformed,
                 state.min_transform_us == std::numeric_limits<std::uint64_t>::max()
                     ? 0U : state.min_transform_us,
                 state.max_transform_us, average, state.total_transform_us);
@@ -1944,10 +1828,7 @@ esp_err_t run()
     std::printf("P4_NANO_LIVE_RESULT=%s visible_hold_seconds=30\n",
                 failed ? "FAIL" : "PASS");
 
-    const esp_err_t cleanup_result =
-        p4_nano_display::display_session_cleanup(&state.display);
-    heap_caps_free(state.slots[0].ptr);
-    heap_caps_free(state.slots[1].ptr);
+    const esp_err_t cleanup_result = state.session.shutdown();
     std::printf("P4_NANO_LIVE_CLEANUP result=%s backlight=OFF\n",
                 cleanup_result == ESP_OK ? "PASS" : "FAIL");
     if (cleanup_result != ESP_OK) {

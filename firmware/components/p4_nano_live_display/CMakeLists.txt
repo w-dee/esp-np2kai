@@ -33,7 +33,8 @@ endif()
 idf_component_register(
     SRCS "p4_nano_live_display.cpp"
     INCLUDE_DIRS ${P4_NANO_LIVE_INCLUDE_DIRS}
-    PRIV_REQUIRES p4_nano_display np2video_runner np2presentation
+    PRIV_REQUIRES p4_nano_display p4_nano_live_display_session
+                 np2video_runner np2presentation
                  esp_psram esp_hw_support heap freertos esp_timer)
 
 if(P4_NANO_LIVE_MOTION_VALIDATION_PROFILE_ACTIVE)
