@@ -1,0 +1,11 @@
+{
+  "fixture": "np2kbdtest",
+  "image": "np2kbdtest-fd1232.image",
+  "image_size": 1261568,
+  "ipl_code_end": 504,
+  "ipl_size": 1024,
+  "nasm": "2.16.01",
+  "payload_loaded": false,
+  "schema_version": 1,
+  "sha256": "65445b14b67b0ff94b5751d05fe87fb7acadfa3a6ce41f60c764ca11c58e7eca"
+}

@@ -90,6 +90,13 @@ HEADLESS_BMP_DEPENDENCY := $(BUILD_DIR)/backend/headless/scrnmng_bmp.d
 RESULT_V1_PARSER_SOURCE := $(CURDIR)/runner/result_v1_parser.c
 RESULT_V1_PARSER_TEST_SOURCE := $(CURDIR)/tests/result_v1_parser_test.c
 RESULT_V1_PARSER_TEST_OUTPUT := $(BUILD_DIR)/tests/result_v1_parser_test
+NP2KBD_CONTROL_V1_SOURCE := $(CURDIR)/runner/np2kbd_control_v1_parser.c
+NP2KBD_CONTROL_V1_HEADER_DIR := $(CURDIR)/runner
+NP2KBD_CONTROL_V1_TEST_SOURCE := $(CURDIR)/tests/np2kbd_control_v1_parser_test.c
+NP2KBD_CONTROL_V1_TEST_OUTPUT := $(BUILD_DIR)/tests/np2kbd_control_v1_parser_test
+NP2KBD_RESULT_V1_SOURCE := $(CURDIR)/runner/np2kbd_result_v1_parser.c
+NP2KBD_RESULT_V1_TEST_SOURCE := $(CURDIR)/tests/np2kbd_result_v1_parser_test.c
+NP2KBD_RESULT_V1_TEST_OUTPUT := $(BUILD_DIR)/tests/np2kbd_result_v1_parser_test
 EXECUTION_CONTROLLER_SOURCE := $(CURDIR)/runner/execution_controller.c
 EXECUTION_CONTROLLER_TEST_SOURCE := $(CURDIR)/tests/execution_controller_test.c
 EXECUTION_CONTROLLER_TEST_OUTPUT := $(BUILD_DIR)/tests/execution_controller_test
@@ -206,7 +213,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-p4-nano-pc98-runtime-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-live-display-contract test-p4-nano-pc98-runtime-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -493,6 +500,26 @@ test-result-v1-parser:
 		"$(RESULT_V1_PARSER_TEST_SOURCE)" \
 		-o "$(RESULT_V1_PARSER_TEST_OUTPUT)"
 	@"$(RESULT_V1_PARSER_TEST_OUTPUT)"
+
+test-np2kbd-control-v1:
+	@mkdir -p "$(dir $(NP2KBD_CONTROL_V1_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(NP2KBD_CONTROL_V1_HEADER_DIR)" -I"$(CURDIR)/compat" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2KBD_CONTROL_V1_SOURCE)" \
+		"$(NP2KBD_CONTROL_V1_TEST_SOURCE)" -o "$(NP2KBD_CONTROL_V1_TEST_OUTPUT)"
+	@"$(NP2KBD_CONTROL_V1_TEST_OUTPUT)"
+	@printf '%s\n' 'NP2 keyboard control-v1 parser/tracker tests passed.'
+
+test-np2kbd-result-v1:
+	@mkdir -p "$(dir $(NP2KBD_RESULT_V1_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(NP2KBD_CONTROL_V1_HEADER_DIR)" -I"$(CURDIR)/compat" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2KBD_RESULT_V1_SOURCE)" \
+		"$(NP2KBD_RESULT_V1_TEST_SOURCE)" -o "$(NP2KBD_RESULT_V1_TEST_OUTPUT)"
+	@"$(NP2KBD_RESULT_V1_TEST_OUTPUT)"
+	@printf '%s\n' 'NP2 keyboard result-v1 parser tests passed.'
+
+test-np2kbd: test-np2kbd-control-v1 test-np2kbd-result-v1
 
 test-execution-controller:
 	@mkdir -p "$(dir $(EXECUTION_CONTROLLER_TEST_OUTPUT))"

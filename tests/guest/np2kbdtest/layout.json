@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "name": "np2kbdtest",
+  "image": {
+    "format": "raw",
+    "extension": ".hdm",
+    "geometry": {
+      "cylinders": 77,
+      "heads": 2,
+      "sectors_per_track": 8,
+      "bytes_per_sector": 1024
+    },
+    "size_bytes": 1261568
+  },
+  "ipl": {
+    "source": "src/ipl.asm",
+    "binary_size": 1024,
+    "sector_offset": 0,
+    "sector_bytes": 1024,
+    "load_physical": 130048,
+    "entry": { "cs": 8128, "ip": 0 },
+    "signatures": [
+      { "offset": 510, "bytes": "55aa" },
+      { "offset": 1022, "bytes": "55aa" }
+    ],
+    "executable_budget": {
+      "first_signature_exclusive": 510,
+      "require_second_half_zero": true
+    }
+  },
+  "control": {
+    "protocol": "np2kbd-control-v1",
+    "physical_address": 163776,
+    "size_bytes": 64,
+    "alignment": 16,
+    "wire": {
+      "byte_order": "little",
+      "crc_algorithm": "CRC-32/ISO-HDLC",
+      "crc_coverage_end": 56,
+      "crc_offset": 56,
+      "state_offset": 60,
+      "fields": [
+        { "name": "magic", "offset": 0, "width": 4 },
+        { "name": "version", "offset": 4, "width": 2 },
+        { "name": "header_size", "offset": 6, "width": 2 },
+        { "name": "block_size", "offset": 8, "width": 2 },
+        { "name": "flags", "offset": 10, "width": 2 },
+        { "name": "suite_id", "offset": 12, "width": 4 },
+        { "name": "build_id", "offset": 16, "width": 4 },
+        { "name": "expected_make", "offset": 20, "width": 1 },
+        { "name": "expected_break", "offset": 21, "width": 1 },
+        { "name": "observed_make", "offset": 22, "width": 1 },
+        { "name": "observed_break", "offset": 23, "width": 1 },
+        { "name": "failure_reason", "offset": 24, "width": 2 },
+        { "name": "reserved_body", "offset": 26, "width": 30 },
+        { "name": "crc", "offset": 56, "width": 4 },
+        { "name": "state", "offset": 60, "width": 1 },
+        { "name": "reserved_tail", "offset": 61, "width": 3 }
+      ]
+    },
+    "magic": "NP2K",
+    "version": 1,
+    "header_size": 26,
+    "block_size": 64,
+    "flags": 0,
+    "suite_id": 1313884977,
+    "build_id": 65537,
+    "expected_make": 29,
+    "expected_break": 157,
+    "states": {
+      "UNINITIALIZED": 0,
+      "READY": 1,
+      "MAKE_OBSERVED": 2,
+      "BREAK_OBSERVED": 3,
+      "FAIL": 4
+    },
+    "failure_reasons": {
+      "NONE": 0,
+      "PRECONDITION_DATA_READY": 1,
+      "STATUS_OVERFLOW": 2,
+      "MAKE_MISMATCH": 3,
+      "BREAK_MISMATCH": 4
+    }
+  },
+  "result": {
+    "protocol": "result-v1",
+    "physical_address": 167936,
+    "size_bytes": 128,
+    "alignment": 16,
+    "suite_id": 1313884977,
+    "build_id": 65537,
+    "total_count": 1,
+    "test_id": 3073,
+    "diagnostic": "KBD1"
+  },
+  "memory": {
+    "address_space": { "start": 0, "size_bytes": 1048576 },
+    "owned_regions": [
+      { "name": "ipl", "kind": "ipl", "start": 130048, "size_bytes": 1024, "alignment": 1024 },
+      { "name": "control", "kind": "control", "start": 163776, "size_bytes": 64, "alignment": 16 },
+      { "name": "stack", "kind": "stack", "start": 163840, "size_bytes": 4096, "alignment": 16 },
+      { "name": "result", "kind": "result", "start": 167936, "size_bytes": 128, "alignment": 16 }
+    ],
+    "excluded_ranges": [
+      { "name": "pc98-low-bios-data", "start": 0, "size_bytes": 4096 },
+      { "name": "pc98-text-vram", "start": 655360, "size_bytes": 32768 },
+      { "name": "pc98-graphics-vram-b-r-g", "start": 688128, "size_bytes": 98304 },
+      { "name": "pc98-graphics-vram-e", "start": 917504, "size_bytes": 32768 },
+      { "name": "pc98-bios-firmware", "start": 950272, "size_bytes": 98304 }
+    ]
+  },
+  "artifact": {
+    "golden_path": "tests/guest/np2kbdtest/golden/np2kbdtest-fd1232.image",
+    "expected_sha256": "65445b14b67b0ff94b5751d05fe87fb7acadfa3a6ce41f60c764ca11c58e7eca",
+    "manifest_path": "tests/guest/np2kbdtest/manifest.json"
+  },
+  "toolchain": {
+    "assembler": "nasm",
+    "expected_nasm": "2.16.01",
+    "python": "python3"
+  }
+}

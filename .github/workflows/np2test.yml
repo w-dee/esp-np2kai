@@ -42,6 +42,12 @@ jobs:
           TZ: UTC
         run: make -C tests/guest/np2test ci-check
 
+      - name: Run dedicated keyboard fixture CI
+        env:
+          LC_ALL: C
+          TZ: UTC
+        run: make -C tests/guest/np2kbdtest check
+
   ubuntu-native-headless:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -78,6 +84,9 @@ jobs:
 
       - name: Test result-v1 parser
         run: make -C host test-result-v1-parser
+
+      - name: Test keyboard control and result protocols
+        run: make -C host test-np2kbd
 
       - name: Test execution controller
         run: make -C host test-execution-controller
