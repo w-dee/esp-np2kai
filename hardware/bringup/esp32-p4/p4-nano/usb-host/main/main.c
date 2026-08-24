@@ -12,7 +12,7 @@
 #include "usb/hid_host.h"
 #include "usb/usb_host.h"
 
-#include "hid_boot_keyboard.h"
+#include "hid_boot_keyboard/hid_boot_keyboard.h"
 
 #define TAG "p4_nano_usb_host"
 

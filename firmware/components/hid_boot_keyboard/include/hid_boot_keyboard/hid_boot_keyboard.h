@@ -4,14 +4,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define HID_BOOT_KEYBOARD_REPORT_SIZE 8U
 #define HID_BOOT_KEYBOARD_MODIFIER_COUNT 8U
 #define HID_BOOT_KEYBOARD_KEY_COUNT 6U
 #define HID_BOOT_KEYBOARD_MAX_EVENTS \
     (HID_BOOT_KEYBOARD_MODIFIER_COUNT + (2U * HID_BOOT_KEYBOARD_KEY_COUNT))
 
+#if defined(__cplusplus)
+static_assert(HID_BOOT_KEYBOARD_MAX_EVENTS == 20U,
+              "Boot keyboard event bound must cover all report edges");
+#else
 _Static_assert(HID_BOOT_KEYBOARD_MAX_EVENTS == 20U,
                "Boot keyboard event bound must cover all report edges");
+#endif
 
 typedef enum {
     HID_BOOT_EVENT_KEY_PRESS = 0,
@@ -53,3 +62,7 @@ size_t hid_boot_keyboard_process(
     size_t event_capacity);
 
 bool hid_boot_keyboard_is_error_usage(uint8_t usage);
+
+#ifdef __cplusplus
+}
+#endif

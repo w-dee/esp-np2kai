@@ -1,4 +1,4 @@
-#include "hid_boot_keyboard.h"
+#include "hid_boot_keyboard/hid_boot_keyboard.h"
 
 #include <string.h>
 

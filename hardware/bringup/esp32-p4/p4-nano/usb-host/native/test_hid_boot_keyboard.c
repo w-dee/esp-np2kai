@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../main/hid_boot_keyboard.h"
+#include "hid_boot_keyboard/hid_boot_keyboard.h"
 
 static size_t process_with_capacity(hid_boot_keyboard_state_t *state,
                                     const uint8_t *report, size_t report_length,

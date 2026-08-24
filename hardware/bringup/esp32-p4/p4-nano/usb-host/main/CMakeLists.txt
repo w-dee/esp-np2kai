@@ -4,7 +4,7 @@ if(CONFIG_USB_HOST_HUBS_SUPPORTED)
 endif()
 
 idf_component_register(
-    SRCS ${usb_host_app_srcs} "hid_boot_keyboard.c"
+    SRCS ${usb_host_app_srcs}
     INCLUDE_DIRS "."
-    PRIV_REQUIRES usb esp_driver_gpio usb_host_hid
+    PRIV_REQUIRES usb esp_driver_gpio usb_host_hid hid_boot_keyboard
 )

@@ -270,10 +270,16 @@ ESP-IDFを必要としない決定的テストを実行します。
 
 ```bash
 cc -std=c11 -Wall -Wextra -Werror \
-  main/hid_boot_keyboard.c native/test_hid_boot_keyboard.c \
+  -Ifirmware/components/hid_boot_keyboard/include \
+  firmware/components/hid_boot_keyboard/hid_boot_keyboard.c \
+  hardware/bringup/esp32-p4/p4-nano/usb-host/native/test_hid_boot_keyboard.c \
   -o /tmp/p4-nano-usb-host-hid-test
 /tmp/p4-nano-usb-host-hid-test
 ```
+
+Stage 1 and Stage 2 consume the same canonical parser component through the
+standalone project's `EXTRA_COMPONENT_DIRS`; no parser copy remains under
+`usb-host/main`.
 
 ## Physical flash boundary
 

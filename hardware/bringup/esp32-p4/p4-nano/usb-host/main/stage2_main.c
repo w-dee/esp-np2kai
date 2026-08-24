@@ -18,7 +18,7 @@
 #include "usb/usb_types_ch11.h"
 #include "usb/usb_types_ch9.h"
 
-#include "hid_boot_keyboard.h"
+#include "hid_boot_keyboard/hid_boot_keyboard.h"
 
 #define TAG "p4_nano_usb_host"
 
