@@ -12,4 +12,7 @@ esp_err_t run_production() noexcept;
  * validation wrapper; it never selects the production media path. */
 esp_err_t run_validation() noexcept;
 
+/* Starts the deterministic synthetic-keyboard validation composition. */
+esp_err_t run_keyboard_validation() noexcept;
+
 } // namespace p4_nano_pc98_runtime

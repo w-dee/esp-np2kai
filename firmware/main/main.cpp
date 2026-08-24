@@ -14,7 +14,8 @@
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
 #include "p4_nano_live_display/p4_nano_live_display.hpp"
 #elif defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
-    defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
 #include "p4_nano_pc98_runtime/p4_nano_pc98_runtime.hpp"
 #else
 #if defined(NP2_PRESENTATION_PROFILE)
@@ -84,7 +85,8 @@
     !defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_REAL_RUNTIME_PROFILE) && \
-    !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+    !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) && \
+    !defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
 namespace {
 
 #if !defined(NP2_PRESENTATION_PROFILE)
@@ -161,6 +163,13 @@ extern "C" void app_main(void)
     const esp_err_t runtime_result = p4_nano_pc98_runtime::run_validation();
     std::printf("P4_NANO_RUNTIME_VALIDATION_EXIT=%s\n",
                 runtime_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    const esp_err_t keyboard_result =
+        p4_nano_pc98_runtime::run_keyboard_validation();
+    std::printf("P4_NANO_KEYBOARD_VALIDATION_EXIT=%s\n",
+                keyboard_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(NP2_PRESENTATION_PROFILE)

@@ -10,17 +10,31 @@ if(P4_NANO_RUNTIME_VALIDATION_PROFILE)
          "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner/result_v1_parser.c"
          "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/compat/np2_crc32.c")
 endif()
+if(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    list(APPEND P4_NANO_PC98_RUNTIME_SRCS
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner/np2kbd_control_v1_parser.c"
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner/np2kbd_result_v1_parser.c"
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/compat/np2_crc32.c"
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/np2_keyboard_validation/validation_controller.cpp")
+endif()
+set(P4_NANO_PC98_RUNTIME_REQUIRES
+    np2runtime np2host p4_nano_live_display_session np2_keyboard_input_bridge
+    storage_sdmmc storage_fatfs freertos esp_timer)
+set(P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
+    "include"
+    "${P4_NANO_PC98_RUNTIME_VENDOR_SRC}"
+    "${P4_NANO_PC98_RUNTIME_VENDOR_SRC}/i286c"
+    "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/compat"
+    "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner")
+if(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    list(APPEND P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/np2_keyboard_validation/include")
+endif()
 
 idf_component_register(
     SRCS ${P4_NANO_PC98_RUNTIME_SRCS}
-    INCLUDE_DIRS "include"
-                 "${P4_NANO_PC98_RUNTIME_VENDOR_SRC}"
-                 "${P4_NANO_PC98_RUNTIME_VENDOR_SRC}/i286c"
-                 "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/compat"
-                 "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/host/runner"
-    PRIV_REQUIRES np2runtime np2host p4_nano_live_display_session
-                 np2_keyboard_input_bridge
-                 storage_sdmmc storage_fatfs freertos esp_timer)
+    INCLUDE_DIRS ${P4_NANO_PC98_RUNTIME_INCLUDE_DIRS}
+    PRIV_REQUIRES ${P4_NANO_PC98_RUNTIME_REQUIRES})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>"
@@ -38,6 +52,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 if(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_RUNTIME_VALIDATION_PROFILE=1)
+endif()
+if(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_KEYBOARD_VALIDATION_PROFILE=1)
 endif()
 if(P4_NANO_RUNTIME_EMU_BACKEND)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE

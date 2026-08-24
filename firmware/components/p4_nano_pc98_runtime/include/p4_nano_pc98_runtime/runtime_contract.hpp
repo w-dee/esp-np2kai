@@ -30,6 +30,20 @@ inline constexpr MediaConfig hardware_validation_media_config() noexcept
             "./runtime-validation-fdd0.hdm", 0U};
 }
 
+#if !defined(ESP_PLATFORM) || defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+inline constexpr MediaConfig keyboard_validation_media_config() noexcept
+{
+    return {"/persist/fixtures/np2kbdtest-fd1232.hdm",
+            "./runtime-keyboard-validation-fdd0.hdm", 0U};
+}
+
+inline constexpr MediaConfig hardware_keyboard_validation_media_config() noexcept
+{
+    return {"/sdcard/files/pc98/fdd/runtime-keyboard-validation.hdm",
+            "./runtime-keyboard-validation-fdd0.hdm", 0U};
+}
+#endif
+
 /* Runtime::cleanup() terminates pccore on the owner task before that task is
  * joined; only then can the composition eject the drive and tear down VFS.
  * This is the dependency-safe realization of the public cleanup contract. */

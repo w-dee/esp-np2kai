@@ -16,9 +16,16 @@
 
 extern "C" {
 #include <compiler.h>
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
 #include <cpumem.h>
+#endif
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
 #include <result_v1_parser.h>
+#endif
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#include <np2kbd_control_v1_parser.h>
+#include <np2kbd_result_v1_parser.h>
 #endif
 #include <diskimage/fddfile.h>
 #include <scrnmng.h>
@@ -26,6 +33,10 @@ extern "C" {
 
 #include "np2host/dosio_esp.h"
 #include "np2_keyboard_input_bridge/keyboard_input_bridge.hpp"
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#include "np2_keyboard_input/keyboard_input.hpp"
+#include "np2_keyboard_validation/validation_controller.hpp"
+#endif
 #include "np2runtime/np2runtime.hpp"
 #include "p4_nano_live_display_session/session.hpp"
 #include "p4_nano_pc98_runtime/runtime_contract.hpp"
@@ -41,9 +52,19 @@ constexpr TickType_t kStartupTimeoutTicks = pdMS_TO_TICKS(30000U) == 0U
                                                  ? 1U
                                                  : pdMS_TO_TICKS(30000U);
 constexpr TickType_t kConsumerDelayTicks = 1U;
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
 constexpr std::uintptr_t kResultPhysicalAddress = 0x29000U;
 #endif
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+constexpr std::uintptr_t kControlPhysicalAddress = 0x27fc0U;
+#endif
+
+enum class ValidationKind : std::uint8_t {
+    None,
+    Runtime,
+    Keyboard,
+};
 
 enum class GuestCompletion : std::uint8_t {
     Unknown,
@@ -51,23 +72,37 @@ enum class GuestCompletion : std::uint8_t {
     Fail,
 };
 
-struct Composition final {
-    explicit Composition(bool validation_profile, bool emu_backend) noexcept
-        : validation(validation_profile),
-          emu(emu_backend),
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
-          media(validation_profile
-                    ? (emu_backend
-                           ? p4_nano_pc98_runtime::validation_media_config()
-                           : p4_nano_pc98_runtime::hardware_validation_media_config())
-                    : p4_nano_pc98_runtime::production_media_config())
+constexpr p4_nano_pc98_runtime::MediaConfig media_config_for(
+    const ValidationKind validation_kind, const bool emu_backend) noexcept
+{
+    if (validation_kind == ValidationKind::Runtime) {
+        return emu_backend ? p4_nano_pc98_runtime::validation_media_config()
+                           : p4_nano_pc98_runtime::hardware_validation_media_config();
+    }
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    if (validation_kind == ValidationKind::Keyboard) {
+        return emu_backend
+                   ? p4_nano_pc98_runtime::keyboard_validation_media_config()
+                   : p4_nano_pc98_runtime::hardware_keyboard_validation_media_config();
+    }
 #else
-          media(p4_nano_pc98_runtime::production_media_config())
+    (void)emu_backend;
 #endif
+    return p4_nano_pc98_runtime::production_media_config();
+}
+
+struct Composition final {
+    explicit Composition(const ValidationKind validation_kind,
+                         const bool emu_backend) noexcept
+        : validation(validation_kind != ValidationKind::None),
+          kind(validation_kind),
+          emu(emu_backend),
+          media(media_config_for(validation_kind, emu_backend))
     {
     }
 
     bool validation;
+    ValidationKind kind;
     bool emu;
     p4_nano_pc98_runtime::MediaConfig media;
     storage_sdmmc::SdmmcMountProvider sd_provider{};
@@ -89,6 +124,19 @@ struct Composition final {
     bool fdd_attached = false;
     bool ready_signaled = false;
     bool keyboard_status_reported = false;
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    np2_keyboard_validation::ValidationController keyboard_validation{};
+    np2kbd_control_v1_tracker control_tracker{};
+    np2kbd_control_v1_state accepted_control_state =
+        NP2KBD_CONTROL_V1_STATE_UNINITIALIZED;
+    np2kbd_control_v1_result accepted_control{};
+    np2_keyboard_validation::EnqueueOutcome pending_enqueue_outcome =
+        np2_keyboard_validation::EnqueueOutcome::None;
+    np2_keyboard_validation::CounterSnapshot proof_counters{};
+    bool keyboard_validation_started = false;
+    bool keyboard_ready_reported = false;
+    bool keyboard_proof_terminal_reported = false;
+#endif
 };
 
 void emit(const char *format, ...)
@@ -138,12 +186,346 @@ void observe_guest_completion(Composition *composition) noexcept
 }
 #endif
 
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+np2_keyboard_validation::ControlState keyboard_control_state(
+    const np2kbd_control_v1_state state) noexcept
+{
+    switch (state) {
+    case NP2KBD_CONTROL_V1_STATE_READY:
+        return np2_keyboard_validation::ControlState::Ready;
+    case NP2KBD_CONTROL_V1_STATE_MAKE_OBSERVED:
+        return np2_keyboard_validation::ControlState::MakeObserved;
+    case NP2KBD_CONTROL_V1_STATE_BREAK_OBSERVED:
+        return np2_keyboard_validation::ControlState::BreakObserved;
+    case NP2KBD_CONTROL_V1_STATE_FAIL:
+        return np2_keyboard_validation::ControlState::Fail;
+    case NP2KBD_CONTROL_V1_STATE_UNINITIALIZED:
+        return np2_keyboard_validation::ControlState::Uninitialized;
+    }
+    return np2_keyboard_validation::ControlState::Uninitialized;
+}
+
+np2_keyboard_validation::ResultObservation keyboard_result_observation(
+    const np2kbd_result_v1_observation observation) noexcept
+{
+    switch (observation) {
+    case NP2KBD_RESULT_V1_PRE_PROTOCOL:
+        return np2_keyboard_validation::ResultObservation::PreProtocol;
+    case NP2KBD_RESULT_V1_UNINITIALIZED:
+        return np2_keyboard_validation::ResultObservation::Uninitialized;
+    case NP2KBD_RESULT_V1_RUNNING:
+        return np2_keyboard_validation::ResultObservation::Running;
+    case NP2KBD_RESULT_V1_PASS:
+        return np2_keyboard_validation::ResultObservation::Pass;
+    case NP2KBD_RESULT_V1_FAIL:
+        return np2_keyboard_validation::ResultObservation::Fail;
+    case NP2KBD_RESULT_V1_INVALID:
+        return np2_keyboard_validation::ResultObservation::Invalid;
+    }
+    return np2_keyboard_validation::ResultObservation::Invalid;
+}
+
+np2_keyboard_validation::CounterSnapshot keyboard_counters(
+    const np2_keyboard_input_bridge::BridgeCounters &counters) noexcept
+{
+    return {counters.enqueued,
+            counters.dequeued,
+            counters.queue_overflows,
+            counters.queue_rejected,
+            counters.blocked_events,
+            counters.recovery_discards,
+            counters.ownership.press_injected,
+            counters.ownership.release_injected,
+            counters.ownership.duplicate_suppressed,
+            counters.ownership.invalid_rejected,
+            counters.ownership.source_capacity_failures,
+            counters.ownership.source_disconnects,
+            counters.ownership.global_recoveries,
+            false};
+}
+
+bool keyboard_proof_counters_valid(const Composition *composition) noexcept
+{
+    if (composition == nullptr) {
+        return false;
+    }
+    const auto &baseline = composition->keyboard_validation.baseline();
+    const auto &proof = composition->proof_counters;
+    const auto delta = [](const std::uint32_t current,
+                          const std::uint32_t before,
+                          const std::uint32_t expected) noexcept {
+        return current >= before && current - before == expected;
+    };
+    return delta(proof.enqueued, baseline.enqueued, 2U) &&
+           delta(proof.dequeued, baseline.dequeued, 2U) &&
+           delta(proof.press_injected, baseline.press_injected, 1U) &&
+           delta(proof.release_injected, baseline.release_injected, 1U) &&
+           proof.queue_overflows == baseline.queue_overflows &&
+           proof.queue_rejected == baseline.queue_rejected &&
+           proof.blocked_events == baseline.blocked_events &&
+           proof.recovery_discards == baseline.recovery_discards &&
+           proof.duplicate_suppressed == baseline.duplicate_suppressed &&
+           proof.invalid_rejected == baseline.invalid_rejected &&
+           proof.source_capacity_failures ==
+               baseline.source_capacity_failures &&
+           proof.source_disconnects == baseline.source_disconnects &&
+           proof.global_recoveries == baseline.global_recoveries &&
+           !proof.quarantined;
+}
+
+void snapshot_keyboard_protocol(
+    Composition *composition,
+    np2_keyboard_validation::InputSnapshot *sample) noexcept
+{
+    if (composition == nullptr || sample == nullptr) {
+        return;
+    }
+
+    std::uint8_t control_snapshot[NP2KBD_CONTROL_V1_SIZE];
+    std::memcpy(control_snapshot, mem + kControlPhysicalAddress,
+                sizeof(control_snapshot));
+    const auto tracked = np2kbd_control_v1_tracker_observe(
+        &composition->control_tracker, control_snapshot,
+        sizeof(control_snapshot));
+    if (tracked == NP2KBD_CONTROL_V1_TRACK_INVALID) {
+        sample->control_observation =
+            np2_keyboard_validation::ControlObservation::Invalid;
+    } else if (tracked == NP2KBD_CONTROL_V1_TRACK_TRANSIENT) {
+        sample->control_observation =
+            np2_keyboard_validation::ControlObservation::Transient;
+    } else {
+        np2kbd_control_v1_result parsed{};
+        const auto parsed_observation = np2kbd_control_v1_parse(
+            control_snapshot, sizeof(control_snapshot), &parsed);
+        if (parsed_observation == NP2KBD_CONTROL_V1_INVALID ||
+            parsed_observation == NP2KBD_CONTROL_V1_TRANSIENT ||
+            parsed_observation == NP2KBD_CONTROL_V1_PRE_PROTOCOL ||
+            parsed_observation == NP2KBD_CONTROL_V1_UNINITIALIZED) {
+            sample->control_observation =
+                np2_keyboard_validation::ControlObservation::Invalid;
+        } else {
+            composition->accepted_control_state = parsed.state;
+            composition->accepted_control = parsed;
+            sample->control_observation =
+                np2_keyboard_validation::ControlObservation::Accepted;
+        }
+    }
+    sample->control_state = keyboard_control_state(
+        composition->accepted_control_state);
+    sample->observed_make = composition->accepted_control.observed_make;
+    sample->observed_break = composition->accepted_control.observed_break;
+    sample->failure_reason = composition->accepted_control.failure_reason;
+
+    std::uint8_t result_snapshot[NP2KBD_RESULT_V1_SIZE];
+    std::memcpy(result_snapshot, mem + kResultPhysicalAddress,
+                sizeof(result_snapshot));
+    np2kbd_result_v1_result result{};
+    const auto result_observation = np2kbd_result_v1_parse(
+        result_snapshot, sizeof(result_snapshot), &result);
+    sample->result_observation =
+        keyboard_result_observation(result_observation);
+}
+
+void emit_keyboard_proof_failure(Composition *composition,
+                                const np2_keyboard_validation::StepResult &step)
+{
+    if (composition == nullptr ||
+        composition->keyboard_proof_terminal_reported) {
+        return;
+    }
+    composition->keyboard_proof_terminal_reported = true;
+    emit("P4_NANO_KEYBOARD_PROOF_RESULT=FAIL reason=%s\n",
+         np2_keyboard_validation::to_string(step.failure_reason));
+}
+
+bool owner_iteration_keyboard(Composition *composition) noexcept
+{
+    if (composition == nullptr) {
+        return false;
+    }
+    if (composition->stop_requested.load(std::memory_order_acquire)) {
+        if (composition->keyboard_validation.state() !=
+                np2_keyboard_validation::State::Complete &&
+            composition->keyboard_validation.state() !=
+                np2_keyboard_validation::State::Failed) {
+            const auto failure = composition->keyboard_validation.fail(
+                np2_keyboard_validation::FailureReason::GlobalTimeout);
+            emit_keyboard_proof_failure(composition, failure);
+        }
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
+    }
+    if (composition->runtime.failure()) {
+        const auto failure = composition->keyboard_validation.fail(
+            np2_keyboard_validation::FailureReason::RuntimeFatal);
+        emit_keyboard_proof_failure(composition, failure);
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
+    }
+
+    /* This callback is the owner-task boundary.  The protocol snapshots are
+     * copied before draining, and a command created below is therefore
+     * necessarily drained on the next owner iteration. */
+    np2_keyboard_validation::InputSnapshot sample{};
+    sample.now_us = static_cast<std::uint64_t>(esp_timer_get_time());
+    sample.enqueue_outcome = composition->pending_enqueue_outcome;
+    composition->pending_enqueue_outcome =
+        np2_keyboard_validation::EnqueueOutcome::None;
+    snapshot_keyboard_protocol(composition, &sample);
+
+    /* A committed guest terminal failure is authoritative before the bridge
+     * drain.  This keeps the owner-iteration sequence deterministic even if
+     * a stale producer command is still waiting in the bounded queue. */
+    np2_keyboard_validation::FailureReason pre_drain_failure =
+        np2_keyboard_validation::FailureReason::None;
+    if (sample.control_observation ==
+        np2_keyboard_validation::ControlObservation::Invalid) {
+        pre_drain_failure =
+            np2_keyboard_validation::FailureReason::ControlInvalid;
+    } else if (sample.control_observation ==
+                   np2_keyboard_validation::ControlObservation::Accepted &&
+               sample.control_state ==
+                   np2_keyboard_validation::ControlState::Fail) {
+        pre_drain_failure =
+            np2_keyboard_validation::FailureReason::GuestControlFail;
+    } else if (sample.result_observation ==
+               np2_keyboard_validation::ResultObservation::Invalid) {
+        pre_drain_failure = np2_keyboard_validation::FailureReason::ResultInvalid;
+    } else if (sample.result_observation ==
+               np2_keyboard_validation::ResultObservation::Fail) {
+        pre_drain_failure =
+            np2_keyboard_validation::FailureReason::GuestResultFail;
+    }
+    if (pre_drain_failure != np2_keyboard_validation::FailureReason::None) {
+        const auto failure =
+            composition->keyboard_validation.fail(pre_drain_failure);
+        emit_keyboard_proof_failure(composition, failure);
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
+    }
+
+    const auto input_result = composition->keyboard.owner_iteration();
+    if (input_result ==
+            np2_keyboard_input_bridge::OwnerIterationResult::Recovered ||
+        input_result ==
+            np2_keyboard_input_bridge::OwnerIterationResult::Quarantined) {
+        if (!composition->keyboard_status_reported) {
+            composition->keyboard_status_reported = true;
+            const auto counters = composition->keyboard.counters();
+            emit("P4_NANO_KEYBOARD=QUARANTINED queue_overflows=%" PRIu32
+                 " recoveries=%" PRIu32 "\n",
+                 counters.queue_overflows,
+                 counters.ownership.global_recoveries);
+        }
+    }
+    const auto bridge_counters = composition->keyboard.counters();
+    sample.counters = keyboard_counters(bridge_counters);
+    sample.counters.quarantined = composition->keyboard.quarantined();
+
+    const auto before = composition->keyboard_validation.state();
+    const auto step = composition->keyboard_validation.observe(sample);
+    if (sample.control_observation ==
+            np2_keyboard_validation::ControlObservation::Accepted &&
+        sample.control_state == np2_keyboard_validation::ControlState::Ready &&
+        !composition->keyboard_ready_reported) {
+        composition->keyboard_ready_reported = true;
+        emit("P4_NANO_KEYBOARD_PROOF_STATE=READY\n");
+    }
+    if (before == np2_keyboard_validation::State::PressQueued &&
+        step.state == np2_keyboard_validation::State::WaitingMake) {
+        emit("P4_NANO_KEYBOARD_PROOF_EVENT=PRESS_DRAINED\n");
+    }
+    if (before == np2_keyboard_validation::State::ReleaseQueued &&
+        step.state == np2_keyboard_validation::State::WaitingBreak) {
+        emit("P4_NANO_KEYBOARD_PROOF_EVENT=RELEASE_DRAINED\n");
+    }
+
+    if (step.action == np2_keyboard_validation::Action::EnqueuePress ||
+        step.action == np2_keyboard_validation::Action::EnqueueRelease) {
+        if (step.action == np2_keyboard_validation::Action::EnqueueRelease) {
+            emit("P4_NANO_KEYBOARD_PROOF_STATE=MAKE_OBSERVED byte=0x%02x\n",
+                 sample.observed_make);
+        }
+        const np2_keyboard_input::Event event{
+            np2_keyboard_input::kSyntheticSource,
+            np2_keyboard_input::Key::A,
+            step.action == np2_keyboard_validation::Action::EnqueuePress
+                ? np2_keyboard_input::Action::Press
+                : np2_keyboard_input::Action::Release};
+        const auto enqueue_result = composition->keyboard.enqueue(event);
+        if (enqueue_result == np2_keyboard_input_bridge::EnqueueResult::Enqueued) {
+            composition->pending_enqueue_outcome =
+                np2_keyboard_validation::EnqueueOutcome::Enqueued;
+            emit("P4_NANO_KEYBOARD_PROOF_EVENT=%s\n",
+                 step.action == np2_keyboard_validation::Action::EnqueuePress
+                     ? "PRESS_ENQUEUED"
+                     : "RELEASE_ENQUEUED");
+        } else {
+            composition->pending_enqueue_outcome =
+                np2_keyboard_validation::EnqueueOutcome::Failed;
+        }
+    }
+
+    if (before == np2_keyboard_validation::State::WaitingBreak &&
+        step.state == np2_keyboard_validation::State::WaitingResult) {
+        emit("P4_NANO_KEYBOARD_PROOF_STATE=BREAK_OBSERVED byte=0x%02x\n",
+             sample.observed_break);
+    }
+    if (step.action == np2_keyboard_validation::Action::Complete) {
+        composition->proof_counters =
+            composition->keyboard_validation.proof_counters();
+        emit("P4_NANO_KEYBOARD_PROOF_COUNTERS enqueued=%" PRIu32
+             " dequeued=%" PRIu32 " press=%" PRIu32
+             " release=%" PRIu32 " queue_overflows=%" PRIu32
+             " rejected=%" PRIu32 " blocked=%" PRIu32
+             " duplicate=%" PRIu32 " invalid=%" PRIu32
+             " source_capacity=%" PRIu32 " recoveries=%" PRIu32
+             " quarantined=%u\n",
+             composition->proof_counters.enqueued,
+             composition->proof_counters.dequeued,
+             composition->proof_counters.press_injected,
+             composition->proof_counters.release_injected,
+             composition->proof_counters.queue_overflows,
+             composition->proof_counters.queue_rejected,
+             composition->proof_counters.blocked_events,
+             composition->proof_counters.duplicate_suppressed,
+             composition->proof_counters.invalid_rejected,
+             composition->proof_counters.source_capacity_failures,
+             composition->proof_counters.global_recoveries,
+             composition->proof_counters.quarantined ? 1U : 0U);
+        emit("P4_NANO_KEYBOARD_PROOF_RESULT=PASS make=0x%02x break=0x%02x\n",
+             sample.observed_make, sample.observed_break);
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
+    }
+    if (step.action == np2_keyboard_validation::Action::Fail) {
+        emit_keyboard_proof_failure(composition, step);
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+        return true;
+    }
+    return false;
+}
+#endif
+
 bool owner_iteration(void *context) noexcept
 {
     auto *composition = static_cast<Composition *>(context);
     if (composition == nullptr) {
         return false;
     }
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    return owner_iteration_keyboard(composition);
+#else
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     observe_guest_completion(composition);
     const GuestCompletion guest_completion =
@@ -178,6 +560,7 @@ bool owner_iteration(void *context) noexcept
              counters.ownership.global_recoveries);
     }
     return false;
+#endif
 }
 
 void signal_ready(Composition *composition, esp_err_t result) noexcept
@@ -238,6 +621,15 @@ void owner_task(void *context)
     }
 
     const bool keyboard_initialized = composition->keyboard.initialize();
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    if (keyboard_initialized) {
+        composition->keyboard_validation.begin(
+            keyboard_counters(composition->keyboard.counters()),
+            static_cast<std::uint64_t>(esp_timer_get_time()));
+        composition->keyboard_validation_started = true;
+        np2kbd_control_v1_tracker_init(&composition->control_tracker);
+    }
+#endif
     const np2runtime::Result runtime_init =
         keyboard_initialized
             ? composition->runtime.initialize(
@@ -325,7 +717,9 @@ done:
              " rejected=%" PRIu32 " blocked=%" PRIu32
              " press=%" PRIu32 " release=%" PRIu32
              " duplicate=%" PRIu32 " invalid=%" PRIu32
-             " disconnects=%" PRIu32 " recoveries=%" PRIu32 "\n",
+             " disconnects=%" PRIu32 " source_capacity=%" PRIu32
+             " recovery_discards=%" PRIu32 " recoveries=%" PRIu32
+             " quarantined=%u\n",
              counters.enqueued, counters.dequeued, counters.queue_overflows,
              counters.queue_rejected, counters.blocked_events,
              counters.ownership.press_injected,
@@ -333,7 +727,10 @@ done:
              counters.ownership.duplicate_suppressed,
              counters.ownership.invalid_rejected,
              counters.ownership.source_disconnects,
-             counters.ownership.global_recoveries);
+             counters.ownership.source_capacity_failures,
+             counters.recovery_discards,
+             counters.ownership.global_recoveries,
+             composition->keyboard.quarantined() ? 1U : 0U);
     }
     composition->owner_done.store(true, std::memory_order_release);
     if (composition->stopped_semaphore != nullptr) {
@@ -367,12 +764,15 @@ void destroy_sync(Composition *composition) noexcept
     }
 }
 
-esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
+esp_err_t run_composition(const ValidationKind validation_kind,
+                          const bool emu_backend) noexcept
 {
-    Composition composition(validation_profile, emu_backend);
+    const bool validation_profile = validation_kind != ValidationKind::None;
+    Composition composition(validation_kind, emu_backend);
     const auto &media = composition.media;
 
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     if (validation_profile && !emu_backend) {
         if (composition.sd_provider.mount() != ESP_OK) {
             emit("P4_NANO_RUNTIME_SD_MOUNT=FAIL reason=SD_MOUNT_FAILED\n");
@@ -453,7 +853,8 @@ esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
     }
 
     bool visible_reported = false;
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     const std::int64_t validation_deadline =
         esp_timer_get_time() + 30LL * 1000LL * 1000LL;
 #endif
@@ -470,9 +871,12 @@ esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
 
         np2_dosio_stats stats{};
         np2_dosio_stats_get(&stats);
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
         if (validation_profile && esp_timer_get_time() >= validation_deadline) {
-            emit("P4_NANO_RUNTIME_RESULT=FAIL reason=VALIDATION_TIMEOUT\n");
+            emit("P4_NANO_%s_RESULT=FAIL reason=VALIDATION_TIMEOUT\n",
+                 validation_kind == ValidationKind::Keyboard ? "KEYBOARD_VALIDATION"
+                                                              : "RUNTIME");
             composition.stop_requested.store(true, std::memory_order_release);
         }
 #endif
@@ -495,9 +899,18 @@ esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
     const auto &counters = composition.session.counters();
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     const bool validation_pass =
-        validation_profile &&
+        validation_kind == ValidationKind::Runtime &&
         composition.guest_completion.load(std::memory_order_acquire) ==
             GuestCompletion::Pass &&
+        !composition.session.failed() &&
+        stats.read_bytes > 0U && counters.submitted > 0U &&
+        counters.transformed > 0U && counters.released > 0U;
+#elif defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    const bool validation_pass =
+        validation_kind == ValidationKind::Keyboard &&
+        composition.keyboard_validation.state() ==
+            np2_keyboard_validation::State::Complete &&
+        keyboard_proof_counters_valid(&composition) &&
         !composition.session.failed() &&
         stats.read_bytes > 0U && counters.submitted > 0U &&
         counters.transformed > 0U && counters.released > 0U;
@@ -521,9 +934,15 @@ esp_err_t run_composition(bool validation_profile, bool emu_backend) noexcept
         emit("P4_NANO_RUNTIME_VALIDATION_RESULT=%s\n",
              validation_pass ? "PASS" : "FAIL");
     }
+#elif defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    if (validation_profile) {
+        emit("P4_NANO_KEYBOARD_VALIDATION_RESULT=%s\n",
+             validation_pass ? "PASS" : "FAIL");
+    }
 #endif
     destroy_sync(&composition);
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     return validation_profile ? (validation_pass ? ESP_OK : ESP_FAIL)
                               : composition.owner_result;
 #else
@@ -537,12 +956,23 @@ namespace p4_nano_pc98_runtime {
 
 esp_err_t run_production() noexcept
 {
-    return run_composition(false, false);
+    return run_composition(ValidationKind::None, false);
 }
 
 esp_err_t run_validation() noexcept
 {
-    return run_composition(true,
+    return run_composition(ValidationKind::Runtime,
+#if defined(P4_NANO_RUNTIME_EMU_BACKEND)
+                           true
+#else
+                           false
+#endif
+    );
+}
+
+esp_err_t run_keyboard_validation() noexcept
+{
+    return run_composition(ValidationKind::Keyboard,
 #if defined(P4_NANO_RUNTIME_EMU_BACKEND)
                            true
 #else
