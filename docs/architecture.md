@@ -551,20 +551,23 @@ physical RGB-order evidence using a color diagnostic through the same transform
 and display path; this is prior path evidence, not a claim that colored live NP2
 content was validated here.
 
-The next display milestone is **Step 7B.2d: sustained live presentation cadence
-and transform performance**. It should characterize multiple NP2 frames,
-publication/acquisition/transform cadence, coalescing/dropping, latency,
-visible animation, tearing, PSRAM load, and whether optimization is needed.
-Potential loop/cache, SIMD, multicore, PPA A/B, and buffering work remains
-unselected. Keep one-framebuffer reuse, refresh-boundary synchronization,
-revision-1 refresh-callback semantics, and the relationship between NP2 render,
-publication, consumer, transform, and panel clocks as future questions. The
-following remain FUTURE / UNVALIDATED: sustained multi-frame display, arbitrary
-guest software, colored live NP2 visual validation, production framerate,
-transform throughput, long-duration stability, second native framebuffer,
-tearing elimination, measured panel refresh, live-load PSRAM bandwidth, PPA,
-display plus SDMMC/audio concurrency, touch, LVGL, OSD, TAB5, ESP32-S31, and
-ESP32-S3 display backends.
+Step 7B.2d sustained live presentation and transform validation is complete for
+the reviewed P4-NANO path. Transform processing is `-O2` by default for
+transform-using profiles, while explicit `--transform-opt debug` preserves the
+validated `-Og` reference path. Isolated transform improvement was
+approximately 39.3%; LIVE improvement was approximately 49.9%, and the
+producer-associated shared execution/memory contention decreased from roughly
+78.6 ms to 28.0 ms. Correctness, scheduler/TWDT safety, and host CRC
+regressions passed with a 16-byte LIVE benchmark app increase. This is
+transform processing capacity evidence, not guest/display FPS or a measured
+raw-PSRAM-bandwidth improvement. Long-duration stability, refresh/tearing
+characterization, PPA, display plus SDMMC/audio concurrency, touch, LVGL, OSD,
+TAB5, ESP32-S31, and ESP32-S3 display backends remain FUTURE / UNVALIDATED.
+Motion validation remains a separate future task with an **AUTOMATED PROBE
+FIRST** order: guest update progression, guest multi-frame content,
+presentation sequence/content progression, moving-bar ROI, native-framebuffer
+ROI, camera/video analysis if needed, and human visual confirmation only as a
+fallback.
 
 ## Audio boundary
 

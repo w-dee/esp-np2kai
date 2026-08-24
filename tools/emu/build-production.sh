@@ -14,7 +14,7 @@ variant=""
 board="generic"
 build_dir=""
 i286_inline_mem_fastpath=0
-transform_opt=debug
+transform_opt=""
 display_foundation=0
 display_foundation_variant=""
 display_transform_diagnostic=0
@@ -128,7 +128,7 @@ case "${i286_inline_mem_fastpath}" in
 esac
 
 case "${transform_opt}" in
-    debug|o2)
+    ""|debug|o2)
         ;;
     *)
         printf 'ERROR: --transform-opt requires exactly debug or o2\n' >&2
@@ -139,12 +139,6 @@ esac
 if (( live_display_transform_isolated_benchmark )) &&
    [[ "${i286_inline_mem_fastpath}" != "0" ]]; then
     printf 'ERROR: --live-display-transform-isolated-benchmark requires --i286-inline-mem-fastpath 0\n' >&2
-    exit 2
-fi
-
-if [[ "${transform_opt}" == "o2" ]] &&
-   (( ! live_display_benchmark && ! live_display_transform_isolated_benchmark )); then
-    printf 'ERROR: --transform-opt o2 requires --live-display-benchmark or --live-display-transform-isolated-benchmark\n' >&2
     exit 2
 fi
 
@@ -240,6 +234,23 @@ if (( esp_emu_test && live_display_benchmark )); then
 fi
 if (( esp_emu_test && live_display_transform_isolated_benchmark )); then
     printf 'ERROR: --live-display-transform-isolated-benchmark cannot be combined with --esp-emu-test\n' >&2
+    exit 2
+fi
+
+transform_profile=0
+if (( display_transform_diagnostic || live_display || live_display_benchmark ||
+      live_display_transform_isolated_benchmark )); then
+    transform_profile=1
+fi
+if [[ -z "${transform_opt}" ]]; then
+    if (( transform_profile )); then
+        transform_opt=o2
+    else
+        transform_opt=debug
+    fi
+fi
+if [[ "${transform_opt}" == "o2" ]] && (( ! transform_profile )); then
+    printf 'ERROR: --transform-opt o2 requires a P4-NANO transform profile\n' >&2
     exit 2
 fi
 

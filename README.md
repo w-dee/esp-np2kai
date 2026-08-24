@@ -168,13 +168,26 @@ Step 7B.2b physical RGB-order evidence. The saved UART transcript began late,
 so its early immutability marker and startup lines are not retained; this is an
 evidence-capture limitation, not a runtime failure.
 
-This does not claim a general production emulator display pipeline. Sustained
-multi-frame cadence, buffering/reuse, tearing, measured refresh, latency,
-long-duration stability, live-load PSRAM bandwidth, PPA, and display concurrency
-with SDMMC/audio remain future work. The next display milestone is Step 7B.2d:
-sustained live presentation cadence and transform performance. The P4-NANO CCW
-policy does not generalize to TAB5, ESP32-S31, or ESP32-S3 without an
-independent geometry/orientation decision.
+Step 7B.2d sustained live presentation and transform validation is complete for
+the reviewed P4-NANO path. The transform translation unit is now `-O2` by
+default for transform-using P4-NANO profiles (normal live display, live
+benchmark, isolated benchmark, and the transform diagnostic); explicit
+`--transform-opt debug` retains the validated `-Og` reference escape hatch.
+The physical evidence measured approximately 39.3% isolated and 49.9% LIVE
+transform improvement, with producer-associated shared execution/memory
+contention falling from approximately 78.6 ms to 28.0 ms. Correctness,
+scheduler/TWDT safety, and host CRC regressions passed; the LIVE benchmark app
+grew by 16 bytes. These results describe transform processing capacity, not
+guest FPS, displayed FPS, or a measured raw-PSRAM-bandwidth gain. Sustained
+tearing/refresh characterization, long-duration stability, PPA, and display
+concurrency with SDMMC/audio remain future work. The P4-NANO CCW policy does
+not generalize to TAB5, ESP32-S31, or ESP32-S3 without an independent
+geometry/orientation decision.
+Motion validation remains separate and follows an **AUTOMATED PROBE FIRST**
+sequence: guest update progression, guest multi-frame content, presentation
+sequence/content progression, moving-bar ROI, native-framebuffer ROI,
+camera/video analysis if needed, and human visual confirmation only as a
+fallback.
 Physical-media removal/durability, input, audio, and TAB5 integration remain
 future hardware-dependent work.
 

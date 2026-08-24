@@ -660,15 +660,24 @@ framebuffer viability, long-duration stability, live-load PSRAM bandwidth,
 optimized transform path, PPA acceleration, display plus SDMMC/audio
 concurrency, touch, LVGL, OSD, TAB5, ESP32-S31, or ESP32-S3 display backends.
 
-The next display milestone is **Step 7B.2d: sustained live presentation cadence
-and transform performance**. It should characterize multiple NP2 frames,
-publication/acquisition/transform cadence, coalescing/dropping, latency,
-visible animation, tearing, PSRAM load, and whether optimization is required.
-Possible loop/cache, SIMD, multicore, PPA A/B, and buffering approaches remain
-future alternatives; the Step 7B.2b CPU fused implementation remains the
-correctness oracle. One active DSI framebuffer, refresh-boundary synchronization,
-revision-1 refresh-callback semantics, and the relationship among NP2 render,
-publication, consumer, transform, and panel clocks remain future questions.
+Step 7B.2d sustained live presentation and transform validation is complete for
+the reviewed P4-NANO path. The transform TU is promoted to `-O2` by default for
+normal live, LIVE benchmark, isolated benchmark, and transform-diagnostic
+profiles; explicit `--transform-opt debug` remains the `-Og` reference escape
+hatch. Physical evidence measured approximately 39.3% isolated and 49.9% LIVE
+transform improvement, while producer-associated shared execution/memory
+contention decreased from approximately 78.6 ms to 28.0 ms. Correctness,
+scheduler/TWDT safety, and host CRC checks passed, with a 16-byte LIVE
+benchmark app increase. These are transform processing capacity results, not
+guest/display FPS or raw-PSRAM-bandwidth measurements. Long-duration stability,
+refresh/tearing characterization, PPA, and display plus SDMMC/audio concurrency
+remain future work; the Step 7B.2b CPU-fused implementation remains the
+correctness oracle.
+Motion validation is intentionally separate and will use **AUTOMATED PROBE
+FIRST**: guest update progression, guest multi-frame content, presentation
+sequence/content progression, moving-bar ROI, native-framebuffer ROI,
+camera/video analysis if needed, and human visual confirmation only as a
+fallback.
 
 ## Remaining hardware boundary
 

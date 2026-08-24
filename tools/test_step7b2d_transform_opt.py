@@ -162,20 +162,26 @@ def check_source_contract() -> None:
     cmake = DISPLAY_CMAKE.read_text(encoding="utf-8")
     sdkconfig = SDKCONFIG.read_text(encoding="utf-8")
 
+    if 'transform_opt=""' not in build:
+        fail("transform selector is not profile-derived when omitted")
+    if "transform_profile=0" not in build or "transform_opt=o2" not in build:
+        fail("transform profile default policy is missing")
     if "transform_opt=debug" not in build:
-        fail("transform selector default is not debug")
+        fail("non-transform transform selector fallback is missing")
     for option in ("--transform-opt)", "--transform-opt=*"):
         if option not in build:
             fail(f"missing CLI form {option}")
     if "debug|o2" not in build or "requires exactly debug or o2" not in build:
         fail("selector validation is incomplete")
-    if "--transform-opt o2 requires --live-display-benchmark or --live-display-transform-isolated-benchmark" not in build:
+    if "--transform-opt o2 requires a P4-NANO transform profile" not in build:
         fail("o2 profile restriction is missing")
-    if "! live_display_benchmark && ! live_display_transform_isolated_benchmark" not in build:
-        fail("o2 must be allowed for both live benchmark profiles")
-    for profile in ("--live-display-benchmark", "--live-display-transform-isolated-benchmark"):
+    if "display_transform_diagnostic || live_display || live_display_benchmark" not in build:
+        fail("transform profile default set is incomplete")
+    for profile in ("--live-display", "--live-display-benchmark",
+                    "--live-display-transform-isolated-benchmark",
+                    "--display-transform-diagnostic"):
         if profile not in build:
-            fail(f"missing accepted O2 profile selector: {profile}")
+            fail(f"missing transform profile selector: {profile}")
     if "P4_NANO_DISPLAY_TRANSFORM_OPT=${transform_opt}" not in build:
         fail("transform selector is not passed to CMake")
     if "transform_opt=%s" not in build:
@@ -197,18 +203,14 @@ def check_source_contract() -> None:
     run_rejected("--variant", "p4-v1x", "--transform-opt", "fast",
                  expected_fragment="requires exactly debug or o2")
     run_rejected("--variant", "p4-v1x", "--board", "p4-nano",
-                 "--live-display", "--transform-opt", "o2",
-                 expected_fragment="requires --live-display-benchmark or --live-display-transform-isolated-benchmark")
+                 "--transform-opt", "o2",
+                 expected_fragment="requires a P4-NANO transform profile")
     run_rejected("--variant", "p4-v1x", "--board", "p4-nano",
                  "--display-foundation", "--transform-opt", "o2",
-                 expected_fragment="requires --live-display-benchmark or --live-display-transform-isolated-benchmark")
-    run_rejected("--variant", "p4-v1x", "--board", "p4-nano",
-                 "--display-transform-diagnostic", "--rotation", "cw",
-                 "--transform-opt", "o2",
-                 expected_fragment="requires --live-display-benchmark or --live-display-transform-isolated-benchmark")
+                 expected_fragment="requires a P4-NANO transform profile")
     run_rejected("--variant", "p4-v3x", "--board", "generic",
                  "--transform-opt", "o2",
-                 expected_fragment="requires --live-display-benchmark or --live-display-transform-isolated-benchmark")
+                 expected_fragment="requires a P4-NANO transform profile")
 
 
 def main() -> int:
