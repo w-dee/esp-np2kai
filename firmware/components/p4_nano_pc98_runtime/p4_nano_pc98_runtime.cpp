@@ -133,7 +133,6 @@ struct Composition final {
     np2_keyboard_validation::EnqueueOutcome pending_enqueue_outcome =
         np2_keyboard_validation::EnqueueOutcome::None;
     np2_keyboard_validation::CounterSnapshot proof_counters{};
-    bool keyboard_validation_started = false;
     bool keyboard_ready_reported = false;
     bool keyboard_proof_terminal_reported = false;
 #endif
@@ -621,15 +620,6 @@ void owner_task(void *context)
     }
 
     const bool keyboard_initialized = composition->keyboard.initialize();
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
-    if (keyboard_initialized) {
-        composition->keyboard_validation.begin(
-            keyboard_counters(composition->keyboard.counters()),
-            static_cast<std::uint64_t>(esp_timer_get_time()));
-        composition->keyboard_validation_started = true;
-        np2kbd_control_v1_tracker_init(&composition->control_tracker);
-    }
-#endif
     const np2runtime::Result runtime_init =
         keyboard_initialized
             ? composition->runtime.initialize(
@@ -692,6 +682,16 @@ void owner_task(void *context)
     composition->fdd_attached = true;
     emit("P4_NANO_RUNTIME_FDD0=ATTACHED type=autodetect readonly=1 fddequip=0x%02x\n",
          p4_nano_pc98_runtime::kFdd0OnlyEquipment);
+
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    /* Start keyboard proof deadlines only after the guest's complete runtime,
+     * display, DOSIO, and FDD setup has succeeded.  The next owner iteration
+     * is therefore the first interval in which the guest can publish READY. */
+    composition->keyboard_validation.begin(
+        keyboard_counters(composition->keyboard.counters()),
+        static_cast<std::uint64_t>(esp_timer_get_time()));
+    np2kbd_control_v1_tracker_init(&composition->control_tracker);
+#endif
 
     signal_ready(composition, ESP_OK);
     emit("P4_NANO_RUNTIME_CORE=RUNNING\n");
