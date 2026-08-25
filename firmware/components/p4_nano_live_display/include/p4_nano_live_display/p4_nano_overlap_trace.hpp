@@ -144,14 +144,48 @@ struct Analysis {
     std::size_t zero_overlap_transform_stored = 0U;
     std::size_t overlapping_transform_stored = 0U;
     std::size_t intersecting_submit_count_stored = 0U;
+
+    void reset()
+    {
+        submit_count = 0U;
+        transform_count = 0U;
+        measured_transform_count = 0U;
+        overlapping_transform_count = 0U;
+        zero_overlap_transform_count = 0U;
+        matched_transform_count = 0U;
+        unmatched_acquired_count = 0U;
+        unmatched_submit_count = 0U;
+        sequence_metadata_mismatch_count = 0U;
+        max_concurrent_submit_count = 0U;
+        single_submit_overlap_transform_count = 0U;
+        multiple_submit_overlap_transform_count = 0U;
+        submit_intervals_non_overlapping = true;
+        submit_source_sequences_monotonic = true;
+        submit_published_sequences_monotonic = true;
+        transform_source_sequences_monotonic = true;
+        transform_published_sequences_monotonic = true;
+        overlap_us.fill(0U);
+        overlap_fraction_ppm.fill(0U);
+        transform_us.fill(0U);
+        zero_overlap_transform_us.fill(0U);
+        overlapping_transform_us.fill(0U);
+        intersecting_submit_count.fill(0U);
+        overlap_stored = 0U;
+        overlap_fraction_stored = 0U;
+        transform_stored = 0U;
+        zero_overlap_transform_stored = 0U;
+        overlapping_transform_stored = 0U;
+        intersecting_submit_count_stored = 0U;
+    }
 };
 
 template <std::size_t MaxMeasuredTransforms>
-Analysis<MaxMeasuredTransforms> analyze(
+void analyze(
     std::span<const SubmitInterval> submits,
-    std::span<const TransformInterval> transforms)
+    std::span<const TransformInterval> transforms,
+    Analysis<MaxMeasuredTransforms> &result)
 {
-    Analysis<MaxMeasuredTransforms> result{};
+    result.reset();
     result.submit_count = submits.size();
     result.transform_count = transforms.size();
     result.max_concurrent_submit_count =
@@ -247,7 +281,6 @@ Analysis<MaxMeasuredTransforms> analyze(
                 result.overlapping_transform_stored++] = duration_us;
         }
     }
-    return result;
 }
 
 } // namespace p4_nano_overlap

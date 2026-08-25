@@ -1040,14 +1040,14 @@ void benchmark_prepare_overlap_analysis(BenchmarkState *state)
     if (state == nullptr) {
         return;
     }
-    state->overlap_analysis = p4_nano_overlap::analyze<
-        kBenchmarkMeasuredTransforms>(
+    p4_nano_overlap::analyze<kBenchmarkMeasuredTransforms>(
         std::span<const p4_nano_overlap::SubmitInterval>(
             state->overlap_submit_trace.data(),
             state->overlap_submit_trace_stored),
         std::span<const p4_nano_overlap::TransformInterval>(
             state->overlap_transform_trace.data(),
-            state->overlap_transform_trace_stored));
+            state->overlap_transform_trace_stored),
+        state->overlap_analysis);
     state->overlap_trace_analyzed = true;
 }
 

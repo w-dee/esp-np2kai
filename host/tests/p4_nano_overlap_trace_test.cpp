@@ -82,7 +82,8 @@ void test_analysis_identity_and_warmup()
         transform(10U, 20U, 10U, false),
         transform(30U, 45U, 11U, true),
         transform(60U, 70U, 12U, true)};
-    const auto result = p4_nano_overlap::analyze<2U>(submits, transforms);
+    p4_nano_overlap::Analysis<2U> result{};
+    p4_nano_overlap::analyze<2U>(submits, transforms, result);
     assert(result.transform_count == 3U);
     assert(result.measured_transform_count == 2U);
     assert(result.overlapping_transform_count == 0U);
@@ -104,7 +105,8 @@ void test_submit_trace_completeness_and_intersection_count()
     const SubmitInterval submits[] = {
         submit(90U, 110U, 1U), submit(130U, 160U, 2U)};
     const TransformInterval transforms[] = {transform(100U, 150U, 1U)};
-    const auto result = p4_nano_overlap::analyze<1U>(submits, transforms);
+    p4_nano_overlap::Analysis<1U> result{};
+    p4_nano_overlap::analyze<1U>(submits, transforms, result);
     assert(result.intersecting_submit_count_stored == 1U);
     assert(result.intersecting_submit_count[0] == 2U);
     assert(result.overlapping_transform_count == 1U);
@@ -112,8 +114,8 @@ void test_submit_trace_completeness_and_intersection_count()
     assert(result.multiple_submit_overlap_transform_count == 1U);
 
     const SubmitInterval one_submit[] = {submit(110U, 120U, 1U)};
-    const auto one_result = p4_nano_overlap::analyze<1U>(
-        one_submit, transforms);
+    p4_nano_overlap::Analysis<1U> one_result{};
+    p4_nano_overlap::analyze<1U>(one_submit, transforms, one_result);
     assert(one_result.intersecting_submit_count[0] == 1U);
     assert(one_result.single_submit_overlap_transform_count == 1U);
     assert(one_result.multiple_submit_overlap_transform_count == 0U);
@@ -129,7 +131,8 @@ void test_different_sequences_and_capacity()
 {
     const SubmitInterval submits[] = {submit(10U, 20U, 2U)};
     const TransformInterval transforms[] = {transform(15U, 25U, 3U)};
-    const auto result = p4_nano_overlap::analyze<1U>(submits, transforms);
+    p4_nano_overlap::Analysis<1U> result{};
+    p4_nano_overlap::analyze<1U>(submits, transforms, result);
     assert(result.overlapping_transform_count == 1U);
     assert(result.unmatched_acquired_count == 1U);
     assert(result.unmatched_submit_count == 1U);
@@ -137,9 +140,11 @@ void test_different_sequences_and_capacity()
     SubmitInterval metadata_submit = submit(10U, 20U, 4U);
     TransformInterval metadata_transform = transform(15U, 25U, 4U);
     metadata_transform.source_update_sequence = 99U;
-    const auto metadata_result = p4_nano_overlap::analyze<1U>(
+    p4_nano_overlap::Analysis<1U> metadata_result{};
+    p4_nano_overlap::analyze<1U>(
         std::span<const SubmitInterval>(&metadata_submit, 1U),
-        std::span<const TransformInterval>(&metadata_transform, 1U));
+        std::span<const TransformInterval>(&metadata_transform, 1U),
+        metadata_result);
     assert(metadata_result.matched_transform_count == 1U);
     assert(metadata_result.unmatched_acquired_count == 0U);
     assert(metadata_result.sequence_metadata_mismatch_count == 1U);
@@ -169,6 +174,63 @@ void test_concurrency_assumption()
                                                 overlapping[1]));
 }
 
+void test_analysis_large_reuse_and_reset()
+{
+    using LargeAnalysis = p4_nano_overlap::Analysis<128U>;
+
+    const SubmitInterval first_submit[] = {submit(10U, 20U, 1U)};
+    const TransformInterval first_transform[] = {
+        transform(15U, 25U, 1U)};
+    LargeAnalysis result{};
+    result.submit_count = 999U;
+    result.submit_intervals_non_overlapping = false;
+    result.overlap_us.fill(UINT64_MAX);
+    result.zero_overlap_transform_us.fill(UINT64_MAX);
+    result.overlap_stored = 128U;
+    result.zero_overlap_transform_stored = 128U;
+
+    p4_nano_overlap::analyze<128U>(first_submit, first_transform, result);
+    assert(result.submit_count == 1U);
+    assert(result.transform_count == 1U);
+    assert(result.measured_transform_count == 1U);
+    assert(result.overlapping_transform_count == 1U);
+    assert(result.zero_overlap_transform_count == 0U);
+    assert(result.overlap_stored == 1U);
+    assert(result.overlap_us[0] == 5U);
+    assert(result.overlap_fraction_ppm[0] == 500000U);
+    assert(result.overlapping_transform_stored == 1U);
+    assert(result.overlapping_transform_us[0] == 10U);
+
+    const SubmitInterval second_submit[] = {submit(0U, 5U, 2U)};
+    const TransformInterval second_transform[] = {
+        transform(10U, 20U, 2U)};
+    p4_nano_overlap::analyze<128U>(second_submit, second_transform, result);
+    assert(result.submit_count == 1U);
+    assert(result.transform_count == 1U);
+    assert(result.measured_transform_count == 1U);
+    assert(result.overlapping_transform_count == 0U);
+    assert(result.zero_overlap_transform_count == 1U);
+    assert(result.matched_transform_count == 1U);
+    assert(result.unmatched_acquired_count == 0U);
+    assert(result.unmatched_submit_count == 0U);
+    assert(result.overlap_stored == 1U);
+    assert(result.overlap_us[0] == 0U);
+    assert(result.overlap_fraction_ppm[0] == 0U);
+    assert(result.zero_overlap_transform_stored == 1U);
+    assert(result.zero_overlap_transform_us[0] == 10U);
+    assert(result.overlapping_transform_stored == 0U);
+    assert(result.intersecting_submit_count_stored == 1U);
+    assert(result.intersecting_submit_count[0] == 0U);
+    for (std::size_t index = 1U; index < 128U; ++index) {
+        assert(result.overlap_us[index] == 0U);
+        assert(result.overlap_fraction_ppm[index] == 0U);
+        assert(result.transform_us[index] == 0U);
+        assert(result.zero_overlap_transform_us[index] == 0U);
+        assert(result.overlapping_transform_us[index] == 0U);
+        assert(result.intersecting_submit_count[index] == 0U);
+    }
+}
+
 } // namespace
 
 int main()
@@ -178,5 +240,6 @@ int main()
     test_submit_trace_completeness_and_intersection_count();
     test_different_sequences_and_capacity();
     test_concurrency_assumption();
+    test_analysis_large_reuse_and_reset();
     return 0;
 }
