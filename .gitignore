@@ -9,6 +9,9 @@ sdkconfig
 sdkconfig.old
 sdkconfig.*.old
 
+# Dependency lock file
+dependencies.lock
+
 # ESP-IDF managed component working tree
 managed_components/
 
