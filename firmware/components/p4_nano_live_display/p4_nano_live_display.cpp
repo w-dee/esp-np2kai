@@ -813,6 +813,8 @@ using BenchmarkDrawAnalysis =
     p4_nano_overlap::DrawAnalysis<kBenchmarkMeasuredTransforms>;
 using BenchmarkHierarchyAnalysis =
     p4_nano_overlap::HierarchyAnalysis<kBenchmarkMeasuredTransforms>;
+using BenchmarkCpuNeventAnalysis =
+    p4_nano_overlap::CpuNeventAnalysis<kBenchmarkMeasuredTransforms>;
 #endif
 
 struct BenchmarkState {
@@ -845,6 +847,7 @@ struct BenchmarkState {
         overlap_transform_trace{};
     np2video_pccore_trace pccore_trace{};
     np2_pccore_draw_trace draw_trace{};
+    np2_pccore_cpu_nevent_trace cpu_nevent_trace{};
     std::size_t overlap_submit_trace_stored = 0U;
     std::size_t overlap_transform_trace_stored = 0U;
     bool overlap_submit_trace_overflow = false;
@@ -854,8 +857,10 @@ struct BenchmarkState {
     BenchmarkPccoreAnalysis pccore_analysis{};
     BenchmarkDrawAnalysis draw_analysis{};
     BenchmarkHierarchyAnalysis hierarchy_analysis{};
+    BenchmarkCpuNeventAnalysis cpu_nevent_analysis{};
     bool pccore_overlap_analyzed = false;
     bool draw_overlap_analyzed = false;
+    bool cpu_nevent_overlap_analyzed = false;
 #endif
     std::array<std::uint64_t, kBenchmarkSubmitSampleCapacity> submit_samples{};
     std::array<std::uint64_t, kBenchmarkLatencySampleCapacity> latency_samples{};
@@ -1097,6 +1102,31 @@ void benchmark_prepare_overlap_analysis(BenchmarkState *state)
         state->overlap_analysis, state->draw_analysis, state->pccore_analysis,
         state->hierarchy_analysis);
     state->draw_overlap_analyzed = true;
+    const std::uint64_t cpu_exec_count =
+        state->producer_result.pccore_profile
+            .phases[NP2_PCCORE_PHASE_CPU_EXEC_NESTED]
+            .count;
+    const std::uint64_t nevent_count =
+        state->producer_result.pccore_profile
+            .phases[NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED]
+            .count;
+    p4_nano_overlap::analyze_cpu_nevent<kBenchmarkMeasuredTransforms>(
+        std::span<const p4_nano_overlap::CpuNeventInterval>(
+            state->cpu_nevent_trace.intervals,
+            state->cpu_nevent_trace.stored),
+        std::span<const p4_nano_overlap::DrawInterval>(
+            state->draw_trace.intervals, state->draw_trace.stored),
+        std::span<const p4_nano_overlap::PccoreInterval>(
+            state->pccore_trace.intervals, state->pccore_trace.stored),
+        std::span<const p4_nano_overlap::TransformInterval>(
+            state->overlap_transform_trace.data(),
+            state->overlap_transform_trace_stored),
+        cpu_exec_count, nevent_count,
+        state->cpu_nevent_trace.has_cpu_stored,
+        state->cpu_nevent_trace.overflow, state->overlap_analysis,
+        state->draw_analysis, state->pccore_analysis,
+        state->hierarchy_analysis, state->cpu_nevent_analysis);
+    state->cpu_nevent_overlap_analyzed = true;
 }
 
 void benchmark_print_pccore_overlap_report(BenchmarkState *state)
@@ -1242,6 +1272,103 @@ void benchmark_print_draw_overlap_report(BenchmarkState *state)
     benchmark_print_fixed_metric("transform_with_draw_overlap_us",
                                  draw.overlapping_transform_us,
                                  draw.overlapping_transform_stored);
+}
+
+void benchmark_print_cpu_nevent_report(BenchmarkState *state)
+{
+    if (state == nullptr || !state->cpu_nevent_overlap_analyzed) {
+        return;
+    }
+    BenchmarkCpuNeventAnalysis &analysis = state->cpu_nevent_analysis;
+    const np2_pccore_profile &profile = state->producer_result.pccore_profile;
+    const std::size_t cpu_exec_phase_count = static_cast<std::size_t>(
+        profile.phases[NP2_PCCORE_PHASE_CPU_EXEC_NESTED].count);
+    const std::size_t nevent_phase_count = static_cast<std::size_t>(
+        profile.phases[NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED].count);
+    const bool interval_valid =
+        analysis.trace_validation.intervals_valid &&
+        analysis.trace_validation.chronological &&
+        analysis.trace_validation.call_indices_monotonic &&
+        analysis.trace_validation.intervals_non_overlapping &&
+        analysis.trace_validation.max_concurrent <= 1U;
+    std::printf(
+        "P4_NANO_CPU_NEVENT_TRACE cpu_exec_phase_count=%zu"
+        " nevent_phase_count=%zu pair_trace_intervals=%zu"
+        " pair_has_cpu_count=%zu pair_trace_completeness=%s"
+        " pair_cpu_completeness=%s cpu_le_nevent=%s overflow=%s"
+        " structural_validity=%s"
+        " chronology=%s non_overlapping=%s max_concurrent=%zu"
+        " pair_without_containing_pccore=%zu"
+        " draw_without_containing_nevent=%zu\n",
+        cpu_exec_phase_count, nevent_phase_count, analysis.pair_count,
+        analysis.cpu_count, analysis.pair_trace_completeness ? "PASS" : "FAIL",
+        analysis.pair_cpu_completeness ? "PASS" : "FAIL",
+        analysis.cpu_phase_count_order_valid ? "PASS" : "FAIL",
+        analysis.trace_overflow ? "FAIL" : "PASS",
+        analysis.structural_validity ? "PASS" : "FAIL",
+        analysis.trace_validation.chronological ? "PASS" : "FAIL",
+        analysis.trace_validation.intervals_non_overlapping ? "PASS" : "FAIL",
+        analysis.trace_validation.max_concurrent,
+        analysis.pair_without_containing_pccore_count,
+        analysis.draw_without_containing_nevent_count);
+    std::printf(
+        "P4_NANO_CPU_NEVENT_CONTAINMENT pair_subset_pccore=%s"
+        " draw_subset_nevent=%s arithmetic_validity=%s"
+        " full_hierarchy_validity=%s interval_validity=%s\n",
+        analysis.pair_subset_pccore ? "PASS" : "FAIL",
+        analysis.draw_subset_nevent ? "PASS" : "FAIL",
+        analysis.arithmetic_validity ? "PASS" : "FAIL",
+        analysis.full_hierarchy_validity ? "PASS" : "FAIL",
+        interval_valid ? "PASS" : "FAIL");
+    std::printf(
+        "P4_NANO_CPU_EXEC_OVERLAP measured_transforms=%zu"
+        " transforms_with_cpu_exec_overlap=%zu"
+        " transforms_zero_cpu_exec_overlap=%zu overlap_percent=%.3f\n",
+        analysis.measured_transform_count,
+        analysis.cpu_overlap_transform_count,
+        analysis.cpu_zero_overlap_transform_count,
+        analysis.measured_transform_count == 0U
+            ? 0.0
+            : 100.0 * static_cast<double>(analysis.cpu_overlap_transform_count) /
+                  static_cast<double>(analysis.measured_transform_count));
+    benchmark_print_fixed_metric("cpu_exec_overlap_us",
+                                 analysis.cpu_overlap_us,
+                                 analysis.cpu_overlap_stored);
+    benchmark_print_fixed_metric("cpu_exec_overlap_fraction_ppm",
+                                 analysis.cpu_overlap_fraction_ppm,
+                                 analysis.cpu_overlap_fraction_stored);
+    benchmark_print_fixed_metric("cpu_exec_intersecting_interval_count",
+                                 analysis.cpu_intersecting_interval_count,
+                                 analysis.cpu_intersecting_interval_count_stored);
+    std::printf(
+        "P4_NANO_NEVENT_OVERLAP measured_transforms=%zu"
+        " transforms_with_nevent_overlap=%zu"
+        " transforms_zero_nevent_overlap=%zu overlap_percent=%.3f\n",
+        analysis.measured_transform_count,
+        analysis.nevent_overlap_transform_count,
+        analysis.nevent_zero_overlap_transform_count,
+        analysis.measured_transform_count == 0U
+            ? 0.0
+            : 100.0 * static_cast<double>(analysis.nevent_overlap_transform_count) /
+                  static_cast<double>(analysis.measured_transform_count));
+    benchmark_print_fixed_metric("nevent_overlap_us",
+                                 analysis.nevent_overlap_us,
+                                 analysis.nevent_overlap_stored);
+    benchmark_print_fixed_metric("nevent_overlap_fraction_ppm",
+                                 analysis.nevent_overlap_fraction_ppm,
+                                 analysis.nevent_overlap_fraction_stored);
+    benchmark_print_fixed_metric("nevent_intersecting_interval_count",
+                                 analysis.nevent_intersecting_interval_count,
+                                 analysis.nevent_intersecting_interval_count_stored);
+    benchmark_print_fixed_metric("non_draw_nevent_overlap_us",
+                                 analysis.non_draw_nevent_overlap_us,
+                                 analysis.non_draw_nevent_overlap_stored);
+    benchmark_print_fixed_metric("non_draw_nevent_overlap_fraction_ppm",
+                                 analysis.non_draw_nevent_overlap_fraction_ppm,
+                                 analysis.non_draw_nevent_overlap_fraction_stored);
+    benchmark_print_fixed_metric("other_pccore_overlap_us",
+                                 analysis.other_pccore_overlap_us,
+                                 analysis.other_pccore_overlap_stored);
 }
 
 void benchmark_print_overlap_report(
@@ -3012,9 +3139,11 @@ esp_err_t run_benchmark()
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
         .pccore_trace = &state.pccore_trace,
         .draw_trace = &state.draw_trace,
+        .cpu_nevent_trace = &state.cpu_nevent_trace,
 #else
         .pccore_trace = nullptr,
         .draw_trace = nullptr,
+        .cpu_nevent_trace = nullptr,
 #endif
         .task_scheduling_override = true,
         .task_core_id = kBenchmarkProducerCore,
@@ -3142,7 +3271,9 @@ esp_err_t run_benchmark()
                                  state.hierarchy_analysis.draw_subset_pccore &&
                                  state.hierarchy_analysis.validity &&
                                  state.hierarchy_analysis.stored ==
-                                     kBenchmarkMeasuredTransforms;
+                                     kBenchmarkMeasuredTransforms &&
+                                 state.cpu_nevent_overlap_analyzed &&
+                                 state.cpu_nevent_analysis.full_hierarchy_validity;
 #else
     const bool overlap_trace_valid = true;
     const bool pccore_trace_valid = true;
@@ -3193,6 +3324,7 @@ esp_err_t run_benchmark()
                                    submit_trace_is_complete);
     benchmark_print_pccore_overlap_report(&state);
     benchmark_print_draw_overlap_report(&state);
+    benchmark_print_cpu_nevent_report(&state);
 #endif
     std::printf("P4_NANO_BENCHMARK_WARMUP transforms=%u completed=%u\n",
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),

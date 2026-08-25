@@ -34,6 +34,7 @@ struct TransformInterval {
 
 using PccoreInterval = np2video_pccore_interval;
 using DrawInterval = np2_pccore_draw_interval;
+using CpuNeventInterval = np2_pccore_cpu_nevent_interval;
 
 struct PccoreOverlap {
     std::uint64_t total_us = 0U;
@@ -49,6 +50,14 @@ struct PccoreTraceValidation {
 };
 
 struct DrawTraceValidation {
+    bool intervals_valid = true;
+    bool chronological = true;
+    bool call_indices_monotonic = true;
+    bool intervals_non_overlapping = true;
+    std::size_t max_concurrent = 0U;
+};
+
+struct CpuNeventTraceValidation {
     bool intervals_valid = true;
     bool chronological = true;
     bool call_indices_monotonic = true;
@@ -154,6 +163,78 @@ inline DrawOverlap calculate_draw_overlap(
     return result;
 }
 
+inline std::uint64_t cpu_nevent_pair_start(
+    const CpuNeventInterval &interval)
+{
+    return interval.has_cpu ? interval.cpu_start_us : interval.nevent_start_us;
+}
+
+struct CpuNeventOverlap {
+    std::uint64_t total_us = 0U;
+    std::size_t intersecting_interval_count = 0U;
+};
+
+inline CpuNeventOverlap calculate_cpu_exec_overlap(
+    const TransformInterval &transform,
+    std::span<const CpuNeventInterval> intervals)
+{
+    CpuNeventOverlap result{};
+    if (transform.transform_end_us <= transform.transform_start_us) {
+        return result;
+    }
+    for (const CpuNeventInterval &interval : intervals) {
+        if (!interval.has_cpu ||
+            interval.nevent_start_us <= interval.cpu_start_us ||
+            interval.nevent_start_us <= transform.transform_start_us ||
+            transform.transform_end_us <= interval.cpu_start_us) {
+            continue;
+        }
+        const std::uint64_t start =
+            interval.cpu_start_us > transform.transform_start_us
+                ? interval.cpu_start_us
+                : transform.transform_start_us;
+        const std::uint64_t end =
+            interval.nevent_start_us < transform.transform_end_us
+                ? interval.nevent_start_us
+                : transform.transform_end_us;
+        if (end > start) {
+            result.total_us += end - start;
+            ++result.intersecting_interval_count;
+        }
+    }
+    return result;
+}
+
+inline CpuNeventOverlap calculate_nevent_overlap(
+    const TransformInterval &transform,
+    std::span<const CpuNeventInterval> intervals)
+{
+    CpuNeventOverlap result{};
+    if (transform.transform_end_us <= transform.transform_start_us) {
+        return result;
+    }
+    for (const CpuNeventInterval &interval : intervals) {
+        if (interval.nevent_end_us <= interval.nevent_start_us ||
+            interval.nevent_end_us <= transform.transform_start_us ||
+            transform.transform_end_us <= interval.nevent_start_us) {
+            continue;
+        }
+        const std::uint64_t start =
+            interval.nevent_start_us > transform.transform_start_us
+                ? interval.nevent_start_us
+                : transform.transform_start_us;
+        const std::uint64_t end =
+            interval.nevent_end_us < transform.transform_end_us
+                ? interval.nevent_end_us
+                : transform.transform_end_us;
+        if (end > start) {
+            result.total_us += end - start;
+            ++result.intersecting_interval_count;
+        }
+    }
+    return result;
+}
+
 inline PccoreTraceValidation validate_pccore_intervals(
     std::span<const PccoreInterval> pccore_intervals)
 {
@@ -238,6 +319,54 @@ inline DrawTraceValidation validate_draw_intervals(
     return result;
 }
 
+inline CpuNeventTraceValidation validate_cpu_nevent_intervals(
+    std::span<const CpuNeventInterval> intervals)
+{
+    CpuNeventTraceValidation result{};
+    for (std::size_t index = 0U; index < intervals.size(); ++index) {
+        const CpuNeventInterval &current = intervals[index];
+        const std::uint64_t pair_start = cpu_nevent_pair_start(current);
+        if (current.nevent_start_us > current.nevent_end_us ||
+            (current.has_cpu && current.cpu_start_us > current.nevent_start_us) ||
+            (!current.has_cpu && current.cpu_start_us != current.nevent_start_us)) {
+            result.intervals_valid = false;
+        }
+        if (index == 0U) {
+            continue;
+        }
+        const CpuNeventInterval &previous = intervals[index - 1U];
+        const std::uint64_t previous_start = cpu_nevent_pair_start(previous);
+        if (pair_start < previous_start) {
+            result.chronological = false;
+        }
+        if (current.call_index <= previous.call_index) {
+            result.call_indices_monotonic = false;
+        }
+        if (previous.nevent_end_us > pair_start) {
+            result.intervals_non_overlapping = false;
+        }
+    }
+    for (const CpuNeventInterval &candidate : intervals) {
+        const std::uint64_t candidate_start = cpu_nevent_pair_start(candidate);
+        if (candidate.nevent_end_us <= candidate_start) {
+            continue;
+        }
+        std::size_t active = 0U;
+        for (const CpuNeventInterval &other : intervals) {
+            const std::uint64_t other_start = cpu_nevent_pair_start(other);
+            if (other.nevent_end_us > other_start &&
+                other_start <= candidate_start &&
+                candidate_start < other.nevent_end_us) {
+                ++active;
+            }
+        }
+        if (active > result.max_concurrent) {
+            result.max_concurrent = active;
+        }
+    }
+    return result;
+}
+
 inline bool pccore_trace_complete(std::size_t recorded_count,
                                    std::uint64_t expected_count,
                                    bool overflow)
@@ -250,6 +379,59 @@ inline bool draw_trace_complete(std::size_t recorded_count,
                                 bool overflow)
 {
     return !overflow && recorded_count == expected_count;
+}
+
+inline bool cpu_nevent_trace_complete(
+    std::size_t recorded_count, std::uint64_t expected_nevent_count,
+    std::size_t has_cpu_count, std::uint64_t expected_cpu_count,
+    bool overflow)
+{
+    return !overflow && recorded_count == expected_nevent_count &&
+           has_cpu_count == expected_cpu_count;
+}
+
+template <typename ParentInterval>
+std::size_t count_cpu_nevent_without_containing_interval(
+    std::span<const CpuNeventInterval> children,
+    std::span<const ParentInterval> parents)
+{
+    std::size_t unmatched = 0U;
+    for (const CpuNeventInterval &child : children) {
+        const std::uint64_t child_start = cpu_nevent_pair_start(child);
+        bool contained = false;
+        for (const ParentInterval &parent : parents) {
+            if (parent.start_us <= child_start &&
+                child.nevent_end_us <= parent.end_us) {
+                contained = true;
+                break;
+            }
+        }
+        if (!contained) {
+            ++unmatched;
+        }
+    }
+    return unmatched;
+}
+
+std::size_t count_draw_without_containing_cpu_nevent(
+    std::span<const DrawInterval> children,
+    std::span<const CpuNeventInterval> parents)
+{
+    std::size_t unmatched = 0U;
+    for (const DrawInterval &child : children) {
+        bool contained = false;
+        for (const CpuNeventInterval &parent : parents) {
+            if (parent.nevent_start_us <= child.start_us &&
+                child.end_us <= parent.nevent_end_us) {
+                contained = true;
+                break;
+            }
+        }
+        if (!contained) {
+            ++unmatched;
+        }
+    }
+    return unmatched;
 }
 
 inline bool intervals_intersect(const SubmitInterval &first,
@@ -527,6 +709,99 @@ struct HierarchyAnalysis {
         non_draw_pccore_overlap_us.fill(0U);
         outside_pccore_us.fill(0U);
         stored = 0U;
+    }
+};
+
+template <std::size_t MaxMeasuredTransforms>
+struct CpuNeventAnalysis {
+    std::size_t pair_count = 0U;
+    std::size_t cpu_count = 0U;
+    std::size_t nevent_count = 0U;
+    std::size_t transform_count = 0U;
+    std::size_t measured_transform_count = 0U;
+    std::size_t cpu_overlap_transform_count = 0U;
+    std::size_t cpu_zero_overlap_transform_count = 0U;
+    std::size_t nevent_overlap_transform_count = 0U;
+    std::size_t nevent_zero_overlap_transform_count = 0U;
+    std::size_t pair_without_containing_pccore_count = 0U;
+    std::size_t draw_without_containing_nevent_count = 0U;
+    CpuNeventTraceValidation trace_validation{};
+    bool trace_overflow = false;
+    bool pair_trace_completeness = false;
+    bool pair_cpu_completeness = false;
+    bool cpu_phase_count_order_valid = false;
+    bool pair_subset_pccore = false;
+    bool draw_subset_nevent = false;
+    bool structural_validity = false;
+    bool arithmetic_validity = false;
+    bool full_hierarchy_validity = false;
+    std::array<std::uint64_t, MaxMeasuredTransforms> cpu_overlap_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        cpu_overlap_fraction_ppm{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        cpu_intersecting_interval_count{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> nevent_overlap_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        nevent_overlap_fraction_ppm{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        nevent_intersecting_interval_count{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        non_draw_nevent_overlap_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        non_draw_nevent_overlap_fraction_ppm{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        other_pccore_overlap_us{};
+    std::size_t cpu_overlap_stored = 0U;
+    std::size_t cpu_overlap_fraction_stored = 0U;
+    std::size_t cpu_intersecting_interval_count_stored = 0U;
+    std::size_t nevent_overlap_stored = 0U;
+    std::size_t nevent_overlap_fraction_stored = 0U;
+    std::size_t nevent_intersecting_interval_count_stored = 0U;
+    std::size_t non_draw_nevent_overlap_stored = 0U;
+    std::size_t non_draw_nevent_overlap_fraction_stored = 0U;
+    std::size_t other_pccore_overlap_stored = 0U;
+
+    void reset()
+    {
+        pair_count = 0U;
+        cpu_count = 0U;
+        nevent_count = 0U;
+        transform_count = 0U;
+        measured_transform_count = 0U;
+        cpu_overlap_transform_count = 0U;
+        cpu_zero_overlap_transform_count = 0U;
+        nevent_overlap_transform_count = 0U;
+        nevent_zero_overlap_transform_count = 0U;
+        pair_without_containing_pccore_count = 0U;
+        draw_without_containing_nevent_count = 0U;
+        trace_validation = {};
+        trace_overflow = false;
+        pair_trace_completeness = false;
+        pair_cpu_completeness = false;
+        cpu_phase_count_order_valid = false;
+        pair_subset_pccore = false;
+        draw_subset_nevent = false;
+        structural_validity = false;
+        arithmetic_validity = false;
+        full_hierarchy_validity = false;
+        cpu_overlap_us.fill(0U);
+        cpu_overlap_fraction_ppm.fill(0U);
+        cpu_intersecting_interval_count.fill(0U);
+        nevent_overlap_us.fill(0U);
+        nevent_overlap_fraction_ppm.fill(0U);
+        nevent_intersecting_interval_count.fill(0U);
+        non_draw_nevent_overlap_us.fill(0U);
+        non_draw_nevent_overlap_fraction_ppm.fill(0U);
+        other_pccore_overlap_us.fill(0U);
+        cpu_overlap_stored = 0U;
+        cpu_overlap_fraction_stored = 0U;
+        cpu_intersecting_interval_count_stored = 0U;
+        nevent_overlap_stored = 0U;
+        nevent_overlap_fraction_stored = 0U;
+        nevent_intersecting_interval_count_stored = 0U;
+        non_draw_nevent_overlap_stored = 0U;
+        non_draw_nevent_overlap_fraction_stored = 0U;
+        other_pccore_overlap_stored = 0U;
     }
 };
 
@@ -815,6 +1090,154 @@ void analyze_hierarchy(
     result.validity = result.pccore_overlap_within_transform &&
                       result.subtraction_order_valid &&
                       result.stored == draw_analysis.measured_transform_count;
+}
+
+template <std::size_t MaxMeasuredTransforms>
+void analyze_cpu_nevent(
+    std::span<const CpuNeventInterval> pairs,
+    std::span<const DrawInterval> draw_intervals,
+    std::span<const PccoreInterval> pccore_intervals,
+    std::span<const TransformInterval> transforms,
+    std::uint64_t expected_cpu_count, std::uint64_t expected_nevent_count,
+    std::size_t has_cpu_count, bool trace_overflow,
+    const Analysis<MaxMeasuredTransforms> &submit_analysis,
+    const DrawAnalysis<MaxMeasuredTransforms> &draw_analysis,
+    const PccoreAnalysis<MaxMeasuredTransforms> &pccore_analysis,
+    const HierarchyAnalysis<MaxMeasuredTransforms> &hierarchy_analysis,
+    CpuNeventAnalysis<MaxMeasuredTransforms> &result)
+{
+    result.reset();
+    result.pair_count = pairs.size();
+    result.cpu_count = has_cpu_count;
+    result.nevent_count = pairs.size();
+    result.transform_count = transforms.size();
+    result.trace_overflow = trace_overflow;
+    result.trace_validation = validate_cpu_nevent_intervals(pairs);
+    result.pair_trace_completeness = cpu_nevent_trace_complete(
+        pairs.size(), expected_nevent_count, has_cpu_count,
+        expected_cpu_count, trace_overflow);
+    result.pair_cpu_completeness = has_cpu_count == expected_cpu_count;
+    result.cpu_phase_count_order_valid = expected_cpu_count <= expected_nevent_count;
+    result.pair_without_containing_pccore_count =
+        count_cpu_nevent_without_containing_interval(pairs, pccore_intervals);
+    result.draw_without_containing_nevent_count =
+        count_draw_without_containing_cpu_nevent(draw_intervals, pairs);
+    result.pair_subset_pccore =
+        result.pair_without_containing_pccore_count == 0U;
+    result.draw_subset_nevent =
+        result.draw_without_containing_nevent_count == 0U;
+
+    const bool interval_validity =
+        result.trace_validation.intervals_valid &&
+        result.trace_validation.chronological &&
+        result.trace_validation.call_indices_monotonic &&
+        result.trace_validation.intervals_non_overlapping &&
+        result.trace_validation.max_concurrent <= 1U;
+    const bool existing_trace_validity =
+        draw_analysis.trace_completeness && !draw_analysis.trace_overflow &&
+        pccore_analysis.trace_completeness && !pccore_analysis.trace_overflow;
+    result.structural_validity =
+        !trace_overflow && result.pair_trace_completeness &&
+        result.cpu_phase_count_order_valid && interval_validity &&
+        existing_trace_validity &&
+        result.pair_subset_pccore && result.draw_subset_nevent;
+    if (!result.structural_validity ||
+        draw_analysis.measured_transform_count !=
+            pccore_analysis.measured_transform_count ||
+        pccore_analysis.measured_transform_count > MaxMeasuredTransforms) {
+        return;
+    }
+
+    result.arithmetic_validity = true;
+    for (const TransformInterval &transform : transforms) {
+        if (!transform.measured ||
+            result.measured_transform_count >= MaxMeasuredTransforms) {
+            continue;
+        }
+        const std::size_t index = result.measured_transform_count++;
+        const std::uint64_t duration_us =
+            transform.transform_end_us > transform.transform_start_us
+                ? transform.transform_end_us - transform.transform_start_us
+                : 0U;
+        const CpuNeventOverlap cpu_overlap =
+            calculate_cpu_exec_overlap(transform, pairs);
+        const CpuNeventOverlap nevent_overlap =
+            calculate_nevent_overlap(transform, pairs);
+        const std::uint64_t draw_overlap = draw_analysis.overlap_us[index];
+        const std::uint64_t pccore_overlap =
+            pccore_analysis.overlap_us[index];
+        const std::uint64_t submit_overlap =
+            submit_analysis.overlap_us[index];
+        if (draw_overlap > nevent_overlap.total_us ||
+            cpu_overlap.total_us > pccore_overlap ||
+            nevent_overlap.total_us > pccore_overlap ||
+            cpu_overlap.total_us + nevent_overlap.total_us >
+                pccore_overlap ||
+            submit_overlap > draw_overlap ||
+            draw_overlap > pccore_overlap || pccore_overlap > duration_us) {
+            result.arithmetic_validity = false;
+            continue;
+        }
+        const std::uint64_t non_draw_nevent =
+            nevent_overlap.total_us - draw_overlap;
+        const std::uint64_t non_submit_draw = draw_overlap - submit_overlap;
+        const std::uint64_t other_pccore =
+            pccore_overlap - cpu_overlap.total_us - nevent_overlap.total_us;
+        const std::uint64_t outside_pccore = duration_us - pccore_overlap;
+        const std::uint64_t reconstructed =
+            cpu_overlap.total_us + non_draw_nevent + non_submit_draw +
+            submit_overlap + other_pccore + outside_pccore;
+        if (reconstructed != duration_us) {
+            result.arithmetic_validity = false;
+            continue;
+        }
+        const std::uint64_t cpu_fraction =
+            duration_us == 0U
+                ? 0U
+                : (cpu_overlap.total_us * 1'000'000U) / duration_us;
+        const std::uint64_t nevent_fraction =
+            duration_us == 0U
+                ? 0U
+                : (nevent_overlap.total_us * 1'000'000U) / duration_us;
+        const std::uint64_t non_draw_fraction =
+            duration_us == 0U
+                ? 0U
+                : (non_draw_nevent * 1'000'000U) / duration_us;
+        result.cpu_overlap_us[index] = cpu_overlap.total_us;
+        result.cpu_overlap_fraction_ppm[index] = cpu_fraction;
+        result.cpu_intersecting_interval_count[index] =
+            cpu_overlap.intersecting_interval_count;
+        result.nevent_overlap_us[index] = nevent_overlap.total_us;
+        result.nevent_overlap_fraction_ppm[index] = nevent_fraction;
+        result.nevent_intersecting_interval_count[index] =
+            nevent_overlap.intersecting_interval_count;
+        result.non_draw_nevent_overlap_us[index] = non_draw_nevent;
+        result.non_draw_nevent_overlap_fraction_ppm[index] = non_draw_fraction;
+        result.other_pccore_overlap_us[index] = other_pccore;
+        ++result.cpu_overlap_stored;
+        ++result.cpu_overlap_fraction_stored;
+        ++result.cpu_intersecting_interval_count_stored;
+        ++result.nevent_overlap_stored;
+        ++result.nevent_overlap_fraction_stored;
+        ++result.nevent_intersecting_interval_count_stored;
+        ++result.non_draw_nevent_overlap_stored;
+        ++result.non_draw_nevent_overlap_fraction_stored;
+        ++result.other_pccore_overlap_stored;
+        if (cpu_overlap.total_us == 0U) {
+            ++result.cpu_zero_overlap_transform_count;
+        } else {
+            ++result.cpu_overlap_transform_count;
+        }
+        if (nevent_overlap.total_us == 0U) {
+            ++result.nevent_zero_overlap_transform_count;
+        } else {
+            ++result.nevent_overlap_transform_count;
+        }
+    }
+    result.full_hierarchy_validity =
+        result.structural_validity && result.arithmetic_validity &&
+        hierarchy_analysis.validity && hierarchy_analysis.stored ==
+            result.measured_transform_count;
 }
 
 } // namespace p4_nano_overlap

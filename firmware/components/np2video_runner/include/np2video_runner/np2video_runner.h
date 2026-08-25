@@ -66,6 +66,8 @@ typedef struct {
     np2video_pccore_trace *pccore_trace;
     /* Retains existing DRAW_NESTED profiler timestamps; NULL in production. */
     np2_pccore_draw_trace *draw_trace;
+    /* Retains paired CPU_EXEC/NEVENT timestamps; NULL in production. */
+    np2_pccore_cpu_nevent_trace *cpu_nevent_trace;
     bool task_scheduling_override;
     int task_core_id;
     uint32_t task_priority;

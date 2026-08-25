@@ -11,11 +11,13 @@ typedef struct {
     np2_pccore_profile profile;
     uint64_t start_us[NP2_PCCORE_PHASE_COUNT];
     bool active[NP2_PCCORE_PHASE_COUNT];
+    bool pending_cpu_executed;
 } np2_pccore_profiler_state;
 
 static np2_pccore_profiler_state np2_pccore_profile_state;
 static bool np2_pccore_profile_enabled;
 static np2_pccore_draw_trace *np2_pccore_active_draw_trace;
+static np2_pccore_cpu_nevent_trace *np2_pccore_active_cpu_nevent_trace;
 
 bool np2_pccore_draw_trace_append(np2_pccore_draw_trace *trace,
                                   uint64_t start_us, uint64_t end_us,
@@ -33,6 +35,31 @@ bool np2_pccore_draw_trace_append(np2_pccore_draw_trace *trace,
     trace->intervals[trace->stored].end_us = end_us;
     trace->intervals[trace->stored].call_index = (uint32_t)call_index;
     ++trace->stored;
+    return true;
+}
+
+bool np2_pccore_cpu_nevent_trace_append(
+    np2_pccore_cpu_nevent_trace *trace, uint64_t cpu_start_us,
+    uint64_t nevent_start_us, uint64_t nevent_end_us, uint64_t call_index,
+    bool has_cpu)
+{
+    if (trace == NULL) {
+        return false;
+    }
+    if (trace->stored >= NP2_PCCORE_CPU_NEVENT_TRACE_CAPACITY ||
+        call_index > UINT32_MAX) {
+        trace->overflow = true;
+        return false;
+    }
+    trace->intervals[trace->stored].cpu_start_us = cpu_start_us;
+    trace->intervals[trace->stored].nevent_start_us = nevent_start_us;
+    trace->intervals[trace->stored].nevent_end_us = nevent_end_us;
+    trace->intervals[trace->stored].call_index = (uint32_t)call_index;
+    trace->intervals[trace->stored].has_cpu = has_cpu;
+    ++trace->stored;
+    if (has_cpu) {
+        ++trace->has_cpu_stored;
+    }
     return true;
 }
 
@@ -54,6 +81,19 @@ static void np2_pccore_profiler_record_end_at(np2_pccore_phase phase,
         (void)np2_pccore_draw_trace_append(
             np2_pccore_active_draw_trace,
             np2_pccore_profile_state.start_us[phase], end_us, stats->count);
+    }
+    if (phase == NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED) {
+        /* CPU_EXEC -> NEVENT uses the transition timestamp already stored in
+         * start_us[NEVENT].  Appending here adds no timer read and emits one
+         * paired record for every completed NEVENT invocation. */
+        (void)np2_pccore_cpu_nevent_trace_append(
+            np2_pccore_active_cpu_nevent_trace,
+            np2_pccore_profile_state.pending_cpu_executed
+                ? np2_pccore_profile_state.start_us[
+                      NP2_PCCORE_PHASE_CPU_EXEC_NESTED]
+                : np2_pccore_profile_state.start_us[phase],
+            np2_pccore_profile_state.start_us[phase], end_us, stats->count,
+            np2_pccore_profile_state.pending_cpu_executed);
     }
     stats->total_us += elapsed_us;
     if (elapsed_us > stats->max_single_us) {
@@ -88,9 +128,24 @@ void np2_pccore_draw_trace_reset(np2_pccore_draw_trace *trace)
     }
 }
 
+void np2_pccore_cpu_nevent_trace_reset(np2_pccore_cpu_nevent_trace *trace)
+{
+    if (trace != NULL) {
+        trace->stored = 0U;
+        trace->has_cpu_stored = 0U;
+        trace->overflow = false;
+    }
+}
+
 void np2_pccore_profiler_set_draw_trace(np2_pccore_draw_trace *trace)
 {
     np2_pccore_active_draw_trace = trace;
+}
+
+void np2_pccore_profiler_set_cpu_nevent_trace(
+    np2_pccore_cpu_nevent_trace *trace)
+{
+    np2_pccore_active_cpu_nevent_trace = trace;
 }
 
 #if defined(NP2_PCCORE_PHASE_PROFILER)
@@ -132,6 +187,14 @@ void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
     np2_pccore_profile_state.start_us[phase] =
         (uint64_t)esp_timer_get_time();
     np2_pccore_profile_state.active[phase] = true;
+    if (phase == NP2_PCCORE_PHASE_CPU_EXEC_NESTED) {
+        np2_pccore_profile_state.pending_cpu_executed = true;
+    } else if (phase == NP2_PCCORE_PHASE_NEVENT_PROGRESS_NESTED &&
+               !np2_pccore_profile_state.active[
+                   NP2_PCCORE_PHASE_CPU_EXEC_NESTED]) {
+        /* This is the existing CPU_REMCLOCK-skipped path. */
+        np2_pccore_profile_state.pending_cpu_executed = false;
+    }
 }
 
 void np2_pccore_profiler_phase_end(np2_pccore_phase phase)

@@ -12,6 +12,7 @@ using p4_nano_overlap::SubmitInterval;
 using p4_nano_overlap::TransformInterval;
 using p4_nano_overlap::PccoreInterval;
 using p4_nano_overlap::DrawInterval;
+using p4_nano_overlap::CpuNeventInterval;
 
 TransformInterval transform(std::uint64_t start, std::uint64_t end,
                             std::uint64_t published, bool measured = true)
@@ -53,6 +54,20 @@ DrawInterval draw(std::uint64_t start, std::uint64_t end,
     value.start_us = start;
     value.end_us = end;
     value.call_index = call_index;
+    return value;
+}
+
+CpuNeventInterval cpu_nevent(std::uint64_t cpu_start,
+                              std::uint64_t nevent_start,
+                              std::uint64_t nevent_end,
+                              std::uint32_t call_index, bool has_cpu)
+{
+    CpuNeventInterval value{};
+    value.cpu_start_us = cpu_start;
+    value.nevent_start_us = nevent_start;
+    value.nevent_end_us = nevent_end;
+    value.call_index = call_index;
+    value.has_cpu = has_cpu;
     return value;
 }
 
@@ -546,6 +561,184 @@ void test_hierarchy_containment_and_subtraction()
     assert(!hierarchy.validity);
 }
 
+void test_cpu_nevent_trace_and_overlap_analysis()
+{
+    np2_pccore_cpu_nevent_trace trace{};
+    np2_pccore_cpu_nevent_trace_reset(&trace);
+    assert(np2_pccore_cpu_nevent_trace_append(&trace, 0U, 20U, 40U, 1U,
+                                               true));
+    assert(np2_pccore_cpu_nevent_trace_append(&trace, 40U, 40U, 60U, 2U,
+                                               false));
+    assert(np2_pccore_cpu_nevent_trace_append(&trace, 60U, 80U, 100U, 3U,
+                                               true));
+    assert(trace.stored == 3U);
+    assert(trace.has_cpu_stored == 2U);
+    assert(!trace.overflow);
+
+    const auto validation = p4_nano_overlap::validate_cpu_nevent_intervals(
+        std::span<const CpuNeventInterval>(trace.intervals, trace.stored));
+    assert(validation.intervals_valid);
+    assert(validation.chronological);
+    assert(validation.call_indices_monotonic);
+    assert(validation.intervals_non_overlapping);
+    assert(validation.max_concurrent == 1U);
+    const TransformInterval cpu_only = transform(0U, 20U, 1U);
+    const TransformInterval nevent_only = transform(20U, 40U, 2U);
+    const TransformInterval boundary = transform(20U, 60U, 3U);
+    assert(p4_nano_overlap::calculate_cpu_exec_overlap(
+               cpu_only, std::span<const CpuNeventInterval>(trace.intervals,
+                                                              trace.stored))
+               .total_us == 20U);
+    assert(p4_nano_overlap::calculate_nevent_overlap(
+               cpu_only, std::span<const CpuNeventInterval>(trace.intervals,
+                                                              trace.stored))
+               .total_us == 0U);
+    assert(p4_nano_overlap::calculate_cpu_exec_overlap(
+               nevent_only,
+               std::span<const CpuNeventInterval>(trace.intervals,
+                                                  trace.stored))
+               .total_us == 0U);
+    assert(p4_nano_overlap::calculate_nevent_overlap(
+               nevent_only,
+               std::span<const CpuNeventInterval>(trace.intervals,
+                                                  trace.stored))
+               .total_us == 20U);
+    assert(p4_nano_overlap::calculate_cpu_exec_overlap(
+               boundary, std::span<const CpuNeventInterval>(trace.intervals,
+                                                              trace.stored))
+               .total_us == 0U);
+    assert(p4_nano_overlap::calculate_nevent_overlap(
+               boundary, std::span<const CpuNeventInterval>(trace.intervals,
+                                                              trace.stored))
+               .total_us == 40U);
+    assert(p4_nano_overlap::cpu_nevent_trace_complete(3U, 3U, 2U, 2U,
+                                                       false));
+    assert(!p4_nano_overlap::cpu_nevent_trace_complete(2U, 3U, 2U, 2U,
+                                                        false));
+    assert(!p4_nano_overlap::cpu_nevent_trace_complete(3U, 3U, 1U, 2U,
+                                                        false));
+    assert(!p4_nano_overlap::cpu_nevent_trace_complete(3U, 3U, 2U, 2U,
+                                                        true));
+
+    const TransformInterval measured[] = {
+        transform(0U, 100U, 1U, true),
+        transform(25U, 125U, 2U, true),
+        transform(150U, 160U, 3U, false),
+    };
+    const DrawInterval draws[] = {draw(50U, 55U, 1U)};
+    const SubmitInterval submits[] = {submit(51U, 53U, 1U)};
+    const PccoreInterval pccores[] = {pccore(0U, 100U, 1U)};
+    p4_nano_overlap::Analysis<2U> submit_analysis{};
+    p4_nano_overlap::DrawAnalysis<2U> draw_analysis{};
+    p4_nano_overlap::PccoreAnalysis<2U> pccore_analysis{};
+    p4_nano_overlap::HierarchyAnalysis<2U> hierarchy{};
+    p4_nano_overlap::CpuNeventAnalysis<2U> result{};
+    p4_nano_overlap::analyze<2U>(submits, measured, submit_analysis);
+    p4_nano_overlap::analyze_draw<2U>(draws, measured, 1U, false,
+                                       draw_analysis);
+    p4_nano_overlap::analyze_pccore<2U>(pccores, measured, 1U, false,
+                                         pccore_analysis);
+    p4_nano_overlap::analyze_hierarchy<2U>(
+        submits, draws, pccores, submit_analysis, draw_analysis,
+        pccore_analysis, hierarchy);
+    p4_nano_overlap::analyze_cpu_nevent<2U>(
+        std::span<const CpuNeventInterval>(trace.intervals, trace.stored),
+        draws, pccores, measured, 2U, 3U, trace.has_cpu_stored, trace.overflow,
+        submit_analysis, draw_analysis, pccore_analysis, hierarchy, result);
+    assert(result.pair_count == 3U);
+    assert(result.cpu_count == 2U);
+    assert(result.nevent_count == 3U);
+    assert(result.measured_transform_count == 2U);
+    assert(result.pair_trace_completeness);
+    assert(result.pair_cpu_completeness);
+    assert(result.cpu_phase_count_order_valid);
+    assert(result.pair_subset_pccore);
+    assert(result.draw_subset_nevent);
+    assert(result.structural_validity);
+    assert(result.arithmetic_validity);
+    assert(result.full_hierarchy_validity);
+    assert(result.cpu_overlap_us[0] == 40U);
+    assert(result.nevent_overlap_us[0] == 60U);
+    assert(result.non_draw_nevent_overlap_us[0] == 55U);
+    assert(result.other_pccore_overlap_us[0] == 0U);
+    assert(result.cpu_overlap_us[1] == 20U);
+    assert(result.nevent_overlap_us[1] == 55U);
+    assert(result.non_draw_nevent_overlap_us[1] == 50U);
+    assert(result.other_pccore_overlap_us[1] == 0U);
+
+    const CpuNeventInterval invalid_end[] = {cpu_nevent(10U, 20U, 19U, 1U,
+                                                         true)};
+    assert(!p4_nano_overlap::validate_cpu_nevent_intervals(invalid_end)
+                .intervals_valid);
+    const CpuNeventInterval invalid_skip[] = {cpu_nevent(10U, 20U, 30U, 1U,
+                                                          false)};
+    assert(!p4_nano_overlap::validate_cpu_nevent_intervals(invalid_skip)
+                .intervals_valid);
+    const CpuNeventInterval invalid_cpu_start[] = {
+        cpu_nevent(30U, 20U, 40U, 1U, true)};
+    assert(!p4_nano_overlap::validate_cpu_nevent_intervals(invalid_cpu_start)
+                .intervals_valid);
+    const CpuNeventInterval invalid_order[] = {
+        cpu_nevent(20U, 30U, 40U, 2U, true),
+        cpu_nevent(10U, 10U, 20U, 1U, false),
+    };
+    const auto invalid_order_validation =
+        p4_nano_overlap::validate_cpu_nevent_intervals(invalid_order);
+    assert(!invalid_order_validation.chronological);
+    assert(!invalid_order_validation.call_indices_monotonic);
+    assert(!invalid_order_validation.intervals_non_overlapping);
+
+    const DrawInterval draw_outside[] = {draw(10U, 15U, 1U)};
+    p4_nano_overlap::DrawAnalysis<2U> outside_draw_analysis{};
+    p4_nano_overlap::analyze_draw<2U>(draw_outside, measured, 1U, false,
+                                       outside_draw_analysis);
+    p4_nano_overlap::analyze_cpu_nevent<2U>(
+        std::span<const CpuNeventInterval>(trace.intervals, trace.stored),
+        draw_outside, pccores, measured, 2U, 3U, trace.has_cpu_stored,
+        trace.overflow, submit_analysis, outside_draw_analysis,
+        pccore_analysis, hierarchy, result);
+    assert(!result.draw_subset_nevent);
+    assert(!result.structural_validity);
+
+    const CpuNeventInterval pair_outside[] = {
+        cpu_nevent(100U, 100U, 110U, 1U, false)};
+    assert(p4_nano_overlap::count_cpu_nevent_without_containing_interval(
+               std::span<const CpuNeventInterval>(pair_outside),
+               std::span<const PccoreInterval>(pccores)) == 1U);
+    const DrawInterval draw_after[] = {draw(95U, 105U, 1U)};
+    assert(p4_nano_overlap::count_draw_without_containing_cpu_nevent(
+               std::span<const DrawInterval>(draw_after),
+               std::span<const CpuNeventInterval>(trace.intervals,
+                                                  trace.stored)) == 1U);
+
+    p4_nano_overlap::analyze_cpu_nevent<2U>(
+        std::span<const CpuNeventInterval>(trace.intervals, trace.stored),
+        draws, pccores, measured, 4U, 3U, trace.has_cpu_stored,
+        trace.overflow, submit_analysis, draw_analysis, pccore_analysis,
+        hierarchy, result);
+    assert(!result.cpu_phase_count_order_valid);
+    assert(!result.structural_validity);
+
+    np2_pccore_cpu_nevent_trace bounded{};
+    np2_pccore_cpu_nevent_trace_reset(&bounded);
+    for (std::uint32_t index = 0U;
+         index < NP2_PCCORE_CPU_NEVENT_TRACE_CAPACITY; ++index) {
+        assert(np2_pccore_cpu_nevent_trace_append(
+            &bounded, index, index, index + 1U, index + 1U, false));
+    }
+    assert(bounded.stored == NP2_PCCORE_CPU_NEVENT_TRACE_CAPACITY);
+    assert(bounded.has_cpu_stored == 0U);
+    assert(!np2_pccore_cpu_nevent_trace_append(
+        &bounded, 0U, 0U, 1U, NP2_PCCORE_CPU_NEVENT_TRACE_CAPACITY + 1U,
+        false));
+    assert(bounded.overflow);
+    assert(bounded.stored == NP2_PCCORE_CPU_NEVENT_TRACE_CAPACITY);
+    np2_pccore_cpu_nevent_trace_reset(&bounded);
+    assert(bounded.stored == 0U);
+    assert(bounded.has_cpu_stored == 0U);
+    assert(!bounded.overflow);
+}
+
 } // namespace
 
 int main()
@@ -562,5 +755,6 @@ int main()
     test_draw_intersection_edges_and_conditionals();
     test_draw_trace_validity_completeness_and_capacity();
     test_hierarchy_containment_and_subtraction();
+    test_cpu_nevent_trace_and_overlap_analysis();
     return 0;
 }
