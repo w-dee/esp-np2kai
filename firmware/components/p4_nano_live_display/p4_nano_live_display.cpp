@@ -2442,6 +2442,19 @@ esp_err_t run_psram_read_control_benchmark_after_start(BenchmarkState *state)
         state->producer_pause_acknowledged.load(std::memory_order_acquire);
     const bool control_wall_valid = state->p8_control_end_us >
                                     state->p8_control_start_us;
+    const bool reader_active_wall_valid =
+        health.active_start_us != 0U &&
+        health.active_end_us > health.active_start_us;
+    const std::uint64_t reader_active_wall_us = reader_active_wall_valid
+                                                    ? health.active_end_us -
+                                                          health.active_start_us
+                                                    : 0U;
+    // This is requested 4-MiB sweep payload over the CPU1 reader lifetime,
+    // not a hardware bus-bandwidth counter.
+    double payload_mib_s = 0.0;
+    const bool payload_rate_valid =
+        p4_nano_psram_read_control::payload_mib_per_second(
+            health.total_bytes, reader_active_wall_us, &payload_mib_s);
     if (state->publish_failed.load(std::memory_order_acquire) ||
         !state->p8_buffer_initialized || !state->p8_msync_pass ||
         !source_immutable || !a_native_stable || !b_native_stable ||
@@ -2457,7 +2470,8 @@ esp_err_t run_psram_read_control_benchmark_after_start(BenchmarkState *state)
         health.sweeps == 0U || health.total_bytes == 0U ||
         health.relief_count == 0U ||
         health.last_sweep_checksum != state->p8_expected_checksum ||
-        !control_wall_valid) {
+        !control_wall_valid || !reader_active_wall_valid ||
+        !payload_rate_valid) {
         failed = true;
     }
     benchmark_print_fixed_metric("psram_read_control_A_transform_only_us",
@@ -2481,26 +2495,21 @@ esp_err_t run_psram_read_control_benchmark_after_start(BenchmarkState *state)
                                               ? state->p8_control_end_us -
                                                     state->p8_control_start_us
                                               : 0U;
-    double payload_mib_s = 0.0;
-    const bool payload_rate_valid =
-        p4_nano_psram_read_control::payload_mib_per_second(
-            health.total_bytes, control_wall_us, &payload_mib_s);
-    if (!payload_rate_valid) {
-        failed = true;
-    }
     std::printf(
         "P4_NANO_PSRAM_READ_CONTROL_HEALTH sweeps=%" PRIu64
         " bytes_per_sweep=%zu total_bytes=%" PRIu64
         " relief_count=%" PRIu32 " last_sweep_checksum=0x%08" PRIx32
         " expected_checksum=0x%08" PRIx32
         " checksum_validity=%u stack_high_water_words=%" PRIu32
-        " ready=%u clean_stop=%u B_wall_us=%" PRIu64
+        " ready=%u clean_stop=%u B_phase_wall_us=%" PRIu64
+        " reader_active_wall_us=%" PRIu64
         " approximate_payload_mib_s=%.3f\n",
         health.sweeps, p4_nano_psram_read_control::kBufferBytes,
         health.total_bytes, health.relief_count, health.last_sweep_checksum,
         state->p8_expected_checksum, health.checksum_valid ? 1U : 0U,
         health.stack_high_water_words, health.ready ? 1U : 0U,
-        health.clean_stop ? 1U : 0U, control_wall_us, payload_mib_s);
+        health.clean_stop ? 1U : 0U, control_wall_us, reader_active_wall_us,
+        payload_mib_s);
     std::printf(
         "P4_NANO_PSRAM_READ_CONTROL_CORRECTNESS A_source_crc=0x%08" PRIx32
         " B_source_crc=0x%08" PRIx32 " A_native_crc=0x%08" PRIx32

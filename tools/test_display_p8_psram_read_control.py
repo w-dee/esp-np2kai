@@ -98,7 +98,29 @@ def main() -> int:
             "active handshake gate")
     require(live, "p8_control_start_us", "outer B wall start")
     require(live, "p8_control_end_us", "outer B wall end")
-    require(live, "payload_mib_per_second", "B wall throughput accounting")
+    require(live, "payload_mib_per_second", "payload throughput accounting")
+    require(header, "active_start_us", "reader active start state")
+    require(header, "active_end_us", "reader active end state")
+    require(control, "health.active_start_us", "reader active start timestamp")
+    require(control, "health.active_end_us", "reader active end timestamp")
+    require(live, "reader_active_wall_us", "reader active denominator")
+    require(live, "!reader_active_wall_valid", "reader active-window gate")
+    require(live, "!payload_rate_valid", "payload rate gate")
+    require(live, "health.total_bytes, reader_active_wall_us",
+            "reader active throughput denominator")
+    task = control[control.index("void read_task(void *)"):control.index(
+        "} // namespace")]
+    active_start = task.index("health.active_start_us")
+    if active_start >= task.index("read_sweep(", active_start):
+        raise AssertionError("active start must precede first active sweep")
+    if task.index("health.active_end_us") <= task.rfind("read_sweep("):
+        raise AssertionError("active end must follow final active sweep")
+    if control.index("health.active_start_us") >= control.index(
+            "s_runtime.running.store(true"):
+        raise AssertionError("active start must precede running publication")
+    if control.index("health.active_end_us") >= control.index(
+            "s_runtime.running.store(false"):
+        raise AssertionError("active end must precede running=false publication")
     isolated_samples = live[live.index("bool benchmark_run_isolated_samples"):
                             live.index("esp_err_t run_isolated_benchmark_after_start")]
     if "xSemaphore" in isolated_samples:

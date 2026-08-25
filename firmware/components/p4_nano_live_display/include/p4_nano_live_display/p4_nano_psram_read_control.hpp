@@ -128,6 +128,8 @@ struct Health {
     std::uint32_t core = 0U;
     std::uint32_t priority = 0U;
     std::uint32_t stack_high_water_words = 0U;
+    std::uint64_t active_start_us = 0U;
+    std::uint64_t active_end_us = 0U;
     std::uint64_t sweeps = 0U;
     std::uint64_t total_bytes = 0U;
     std::uint32_t relief_count = 0U;

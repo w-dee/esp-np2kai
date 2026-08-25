@@ -75,6 +75,8 @@ void read_task(void *)
     s_runtime.health.ready = true;
     (void)xSemaphoreGive(s_runtime.ready);
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    s_runtime.health.active_start_us = static_cast<std::uint64_t>(
+        esp_timer_get_time());
     s_runtime.running.store(true, std::memory_order_release);
     s_runtime.health.running = true;
     while (!s_runtime.stop_requested.load(std::memory_order_acquire)) {
@@ -103,6 +105,8 @@ void read_task(void *)
     }
     s_runtime.health.stack_high_water_words =
         static_cast<std::uint32_t>(uxTaskGetStackHighWaterMark(nullptr));
+    s_runtime.health.active_end_us = static_cast<std::uint64_t>(
+        esp_timer_get_time());
     s_runtime.health.running = false;
     s_runtime.health.clean_stop = true;
     s_runtime.running.store(false, std::memory_order_release);
