@@ -13,11 +13,13 @@
 #include <span>
 
 #include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_cache.h"
 #include "esp_chip_info.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
+#include "esp_timer.h"
 #include "esp_lcd_jd9365_10_1.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_io.h"
@@ -45,6 +47,48 @@ constexpr std::size_t kFramebufferCount = 1;
 constexpr TickType_t kPanelStabilizationDelay = pdMS_TO_TICKS(200);
 constexpr TickType_t kStaticPatternHold = pdMS_TO_TICKS(5000);
 constexpr TickType_t kTransformDiagnosticHold = pdMS_TO_TICKS(30000);
+
+bool IRAM_ATTR dpi_refresh_done_callback(esp_lcd_panel_handle_t,
+                                         esp_lcd_dpi_panel_event_data_t *,
+                                         void *user_ctx)
+{
+    auto *stats = static_cast<p4_nano_display::VsyncStats *>(user_ctx);
+    if (stats == nullptr || !stats->active.load(std::memory_order_relaxed)) {
+        return false;
+    }
+
+    const std::uint32_t now_us = static_cast<std::uint32_t>(
+        esp_timer_get_time());
+    const std::uint32_t sequence =
+        stats->callback_count.fetch_add(1U, std::memory_order_relaxed);
+    const std::uint32_t previous_us =
+        stats->last_timestamp_us.exchange(now_us, std::memory_order_relaxed);
+    if (sequence == 0U) {
+        return false;
+    }
+
+    const std::uint32_t period_us = now_us - previous_us;
+    stats->period_count.fetch_add(1U, std::memory_order_relaxed);
+
+    const std::uint32_t prior_low =
+        stats->period_total_low.fetch_add(period_us,
+                                          std::memory_order_relaxed);
+    if (prior_low > UINT32_MAX - period_us) {
+        stats->period_total_high.fetch_add(1U, std::memory_order_relaxed);
+    }
+
+    const std::uint32_t prior_min =
+        stats->period_min_us.load(std::memory_order_relaxed);
+    if (period_us < prior_min) {
+        stats->period_min_us.store(period_us, std::memory_order_relaxed);
+    }
+    const std::uint32_t prior_max =
+        stats->period_max_us.load(std::memory_order_relaxed);
+    if (period_us > prior_max) {
+        stats->period_max_us.store(period_us, std::memory_order_relaxed);
+    }
+    return false;
+}
 
 void report_memory(const char *phase)
 {
@@ -81,6 +125,9 @@ esp_err_t cleanup(p4_nano_display::DisplaySession *resources)
     return ESP_OK;
 #else
     esp_err_t first_error = ESP_OK;
+
+    resources->vsync.active.store(false, std::memory_order_relaxed);
+    resources->vsync_callback_registered = false;
 
     /* Backlight-off is intentionally attempted before tearing down hardware. */
     remember_first_error(&first_error, p4_nano_board::display_control_safe_off());
@@ -137,6 +184,8 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     if (resources == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
+    resources->vsync.reset();
+    resources->vsync_callback_registered = false;
 #if defined(P4_NANO_RUNTIME_EMU_BACKEND)
     /* esp-emu has no MIPI-DSI panel model.  The bounded validation profile
      * keeps the real Session transform and external native framebuffer while
@@ -260,7 +309,19 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     if (ret != ESP_OK) {
         return fail_stage(resources, "panel_display_on", ret);
     }
+    const esp_lcd_dpi_panel_event_callbacks_t dpi_callbacks{
+        .on_color_trans_done = nullptr,
+        .on_refresh_done = dpi_refresh_done_callback,
+    };
+    ret = esp_lcd_dpi_panel_register_event_callbacks(
+        resources->panel, &dpi_callbacks, &resources->vsync);
+    if (ret != ESP_OK) {
+        return fail_stage(resources, "dpi_refresh_callback", ret);
+    }
+    resources->vsync_callback_registered = true;
+    resources->vsync.active.store(true, std::memory_order_release);
     ESP_LOGI(kTag, "foundation stage=panel_reset_init_display_on result=PASS");
+    ESP_LOGI(kTag, "foundation stage=dpi_refresh_callback result=PASS");
     return ESP_OK;
 #endif
 }
@@ -279,6 +340,47 @@ esp_err_t display_session_cleanup(DisplaySession *session)
         return ESP_ERR_INVALID_ARG;
     }
     return cleanup(session);
+}
+
+void display_session_reset_vsync(DisplaySession *session) noexcept
+{
+    if (session == nullptr) {
+        return;
+    }
+    const bool was_active =
+        session->vsync.active.exchange(false, std::memory_order_acq_rel);
+    session->vsync.reset();
+    if (was_active) {
+        session->vsync.active.store(true, std::memory_order_release);
+    }
+}
+
+void display_session_snapshot_vsync(const DisplaySession *session,
+                                    VsyncStatsSnapshot *snapshot) noexcept
+{
+    if (snapshot == nullptr) {
+        return;
+    }
+    *snapshot = {};
+    if (session == nullptr) {
+        return;
+    }
+
+    snapshot->callback_count = session->vsync.callback_count.load(
+        std::memory_order_acquire);
+    snapshot->period_count = session->vsync.period_count.load(
+        std::memory_order_acquire);
+    const std::uint32_t minimum = session->vsync.period_min_us.load(
+        std::memory_order_acquire);
+    snapshot->period_min_us = minimum == UINT32_MAX ? 0U : minimum;
+    snapshot->period_max_us = session->vsync.period_max_us.load(
+        std::memory_order_acquire);
+    const std::uint64_t high = session->vsync.period_total_high.load(
+        std::memory_order_acquire);
+    const std::uint64_t low = session->vsync.period_total_low.load(
+        std::memory_order_acquire);
+    snapshot->period_total_us = (high << 32U) | low;
+    snapshot->callback_registered = session->vsync_callback_registered;
 }
 
 esp_err_t run_foundation()

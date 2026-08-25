@@ -966,6 +966,35 @@ void benchmark_print_fixed_metric(const char *name,
                            samples);
 }
 
+void benchmark_print_vsync_stats(
+    const p4_nano_display::DisplaySession &display)
+{
+    p4_nano_display::VsyncStatsSnapshot stats{};
+    p4_nano_display::display_session_snapshot_vsync(&display, &stats);
+    const std::uint64_t average_us =
+        stats.period_count == 0U
+            ? 0U
+            : stats.period_total_us / stats.period_count;
+    const std::uint64_t refresh_millihz =
+        average_us == 0U ? 0U : 1'000'000'000ULL / average_us;
+    const bool count_consistent =
+        stats.callback_count > 0U &&
+        stats.period_count == stats.callback_count - 1U;
+    std::printf(
+        "P4_NANO_VSYNC callback_registered=%u callback_count=%" PRIu32
+        " period_count=%" PRIu32 " period_total_us=%" PRIu64
+        " period_avg_us=%" PRIu64 " period_min_us=%" PRIu32
+        " period_max_us=%" PRIu32 " jitter_minmax_us=%" PRIu32
+        " refresh_millihz=%" PRIu64 " count_consistency=%s\n",
+        stats.callback_registered ? 1U : 0U, stats.callback_count,
+        stats.period_count, stats.period_total_us, average_us,
+        stats.period_min_us, stats.period_max_us,
+        stats.period_max_us >= stats.period_min_us
+            ? stats.period_max_us - stats.period_min_us
+            : 0U,
+        refresh_millihz, count_consistent ? "PASS" : "FAIL");
+}
+
 bool benchmark_validate_frame(const np2_presentation_frame_view &view)
 {
     return view.ptr != nullptr && esp_ptr_external_ram(view.ptr) &&
@@ -1059,6 +1088,11 @@ void benchmark_scene_ready(std::uint32_t generation,
     state->scene_ready_dropped =
         np2_presentation_dropped_count(&state->publisher);
     state->scene_ready_surface_update_sequence = update_sequence;
+    /* Start the VSYNC statistics at the same scene boundary used by the
+     * existing LIVE/isolated counters.  This keeps panel initialization and
+     * prelude traffic out of the baseline window without adding a new timing
+     * path for the frame pipeline. */
+    p4_nano_display::display_session_reset_vsync(&state->display);
     state->scene_ready.store(true, std::memory_order_release);
 }
 
@@ -1367,6 +1401,7 @@ esp_err_t run_isolated_benchmark_after_start(BenchmarkState *state)
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(kBenchmarkMeasuredTransforms),
                 static_cast<unsigned>(kBenchmarkFinalValidationTransforms));
+    benchmark_print_vsync_stats(state->display);
 
     /* Resume only after final CRC/counter capture and the isolated summary
      * have completed.  The held presentation lease is released after the
@@ -2176,6 +2211,7 @@ esp_err_t run_benchmark()
                 "consumer_service=%zu\n",
                 state.transform_stored, state.cache_stored,
                 state.service_stored);
+    benchmark_print_vsync_stats(state.display);
     std::printf("P4_NANO_BENCHMARK_COOPERATION producer_cooperate_calls=%" PRIu32
                 " consumer_cooperate_calls=%" PRIu32 "\n",
                 state.producer_result.cooperate_calls,

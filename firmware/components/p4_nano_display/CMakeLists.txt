@@ -4,7 +4,7 @@ idf_component_register(
          "p4_nano_jd9365_safe.c"
     INCLUDE_DIRS "include" "include/p4_nano_display"
     REQUIRES p4_nano_board esp_lcd esp_hw_support esp_mm esp_driver_gpio
-             esp_driver_i2c esp_psram heap freertos esp_lcd_jd9365_10_1)
+             esp_driver_i2c esp_psram heap freertos esp_timer esp_lcd_jd9365_10_1)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>"
