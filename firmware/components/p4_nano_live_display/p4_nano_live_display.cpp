@@ -38,6 +38,9 @@
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #include "p4_nano_live_display/p4_nano_live_display_contract.hpp"
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
+#include "p4_nano_live_display/p4_nano_compute_control.hpp"
+#endif
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
@@ -933,6 +936,29 @@ struct BenchmarkState {
     std::uint32_t isolated_source_generation = 0;
     std::uint32_t isolated_source_update_sequence = 0;
     std::uint64_t isolated_source_published_sequence = 0;
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        compute_control_transform_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        compute_control_cache_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms>
+        compute_control_service_samples{};
+    std::size_t compute_control_transform_stored = 0U;
+    std::size_t compute_control_cache_stored = 0U;
+    std::size_t compute_control_service_stored = 0U;
+    std::uint32_t compute_control_transforms_started = 0U;
+    std::uint32_t compute_control_transforms_completed = 0U;
+    std::uint32_t compute_control_cache_sync_success = 0U;
+    std::uint32_t compute_control_cache_sync_failures = 0U;
+    std::uint32_t compute_control_consumer_cooperate_calls = 0U;
+    std::uint32_t compute_control_correctness_pass = 0U;
+    std::uint32_t compute_control_correctness_fail = 0U;
+    std::uint32_t compute_control_source_crc_after = 0U;
+    std::uint32_t compute_control_first_native_crc = 0U;
+    std::uint32_t compute_control_final_native_crc = 0U;
+    bool compute_control_first_native_crc_captured = false;
+    bool compute_control_final_native_crc_captured = false;
+#endif
     bool first_source_crc_captured = false;
     bool final_source_crc_captured = false;
     bool first_native_crc_captured = false;
@@ -1732,7 +1758,8 @@ bool benchmark_request_isolated_pause(BenchmarkState *state)
     return true;
 }
 
-bool benchmark_run_isolated_samples(BenchmarkState *state)
+bool benchmark_run_isolated_samples(BenchmarkState *state,
+                                     bool compute_control = false)
 {
     if (state == nullptr || !state->isolated_source_held ||
         !state->isolated_source_crc_captured) {
@@ -1744,7 +1771,57 @@ bool benchmark_run_isolated_samples(BenchmarkState *state)
     const auto destination = std::span<std::uint16_t>(
         state->display.framebuffer,
         p4_nano_display::kTransformDestinationPixelCount);
-    std::printf("ISOLATED_MEASUREMENT_BEGIN\n");
+    auto *transform_samples = &state->isolated_transform_samples;
+    auto *cache_samples = &state->isolated_cache_samples;
+    auto *service_samples = &state->isolated_service_samples;
+    std::size_t *transform_stored = &state->isolated_transform_stored;
+    std::size_t *cache_stored = &state->isolated_cache_stored;
+    std::size_t *service_stored = &state->isolated_service_stored;
+    std::uint32_t *transforms_started = &state->isolated_transforms_started;
+    std::uint32_t *transforms_completed = &state->isolated_transforms_completed;
+    std::uint32_t *cache_sync_success = &state->isolated_cache_sync_success;
+    std::uint32_t *cache_sync_failures = &state->isolated_cache_sync_failures;
+    std::uint32_t *consumer_cooperate_calls =
+        &state->isolated_consumer_cooperate_calls;
+    std::uint32_t *correctness_pass = &state->isolated_correctness_pass;
+    std::uint32_t *correctness_fail = &state->isolated_correctness_fail;
+    std::uint32_t *source_crc_after = &state->isolated_source_crc_after;
+    std::uint32_t *first_native_crc = &state->isolated_first_native_crc;
+    std::uint32_t *final_native_crc = &state->isolated_final_native_crc;
+    bool *first_native_crc_captured =
+        &state->isolated_first_native_crc_captured;
+    bool *final_native_crc_captured =
+        &state->isolated_final_native_crc_captured;
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
+    if (compute_control) {
+        transform_samples = &state->compute_control_transform_samples;
+        cache_samples = &state->compute_control_cache_samples;
+        service_samples = &state->compute_control_service_samples;
+        transform_stored = &state->compute_control_transform_stored;
+        cache_stored = &state->compute_control_cache_stored;
+        service_stored = &state->compute_control_service_stored;
+        transforms_started = &state->compute_control_transforms_started;
+        transforms_completed = &state->compute_control_transforms_completed;
+        cache_sync_success = &state->compute_control_cache_sync_success;
+        cache_sync_failures = &state->compute_control_cache_sync_failures;
+        consumer_cooperate_calls =
+            &state->compute_control_consumer_cooperate_calls;
+        correctness_pass = &state->compute_control_correctness_pass;
+        correctness_fail = &state->compute_control_correctness_fail;
+        source_crc_after = &state->compute_control_source_crc_after;
+        first_native_crc = &state->compute_control_first_native_crc;
+        final_native_crc = &state->compute_control_final_native_crc;
+        first_native_crc_captured =
+            &state->compute_control_first_native_crc_captured;
+        final_native_crc_captured =
+            &state->compute_control_final_native_crc_captured;
+    }
+#else
+    (void)compute_control;
+#endif
+    std::printf("%s\n", compute_control ?
+                "COMPUTE_CONTROL_B_MEASUREMENT_BEGIN" :
+                "ISOLATED_MEASUREMENT_BEGIN");
     for (std::uint32_t transform_index = 0U;
          transform_index < kBenchmarkTotalTransforms; ++transform_index) {
         const bool correctness_sample = transform_index == 0U ||
@@ -1752,7 +1829,7 @@ bool benchmark_run_isolated_samples(BenchmarkState *state)
                                             kBenchmarkTotalTransforms;
         const std::uint64_t service_start =
             static_cast<std::uint64_t>(esp_timer_get_time());
-        ++state->isolated_transforms_started;
+        ++*transforms_started;
         const std::uint64_t transform_start =
             static_cast<std::uint64_t>(esp_timer_get_time());
         const bool transformed = p4_nano_display::transform_to_native(
@@ -1770,10 +1847,10 @@ bool benchmark_run_isolated_samples(BenchmarkState *state)
         const std::uint64_t cache_us =
             static_cast<std::uint64_t>(esp_timer_get_time()) - cache_start;
         if (sync_result != ESP_OK) {
-            ++state->isolated_cache_sync_failures;
+            ++*cache_sync_failures;
             return false;
         }
-        ++state->isolated_cache_sync_success;
+        ++*cache_sync_success;
         ++state->native_framebuffer_updates;
         if (correctness_sample) {
             const std::uint32_t source_crc = p4_nano_display::crc32(
@@ -1784,17 +1861,21 @@ bool benchmark_run_isolated_samples(BenchmarkState *state)
                     state->display.framebuffer),
                 p4_nano_display::kNativeFramebufferBytes);
             if (source_crc == state->isolated_source_crc) {
-                ++state->isolated_correctness_pass;
+                ++*correctness_pass;
             } else {
-                ++state->isolated_correctness_fail;
+                ++*correctness_fail;
             }
-            state->isolated_source_crc_after = source_crc;
-            if (transform_index == 0U) {
-                state->isolated_first_native_crc = native_crc;
-                state->isolated_first_native_crc_captured = true;
+            if (!compute_control) {
+                state->isolated_source_crc_after = source_crc;
             } else {
-                state->isolated_final_native_crc = native_crc;
-                state->isolated_final_native_crc_captured = true;
+                *source_crc_after = source_crc;
+            }
+            if (transform_index == 0U) {
+                *first_native_crc = native_crc;
+                *first_native_crc_captured = true;
+            } else {
+                *final_native_crc = native_crc;
+                *final_native_crc_captured = true;
             }
         }
         if (transform_index == 0U && !benchmark_enable_backlight(state)) {
@@ -1805,25 +1886,31 @@ bool benchmark_run_isolated_samples(BenchmarkState *state)
         if (benchmark_is_measured_sample(transform_index)) {
             const std::size_t measured_index =
                 transform_index - kBenchmarkWarmupTransforms;
-            state->isolated_transform_samples[measured_index] = transform_us;
-            state->isolated_cache_samples[measured_index] = cache_us;
-            state->isolated_service_samples[measured_index] = service_us;
-            state->isolated_transform_stored = measured_index + 1U;
-            state->isolated_cache_stored = measured_index + 1U;
-            state->isolated_service_stored = measured_index + 1U;
+            (*transform_samples)[measured_index] = transform_us;
+            (*cache_samples)[measured_index] = cache_us;
+            (*service_samples)[measured_index] = service_us;
+            *transform_stored = measured_index + 1U;
+            *cache_stored = measured_index + 1U;
+            *service_stored = measured_index + 1U;
         }
-        ++state->isolated_transforms_completed;
-        ++state->isolated_consumer_cooperate_calls;
+        ++*transforms_completed;
+        ++*consumer_cooperate_calls;
         /* Keep the real one-tick CPU0 cooperation outside every measured
          * transform/cache interval, including warm-up and final validation. */
         np2_host_taskmng_cooperate();
     }
-    state->isolated_cooperate_calls_at_end =
+    if (!compute_control) {
+        state->isolated_cooperate_calls_at_end =
+            state->producer_cooperate_calls.load(std::memory_order_acquire);
+    }
+    const std::uint32_t producer_cooperate_calls =
         state->producer_cooperate_calls.load(std::memory_order_acquire);
-    std::printf("ISOLATED_MEASUREMENT_END producer_cooperate_calls=%" PRIu32
+    std::printf("%s producer_cooperate_calls=%" PRIu32
                 " consumer_cooperate_calls=%" PRIu32 "\n",
-                state->isolated_cooperate_calls_at_end,
-                state->isolated_consumer_cooperate_calls);
+                compute_control ? "COMPUTE_CONTROL_B_MEASUREMENT_END" :
+                                   "ISOLATED_MEASUREMENT_END",
+                producer_cooperate_calls,
+                *consumer_cooperate_calls);
     return true;
 }
 
@@ -1940,6 +2027,198 @@ esp_err_t run_isolated_benchmark_after_start(BenchmarkState *state)
     }
     return failed ? ESP_FAIL : ESP_OK;
 }
+
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
+esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool failed = false;
+    bool control_started = false;
+    std::printf("P4_NANO_COMPUTE_CONTROL_SEQUENCE=A_then_B\n");
+    if (!benchmark_hold_isolated_source(state) ||
+        !benchmark_request_isolated_pause(state)) {
+        failed = true;
+    }
+    if (!failed && !benchmark_run_isolated_samples(state, false)) {
+        failed = true;
+    }
+    if (!failed &&
+        (state->isolated_transforms_completed != kBenchmarkTotalTransforms ||
+         state->isolated_transform_stored != kBenchmarkMeasuredTransforms)) {
+        failed = true;
+    }
+    if (!failed && !p4_nano_compute_control::start_and_calibrate()) {
+        failed = true;
+    }
+    const auto &calibration = p4_nano_compute_control::calibration();
+    std::printf("P4_NANO_COMPUTE_CONTROL_CONFIG task_core=1 task_priority=%u "
+                "stack_depth=%u stack_internal=%u tcb_internal=%u "
+                "state_internal=%u hot_loop_iram=%u hot_loop_executable=%u "
+                "stack_bytes=%" PRIu32 " tcb_bytes=%" PRIu32
+                " state_bytes=%" PRIu32 " static_bytes=%" PRIu32
+                " calibration_iterations=%" PRIu32
+                " calibration_elapsed_us=%" PRIu64
+                " chunk_iterations=%" PRIu32
+                " target_interval_us=%" PRIu32
+                " relief_ticks=1\n",
+                static_cast<unsigned>(tskIDLE_PRIORITY + 3U),
+                static_cast<unsigned>(p4_nano_compute_control::kTaskStackWords),
+                p4_nano_compute_control::stack_internal() ? 1U : 0U,
+                p4_nano_compute_control::tcb_internal() ? 1U : 0U,
+                p4_nano_compute_control::state_internal() ? 1U : 0U,
+                esp_ptr_in_iram(reinterpret_cast<const void *>(
+                    &p4_nano_compute_control::run_chunk)) ? 1U : 0U,
+                esp_ptr_executable(reinterpret_cast<const void *>(
+                    &p4_nano_compute_control::run_chunk)) ? 1U : 0U,
+                p4_nano_compute_control::stack_bytes(),
+                p4_nano_compute_control::tcb_bytes(),
+                p4_nano_compute_control::state_bytes(),
+                p4_nano_compute_control::static_bytes(),
+                calibration.calibration_iterations,
+                calibration.calibration_elapsed_us,
+                calibration.chunk_iterations, calibration.target_interval_us);
+    if (!failed && !p4_nano_compute_control::begin()) {
+        failed = true;
+    } else if (!failed) {
+        control_started = true;
+        if (!benchmark_run_isolated_samples(state, true)) {
+            failed = true;
+        }
+    }
+    if (control_started && !p4_nano_compute_control::stop()) {
+        failed = true;
+    }
+    const auto &health = p4_nano_compute_control::health();
+    const std::uint32_t source_crc_after =
+        state->isolated_source_held && state->isolated_source_view.ptr != nullptr
+            ? p4_nano_display::crc32(state->isolated_source_view.ptr,
+                                      np2video_golden_visible_bytes)
+            : 0U;
+    state->compute_control_source_crc_after = source_crc_after;
+    const bool source_immutable = state->isolated_source_crc_captured &&
+                                  source_crc_after == state->isolated_source_crc;
+    const bool a_native_stable =
+        state->isolated_first_native_crc_captured &&
+        state->isolated_final_native_crc_captured &&
+        state->isolated_first_native_crc == state->isolated_final_native_crc;
+    const bool b_native_stable =
+        state->compute_control_first_native_crc_captured &&
+        state->compute_control_final_native_crc_captured &&
+        state->compute_control_first_native_crc ==
+            state->compute_control_final_native_crc;
+    const bool pause_stable =
+        state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->isolated_cooperate_calls_at_end &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
+    if (state->publish_failed.load(std::memory_order_acquire) ||
+        !source_immutable || !a_native_stable || !b_native_stable ||
+        !pause_stable || state->isolated_correctness_fail != 0U ||
+        state->compute_control_correctness_fail != 0U ||
+        state->compute_control_transforms_completed != kBenchmarkTotalTransforms ||
+        state->compute_control_transform_stored != kBenchmarkMeasuredTransforms ||
+        state->compute_control_cache_stored != kBenchmarkMeasuredTransforms ||
+        state->compute_control_service_stored != kBenchmarkMeasuredTransforms ||
+        state->isolated_cache_sync_failures != 0U ||
+        state->compute_control_cache_sync_failures != 0U ||
+        !health.ready || !health.clean_stop || health.chunks == 0U ||
+        health.iterations == 0U || health.relief_count == 0U ||
+        health.checksum == 0U) {
+        failed = true;
+    }
+    benchmark_print_fixed_metric("compute_control_A_transform_only_us",
+                                 state->isolated_transform_samples,
+                                 state->isolated_transform_stored);
+    benchmark_print_fixed_metric("compute_control_A_cache_sync_us",
+                                 state->isolated_cache_samples,
+                                 state->isolated_cache_stored);
+    benchmark_print_fixed_metric("compute_control_A_consumer_service_us",
+                                 state->isolated_service_samples,
+                                 state->isolated_service_stored);
+    benchmark_print_fixed_metric("compute_control_B_transform_only_us",
+                                 state->compute_control_transform_samples,
+                                 state->compute_control_transform_stored);
+    benchmark_print_fixed_metric("compute_control_B_cache_sync_us",
+                                 state->compute_control_cache_samples,
+                                 state->compute_control_cache_stored);
+    benchmark_print_fixed_metric("compute_control_B_consumer_service_us",
+                                 state->compute_control_service_samples,
+                                 state->compute_control_service_stored);
+    std::printf("P4_NANO_COMPUTE_CONTROL_HEALTH chunks=%" PRIu64
+                " iterations=%" PRIu64 " relief_count=%" PRIu32
+                " checksum=0x%08" PRIx32 " stack_high_water_words=%" PRIu32
+                " ready=%u clean_stop=%u\n",
+                health.chunks, health.iterations, health.relief_count,
+                health.checksum, health.stack_high_water_words,
+                health.ready ? 1U : 0U, health.clean_stop ? 1U : 0U);
+    std::printf("P4_NANO_COMPUTE_CONTROL_CORRECTNESS A_source_crc=0x%08" PRIx32
+                " B_source_crc=0x%08" PRIx32
+                " A_native_crc=0x%08" PRIx32
+                " B_native_crc=0x%08" PRIx32 " result=%s\n",
+                state->isolated_source_crc, source_crc_after,
+                state->isolated_final_native_crc,
+                state->compute_control_final_native_crc,
+                (!failed && source_immutable && a_native_stable &&
+                 b_native_stable) ? "PASS" : "FAIL");
+    std::printf("P4_NANO_COMPUTE_CONTROL_SAMPLE_COUNTS A_transform=%zu "
+                "A_cache_sync=%zu A_service=%zu B_transform=%zu "
+                "B_cache_sync=%zu B_service=%zu warmup=%u measured=%u "
+                "final_validation=%u\n",
+                state->isolated_transform_stored,
+                state->isolated_cache_stored, state->isolated_service_stored,
+                state->compute_control_transform_stored,
+                state->compute_control_cache_stored,
+                state->compute_control_service_stored,
+                static_cast<unsigned>(kBenchmarkWarmupTransforms),
+                static_cast<unsigned>(kBenchmarkMeasuredTransforms),
+                static_cast<unsigned>(kBenchmarkFinalValidationTransforms));
+    benchmark_print_vsync_stats(state->display);
+
+    state->stop_requested.store(true, std::memory_order_release);
+    state->producer_pause_requested.store(false, std::memory_order_release);
+    if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
+        (void)xSemaphoreGive(state->isolated_pause_resume);
+        state->isolated_resumed = true;
+        std::printf("PRODUCER_RESUMED\n");
+    }
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (state->isolated_source_held) {
+        benchmark_release(state, &state->isolated_source_token);
+        state->isolated_source_held = false;
+    }
+    benchmark_hold_visible(state);
+    const esp_err_t backlight_off_result =
+        p4_nano_board::display_backlight_set(0U);
+    state->backlight_off_failed = backlight_off_result != ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    if (state->producer_result.status != ESP_OK ||
+        state->publish_failed.load(std::memory_order_acquire) ||
+        state->producer_pause_acknowledged.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || state->backlight_off_failed ||
+        state->releases != state->acquisitions || !scheduling_contract) {
+        failed = true;
+    }
+    std::printf("P4_NANO_COMPUTE_CONTROL_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    return failed ? ESP_FAIL : ESP_OK;
+}
+#endif
 #endif
 
 bool benchmark_stop_requested(void *context)
@@ -3159,7 +3438,9 @@ esp_err_t run_benchmark()
     }
     state.producer_start_us = static_cast<std::uint64_t>(esp_timer_get_time());
 
-#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
+    return run_compute_control_benchmark_after_start(&state);
+#elif defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
     return run_isolated_benchmark_after_start(&state);
 #else
     bool failed = false;
