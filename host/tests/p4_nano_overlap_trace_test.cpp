@@ -47,7 +47,9 @@ void test_interval_edges()
     }
     {
         const SubmitInterval s[] = {submit(50U, 125U, 3U)};
-        assert(p4_nano_overlap::calculate_overlap(t, s).total_us == 25U);
+        const auto overlap = p4_nano_overlap::calculate_overlap(t, s);
+        assert(overlap.total_us == 25U);
+        assert(overlap.intersecting_submit_count == 1U);
     }
     {
         const SubmitInterval s[] = {submit(175U, 250U, 4U)};
@@ -91,6 +93,36 @@ void test_analysis_identity_and_warmup()
     assert(result.submit_intervals_non_overlapping);
     assert(result.submit_source_sequences_monotonic);
     assert(result.transform_published_sequences_monotonic);
+}
+
+void test_submit_trace_completeness_and_intersection_count()
+{
+    assert(p4_nano_overlap::submit_trace_complete(3U, 3U));
+    assert(!p4_nano_overlap::submit_trace_complete(2U, 3U));
+    assert(!p4_nano_overlap::submit_trace_complete(4U, 3U));
+
+    const SubmitInterval submits[] = {
+        submit(90U, 110U, 1U), submit(130U, 160U, 2U)};
+    const TransformInterval transforms[] = {transform(100U, 150U, 1U)};
+    const auto result = p4_nano_overlap::analyze<1U>(submits, transforms);
+    assert(result.intersecting_submit_count_stored == 1U);
+    assert(result.intersecting_submit_count[0] == 2U);
+    assert(result.overlapping_transform_count == 1U);
+    assert(result.single_submit_overlap_transform_count == 0U);
+    assert(result.multiple_submit_overlap_transform_count == 1U);
+
+    const SubmitInterval one_submit[] = {submit(110U, 120U, 1U)};
+    const auto one_result = p4_nano_overlap::analyze<1U>(
+        one_submit, transforms);
+    assert(one_result.intersecting_submit_count[0] == 1U);
+    assert(one_result.single_submit_overlap_transform_count == 1U);
+    assert(one_result.multiple_submit_overlap_transform_count == 0U);
+
+    const SubmitInterval boundary_submit[] = {submit(150U, 170U, 2U)};
+    const auto boundary = p4_nano_overlap::calculate_overlap(
+        transforms[0], boundary_submit);
+    assert(boundary.total_us == 0U);
+    assert(boundary.intersecting_submit_count == 0U);
 }
 
 void test_different_sequences_and_capacity()
@@ -143,6 +175,7 @@ int main()
 {
     test_interval_edges();
     test_analysis_identity_and_warmup();
+    test_submit_trace_completeness_and_intersection_count();
     test_different_sequences_and_capacity();
     test_concurrency_assumption();
     return 0;

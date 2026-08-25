@@ -1051,7 +1051,9 @@ void benchmark_prepare_overlap_analysis(BenchmarkState *state)
     state->overlap_trace_analyzed = true;
 }
 
-void benchmark_print_overlap_report(BenchmarkState *state)
+void benchmark_print_overlap_report(
+    BenchmarkState *state, std::uint32_t successful_submissions_window,
+    bool submit_trace_is_complete)
 {
     if (state == nullptr || !state->overlap_trace_analyzed) {
         return;
@@ -1066,13 +1068,16 @@ void benchmark_print_overlap_report(BenchmarkState *state)
         analysis.transform_published_sequences_monotonic;
     std::printf(
         "P4_NANO_OVERLAP_TRACE submit_intervals=%zu transform_intervals=%zu "
-        "measured_transforms=%zu trace_overflow=%s "
+        "measured_transforms=%zu successful_submissions_window=%" PRIu32
+        " submit_trace_completeness=%s trace_overflow=%s "
         "sequence_matching=%s unmatched_submits=%zu "
         "unmatched_acquired=%zu metadata_mismatch=%zu "
         "max_concurrent_submit_intervals=%zu "
         "max_concurrent_expected=1 submit_intervals_non_overlapping=%s\n",
         analysis.submit_count, analysis.transform_count,
         analysis.measured_transform_count,
+        successful_submissions_window,
+        submit_trace_is_complete ? "PASS" : "FAIL",
         (state->overlap_submit_trace_overflow ||
          state->overlap_transform_trace_overflow)
             ? "FAIL"
@@ -1084,10 +1089,13 @@ void benchmark_print_overlap_report(BenchmarkState *state)
         analysis.submit_intervals_non_overlapping ? "PASS" : "FAIL");
     std::printf(
         "P4_NANO_OVERLAP_SUMMARY measured=%zu with_overlap=%zu "
-        "zero_overlap=%zu overlap_percent=%.3f\n",
+        "zero_overlap=%zu one_submit_overlap=%zu "
+        "multiple_submit_overlap=%zu overlap_percent=%.3f\n",
         analysis.measured_transform_count,
         analysis.overlapping_transform_count,
         analysis.zero_overlap_transform_count,
+        analysis.single_submit_overlap_transform_count,
+        analysis.multiple_submit_overlap_transform_count,
         analysis.measured_transform_count == 0U
             ? 0.0
             : static_cast<double>(analysis.overlapping_transform_count) *
@@ -1097,6 +1105,9 @@ void benchmark_print_overlap_report(BenchmarkState *state)
     benchmark_print_fixed_metric("submit_overlap_fraction_ppm",
                                  analysis.overlap_fraction_ppm,
                                  analysis.overlap_fraction_stored);
+    benchmark_print_fixed_metric("intersecting_submit_count",
+                                 analysis.intersecting_submit_count,
+                                 analysis.intersecting_submit_count_stored);
     benchmark_print_fixed_metric("transform_zero_overlap_us",
                                  analysis.zero_overlap_transform_us,
                                  analysis.zero_overlap_transform_stored);
@@ -1245,6 +1256,10 @@ void benchmark_scene_ready(std::uint32_t generation,
     state->scene_ready_dropped =
         np2_presentation_dropped_count(&state->publisher);
     state->scene_ready_surface_update_sequence = update_sequence;
+    /* The runner invokes this callback on the producer task before its
+     * continuous scene-window loop.  Capture all deltas first, then publish
+     * scene_ready; the submit hook therefore cannot observe the active bit
+     * until the matching baselines are complete. */
     /* Start the VSYNC statistics at the same scene boundary used by the
      * existing LIVE/isolated counters.  This keeps panel initialization and
      * prelude traffic out of the baseline window without adding a new timing
@@ -2880,9 +2895,14 @@ esp_err_t run_benchmark()
                 .counters[NP2_PCCORE_COUNTER_NEVENT_PROGRESS];
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
     benchmark_prepare_overlap_analysis(&state);
+    const bool submit_trace_is_complete =
+        p4_nano_overlap::submit_trace_complete(
+            state.overlap_submit_trace_stored,
+            successful_submissions);
     const bool overlap_trace_valid =
         !state.overlap_submit_trace_overflow &&
         !state.overlap_transform_trace_overflow &&
+        submit_trace_is_complete &&
         state.overlap_analysis.transform_count == state.transforms_completed &&
         state.overlap_analysis.measured_transform_count ==
             kBenchmarkMeasuredTransforms &&
@@ -2937,7 +2957,8 @@ esp_err_t run_benchmark()
                            state.latency_min_us, state.latency_max_us,
                            state.latency_samples);
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
-    benchmark_print_overlap_report(&state);
+    benchmark_print_overlap_report(&state, successful_submissions,
+                                   submit_trace_is_complete);
 #endif
     std::printf("P4_NANO_BENCHMARK_WARMUP transforms=%u completed=%u\n",
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),

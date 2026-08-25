@@ -71,6 +71,12 @@ inline bool intervals_intersect(const SubmitInterval &first,
            first.end_us > second.start_us && second.end_us > first.start_us;
 }
 
+inline bool submit_trace_complete(std::size_t recorded_count,
+                                  std::size_t successful_window_count)
+{
+    return recorded_count == successful_window_count;
+}
+
 inline std::size_t max_concurrent_submit_intervals(
     std::span<const SubmitInterval> submits)
 {
@@ -118,6 +124,8 @@ struct Analysis {
     std::size_t unmatched_submit_count = 0U;
     std::size_t sequence_metadata_mismatch_count = 0U;
     std::size_t max_concurrent_submit_count = 0U;
+    std::size_t single_submit_overlap_transform_count = 0U;
+    std::size_t multiple_submit_overlap_transform_count = 0U;
     bool submit_intervals_non_overlapping = true;
     bool submit_source_sequences_monotonic = true;
     bool submit_published_sequences_monotonic = true;
@@ -128,11 +136,14 @@ struct Analysis {
     std::array<std::uint64_t, MaxMeasuredTransforms> transform_us{};
     std::array<std::uint64_t, MaxMeasuredTransforms> zero_overlap_transform_us{};
     std::array<std::uint64_t, MaxMeasuredTransforms> overlapping_transform_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        intersecting_submit_count{};
     std::size_t overlap_stored = 0U;
     std::size_t overlap_fraction_stored = 0U;
     std::size_t transform_stored = 0U;
     std::size_t zero_overlap_transform_stored = 0U;
     std::size_t overlapping_transform_stored = 0U;
+    std::size_t intersecting_submit_count_stored = 0U;
 };
 
 template <std::size_t MaxMeasuredTransforms>
@@ -218,12 +229,20 @@ Analysis<MaxMeasuredTransforms> analyze(
         result.overlap_fraction_ppm[result.overlap_fraction_stored++] =
             fraction_ppm;
         result.transform_us[result.transform_stored++] = duration_us;
+        result.intersecting_submit_count[
+            result.intersecting_submit_count_stored++] =
+            static_cast<std::uint64_t>(overlap.intersecting_submit_count);
         if (overlap.total_us == 0U) {
             ++result.zero_overlap_transform_count;
             result.zero_overlap_transform_us[
                 result.zero_overlap_transform_stored++] = duration_us;
         } else {
             ++result.overlapping_transform_count;
+            if (overlap.intersecting_submit_count == 1U) {
+                ++result.single_submit_overlap_transform_count;
+            } else {
+                ++result.multiple_submit_overlap_transform_count;
+            }
             result.overlapping_transform_us[
                 result.overlapping_transform_stored++] = duration_us;
         }
