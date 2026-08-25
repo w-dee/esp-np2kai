@@ -38,6 +38,12 @@
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #include "p4_nano_live_display/p4_nano_live_display_contract.hpp"
+#if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+#define P4_NANO_OVERLAP_TRACE_ACTIVE 1
+#include "p4_nano_live_display/p4_nano_overlap_trace.hpp"
+#endif
 #if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 #include "p4_nano_live_display/p4_nano_psram_bandwidth.hpp"
 #endif
@@ -740,6 +746,17 @@ constexpr std::uint32_t kBenchmarkTotalTransforms =
 constexpr std::size_t kBenchmarkSubmitSampleCapacity = 8192U;
 constexpr std::size_t kBenchmarkLatencySampleCapacity = 256U;
 constexpr std::size_t kBenchmarkTimestampRingSize = 1024U;
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+/* P2 LIVE recorded 151 submit intervals for this 8+128+1 fixture.  Keep a
+ * separate trace bound with >3x headroom rather than duplicating the much
+ * larger percentile-sample array; overflow remains a benchmark failure. */
+constexpr std::size_t kBenchmarkSubmitTraceCapacity = 512U;
+constexpr std::size_t kBenchmarkTransformTraceCapacity =
+    kBenchmarkTotalTransforms;
+static_assert(kBenchmarkSubmitTraceCapacity >=
+              kBenchmarkTotalTransforms * 3U);
+static_assert(kBenchmarkTransformTraceCapacity == kBenchmarkTotalTransforms);
+#endif
 constexpr std::uint64_t kBenchmarkWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 constexpr int kBenchmarkProducerCore = 1;
 /* Scheduler A/B candidate: the priority-0 baseline was deliberately
@@ -783,6 +800,11 @@ struct BenchmarkTimestamp {
     std::atomic<std::uint64_t> submit_start_us{0};
 };
 
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+using BenchmarkOverlapAnalysis =
+    p4_nano_overlap::Analysis<kBenchmarkMeasuredTransforms>;
+#endif
+
 struct BenchmarkState {
     np2_presentation_publisher publisher{};
     np2_presentation_slot_storage slots[kSlotCount]{};
@@ -800,6 +822,23 @@ struct BenchmarkState {
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> publish_failed{false};
     BenchmarkTimestamp timestamp_ring[kBenchmarkTimestampRingSize]{};
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+    /* CPU1 and CPU0 write disjoint trace arrays.  producer_done is published
+     * with release semantics by the runner and observed with acquire before
+     * this post-run analysis, so no shared trace index or lock is needed. */
+    std::array<p4_nano_overlap::SubmitInterval,
+               kBenchmarkSubmitTraceCapacity>
+        overlap_submit_trace{};
+    std::array<p4_nano_overlap::TransformInterval,
+               kBenchmarkTransformTraceCapacity>
+        overlap_transform_trace{};
+    std::size_t overlap_submit_trace_stored = 0U;
+    std::size_t overlap_transform_trace_stored = 0U;
+    bool overlap_submit_trace_overflow = false;
+    bool overlap_transform_trace_overflow = false;
+    bool overlap_trace_analyzed = false;
+    BenchmarkOverlapAnalysis overlap_analysis{};
+#endif
     std::array<std::uint64_t, kBenchmarkSubmitSampleCapacity> submit_samples{};
     std::array<std::uint64_t, kBenchmarkLatencySampleCapacity> latency_samples{};
     std::array<std::uint64_t, kBenchmarkMeasuredTransforms> transform_samples{};
@@ -995,6 +1034,78 @@ void benchmark_print_fixed_metric(const char *name,
                            samples);
 }
 
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+void benchmark_prepare_overlap_analysis(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return;
+    }
+    state->overlap_analysis = p4_nano_overlap::analyze<
+        kBenchmarkMeasuredTransforms>(
+        std::span<const p4_nano_overlap::SubmitInterval>(
+            state->overlap_submit_trace.data(),
+            state->overlap_submit_trace_stored),
+        std::span<const p4_nano_overlap::TransformInterval>(
+            state->overlap_transform_trace.data(),
+            state->overlap_transform_trace_stored));
+    state->overlap_trace_analyzed = true;
+}
+
+void benchmark_print_overlap_report(BenchmarkState *state)
+{
+    if (state == nullptr || !state->overlap_trace_analyzed) {
+        return;
+    }
+    BenchmarkOverlapAnalysis &analysis = state->overlap_analysis;
+    const bool sequence_match_pass =
+        analysis.unmatched_acquired_count == 0U &&
+        analysis.sequence_metadata_mismatch_count == 0U &&
+        analysis.submit_source_sequences_monotonic &&
+        analysis.submit_published_sequences_monotonic &&
+        analysis.transform_source_sequences_monotonic &&
+        analysis.transform_published_sequences_monotonic;
+    std::printf(
+        "P4_NANO_OVERLAP_TRACE submit_intervals=%zu transform_intervals=%zu "
+        "measured_transforms=%zu trace_overflow=%s "
+        "sequence_matching=%s unmatched_submits=%zu "
+        "unmatched_acquired=%zu metadata_mismatch=%zu "
+        "max_concurrent_submit_intervals=%zu "
+        "max_concurrent_expected=1 submit_intervals_non_overlapping=%s\n",
+        analysis.submit_count, analysis.transform_count,
+        analysis.measured_transform_count,
+        (state->overlap_submit_trace_overflow ||
+         state->overlap_transform_trace_overflow)
+            ? "FAIL"
+            : "PASS",
+        sequence_match_pass ? "PASS" : "FAIL",
+        analysis.unmatched_submit_count, analysis.unmatched_acquired_count,
+        analysis.sequence_metadata_mismatch_count,
+        analysis.max_concurrent_submit_count,
+        analysis.submit_intervals_non_overlapping ? "PASS" : "FAIL");
+    std::printf(
+        "P4_NANO_OVERLAP_SUMMARY measured=%zu with_overlap=%zu "
+        "zero_overlap=%zu overlap_percent=%.3f\n",
+        analysis.measured_transform_count,
+        analysis.overlapping_transform_count,
+        analysis.zero_overlap_transform_count,
+        analysis.measured_transform_count == 0U
+            ? 0.0
+            : static_cast<double>(analysis.overlapping_transform_count) *
+                  100.0 / static_cast<double>(analysis.measured_transform_count));
+    benchmark_print_fixed_metric("submit_overlap_us", analysis.overlap_us,
+                                 analysis.overlap_stored);
+    benchmark_print_fixed_metric("submit_overlap_fraction_ppm",
+                                 analysis.overlap_fraction_ppm,
+                                 analysis.overlap_fraction_stored);
+    benchmark_print_fixed_metric("transform_zero_overlap_us",
+                                 analysis.zero_overlap_transform_us,
+                                 analysis.zero_overlap_transform_stored);
+    benchmark_print_fixed_metric("transform_with_overlap_us",
+                                 analysis.overlapping_transform_us,
+                                 analysis.overlapping_transform_stored);
+}
+#endif
+
 void benchmark_print_vsync_stats(
     const p4_nano_display::DisplaySession &display)
 {
@@ -1083,6 +1194,20 @@ void benchmark_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
     }
     if (status == NP2_PRESENTATION_OK) {
         ++state->successful_submissions;
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+        if (measurement_active) {
+            const p4_nano_overlap::SubmitInterval interval{
+                .start_us = submit_start,
+                .end_us = submit_end,
+                .source_update_sequence = view->surface_update_sequence,
+                .published_sequence = state->publisher.published_sequence,
+            };
+            (void)p4_nano_overlap::append_bounded(
+                state->overlap_submit_trace,
+                state->overlap_submit_trace_stored, interval,
+                state->overlap_submit_trace_overflow);
+        }
+#endif
 #if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
         state->p1_publish_progress.fetch_add(1U, std::memory_order_relaxed);
 #endif
@@ -1610,8 +1735,9 @@ int benchmark_consume_one(BenchmarkState *state)
         static_cast<std::uint64_t>(esp_timer_get_time());
     const bool transformed = p4_nano_display::transform_to_native(
         source, destination, p4_nano_display::QuarterTurn::CounterClockwise);
-    const std::uint64_t transform_us =
-        static_cast<std::uint64_t>(esp_timer_get_time()) - transform_start;
+    const std::uint64_t transform_end =
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    const std::uint64_t transform_us = transform_end - transform_start;
     if (!transformed) {
         benchmark_release(state, &token);
         return -1;
@@ -1640,8 +1766,9 @@ int benchmark_consume_one(BenchmarkState *state)
         static_cast<std::uint64_t>(esp_timer_get_time());
     const esp_err_t sync_result =
         p4_nano_display::display_session_sync_framebuffer(&state->display);
-    const std::uint64_t cache_us =
-        static_cast<std::uint64_t>(esp_timer_get_time()) - cache_start;
+    const std::uint64_t cache_sync_end =
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    const std::uint64_t cache_us = cache_sync_end - cache_start;
     if (sync_result != ESP_OK) {
         ++state->cache_sync_failures;
         benchmark_release(state, &token);
@@ -1672,6 +1799,23 @@ int benchmark_consume_one(BenchmarkState *state)
         std::printf("P4_NANO_BENCHMARK_FIRST_VISIBLE=1\n");
     }
     benchmark_release(state, &token);
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+    const p4_nano_overlap::TransformInterval transform_interval{
+        .acquire_us = acquired_at,
+        .transform_start_us = transform_start,
+        .transform_end_us = transform_end,
+        .cache_sync_end_us = cache_sync_end,
+        .release_us = 0U,
+        .source_update_sequence = view.source_update_sequence,
+        .published_sequence = view.published_sequence,
+        .transform_index = transform_index,
+        .measured = benchmark_is_measured_sample(transform_index),
+    };
+    (void)p4_nano_overlap::append_bounded(
+        state->overlap_transform_trace,
+        state->overlap_transform_trace_stored, transform_interval,
+        state->overlap_transform_trace_overflow);
+#endif
     const std::uint64_t service_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - service_start;
     if (benchmark_is_measured_sample(transform_index)) {
@@ -2734,6 +2878,24 @@ esp_err_t run_benchmark()
                 .count ==
             validated_pccore_profile
                 .counters[NP2_PCCORE_COUNTER_NEVENT_PROGRESS];
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+    benchmark_prepare_overlap_analysis(&state);
+    const bool overlap_trace_valid =
+        !state.overlap_submit_trace_overflow &&
+        !state.overlap_transform_trace_overflow &&
+        state.overlap_analysis.transform_count == state.transforms_completed &&
+        state.overlap_analysis.measured_transform_count ==
+            kBenchmarkMeasuredTransforms &&
+        state.overlap_analysis.unmatched_acquired_count == 0U &&
+        state.overlap_analysis.sequence_metadata_mismatch_count == 0U &&
+        state.overlap_analysis.submit_intervals_non_overlapping &&
+        state.overlap_analysis.submit_source_sequences_monotonic &&
+        state.overlap_analysis.submit_published_sequences_monotonic &&
+        state.overlap_analysis.transform_source_sequences_monotonic &&
+        state.overlap_analysis.transform_published_sequences_monotonic;
+#else
+    const bool overlap_trace_valid = true;
+#endif
     if (state.producer_result.status != ESP_OK ||
         state.publish_failed.load(std::memory_order_acquire) ||
         state.transforms_completed != kBenchmarkTotalTransforms ||
@@ -2755,7 +2917,8 @@ esp_err_t run_benchmark()
             kBenchmarkProducerCore ||
         state.producer_priority.load(std::memory_order_relaxed) !=
             kBenchmarkProducerPriority || consumer_core != 0 ||
-        consumer_priority != 1U || !pccore_phase_counts_match) {
+        consumer_priority != 1U || !pccore_phase_counts_match ||
+        !overlap_trace_valid) {
         failed = true;
     }
 
@@ -2773,6 +2936,9 @@ esp_err_t run_benchmark()
                            state.latency_stored, state.latency_total_us,
                            state.latency_min_us, state.latency_max_us,
                            state.latency_samples);
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+    benchmark_print_overlap_report(&state);
+#endif
     std::printf("P4_NANO_BENCHMARK_WARMUP transforms=%u completed=%u\n",
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(std::min(

@@ -1,0 +1,234 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
+
+namespace p4_nano_overlap {
+
+/* These records are written by one benchmark task each.  They intentionally
+ * contain only timestamps and the existing presentation identities; no
+ * production protocol state is represented here. */
+struct SubmitInterval {
+    std::uint64_t start_us = 0U;
+    std::uint64_t end_us = 0U;
+    std::uint32_t source_update_sequence = 0U;
+    std::uint64_t published_sequence = 0U;
+};
+
+struct TransformInterval {
+    std::uint64_t acquire_us = 0U;
+    std::uint64_t transform_start_us = 0U;
+    std::uint64_t transform_end_us = 0U;
+    std::uint64_t cache_sync_end_us = 0U;
+    std::uint64_t release_us = 0U;
+    std::uint32_t source_update_sequence = 0U;
+    std::uint64_t published_sequence = 0U;
+    std::uint32_t transform_index = 0U;
+    bool measured = false;
+};
+
+struct IntervalOverlap {
+    std::uint64_t total_us = 0U;
+    std::size_t intersecting_submit_count = 0U;
+};
+
+inline IntervalOverlap calculate_overlap(
+    const TransformInterval &transform,
+    std::span<const SubmitInterval> submits)
+{
+    IntervalOverlap result{};
+    if (transform.transform_end_us <= transform.transform_start_us) {
+        return result;
+    }
+    for (const SubmitInterval &submit : submits) {
+        if (submit.end_us <= submit.start_us ||
+            submit.end_us <= transform.transform_start_us ||
+            transform.transform_end_us <= submit.start_us) {
+            continue;
+        }
+        const std::uint64_t start =
+            submit.start_us > transform.transform_start_us
+                ? submit.start_us
+                : transform.transform_start_us;
+        const std::uint64_t end =
+            submit.end_us < transform.transform_end_us
+                ? submit.end_us
+                : transform.transform_end_us;
+        if (end > start) {
+            result.total_us += end - start;
+            ++result.intersecting_submit_count;
+        }
+    }
+    return result;
+}
+
+inline bool intervals_intersect(const SubmitInterval &first,
+                                const SubmitInterval &second)
+{
+    return first.end_us > first.start_us && second.end_us > second.start_us &&
+           first.end_us > second.start_us && second.end_us > first.start_us;
+}
+
+inline std::size_t max_concurrent_submit_intervals(
+    std::span<const SubmitInterval> submits)
+{
+    std::size_t maximum = 0U;
+    for (const SubmitInterval &candidate : submits) {
+        if (candidate.end_us <= candidate.start_us) {
+            continue;
+        }
+        std::size_t active = 0U;
+        for (const SubmitInterval &other : submits) {
+            if (other.start_us <= candidate.start_us &&
+                candidate.start_us < other.end_us &&
+                other.end_us > other.start_us) {
+                ++active;
+            }
+        }
+        if (active > maximum) {
+            maximum = active;
+        }
+    }
+    return maximum;
+}
+
+template <typename T, std::size_t Capacity>
+bool append_bounded(std::array<T, Capacity> &storage, std::size_t &stored,
+                    const T &value, bool &overflow)
+{
+    if (stored >= Capacity) {
+        overflow = true;
+        return false;
+    }
+    storage[stored++] = value;
+    return true;
+}
+
+template <std::size_t MaxMeasuredTransforms>
+struct Analysis {
+    std::size_t submit_count = 0U;
+    std::size_t transform_count = 0U;
+    std::size_t measured_transform_count = 0U;
+    std::size_t overlapping_transform_count = 0U;
+    std::size_t zero_overlap_transform_count = 0U;
+    std::size_t matched_transform_count = 0U;
+    std::size_t unmatched_acquired_count = 0U;
+    std::size_t unmatched_submit_count = 0U;
+    std::size_t sequence_metadata_mismatch_count = 0U;
+    std::size_t max_concurrent_submit_count = 0U;
+    bool submit_intervals_non_overlapping = true;
+    bool submit_source_sequences_monotonic = true;
+    bool submit_published_sequences_monotonic = true;
+    bool transform_source_sequences_monotonic = true;
+    bool transform_published_sequences_monotonic = true;
+    std::array<std::uint64_t, MaxMeasuredTransforms> overlap_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> overlap_fraction_ppm{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> transform_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> zero_overlap_transform_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> overlapping_transform_us{};
+    std::size_t overlap_stored = 0U;
+    std::size_t overlap_fraction_stored = 0U;
+    std::size_t transform_stored = 0U;
+    std::size_t zero_overlap_transform_stored = 0U;
+    std::size_t overlapping_transform_stored = 0U;
+};
+
+template <std::size_t MaxMeasuredTransforms>
+Analysis<MaxMeasuredTransforms> analyze(
+    std::span<const SubmitInterval> submits,
+    std::span<const TransformInterval> transforms)
+{
+    Analysis<MaxMeasuredTransforms> result{};
+    result.submit_count = submits.size();
+    result.transform_count = transforms.size();
+    result.max_concurrent_submit_count =
+        max_concurrent_submit_intervals(submits);
+    result.submit_intervals_non_overlapping =
+        result.max_concurrent_submit_count <= 1U;
+
+    for (std::size_t index = 1U; index < submits.size(); ++index) {
+        result.submit_source_sequences_monotonic =
+            result.submit_source_sequences_monotonic &&
+            submits[index].source_update_sequence >
+                submits[index - 1U].source_update_sequence;
+        result.submit_published_sequences_monotonic =
+            result.submit_published_sequences_monotonic &&
+            submits[index].published_sequence >
+                submits[index - 1U].published_sequence;
+    }
+    for (std::size_t index = 1U; index < transforms.size(); ++index) {
+        result.transform_source_sequences_monotonic =
+            result.transform_source_sequences_monotonic &&
+            transforms[index].source_update_sequence >
+                transforms[index - 1U].source_update_sequence;
+        result.transform_published_sequences_monotonic =
+            result.transform_published_sequences_monotonic &&
+            transforms[index].published_sequence >
+                transforms[index - 1U].published_sequence;
+    }
+
+    for (const SubmitInterval &submit : submits) {
+        bool matched = false;
+        for (const TransformInterval &transform : transforms) {
+            if (submit.published_sequence == transform.published_sequence) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            ++result.unmatched_submit_count;
+        }
+    }
+
+    for (const TransformInterval &transform : transforms) {
+        const IntervalOverlap overlap = calculate_overlap(transform, submits);
+        bool matched = false;
+        for (const SubmitInterval &submit : submits) {
+            if (submit.published_sequence == transform.published_sequence) {
+                matched = true;
+                if (submit.source_update_sequence !=
+                    transform.source_update_sequence) {
+                    ++result.sequence_metadata_mismatch_count;
+                }
+                break;
+            }
+        }
+        if (matched) {
+            ++result.matched_transform_count;
+        } else {
+            ++result.unmatched_acquired_count;
+        }
+        if (!transform.measured) {
+            continue;
+        }
+        if (result.measured_transform_count >= MaxMeasuredTransforms) {
+            continue;
+        }
+        ++result.measured_transform_count;
+        const std::uint64_t duration_us =
+            transform.transform_end_us > transform.transform_start_us
+                ? transform.transform_end_us - transform.transform_start_us
+                : 0U;
+        const std::uint64_t fraction_ppm =
+            duration_us == 0U ? 0U : (overlap.total_us * 1'000'000U) /
+                                      duration_us;
+        result.overlap_us[result.overlap_stored++] = overlap.total_us;
+        result.overlap_fraction_ppm[result.overlap_fraction_stored++] =
+            fraction_ppm;
+        result.transform_us[result.transform_stored++] = duration_us;
+        if (overlap.total_us == 0U) {
+            ++result.zero_overlap_transform_count;
+            result.zero_overlap_transform_us[
+                result.zero_overlap_transform_stored++] = duration_us;
+        } else {
+            ++result.overlapping_transform_count;
+            result.overlapping_transform_us[
+                result.overlapping_transform_stored++] = duration_us;
+        }
+    }
+    return result;
+}
+
+} // namespace p4_nano_overlap
