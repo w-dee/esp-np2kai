@@ -756,6 +756,8 @@ constexpr std::size_t kBenchmarkTransformTraceCapacity =
 static_assert(kBenchmarkSubmitTraceCapacity >=
               kBenchmarkTotalTransforms * 3U);
 static_assert(kBenchmarkTransformTraceCapacity == kBenchmarkTotalTransforms);
+static_assert(NP2VIDEO_PCCORE_TRACE_CAPACITY >=
+              kBenchmarkTotalTransforms * 3U);
 #endif
 constexpr std::uint64_t kBenchmarkWatchdogUs = 120ULL * 1000ULL * 1000ULL;
 constexpr int kBenchmarkProducerCore = 1;
@@ -803,6 +805,8 @@ struct BenchmarkTimestamp {
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
 using BenchmarkOverlapAnalysis =
     p4_nano_overlap::Analysis<kBenchmarkMeasuredTransforms>;
+using BenchmarkPccoreAnalysis =
+    p4_nano_overlap::PccoreAnalysis<kBenchmarkMeasuredTransforms>;
 #endif
 
 struct BenchmarkState {
@@ -823,21 +827,25 @@ struct BenchmarkState {
     std::atomic<bool> publish_failed{false};
     BenchmarkTimestamp timestamp_ring[kBenchmarkTimestampRingSize]{};
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
-    /* CPU1 and CPU0 write disjoint trace arrays.  producer_done is published
-     * with release semantics by the runner and observed with acquire before
-     * this post-run analysis, so no shared trace index or lock is needed. */
+    /* CPU1 owns pccore_trace; CPU1 and CPU0 otherwise write disjoint trace
+     * arrays.  benchmark_runner_complete publishes producer_done with release
+     * semantics, and the consumer observes it with acquire before this
+     * analysis, so the bounded trace needs no shared index, atomic, or lock. */
     std::array<p4_nano_overlap::SubmitInterval,
                kBenchmarkSubmitTraceCapacity>
         overlap_submit_trace{};
     std::array<p4_nano_overlap::TransformInterval,
                kBenchmarkTransformTraceCapacity>
         overlap_transform_trace{};
+    np2video_pccore_trace pccore_trace{};
     std::size_t overlap_submit_trace_stored = 0U;
     std::size_t overlap_transform_trace_stored = 0U;
     bool overlap_submit_trace_overflow = false;
     bool overlap_transform_trace_overflow = false;
     bool overlap_trace_analyzed = false;
     BenchmarkOverlapAnalysis overlap_analysis{};
+    BenchmarkPccoreAnalysis pccore_analysis{};
+    bool pccore_overlap_analyzed = false;
 #endif
     std::array<std::uint64_t, kBenchmarkSubmitSampleCapacity> submit_samples{};
     std::array<std::uint64_t, kBenchmarkLatencySampleCapacity> latency_samples{};
@@ -1049,6 +1057,75 @@ void benchmark_prepare_overlap_analysis(BenchmarkState *state)
             state->overlap_transform_trace_stored),
         state->overlap_analysis);
     state->overlap_trace_analyzed = true;
+    p4_nano_overlap::analyze_pccore<kBenchmarkMeasuredTransforms>(
+        std::span<const p4_nano_overlap::PccoreInterval>(
+            state->pccore_trace.intervals, state->pccore_trace.stored),
+        std::span<const p4_nano_overlap::TransformInterval>(
+            state->overlap_transform_trace.data(),
+            state->overlap_transform_trace_stored),
+        state->producer_result.pccore_exec_count,
+        state->pccore_trace.overflow, state->pccore_analysis);
+    state->pccore_overlap_analyzed = true;
+}
+
+void benchmark_print_pccore_overlap_report(BenchmarkState *state)
+{
+    if (state == nullptr || !state->pccore_overlap_analyzed) {
+        return;
+    }
+    BenchmarkPccoreAnalysis &analysis = state->pccore_analysis;
+    const bool intervals_valid =
+        analysis.trace_validation.intervals_valid &&
+        analysis.trace_validation.chronological &&
+        analysis.trace_validation.call_indices_monotonic;
+    const bool trace_valid = analysis.trace_completeness &&
+                             !analysis.trace_overflow && intervals_valid &&
+                             analysis.trace_validation.intervals_non_overlapping &&
+                             analysis.trace_validation.max_concurrent <= 1U;
+    std::printf(
+        "P4_NANO_PCCORE_TRACE pccore_exec_count=%" PRIu64
+        " pccore_trace_intervals=%zu pccore_trace_completeness=%s"
+        " pccore_trace_overflow=%s pccore_intervals_valid=%s"
+        " pccore_intervals_non_overlapping=%s max_concurrent_pccore_intervals=%zu"
+        " validity=%s\n",
+        state->producer_result.pccore_exec_count, analysis.pccore_count,
+        analysis.trace_completeness ? "PASS" : "FAIL",
+        analysis.trace_overflow ? "FAIL" : "PASS",
+        intervals_valid ? "PASS" : "FAIL",
+        analysis.trace_validation.intervals_non_overlapping ? "PASS" : "FAIL",
+        analysis.trace_validation.max_concurrent,
+        trace_valid ? "PASS" : "FAIL");
+    std::printf(
+        "P4_NANO_PCCORE_OVERLAP measured_transforms=%zu"
+        " transforms_with_pccore_overlap=%zu"
+        " transforms_zero_pccore_overlap=%zu overlap_percent=%.3f\n",
+        analysis.measured_transform_count,
+        analysis.overlapping_transform_count,
+        analysis.zero_overlap_transform_count,
+        analysis.measured_transform_count == 0U
+            ? 0U
+            : (100.0 * static_cast<double>(
+                   analysis.overlapping_transform_count)) /
+                  static_cast<double>(analysis.measured_transform_count));
+    benchmark_print_fixed_metric("pccore_overlap_us", analysis.overlap_us,
+                                 analysis.overlap_stored);
+    benchmark_print_fixed_metric("pccore_overlap_fraction_ppm",
+                                 analysis.overlap_fraction_ppm,
+                                 analysis.overlap_fraction_stored);
+    benchmark_print_fixed_metric("pccore_intersecting_interval_count",
+                                 analysis.intersecting_pccore_count,
+                                 analysis.intersecting_pccore_count_stored);
+    std::printf(
+        "P4_NANO_PCCORE_CONDITIONAL zero_overlap_count=%zu"
+        " pccore_overlap_count=%zu\n",
+        analysis.zero_overlap_transform_count,
+        analysis.overlapping_transform_count);
+    benchmark_print_fixed_metric("transform_zero_pccore_overlap_us",
+                                 analysis.zero_overlap_transform_us,
+                                 analysis.zero_overlap_transform_stored);
+    benchmark_print_fixed_metric("transform_with_pccore_overlap_us",
+                                 analysis.overlapping_transform_us,
+                                 analysis.overlapping_transform_stored);
 }
 
 void benchmark_print_overlap_report(
@@ -2816,6 +2893,11 @@ esp_err_t run_benchmark()
         .cooperate = nullptr,
         .pause_at_cooperate = nullptr,
 #endif
+#if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
+        .pccore_trace = &state.pccore_trace,
+#else
+        .pccore_trace = nullptr,
+#endif
         .task_scheduling_override = true,
         .task_core_id = kBenchmarkProducerCore,
         .task_priority = kBenchmarkProducerPriority,
@@ -2913,8 +2995,18 @@ esp_err_t run_benchmark()
         state.overlap_analysis.submit_published_sequences_monotonic &&
         state.overlap_analysis.transform_source_sequences_monotonic &&
         state.overlap_analysis.transform_published_sequences_monotonic;
+    const bool pccore_trace_valid =
+        state.pccore_overlap_analyzed &&
+        state.pccore_analysis.trace_completeness &&
+        !state.pccore_analysis.trace_overflow &&
+        state.pccore_analysis.trace_validation.intervals_valid &&
+        state.pccore_analysis.trace_validation.chronological &&
+        state.pccore_analysis.trace_validation.call_indices_monotonic &&
+        state.pccore_analysis.trace_validation.intervals_non_overlapping &&
+        state.pccore_analysis.trace_validation.max_concurrent <= 1U;
 #else
     const bool overlap_trace_valid = true;
+    const bool pccore_trace_valid = true;
 #endif
     if (state.producer_result.status != ESP_OK ||
         state.publish_failed.load(std::memory_order_acquire) ||
@@ -2938,7 +3030,7 @@ esp_err_t run_benchmark()
         state.producer_priority.load(std::memory_order_relaxed) !=
             kBenchmarkProducerPriority || consumer_core != 0 ||
         consumer_priority != 1U || !pccore_phase_counts_match ||
-        !overlap_trace_valid) {
+        !overlap_trace_valid || !pccore_trace_valid) {
         failed = true;
     }
 
@@ -2959,6 +3051,7 @@ esp_err_t run_benchmark()
 #if defined(P4_NANO_OVERLAP_TRACE_ACTIVE)
     benchmark_print_overlap_report(&state, successful_submissions,
                                    submit_trace_is_complete);
+    benchmark_print_pccore_overlap_report(&state);
 #endif
     std::printf("P4_NANO_BENCHMARK_WARMUP transforms=%u completed=%u\n",
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),

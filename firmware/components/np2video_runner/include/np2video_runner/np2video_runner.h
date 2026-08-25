@@ -6,6 +6,7 @@
 
 #include "esp_err.h"
 #include "np2_pccore_profiler.h"
+#include "np2video_runner/pccore_trace.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,6 +61,9 @@ typedef struct {
     np2video_runner_stop_requested_fn stop_requested;
     np2video_runner_cooperate_fn cooperate;
     np2video_runner_pause_at_cooperate_fn pause_at_cooperate;
+    /* Optional benchmark-owned storage.  The runner is the sole writer and
+     * the owner reads it only after the completion callback publication. */
+    np2video_pccore_trace *pccore_trace;
     bool task_scheduling_override;
     int task_core_id;
     uint32_t task_priority;

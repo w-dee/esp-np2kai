@@ -45,10 +45,36 @@ typedef struct {
     np2video_runner_stop_requested_fn stop_requested;
     np2video_runner_cooperate_fn cooperate;
     np2video_runner_pause_at_cooperate_fn pause_at_cooperate;
+    np2video_pccore_trace *pccore_trace;
 } np2video_runner_task_state;
 
 static np2video_runner_task_state np2video_task_config;
 static int np2video_runner_started;
+
+static void np2video_pccore_trace_reset(np2video_pccore_trace *trace)
+{
+    if (trace != NULL) {
+        trace->stored = 0U;
+        trace->overflow = false;
+    }
+}
+
+static void np2video_pccore_trace_append(np2video_pccore_trace *trace,
+                                         uint64_t start_us, uint64_t end_us,
+                                         uint64_t call_index)
+{
+    if (trace == NULL) {
+        return;
+    }
+    if (trace->stored >= NP2VIDEO_PCCORE_TRACE_CAPACITY) {
+        trace->overflow = true;
+        return;
+    }
+    trace->intervals[trace->stored].start_us = start_us;
+    trace->intervals[trace->stored].end_us = end_us;
+    trace->intervals[trace->stored].call_index = (uint32_t)call_index;
+    ++trace->stored;
+}
 
 static const np2_fixture_descriptor np2video_fixture_descriptor = {
     NP2_FIXTURE_PARTITION_LABEL,
@@ -232,6 +258,7 @@ static void np2video_task(void *argument)
     memset(&final_snapshot, 0, sizeof(final_snapshot));
     memset(&result, 0, sizeof(result));
     np2video_sha256_text(digest);
+    np2video_pccore_trace_reset(state->pccore_trace);
 
     np2video_emit(state,
                   "NP2VIDEO_PROFILE profile=esp32p4-reduced-video "
@@ -344,8 +371,16 @@ static void np2video_task(void *argument)
                 (uint64_t)esp_timer_get_time();
 
             pccore_exec(TRUE);
+            const uint64_t pccore_exec_end_us =
+                (uint64_t)esp_timer_get_time();
             const uint64_t pccore_exec_wall_us =
-                (uint64_t)esp_timer_get_time() - pccore_exec_start_us;
+                pccore_exec_end_us - pccore_exec_start_us;
+            /* Retain the exact boundaries already used by the wall metric;
+             * this append adds no timer read. */
+            np2video_pccore_trace_append(state->pccore_trace,
+                                         pccore_exec_start_us,
+                                         pccore_exec_end_us,
+                                         pccore_exec_count);
             if (pccore_exec_count == 0U) {
                 pccore_exec_first_us = pccore_exec_wall_us;
             }
@@ -581,6 +616,7 @@ esp_err_t np2video_runner_start(np2video_runner_output_fn output,
         .stop_requested = NULL,
         .cooperate = NULL,
         .pause_at_cooperate = NULL,
+        .pccore_trace = NULL,
         .task_scheduling_override = false,
         .task_core_id = 0,
         .task_priority = 0,
@@ -609,6 +645,7 @@ esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
     np2video_task_config.stop_requested = config->stop_requested;
     np2video_task_config.cooperate = config->cooperate;
     np2video_task_config.pause_at_cooperate = config->pause_at_cooperate;
+    np2video_task_config.pccore_trace = config->pccore_trace;
     if (config->task_scheduling_override) {
         if (config->task_core_id < 0 ||
             config->task_core_id >= configNUMBER_OF_CORES ||

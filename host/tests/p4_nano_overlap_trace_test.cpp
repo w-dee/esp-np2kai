@@ -10,6 +10,7 @@ namespace {
 
 using p4_nano_overlap::SubmitInterval;
 using p4_nano_overlap::TransformInterval;
+using p4_nano_overlap::PccoreInterval;
 
 TransformInterval transform(std::uint64_t start, std::uint64_t end,
                             std::uint64_t published, bool measured = true)
@@ -31,6 +32,16 @@ SubmitInterval submit(std::uint64_t start, std::uint64_t end,
     value.end_us = end;
     value.source_update_sequence = static_cast<std::uint32_t>(published);
     value.published_sequence = published;
+    return value;
+}
+
+PccoreInterval pccore(std::uint64_t start, std::uint64_t end,
+                      std::uint32_t call_index)
+{
+    PccoreInterval value{};
+    value.start_us = start;
+    value.end_us = end;
+    value.call_index = call_index;
     return value;
 }
 
@@ -174,6 +185,109 @@ void test_concurrency_assumption()
                                                 overlapping[1]));
 }
 
+void test_pccore_overlap_edges_and_multiple_intervals()
+{
+    const TransformInterval t = transform(100U, 200U, 1U);
+    {
+        const PccoreInterval intervals[] = {pccore(0U, 50U, 0U)};
+        assert(p4_nano_overlap::calculate_pccore_overlap(t, intervals)
+                   .total_us == 0U);
+    }
+    {
+        const PccoreInterval intervals[] = {pccore(200U, 250U, 0U)};
+        assert(p4_nano_overlap::calculate_pccore_overlap(t, intervals)
+                   .total_us == 0U);
+    }
+    {
+        const PccoreInterval intervals[] = {pccore(120U, 150U, 0U)};
+        const auto overlap =
+            p4_nano_overlap::calculate_pccore_overlap(t, intervals);
+        assert(overlap.total_us == 30U);
+        assert(overlap.intersecting_pccore_count == 1U);
+    }
+    {
+        const PccoreInterval intervals[] = {pccore(0U, 300U, 0U)};
+        assert(p4_nano_overlap::calculate_pccore_overlap(t, intervals)
+                   .total_us == 100U);
+    }
+    {
+        const PccoreInterval intervals[] = {
+            pccore(90U, 110U, 0U), pccore(150U, 180U, 1U),
+            pccore(220U, 250U, 2U)};
+        const auto overlap =
+            p4_nano_overlap::calculate_pccore_overlap(t, intervals);
+        assert(overlap.total_us == 40U);
+        assert(overlap.intersecting_pccore_count == 2U);
+    }
+}
+
+void test_pccore_analysis_validation_and_conditionals()
+{
+    const PccoreInterval intervals[] = {
+        pccore(0U, 90U, 0U), pccore(110U, 300U, 1U)};
+    const TransformInterval transforms[] = {
+        transform(80U, 100U, 1U, false),
+        transform(120U, 150U, 2U, true),
+        transform(350U, 380U, 3U, true)};
+    p4_nano_overlap::PccoreAnalysis<2U> result{};
+    p4_nano_overlap::analyze_pccore<2U>(intervals, transforms, 2U, false,
+                                        result);
+    assert(result.pccore_count == 2U);
+    assert(result.transform_count == 3U);
+    assert(result.measured_transform_count == 2U);
+    assert(result.overlapping_transform_count == 1U);
+    assert(result.zero_overlap_transform_count == 1U);
+    assert(result.overlap_us[0] == 30U);
+    assert(result.overlap_fraction_ppm[0] == 1000000U);
+    assert(result.intersecting_pccore_count[0] == 1U);
+    assert(result.zero_overlap_transform_us[0] == 30U);
+    assert(result.overlapping_transform_us[0] == 30U);
+    assert(result.trace_completeness);
+    assert(result.trace_validation.intervals_valid);
+    assert(result.trace_validation.chronological);
+    assert(result.trace_validation.call_indices_monotonic);
+    assert(result.trace_validation.intervals_non_overlapping);
+    assert(result.trace_validation.max_concurrent == 1U);
+
+    const PccoreInterval non_monotonic[] = {
+        pccore(100U, 200U, 2U), pccore(90U, 210U, 1U)};
+    const auto validation =
+        p4_nano_overlap::validate_pccore_intervals(non_monotonic);
+    assert(!validation.chronological);
+    assert(!validation.call_indices_monotonic);
+    assert(!validation.intervals_non_overlapping);
+    assert(validation.max_concurrent == 2U);
+    assert(!p4_nano_overlap::pccore_trace_complete(1U, 2U, false));
+    assert(!p4_nano_overlap::pccore_trace_complete(2U, 2U, true));
+}
+
+void test_pccore_trace_capacity_and_all_overlap()
+{
+    std::array<PccoreInterval, 1U> bounded{};
+    std::size_t stored = 0U;
+    bool overflow = false;
+    assert(p4_nano_overlap::append_bounded(
+        bounded, stored, pccore(0U, 100U, 0U), overflow));
+    assert(!p4_nano_overlap::append_bounded(
+        bounded, stored, pccore(100U, 200U, 1U), overflow));
+    assert(stored == 1U);
+    assert(overflow);
+
+    const PccoreInterval all_overlap[] = {pccore(0U, 1000U, 0U)};
+    const TransformInterval transforms[] = {
+        transform(100U, 200U, 1U, true),
+        transform(300U, 400U, 2U, true)};
+    p4_nano_overlap::PccoreAnalysis<2U> result{};
+    p4_nano_overlap::analyze_pccore<2U>(all_overlap, transforms, 1U, false,
+                                        result);
+    assert(result.overlapping_transform_count == 2U);
+    assert(result.zero_overlap_transform_count == 0U);
+    assert(result.overlap_us[0] == 100U);
+    assert(result.overlap_us[1] == 100U);
+    assert(result.overlap_fraction_ppm[0] == 1000000U);
+    assert(result.overlap_fraction_ppm[1] == 1000000U);
+}
+
 void test_analysis_large_reuse_and_reset()
 {
     using LargeAnalysis = p4_nano_overlap::Analysis<128U>;
@@ -240,6 +354,9 @@ int main()
     test_submit_trace_completeness_and_intersection_count();
     test_different_sequences_and_capacity();
     test_concurrency_assumption();
+    test_pccore_overlap_edges_and_multiple_intervals();
+    test_pccore_analysis_validation_and_conditionals();
+    test_pccore_trace_capacity_and_all_overlap();
     test_analysis_large_reuse_and_reset();
     return 0;
 }

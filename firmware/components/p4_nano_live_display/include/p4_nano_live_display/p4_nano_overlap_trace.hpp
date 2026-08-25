@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <span>
 
+#include "np2video_runner/pccore_trace.h"
+
 namespace p4_nano_overlap {
 
 /* These records are written by one benchmark task each.  They intentionally
@@ -27,6 +29,21 @@ struct TransformInterval {
     std::uint64_t published_sequence = 0U;
     std::uint32_t transform_index = 0U;
     bool measured = false;
+};
+
+using PccoreInterval = np2video_pccore_interval;
+
+struct PccoreOverlap {
+    std::uint64_t total_us = 0U;
+    std::size_t intersecting_pccore_count = 0U;
+};
+
+struct PccoreTraceValidation {
+    bool intervals_valid = true;
+    bool chronological = true;
+    bool call_indices_monotonic = true;
+    bool intervals_non_overlapping = true;
+    std::size_t max_concurrent = 0U;
 };
 
 struct IntervalOverlap {
@@ -62,6 +79,85 @@ inline IntervalOverlap calculate_overlap(
         }
     }
     return result;
+}
+
+inline PccoreOverlap calculate_pccore_overlap(
+    const TransformInterval &transform,
+    std::span<const PccoreInterval> pccore_intervals)
+{
+    PccoreOverlap result{};
+    if (transform.transform_end_us <= transform.transform_start_us) {
+        return result;
+    }
+    for (const PccoreInterval &pccore : pccore_intervals) {
+        if (pccore.end_us <= pccore.start_us ||
+            pccore.end_us <= transform.transform_start_us ||
+            transform.transform_end_us <= pccore.start_us) {
+            continue;
+        }
+        const std::uint64_t start =
+            pccore.start_us > transform.transform_start_us
+                ? pccore.start_us
+                : transform.transform_start_us;
+        const std::uint64_t end =
+            pccore.end_us < transform.transform_end_us
+                ? pccore.end_us
+                : transform.transform_end_us;
+        if (end > start) {
+            result.total_us += end - start;
+            ++result.intersecting_pccore_count;
+        }
+    }
+    return result;
+}
+
+inline PccoreTraceValidation validate_pccore_intervals(
+    std::span<const PccoreInterval> pccore_intervals)
+{
+    PccoreTraceValidation result{};
+    for (std::size_t index = 0U; index < pccore_intervals.size(); ++index) {
+        const PccoreInterval &current = pccore_intervals[index];
+        if (current.end_us < current.start_us) {
+            result.intervals_valid = false;
+        }
+        if (index == 0U) {
+            continue;
+        }
+        const PccoreInterval &previous = pccore_intervals[index - 1U];
+        if (current.start_us < previous.start_us) {
+            result.chronological = false;
+        }
+        if (current.call_index <= previous.call_index) {
+            result.call_indices_monotonic = false;
+        }
+        if (previous.end_us > current.start_us) {
+            result.intervals_non_overlapping = false;
+        }
+    }
+    for (const PccoreInterval &candidate : pccore_intervals) {
+        if (candidate.end_us <= candidate.start_us) {
+            continue;
+        }
+        std::size_t active = 0U;
+        for (const PccoreInterval &other : pccore_intervals) {
+            if (other.end_us > other.start_us &&
+                other.start_us <= candidate.start_us &&
+                candidate.start_us < other.end_us) {
+                ++active;
+            }
+        }
+        if (active > result.max_concurrent) {
+            result.max_concurrent = active;
+        }
+    }
+    return result;
+}
+
+inline bool pccore_trace_complete(std::size_t recorded_count,
+                                   std::uint64_t expected_count,
+                                   bool overflow)
+{
+    return !overflow && recorded_count == expected_count;
 }
 
 inline bool intervals_intersect(const SubmitInterval &first,
@@ -178,6 +274,107 @@ struct Analysis {
         intersecting_submit_count_stored = 0U;
     }
 };
+
+template <std::size_t MaxMeasuredTransforms>
+struct PccoreAnalysis {
+    std::size_t pccore_count = 0U;
+    std::size_t transform_count = 0U;
+    std::size_t measured_transform_count = 0U;
+    std::size_t overlapping_transform_count = 0U;
+    std::size_t zero_overlap_transform_count = 0U;
+    PccoreTraceValidation trace_validation{};
+    bool trace_overflow = false;
+    bool trace_completeness = false;
+    std::array<std::uint64_t, MaxMeasuredTransforms> overlap_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> overlap_fraction_ppm{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        intersecting_pccore_count{};
+    std::array<std::uint64_t, MaxMeasuredTransforms> transform_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        zero_overlap_transform_us{};
+    std::array<std::uint64_t, MaxMeasuredTransforms>
+        overlapping_transform_us{};
+    std::size_t overlap_stored = 0U;
+    std::size_t overlap_fraction_stored = 0U;
+    std::size_t intersecting_pccore_count_stored = 0U;
+    std::size_t transform_stored = 0U;
+    std::size_t zero_overlap_transform_stored = 0U;
+    std::size_t overlapping_transform_stored = 0U;
+
+    void reset()
+    {
+        pccore_count = 0U;
+        transform_count = 0U;
+        measured_transform_count = 0U;
+        overlapping_transform_count = 0U;
+        zero_overlap_transform_count = 0U;
+        trace_validation = {};
+        trace_overflow = false;
+        trace_completeness = false;
+        overlap_us.fill(0U);
+        overlap_fraction_ppm.fill(0U);
+        intersecting_pccore_count.fill(0U);
+        transform_us.fill(0U);
+        zero_overlap_transform_us.fill(0U);
+        overlapping_transform_us.fill(0U);
+        overlap_stored = 0U;
+        overlap_fraction_stored = 0U;
+        intersecting_pccore_count_stored = 0U;
+        transform_stored = 0U;
+        zero_overlap_transform_stored = 0U;
+        overlapping_transform_stored = 0U;
+    }
+};
+
+template <std::size_t MaxMeasuredTransforms>
+void analyze_pccore(
+    std::span<const PccoreInterval> pccore_intervals,
+    std::span<const TransformInterval> transforms,
+    std::uint64_t expected_pccore_count, bool trace_overflow,
+    PccoreAnalysis<MaxMeasuredTransforms> &result)
+{
+    result.reset();
+    result.pccore_count = pccore_intervals.size();
+    result.transform_count = transforms.size();
+    result.trace_overflow = trace_overflow;
+    result.trace_completeness = pccore_trace_complete(
+        pccore_intervals.size(), expected_pccore_count, trace_overflow);
+    result.trace_validation = validate_pccore_intervals(pccore_intervals);
+
+    for (const TransformInterval &transform : transforms) {
+        if (!transform.measured ||
+            result.measured_transform_count >= MaxMeasuredTransforms) {
+            continue;
+        }
+        ++result.measured_transform_count;
+        const PccoreOverlap overlap =
+            calculate_pccore_overlap(transform, pccore_intervals);
+        const std::uint64_t duration_us =
+            transform.transform_end_us > transform.transform_start_us
+                ? transform.transform_end_us - transform.transform_start_us
+                : 0U;
+        const std::uint64_t fraction_ppm =
+            duration_us == 0U
+                ? 0U
+                : (overlap.total_us * 1'000'000U) / duration_us;
+        result.overlap_us[result.overlap_stored++] = overlap.total_us;
+        result.overlap_fraction_ppm[result.overlap_fraction_stored++] =
+            fraction_ppm;
+        result.intersecting_pccore_count[
+            result.intersecting_pccore_count_stored++] =
+            static_cast<std::uint64_t>(overlap.intersecting_pccore_count);
+        result.transform_us[result.transform_stored++] = duration_us;
+        if (overlap.total_us == 0U) {
+            ++result.zero_overlap_transform_count;
+            result.zero_overlap_transform_us[
+                result.zero_overlap_transform_stored++] = duration_us;
+        } else {
+            ++result.overlapping_transform_count;
+            result.overlapping_transform_us[
+                result.overlapping_transform_stored++] = duration_us;
+        }
+    }
+}
 
 template <std::size_t MaxMeasuredTransforms>
 void analyze(
