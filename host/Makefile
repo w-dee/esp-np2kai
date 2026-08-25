@@ -129,6 +129,9 @@ P4_NANO_PSRAM_BANDWIDTH_SOURCE := $(HOST_ROOT)/firmware/components/p4_nano_live_
 P4_NANO_PSRAM_BANDWIDTH_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
 P4_NANO_PSRAM_BANDWIDTH_TEST_SOURCE := $(CURDIR)/tests/p4_nano_psram_bandwidth_test.cpp
 P4_NANO_PSRAM_BANDWIDTH_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_psram_bandwidth_test
+P4_NANO_PSRAM_READ_CONTROL_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
+P4_NANO_PSRAM_READ_CONTROL_TEST_SOURCE := $(CURDIR)/tests/p4_nano_psram_read_control_test.cpp
+P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_psram_read_control_test
 P4_NANO_LIVE_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
 P4_NANO_LIVE_SESSION_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display_session/include
 P4_NANO_LIVE_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_live_display_contract_test.cpp
@@ -686,6 +689,14 @@ test-p4-nano-psram-bandwidth:
 		"$(P4_NANO_PSRAM_BANDWIDTH_TEST_SOURCE)" \
 		-o "$(P4_NANO_PSRAM_BANDWIDTH_TEST_OUTPUT)"
 	@"$(P4_NANO_PSRAM_BANDWIDTH_TEST_OUTPUT)"
+
+test-p4-nano-psram-read-control:
+	@mkdir -p "$(dir $(P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT))"
+	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
+		-I"$(P4_NANO_PSRAM_READ_CONTROL_HEADER_DIR)" \
+		"$(P4_NANO_PSRAM_READ_CONTROL_TEST_SOURCE)" \
+		-o "$(P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT)"
+	@"$(P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT)"
 
 test-p4-nano-live-display-contract:
 	@mkdir -p "$(dir $(P4_NANO_LIVE_CONTRACT_TEST_OUTPUT))"
