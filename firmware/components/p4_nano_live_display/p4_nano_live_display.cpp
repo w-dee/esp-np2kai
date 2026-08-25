@@ -2053,9 +2053,18 @@ esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
         failed = true;
     }
     const auto &calibration = p4_nano_compute_control::calibration();
+    const bool layout_validity =
+        p4_nano_compute_control::stack_internal() &&
+        p4_nano_compute_control::tcb_internal() &&
+        p4_nano_compute_control::state_internal() &&
+        esp_ptr_in_iram(reinterpret_cast<const void *>(
+            &p4_nano_compute_control::run_chunk)) &&
+        esp_ptr_executable(reinterpret_cast<const void *>(
+            &p4_nano_compute_control::run_chunk));
     std::printf("P4_NANO_COMPUTE_CONTROL_CONFIG task_core=1 task_priority=%u "
                 "stack_depth=%u stack_internal=%u tcb_internal=%u "
                 "state_internal=%u hot_loop_iram=%u hot_loop_executable=%u "
+                "layout_validity=%s "
                 "stack_bytes=%" PRIu32 " tcb_bytes=%" PRIu32
                 " state_bytes=%" PRIu32 " static_bytes=%" PRIu32
                 " calibration_iterations=%" PRIu32
@@ -2072,6 +2081,7 @@ esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
                     &p4_nano_compute_control::run_chunk)) ? 1U : 0U,
                 esp_ptr_executable(reinterpret_cast<const void *>(
                     &p4_nano_compute_control::run_chunk)) ? 1U : 0U,
+                layout_validity ? "PASS" : "FAIL",
                 p4_nano_compute_control::stack_bytes(),
                 p4_nano_compute_control::tcb_bytes(),
                 p4_nano_compute_control::state_bytes(),
@@ -2079,15 +2089,25 @@ esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
                 calibration.calibration_iterations,
                 calibration.calibration_elapsed_us,
                 calibration.chunk_iterations, calibration.target_interval_us);
+    bool control_ready = !failed;
+    if (!failed && !layout_validity) {
+        failed = true;
+        if (!p4_nano_compute_control::stop()) {
+            failed = true;
+        }
+        control_ready = false;
+    }
     if (!failed && !p4_nano_compute_control::begin()) {
         failed = true;
+        (void)p4_nano_compute_control::stop();
+        control_ready = false;
     } else if (!failed) {
         control_started = true;
         if (!benchmark_run_isolated_samples(state, true)) {
             failed = true;
         }
     }
-    if (control_started && !p4_nano_compute_control::stop()) {
+    if ((control_started || control_ready) && !p4_nano_compute_control::stop()) {
         failed = true;
     }
     const auto &health = p4_nano_compute_control::health();
@@ -2123,6 +2143,7 @@ esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
         state->compute_control_service_stored != kBenchmarkMeasuredTransforms ||
         state->isolated_cache_sync_failures != 0U ||
         state->compute_control_cache_sync_failures != 0U ||
+        !layout_validity ||
         !health.ready || !health.clean_stop || health.chunks == 0U ||
         health.iterations == 0U || health.relief_count == 0U ||
         health.checksum == 0U) {

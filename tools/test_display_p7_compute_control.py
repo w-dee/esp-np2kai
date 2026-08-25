@@ -78,6 +78,29 @@ def main() -> int:
     require(live, "P4_NANO_COMPUTE_CONTROL_SEQUENCE=A_then_B", "fixed A/B order")
     require(live, "benchmark_run_isolated_samples(state, false)", "A phase")
     require(live, "benchmark_run_isolated_samples(state, true)", "B phase")
+    require(live, "!p4_nano_compute_control::begin()",
+            "B blocked after begin failure")
+    require(live, "layout_validity ? \"PASS\" : \"FAIL\"",
+            "explicit layout diagnostic")
+    require(live, "!layout_validity", "layout validity final gate")
+    for layout_check in (
+        "p4_nano_compute_control::stack_internal()",
+        "p4_nano_compute_control::tcb_internal()",
+        "p4_nano_compute_control::state_internal()",
+        "esp_ptr_in_iram",
+        "esp_ptr_executable",
+    ):
+        require(live, layout_check, f"layout hard gate {layout_check}")
+    isolated_samples = live[live.index("bool benchmark_run_isolated_samples"):
+                            live.index("esp_err_t run_isolated_benchmark_after_start")]
+    if "xSemaphore" in isolated_samples:
+        raise AssertionError("P7 must not add per-transform semaphore synchronization")
+    begin = control[control.index("bool begin()"):
+                    control.index("bool stop()")]
+    require(begin, "s_runtime.running.load(std::memory_order_acquire)",
+            "active-state acquire wait")
+    require(begin, "xTaskGetTickCount()", "bounded active-state timeout")
+    require(begin, "return false", "bounded begin failure")
     require(control, "xTaskCreateStaticPinnedToCore", "static CPU1 task")
     require(control, "vTaskDelay(1)", "TWDT idle relief")
     require(control, "IRAM_ATTR std::uint32_t run_chunk", "IRAM hot loop")
@@ -89,7 +112,7 @@ def main() -> int:
         raise AssertionError("timer reads must not be in the hot-loop function")
     if "P4_NANO_TASK_WDT" in control or "esp_task_wdt_" in control:
         raise AssertionError("P7 must not change or bypass TWDT")
-    print("Display Performance P7B compute-control host contract passed")
+    print("Display Performance P7B.1 compute-control validity contract passed")
     return 0
 
 

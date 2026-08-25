@@ -151,6 +151,23 @@ bool begin()
     }
     s_runtime.stop_requested.store(false, std::memory_order_release);
     xTaskNotifyGive(s_runtime.task);
+    const TickType_t wait_start = xTaskGetTickCount();
+    while (!s_runtime.running.load(std::memory_order_acquire)) {
+        if ((xTaskGetTickCount() - wait_start) >= kControlTimeoutTicks) {
+            /* The task may still be blocked on its notification or may be
+             * between notification consumption and the running publication.
+             * Request a bounded cleanup so a failed begin cannot leak a
+             * permanently-ready CPU1 task into benchmark teardown. */
+            s_runtime.stop_requested.store(true, std::memory_order_release);
+            xTaskNotifyGive(s_runtime.task);
+            if (xSemaphoreTake(s_runtime.done, kControlTimeoutTicks) ==
+                pdTRUE) {
+                s_runtime.task = nullptr;
+            }
+            return false;
+        }
+        vTaskDelay(1);
+    }
     return true;
 }
 
