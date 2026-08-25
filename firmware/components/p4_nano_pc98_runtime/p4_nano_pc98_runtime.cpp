@@ -17,13 +17,15 @@
 extern "C" {
 #include <compiler.h>
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
-    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include <cpumem.h>
 #endif
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
 #include <result_v1_parser.h>
 #endif
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include <np2kbd_control_v1_parser.h>
 #include <np2kbd_result_v1_parser.h>
 #endif
@@ -33,12 +35,14 @@ extern "C" {
 
 #include "np2host/dosio_esp.h"
 #include "np2_keyboard_input_bridge/keyboard_input_bridge.hpp"
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include "np2_keyboard_input/keyboard_input.hpp"
 #include "np2_keyboard_validation/validation_controller.hpp"
 #endif
 #include "np2runtime/np2runtime.hpp"
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include "p4_nano_usb_keyboard/producer.hpp"
 #endif
 #include "p4_nano_live_display_session/session.hpp"
@@ -56,10 +60,12 @@ constexpr TickType_t kStartupTimeoutTicks = pdMS_TO_TICKS(30000U) == 0U
                                                  : pdMS_TO_TICKS(30000U);
 constexpr TickType_t kConsumerDelayTicks = 1U;
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
-    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 constexpr std::uintptr_t kResultPhysicalAddress = 0x29000U;
 #endif
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 constexpr std::uintptr_t kControlPhysicalAddress = 0x27fc0U;
 #endif
 
@@ -75,7 +81,36 @@ enum class GuestCompletion : std::uint8_t {
     Fail,
 };
 
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+enum class UsbKeyboardProofState : std::uint8_t {
+    WaitingReady,
+    WaitingAction,
+    WaitingMake,
+    WaitingBreak,
+    WaitingResult,
+    Complete,
+    Failed,
+};
+
+enum class UsbKeyboardProofFailure : std::uint8_t {
+    None,
+    ReadyTimeout,
+    UsbUnavailable,
+    InputBeforePrompt,
+    MakeTimeout,
+    MakeBeforeDrain,
+    BreakTimeout,
+    BreakBeforeDrain,
+    ResultTimeout,
+    ProtocolInvalid,
+    GuestFail,
+    CounterMismatch,
+    RuntimeFatal,
+};
+#endif
+
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 /* The producer owns static task/queue storage.  Keep the object itself alive
  * if a bounded teardown ever fails and a USB/HID task is still unwinding. */
 p4_nano_usb_keyboard::Producer s_usb_keyboard{};
@@ -88,7 +123,8 @@ constexpr p4_nano_pc98_runtime::MediaConfig media_config_for(
         return emu_backend ? p4_nano_pc98_runtime::validation_media_config()
                            : p4_nano_pc98_runtime::hardware_validation_media_config();
     }
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     if (validation_kind == ValidationKind::Keyboard) {
         return emu_backend
                    ? p4_nano_pc98_runtime::keyboard_validation_media_config()
@@ -119,7 +155,8 @@ struct Composition final {
     storage_fatfs::FatfsMountBackend *mount_backend = nullptr;
     p4_nano_live_display_session::Session session{};
     np2_keyboard_input_bridge::KeyboardInputBridge keyboard{};
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     p4_nano_usb_keyboard::Producer *usb_keyboard = &s_usb_keyboard;
 #endif
     np2runtime::Runtime runtime{};
@@ -136,7 +173,8 @@ struct Composition final {
     bool fdd_attached = false;
     bool ready_signaled = false;
     bool keyboard_status_reported = false;
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     np2_keyboard_validation::ValidationController keyboard_validation{};
     np2kbd_control_v1_tracker control_tracker{};
     np2kbd_control_v1_state accepted_control_state =
@@ -148,6 +186,17 @@ struct Composition final {
     bool keyboard_ready_reported = false;
     bool keyboard_proof_terminal_reported = false;
     bool keyboard_control_invalid_reported = false;
+#endif
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+    UsbKeyboardProofState usb_proof_state = UsbKeyboardProofState::WaitingReady;
+    UsbKeyboardProofFailure usb_proof_failure = UsbKeyboardProofFailure::None;
+    p4_nano_usb_keyboard::Counters usb_start_counters{};
+    p4_nano_usb_keyboard::Counters usb_proof_counters{};
+    np2_keyboard_input_bridge::BridgeCounters usb_start_bridge_counters{};
+    np2_keyboard_input_bridge::BridgeCounters usb_proof_bridge_counters{};
+    std::uint64_t usb_proof_deadline_us = 0U;
+    bool usb_proof_ready_reported = false;
+    bool usb_proof_terminal_reported = false;
 #endif
 };
 
@@ -306,7 +355,8 @@ np2_keyboard_validation::CounterSnapshot keyboard_counters(
             false};
 }
 
-bool keyboard_proof_counters_valid(const Composition *composition) noexcept
+[[maybe_unused]] bool keyboard_proof_counters_valid(
+    const Composition *composition) noexcept
 {
     if (composition == nullptr) {
         return false;
@@ -396,8 +446,327 @@ void snapshot_keyboard_protocol(
         keyboard_result_observation(result_observation);
 }
 
-void emit_keyboard_proof_failure(Composition *composition,
-                                const np2_keyboard_validation::StepResult &step)
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+const char *usb_proof_failure_name(
+    const UsbKeyboardProofFailure failure) noexcept
+{
+    switch (failure) {
+    case UsbKeyboardProofFailure::None:
+        return "NONE";
+    case UsbKeyboardProofFailure::ReadyTimeout:
+        return "READY_TIMEOUT";
+    case UsbKeyboardProofFailure::UsbUnavailable:
+        return "USB_UNAVAILABLE";
+    case UsbKeyboardProofFailure::InputBeforePrompt:
+        return "INPUT_BEFORE_PROMPT";
+    case UsbKeyboardProofFailure::MakeTimeout:
+        return "MAKE_TIMEOUT";
+    case UsbKeyboardProofFailure::MakeBeforeDrain:
+        return "MAKE_BEFORE_DRAIN";
+    case UsbKeyboardProofFailure::BreakTimeout:
+        return "BREAK_TIMEOUT";
+    case UsbKeyboardProofFailure::BreakBeforeDrain:
+        return "BREAK_BEFORE_DRAIN";
+    case UsbKeyboardProofFailure::ResultTimeout:
+        return "RESULT_TIMEOUT";
+    case UsbKeyboardProofFailure::ProtocolInvalid:
+        return "PROTOCOL_INVALID";
+    case UsbKeyboardProofFailure::GuestFail:
+        return "GUEST_FAIL";
+    case UsbKeyboardProofFailure::CounterMismatch:
+        return "COUNTER_MISMATCH";
+    case UsbKeyboardProofFailure::RuntimeFatal:
+        return "RUNTIME_FATAL";
+    }
+    return "UNKNOWN";
+}
+
+std::uint32_t counter_delta(const std::uint32_t current,
+                            const std::uint32_t baseline) noexcept
+{
+    return current >= baseline ? current - baseline : UINT32_MAX;
+}
+
+bool usb_proof_errors_unchanged(
+    const p4_nano_usb_keyboard::Counters &current,
+    const p4_nano_usb_keyboard::Counters &baseline) noexcept
+{
+    return current.reports_error_usage == baseline.reports_error_usage &&
+           current.reports_malformed == baseline.reports_malformed &&
+           current.unsupported_usages == baseline.unsupported_usages &&
+           current.internal_queue_overflows ==
+               baseline.internal_queue_overflows &&
+           current.enqueue_full == baseline.enqueue_full &&
+           current.enqueue_quarantined == baseline.enqueue_quarantined &&
+           current.second_keyboard_rejected ==
+               baseline.second_keyboard_rejected &&
+           current.transfer_errors == baseline.transfer_errors &&
+           current.producer_fatal == baseline.producer_fatal;
+}
+
+bool bridge_proof_errors_unchanged(
+    const np2_keyboard_input_bridge::BridgeCounters &current,
+    const np2_keyboard_input_bridge::BridgeCounters &baseline) noexcept
+{
+    return current.queue_overflows == baseline.queue_overflows &&
+           current.queue_rejected == baseline.queue_rejected &&
+           current.blocked_events == baseline.blocked_events &&
+           current.recovery_discards == baseline.recovery_discards &&
+           current.ownership.duplicate_suppressed ==
+               baseline.ownership.duplicate_suppressed &&
+           current.ownership.invalid_rejected ==
+               baseline.ownership.invalid_rejected &&
+           current.ownership.source_capacity_failures ==
+               baseline.ownership.source_capacity_failures &&
+           current.ownership.source_disconnects ==
+               baseline.ownership.source_disconnects &&
+           current.ownership.global_recoveries ==
+               baseline.ownership.global_recoveries;
+}
+
+void emit_usb_proof_failure(Composition *composition,
+                            const UsbKeyboardProofFailure failure) noexcept
+{
+    if (composition == nullptr || composition->usb_proof_terminal_reported) {
+        return;
+    }
+    composition->usb_proof_terminal_reported = true;
+    composition->usb_proof_failure = failure;
+    composition->usb_proof_state = UsbKeyboardProofState::Failed;
+    emit("P4_NANO_USB_KEYBOARD_PROOF_RESULT=FAIL reason=%s\n",
+         usb_proof_failure_name(failure));
+}
+
+bool usb_proof_counters_valid(const Composition *composition,
+                              const p4_nano_usb_keyboard::Counters &usb,
+                              const np2_keyboard_input_bridge::BridgeCounters
+                                  &bridge) noexcept
+{
+    if (composition == nullptr || !usb_proof_errors_unchanged(
+                                      usb, composition->usb_proof_counters) ||
+        !bridge_proof_errors_unchanged(
+            bridge, composition->usb_proof_bridge_counters) ||
+        composition->keyboard.quarantined()) {
+        return false;
+    }
+    const auto &usb_base = composition->usb_proof_counters;
+    const auto &bridge_base = composition->usb_proof_bridge_counters;
+    return counter_delta(usb.reports_received, usb_base.reports_received) > 0U &&
+           counter_delta(usb.neutral_events_generated,
+                         usb_base.neutral_events_generated) >= 2U &&
+           counter_delta(usb.neutral_events_enqueued,
+                         usb_base.neutral_events_enqueued) >= 2U &&
+           counter_delta(bridge.enqueued, bridge_base.enqueued) >= 2U &&
+           counter_delta(bridge.dequeued, bridge_base.dequeued) >= 2U &&
+           counter_delta(bridge.ownership.press_injected,
+                         bridge_base.ownership.press_injected) >= 1U &&
+           counter_delta(bridge.ownership.release_injected,
+                         bridge_base.ownership.release_injected) >= 1U;
+}
+
+bool owner_iteration_usb_keyboard(Composition *composition) noexcept
+{
+    if (composition == nullptr || composition->usb_keyboard == nullptr) {
+        return false;
+    }
+    const auto fail_and_stop = [&](const UsbKeyboardProofFailure failure) {
+        emit_usb_proof_failure(composition, failure);
+        composition->usb_keyboard->request_stop();
+        composition->keyboard.shutdown();
+        composition->session.detach_source();
+        (void)composition->runtime.request_stop();
+    };
+    if (composition->stop_requested.load(std::memory_order_acquire) ||
+        composition->runtime.failure()) {
+        if (composition->usb_proof_state != UsbKeyboardProofState::Complete &&
+            composition->usb_proof_state != UsbKeyboardProofState::Failed) {
+            fail_and_stop(composition->runtime.failure()
+                                             ? UsbKeyboardProofFailure::RuntimeFatal
+                                             : UsbKeyboardProofFailure::ResultTimeout);
+        }
+        return true;
+    }
+
+    np2_keyboard_validation::InputSnapshot sample{};
+    sample.now_us = static_cast<std::uint64_t>(esp_timer_get_time());
+    snapshot_keyboard_protocol(composition, &sample);
+    const auto input_result = composition->keyboard.owner_iteration();
+    if (input_result ==
+            np2_keyboard_input_bridge::OwnerIterationResult::Recovered ||
+        input_result ==
+            np2_keyboard_input_bridge::OwnerIterationResult::Quarantined) {
+        fail_and_stop(UsbKeyboardProofFailure::CounterMismatch);
+        return true;
+    }
+    const auto bridge = composition->keyboard.counters();
+    const auto usb = composition->usb_keyboard->counters();
+    if (composition->usb_keyboard->state() ==
+            p4_nano_usb_keyboard::State::Disabled ||
+        composition->usb_keyboard->state() ==
+            p4_nano_usb_keyboard::State::TeardownFailed) {
+        fail_and_stop(UsbKeyboardProofFailure::UsbUnavailable);
+        return true;
+    }
+    const auto usb_start_neutral = counter_delta(
+        usb.neutral_events_generated,
+        composition->usb_start_counters.neutral_events_generated);
+    if (usb.producer_fatal > composition->usb_start_counters.producer_fatal ||
+        usb.internal_queue_overflows >
+            composition->usb_start_counters.internal_queue_overflows ||
+        usb.enqueue_full > composition->usb_start_counters.enqueue_full ||
+        usb.enqueue_quarantined >
+            composition->usb_start_counters.enqueue_quarantined) {
+        fail_and_stop(UsbKeyboardProofFailure::UsbUnavailable);
+        return true;
+    }
+
+    if (sample.control_observation ==
+            np2_keyboard_validation::ControlObservation::Invalid ||
+        sample.result_observation ==
+            np2_keyboard_validation::ResultObservation::Invalid) {
+        fail_and_stop(UsbKeyboardProofFailure::ProtocolInvalid);
+        return true;
+    }
+    if (sample.control_observation ==
+            np2_keyboard_validation::ControlObservation::Accepted &&
+        (sample.control_state == np2_keyboard_validation::ControlState::Fail ||
+         sample.result_observation ==
+             np2_keyboard_validation::ResultObservation::Fail)) {
+        fail_and_stop(UsbKeyboardProofFailure::GuestFail);
+        return true;
+    }
+
+    if (composition->usb_proof_state == UsbKeyboardProofState::WaitingReady) {
+        if (usb_start_neutral > 0U ||
+            counter_delta(usb.neutral_events_enqueued,
+                          composition->usb_start_counters.neutral_events_enqueued) >
+                0U) {
+            fail_and_stop(UsbKeyboardProofFailure::InputBeforePrompt);
+            return true;
+        }
+        if (sample.now_us >= composition->usb_proof_deadline_us) {
+            fail_and_stop(UsbKeyboardProofFailure::ReadyTimeout);
+            return true;
+        }
+        if (sample.control_observation ==
+                np2_keyboard_validation::ControlObservation::Accepted &&
+            sample.control_state == np2_keyboard_validation::ControlState::Ready &&
+            composition->usb_keyboard->state() ==
+                p4_nano_usb_keyboard::State::Ready &&
+            composition->usb_keyboard->device_connected()) {
+            composition->usb_proof_counters = usb;
+            composition->usb_proof_bridge_counters = bridge;
+            composition->usb_proof_state = UsbKeyboardProofState::WaitingAction;
+            composition->usb_proof_deadline_us = sample.now_us + 60'000'000U;
+            composition->usb_proof_ready_reported = true;
+            emit("P4_NANO_USB_KEYBOARD_PROOF_STATE=READY\n");
+            emit("P4_NANO_USB_KEYBOARD_PROOF_ACTION=PRESS_AND_RELEASE_A\n");
+        }
+        return false;
+    }
+
+    const auto usb_events = counter_delta(
+        usb.neutral_events_generated,
+        composition->usb_proof_counters.neutral_events_generated);
+    const auto bridge_press = counter_delta(
+        bridge.ownership.press_injected,
+        composition->usb_proof_bridge_counters.ownership.press_injected);
+    const auto bridge_release = counter_delta(
+        bridge.ownership.release_injected,
+        composition->usb_proof_bridge_counters.ownership.release_injected);
+    if (sample.now_us >= composition->usb_proof_deadline_us) {
+        const auto timeout_failure =
+            composition->usb_proof_state == UsbKeyboardProofState::WaitingBreak
+                ? UsbKeyboardProofFailure::BreakTimeout
+                : composition->usb_proof_state ==
+                          UsbKeyboardProofState::WaitingResult
+                      ? UsbKeyboardProofFailure::ResultTimeout
+                      : UsbKeyboardProofFailure::MakeTimeout;
+        fail_and_stop(timeout_failure);
+        return true;
+    }
+    if (composition->usb_proof_state == UsbKeyboardProofState::WaitingAction &&
+        usb_events > 0U) {
+        composition->usb_proof_state = UsbKeyboardProofState::WaitingMake;
+        composition->usb_proof_deadline_us = sample.now_us + 5'000'000U;
+    }
+    if (composition->usb_proof_state == UsbKeyboardProofState::WaitingMake) {
+        if (sample.control_observation ==
+                np2_keyboard_validation::ControlObservation::Accepted &&
+            sample.control_state == np2_keyboard_validation::ControlState::MakeObserved) {
+            if (bridge_press < 1U) {
+                fail_and_stop(UsbKeyboardProofFailure::MakeBeforeDrain);
+                return true;
+            }
+            emit("P4_NANO_USB_KEYBOARD_PROOF_STATE=MAKE_OBSERVED byte=0x%02x\n",
+                 sample.observed_make);
+            composition->usb_proof_state = UsbKeyboardProofState::WaitingBreak;
+            composition->usb_proof_deadline_us = sample.now_us + 5'000'000U;
+        }
+        return false;
+    }
+    if (composition->usb_proof_state == UsbKeyboardProofState::WaitingBreak) {
+        if (sample.control_observation ==
+                np2_keyboard_validation::ControlObservation::Accepted &&
+            sample.control_state == np2_keyboard_validation::ControlState::BreakObserved) {
+            if (bridge_release < 1U || usb_events < 2U) {
+                fail_and_stop(UsbKeyboardProofFailure::BreakBeforeDrain);
+                return true;
+            }
+            emit("P4_NANO_USB_KEYBOARD_PROOF_STATE=BREAK_OBSERVED byte=0x%02x\n",
+                 sample.observed_break);
+            composition->usb_proof_state = UsbKeyboardProofState::WaitingResult;
+            composition->usb_proof_deadline_us = sample.now_us + 5'000'000U;
+        }
+        return false;
+    }
+    if (composition->usb_proof_state == UsbKeyboardProofState::WaitingResult) {
+        if (sample.result_observation ==
+            np2_keyboard_validation::ResultObservation::Pass) {
+            if (!usb_proof_counters_valid(composition, usb, bridge)) {
+                fail_and_stop(UsbKeyboardProofFailure::CounterMismatch);
+                return true;
+            }
+            composition->usb_proof_state = UsbKeyboardProofState::Complete;
+            composition->usb_proof_terminal_reported = true;
+            emit("P4_NANO_USB_KEYBOARD_PROOF_COUNTERS reports_received=%" PRIu32
+                 " neutral_events_generated=%" PRIu32
+                 " neutral_events_enqueued=%" PRIu32
+                 " bridge_enqueued=%" PRIu32 " bridge_dequeued=%" PRIu32
+                 " press=%" PRIu32 " release=%" PRIu32
+                 " queue_overflows=%" PRIu32 " rejected=%" PRIu32
+                 " blocked=%" PRIu32 " recoveries=%" PRIu32
+                 " quarantined=%u\n",
+                 counter_delta(usb.reports_received,
+                               composition->usb_proof_counters.reports_received),
+                 counter_delta(usb.neutral_events_generated,
+                               composition->usb_proof_counters.neutral_events_generated),
+                 counter_delta(usb.neutral_events_enqueued,
+                               composition->usb_proof_counters.neutral_events_enqueued),
+                 counter_delta(bridge.enqueued,
+                               composition->usb_proof_bridge_counters.enqueued),
+                 counter_delta(bridge.dequeued,
+                               composition->usb_proof_bridge_counters.dequeued),
+                 bridge_press, bridge_release, bridge.queue_overflows,
+                 bridge.queue_rejected, bridge.blocked_events,
+                 bridge.ownership.global_recoveries,
+                 composition->keyboard.quarantined() ? 1U : 0U);
+            emit("P4_NANO_USB_KEYBOARD_PROOF_RESULT=PASS make=0x%02x break=0x%02x\n",
+                 sample.observed_make, sample.observed_break);
+            composition->keyboard.shutdown();
+            composition->session.detach_source();
+            (void)composition->runtime.request_stop();
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+#endif
+
+[[maybe_unused]] void emit_keyboard_proof_failure(
+    Composition *composition,
+    const np2_keyboard_validation::StepResult &step)
 {
     if (composition == nullptr ||
         composition->keyboard_proof_terminal_reported) {
@@ -408,13 +777,14 @@ void emit_keyboard_proof_failure(Composition *composition,
          np2_keyboard_validation::to_string(step.failure_reason));
 }
 
-bool owner_iteration_keyboard(Composition *composition) noexcept
+[[maybe_unused]] bool owner_iteration_keyboard(Composition *composition) noexcept
 {
     if (composition == nullptr) {
         return false;
     }
     if (composition->stop_requested.load(std::memory_order_acquire)) {
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
         composition->usb_keyboard->request_stop();
 #endif
         if (composition->keyboard_validation.state() !=
@@ -431,7 +801,8 @@ bool owner_iteration_keyboard(Composition *composition) noexcept
         return true;
     }
     if (composition->runtime.failure()) {
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
         composition->usb_keyboard->request_stop();
 #endif
         const auto failure = composition->keyboard_validation.fail(
@@ -599,7 +970,9 @@ bool owner_iteration(void *context) noexcept
     if (composition == nullptr) {
         return false;
     }
-#if defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+    return owner_iteration_usb_keyboard(composition);
+#elif defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
     return owner_iteration_keyboard(composition);
 #else
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
@@ -616,7 +989,8 @@ bool owner_iteration(void *context) noexcept
         /* Runtime invokes this boundary before pccore_term(), including its
          * fatal cleanup path.  Release keyboard state before core cleanup,
          * then detach display publication and request the stop. */
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
         composition->usb_keyboard->request_stop();
 #endif
         composition->keyboard.shutdown();
@@ -772,6 +1146,13 @@ void owner_task(void *context)
         static_cast<std::uint64_t>(esp_timer_get_time()));
     np2kbd_control_v1_tracker_init(&composition->control_tracker);
 #endif
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+    composition->usb_start_counters = composition->usb_keyboard->counters();
+    composition->usb_start_bridge_counters = composition->keyboard.counters();
+    composition->usb_proof_state = UsbKeyboardProofState::WaitingReady;
+    composition->usb_proof_deadline_us =
+        static_cast<std::uint64_t>(esp_timer_get_time()) + 30'000'000U;
+#endif
 
     signal_ready(composition, ESP_OK);
     emit("P4_NANO_RUNTIME_CORE=RUNNING\n");
@@ -779,7 +1160,8 @@ void owner_task(void *context)
         emit("P4_NANO_RUNTIME_RESULT=RUNNING\n");
     }
     (void)composition->runtime.run(owner_iteration, composition);
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     composition->usb_keyboard->request_stop();
 #endif
     composition->keyboard.set_core_active(false);
@@ -792,7 +1174,8 @@ void owner_task(void *context)
 
 done:
     composition->keyboard.set_core_active(false);
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     composition->usb_keyboard->request_stop();
 #endif
     composition->keyboard.shutdown();
@@ -946,7 +1329,8 @@ esp_err_t run_composition(const ValidationKind validation_kind,
         composition.stop_requested.store(true, std::memory_order_release);
     }
 
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     if (!composition.stop_requested.load(std::memory_order_acquire)) {
         (void)composition.usb_keyboard->start(composition.keyboard);
     }
@@ -954,9 +1338,15 @@ esp_err_t run_composition(const ValidationKind validation_kind,
 
     bool visible_reported = false;
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
-    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     const std::int64_t validation_deadline =
-        esp_timer_get_time() + 30LL * 1000LL * 1000LL;
+        esp_timer_get_time() +
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+        120LL * 1000LL * 1000LL;
+#else
+        30LL * 1000LL * 1000LL;
+#endif
 #endif
     while (!composition.owner_done.load(std::memory_order_acquire)) {
         const auto consume = composition.session.consume_one();
@@ -993,7 +1383,8 @@ esp_err_t run_composition(const ValidationKind validation_kind,
     }
 
     bool usb_stop_clean = true;
-#if defined(P4_NANO_REAL_RUNTIME_PROFILE)
+#if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     usb_stop_clean = composition.usb_keyboard->stop() ==
                      p4_nano_usb_keyboard::StopResult::Clean;
     if (!usb_stop_clean) {
@@ -1007,7 +1398,14 @@ esp_err_t run_composition(const ValidationKind validation_kind,
     np2_dosio_stats stats{};
     np2_dosio_stats_get(&stats);
     const auto &counters = composition.session.counters();
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+    const bool validation_pass =
+        validation_kind == ValidationKind::Keyboard &&
+        composition.usb_proof_state == UsbKeyboardProofState::Complete &&
+        !composition.session.failed() && usb_stop_clean &&
+        stats.read_bytes > 0U && counters.submitted > 0U &&
+        counters.transformed > 0U && counters.released > 0U;
+#elif defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     const bool validation_pass =
         validation_kind == ValidationKind::Runtime &&
         composition.guest_completion.load(std::memory_order_acquire) ==
@@ -1041,7 +1439,12 @@ esp_err_t run_composition(const ValidationKind validation_kind,
          "\n",
          counters.submitted, counters.acquired, counters.transformed,
          counters.released, counters.dropped);
-#if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
+#if defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
+    if (validation_profile) {
+        emit("P4_NANO_USB_KEYBOARD_VALIDATION_RESULT=%s\n",
+             validation_pass ? "PASS" : "FAIL");
+    }
+#elif defined(P4_NANO_RUNTIME_VALIDATION_PROFILE)
     if (validation_profile) {
         emit("P4_NANO_RUNTIME_VALIDATION_RESULT=%s\n",
              validation_pass ? "PASS" : "FAIL");
@@ -1054,7 +1457,8 @@ esp_err_t run_composition(const ValidationKind validation_kind,
 #endif
     destroy_sync(&composition);
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
-    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE)
+    defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
+    defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     return validation_profile ? (validation_pass ? ESP_OK : ESP_FAIL)
                               : composition.owner_result;
 #else
@@ -1091,6 +1495,11 @@ esp_err_t run_keyboard_validation() noexcept
                            false
 #endif
     );
+}
+
+esp_err_t run_usb_keyboard_validation() noexcept
+{
+    return run_composition(ValidationKind::Keyboard, false);
 }
 
 } // namespace p4_nano_pc98_runtime

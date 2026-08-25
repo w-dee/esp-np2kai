@@ -15,4 +15,7 @@ esp_err_t run_validation() noexcept;
 /* Starts the deterministic synthetic-keyboard validation composition. */
 esp_err_t run_keyboard_validation() noexcept;
 
+/* Starts the bounded physical USB Boot Keyboard proof on P4-NANO. */
+esp_err_t run_usb_keyboard_validation() noexcept;
+
 } // namespace p4_nano_pc98_runtime

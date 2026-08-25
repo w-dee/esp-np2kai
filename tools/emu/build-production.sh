@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --real-runtime | --runtime-validation | --runtime-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -36,6 +36,9 @@ runtime_validation_variant=""
 keyboard_validation=0
 keyboard_validation_board=""
 keyboard_validation_variant=""
+usb_keyboard_validation=0
+usb_keyboard_validation_board=""
+usb_keyboard_validation_variant=""
 runtime_emu_backend=0
 esp_emu_test=0
 while (($# > 0)); do
@@ -125,6 +128,10 @@ while (($# > 0)); do
             keyboard_validation=1
             shift
             ;;
+        --usb-keyboard-validation)
+            usb_keyboard_validation=1
+            shift
+            ;;
         --rotation)
             (($# >= 2)) || { usage >&2; exit 2; }
             display_transform_diagnostic_rotation="$2"
@@ -184,7 +191,7 @@ if (( display_foundation )) &&
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + real_runtime + runtime_validation + keyboard_validation > 1 )); then
+if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
     printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
 fi
@@ -255,6 +262,18 @@ if (( keyboard_validation )); then
         runtime_emu_backend=1
     elif [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
         printf 'ERROR: hardware --runtime-keyboard-validation requires p4-v1x p4-nano\n' >&2
+        exit 2
+    fi
+fi
+
+if (( usb_keyboard_validation )); then
+    usb_keyboard_validation_board=1
+    usb_keyboard_validation_variant="${variant}"
+    if (( esp_emu_test )); then
+        printf 'ERROR: --usb-keyboard-validation is hardware-only and cannot use --esp-emu-test\n' >&2
+        exit 2
+    elif [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --usb-keyboard-validation requires p4-v1x p4-nano\n' >&2
         exit 2
     fi
 fi
@@ -332,7 +351,9 @@ if [[ "${transform_opt}" == "o2" ]] && (( ! transform_profile )); then
 fi
 
 if [[ -z "${build_dir}" ]]; then
-    if (( keyboard_validation )); then
+    if (( usb_keyboard_validation )); then
+        build_dir="${FIRMWARE_DIR}/build-usb-keyboard-validation-${board}-${variant}"
+    elif (( keyboard_validation )); then
         build_dir="${FIRMWARE_DIR}/build-keyboard-validation-${board}-${variant}"
     elif [[ "${board}" == "generic" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${variant}"
@@ -439,6 +460,9 @@ cmake_args=(
     -D "P4_NANO_KEYBOARD_VALIDATION_PROFILE=${keyboard_validation}"
     -D "P4_NANO_KEYBOARD_VALIDATION_BOARD=${keyboard_validation_board}"
     -D "P4_NANO_KEYBOARD_VALIDATION_VARIANT=${keyboard_validation_variant}"
+    -D "P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE=${usb_keyboard_validation}"
+    -D "P4_NANO_USB_KEYBOARD_VALIDATION_BOARD=${usb_keyboard_validation_board}"
+    -D "P4_NANO_USB_KEYBOARD_VALIDATION_VARIANT=${usb_keyboard_validation_variant}"
     -D "P4_NANO_RUNTIME_EMU_BACKEND=${runtime_emu_backend}"
     -D "NP2VIDEO_CONTINUOUS_PROFILE=$((live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark))"
     -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark))"
@@ -481,6 +505,15 @@ else
     unset P4_NANO_KEYBOARD_VALIDATION_PROFILE
     unset P4_NANO_KEYBOARD_VALIDATION_BOARD
     unset P4_NANO_KEYBOARD_VALIDATION_VARIANT
+fi
+if (( usb_keyboard_validation )); then
+    export P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE=1
+    export P4_NANO_USB_KEYBOARD_VALIDATION_BOARD=1
+    export P4_NANO_USB_KEYBOARD_VALIDATION_VARIANT="${usb_keyboard_validation_variant}"
+else
+    unset P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE
+    unset P4_NANO_USB_KEYBOARD_VALIDATION_BOARD
+    unset P4_NANO_USB_KEYBOARD_VALIDATION_VARIANT
 fi
 if (( runtime_emu_backend )); then
     export P4_NANO_RUNTIME_EMU_BACKEND=1

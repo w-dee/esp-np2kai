@@ -96,6 +96,12 @@ public:
         return accepting_.load(std::memory_order_acquire);
     }
 
+    bool device_connected() const noexcept
+    {
+        return active_handle_.load(std::memory_order_acquire) != nullptr &&
+               active_open_.load(std::memory_order_acquire);
+    }
+
     Counters counters() const noexcept;
 
 private:
