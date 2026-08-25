@@ -112,17 +112,25 @@ void assert_edge_and_interior_points(
 }
 
 std::uint32_t run_transform(std::span<const std::uint16_t> source,
-                            QuarterTurn rotation)
+                            QuarterTurn rotation,
+                            std::size_t guard_pixels = kGuardPixels)
 {
     std::vector<std::uint16_t> guarded_destination(
-        p4_nano_display::kTransformDestinationPixelCount + 2U * kGuardPixels,
+        p4_nano_display::kTransformDestinationPixelCount + 2U * guard_pixels,
         kGuard);
     const std::span<std::uint16_t> destination(
-        guarded_destination.data() + kGuardPixels,
+        guarded_destination.data() + guard_pixels,
         p4_nano_display::kTransformDestinationPixelCount);
+    if (guard_pixels == 0U) {
+        assert((reinterpret_cast<std::uintptr_t>(destination.data()) & 3U) ==
+               0U);
+    } else if (guard_pixels == kGuardPixels) {
+        assert((reinterpret_cast<std::uintptr_t>(destination.data()) & 3U) ==
+               2U);
+    }
     assert(p4_nano_display::transform_to_native(source, destination, rotation));
 
-    for (std::size_t index = 0; index < kGuardPixels; ++index) {
+    for (std::size_t index = 0; index < guard_pixels; ++index) {
         assert(guarded_destination[index] == kGuard);
         assert(guarded_destination[guarded_destination.size() - 1U - index] ==
                kGuard);
@@ -243,12 +251,17 @@ int main()
         run_transform(source_view, QuarterTurn::Clockwise);
     const std::uint32_t counter_clockwise_crc =
         run_transform(source_view, QuarterTurn::CounterClockwise);
+    const std::uint32_t aligned_counter_clockwise_crc =
+        run_transform(source_view, QuarterTurn::CounterClockwise, 0U);
     std::printf("P4_NANO_TRANSFORM_CW_CRC32=0x%08x\n", clockwise_crc);
     std::printf("P4_NANO_TRANSFORM_CCW_CRC32=0x%08x\n",
                 counter_clockwise_crc);
+    std::printf("P4_NANO_TRANSFORM_CCW_ALIGNED_CRC32=0x%08x\n",
+                aligned_counter_clockwise_crc);
     std::fflush(stdout);
 
     assert(clockwise_crc == 0xdb938d53U);
     assert(counter_clockwise_crc == 0x164584cfU);
+    assert(aligned_counter_clockwise_crc == 0x164584cfU);
     return 0;
 }
