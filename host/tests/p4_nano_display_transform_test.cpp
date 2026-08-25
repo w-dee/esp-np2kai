@@ -13,6 +13,7 @@ using p4_nano_display::QuarterTurn;
 
 constexpr std::uint16_t kGuard = 0xa55a;
 constexpr std::size_t kGuardPixels = 17;
+constexpr std::size_t kAlignedGuardPixels = 18;
 
 std::uint16_t source_pixel(std::size_t x, std::size_t y)
 {
@@ -121,7 +122,7 @@ std::uint32_t run_transform(std::span<const std::uint16_t> source,
     const std::span<std::uint16_t> destination(
         guarded_destination.data() + guard_pixels,
         p4_nano_display::kTransformDestinationPixelCount);
-    if (guard_pixels == 0U) {
+    if (guard_pixels == kAlignedGuardPixels) {
         assert((reinterpret_cast<std::uintptr_t>(destination.data()) & 3U) ==
                0U);
     } else if (guard_pixels == kGuardPixels) {
@@ -252,7 +253,8 @@ int main()
     const std::uint32_t counter_clockwise_crc =
         run_transform(source_view, QuarterTurn::CounterClockwise);
     const std::uint32_t aligned_counter_clockwise_crc =
-        run_transform(source_view, QuarterTurn::CounterClockwise, 0U);
+        run_transform(source_view, QuarterTurn::CounterClockwise,
+                      kAlignedGuardPixels);
     std::printf("P4_NANO_TRANSFORM_CW_CRC32=0x%08x\n", clockwise_crc);
     std::printf("P4_NANO_TRANSFORM_CCW_CRC32=0x%08x\n",
                 counter_clockwise_crc);
