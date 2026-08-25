@@ -46,6 +46,7 @@ typedef struct {
     np2video_runner_cooperate_fn cooperate;
     np2video_runner_pause_at_cooperate_fn pause_at_cooperate;
     np2video_pccore_trace *pccore_trace;
+    np2_pccore_draw_trace *draw_trace;
 } np2video_runner_task_state;
 
 static np2video_runner_task_state np2video_task_config;
@@ -259,6 +260,7 @@ static void np2video_task(void *argument)
     memset(&result, 0, sizeof(result));
     np2video_sha256_text(digest);
     np2video_pccore_trace_reset(state->pccore_trace);
+    np2_pccore_profiler_set_draw_trace(NULL);
 
     np2video_emit(state,
                   "NP2VIDEO_PROFILE profile=esp32p4-reduced-video "
@@ -360,6 +362,10 @@ static void np2video_task(void *argument)
         bool stop_observed = false;
 
 #if defined(NP2VIDEO_BENCHMARK_PROFILE)
+        /* Keep the DRAW trace exactly within the profiler's continuous
+         * benchmark lifetime, including intervals crossing sample edges. */
+        np2_pccore_draw_trace_reset(state->draw_trace);
+        np2_pccore_profiler_set_draw_trace(state->draw_trace);
         np2_pccore_profiler_reset();
         np2_pccore_profiler_set_enabled(true);
 #endif
@@ -547,6 +553,7 @@ cleanup:
     /* The producer's benchmark work has stopped; single-writer counter state is stable for snapshot.
      * The completion callback publishes this result after the read. */
     np2_pccore_profiler_snapshot(&result.pccore_profile);
+    np2_pccore_profiler_set_draw_trace(NULL);
 #endif
     if (fixture.fdd_attached) {
         np2_fixture_detach_fdd(&fixture);
@@ -617,6 +624,7 @@ esp_err_t np2video_runner_start(np2video_runner_output_fn output,
         .cooperate = NULL,
         .pause_at_cooperate = NULL,
         .pccore_trace = NULL,
+        .draw_trace = NULL,
         .task_scheduling_override = false,
         .task_core_id = 0,
         .task_priority = 0,
@@ -646,6 +654,7 @@ esp_err_t np2video_runner_start_ex(const np2video_runner_config *config)
     np2video_task_config.cooperate = config->cooperate;
     np2video_task_config.pause_at_cooperate = config->pause_at_cooperate;
     np2video_task_config.pccore_trace = config->pccore_trace;
+    np2video_task_config.draw_trace = config->draw_trace;
     if (config->task_scheduling_override) {
         if (config->task_core_id < 0 ||
             config->task_core_id >= configNUMBER_OF_CORES ||

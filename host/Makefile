@@ -135,8 +135,10 @@ P4_NANO_LIVE_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_live_display_contra
 P4_NANO_LIVE_CONTRACT_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_live_display_contract_test
 P4_NANO_OVERLAP_TRACE_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
 P4_NANO_PCCORE_TRACE_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2video_runner/include
+NP2_PCCORE_PROFILER_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2core/include
 P4_NANO_OVERLAP_TRACE_TEST_SOURCE := $(CURDIR)/tests/p4_nano_overlap_trace_test.cpp
 P4_NANO_OVERLAP_TRACE_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_overlap_trace_test
+P4_NANO_PCCORE_PROFILER_SOURCE := $(HOST_ROOT)/firmware/components/np2core/np2_pccore_profiler.c
 P4_NANO_LIVE_CONTRACT_PRESENTATION_OBJECT := $(BUILD_DIR)/tests/np2_presentation_for_live_contract.o
 NP2RUNTIME_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2runtime/include
 NP2RUNTIME_LIFECYCLE_SOURCE := $(HOST_ROOT)/firmware/components/np2runtime/np2runtime_lifecycle.cpp
@@ -703,6 +705,8 @@ test-p4-nano-overlap-trace:
 	@$(CXX) -std=c++20 -Wall -Wextra -Werror \
 		-I"$(P4_NANO_OVERLAP_TRACE_HEADER_DIR)" \
 		-I"$(P4_NANO_PCCORE_TRACE_HEADER_DIR)" \
+		-I"$(NP2_PCCORE_PROFILER_HEADER_DIR)" \
+		"$(P4_NANO_PCCORE_PROFILER_SOURCE)" \
 		"$(P4_NANO_OVERLAP_TRACE_TEST_SOURCE)" \
 		-o "$(P4_NANO_OVERLAP_TRACE_TEST_OUTPUT)"
 	@"$(P4_NANO_OVERLAP_TRACE_TEST_OUTPUT)"

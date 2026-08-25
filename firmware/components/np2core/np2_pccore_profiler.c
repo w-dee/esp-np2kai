@@ -15,6 +15,26 @@ typedef struct {
 
 static np2_pccore_profiler_state np2_pccore_profile_state;
 static bool np2_pccore_profile_enabled;
+static np2_pccore_draw_trace *np2_pccore_active_draw_trace;
+
+bool np2_pccore_draw_trace_append(np2_pccore_draw_trace *trace,
+                                  uint64_t start_us, uint64_t end_us,
+                                  uint64_t call_index)
+{
+    if (trace == NULL) {
+        return false;
+    }
+    if (trace->stored >= NP2_PCCORE_DRAW_TRACE_CAPACITY ||
+        call_index > UINT32_MAX) {
+        trace->overflow = true;
+        return false;
+    }
+    trace->intervals[trace->stored].start_us = start_us;
+    trace->intervals[trace->stored].end_us = end_us;
+    trace->intervals[trace->stored].call_index = (uint32_t)call_index;
+    ++trace->stored;
+    return true;
+}
 
 #if defined(NP2_PCCORE_PHASE_PROFILER)
 static void np2_pccore_profiler_record_end_at(np2_pccore_phase phase,
@@ -28,6 +48,13 @@ static void np2_pccore_profiler_record_end_at(np2_pccore_phase phase,
 
     np2_pccore_profile_state.active[phase] = false;
     ++stats->count;
+    if (phase == NP2_PCCORE_PHASE_DRAW_NESTED) {
+        /* Reuse the exact start and already-read end of the profiler sample;
+         * appending this record performs no additional wall-clock read. */
+        (void)np2_pccore_draw_trace_append(
+            np2_pccore_active_draw_trace,
+            np2_pccore_profile_state.start_us[phase], end_us, stats->count);
+    }
     stats->total_us += elapsed_us;
     if (elapsed_us > stats->max_single_us) {
         stats->max_single_us = elapsed_us;
@@ -50,6 +77,20 @@ void np2_pccore_profiler_reset(void)
 void np2_pccore_profiler_set_enabled(bool enabled)
 {
     np2_pccore_profile_enabled = enabled;
+}
+
+void np2_pccore_draw_trace_reset(np2_pccore_draw_trace *trace)
+{
+    if (trace != NULL) {
+        trace->stored = 0U;
+        trace->overflow = false;
+        trace->reentrant = false;
+    }
+}
+
+void np2_pccore_profiler_set_draw_trace(np2_pccore_draw_trace *trace)
+{
+    np2_pccore_active_draw_trace = trace;
 }
 
 #if defined(NP2_PCCORE_PHASE_PROFILER)
@@ -80,6 +121,13 @@ void np2_pccore_profiler_phase_begin(np2_pccore_phase phase)
 {
     if (!np2_pccore_profile_enabled || phase >= NP2_PCCORE_PHASE_COUNT) {
         return;
+    }
+    if (phase == NP2_PCCORE_PHASE_DRAW_NESTED &&
+        np2_pccore_profile_state.active[phase] &&
+        np2_pccore_active_draw_trace != NULL) {
+        /* Preserve existing profiler semantics while making unexpected
+         * reentrancy a hard-invalid trace condition. */
+        np2_pccore_active_draw_trace->reentrant = true;
     }
     np2_pccore_profile_state.start_us[phase] =
         (uint64_t)esp_timer_get_time();

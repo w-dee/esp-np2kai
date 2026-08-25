@@ -11,6 +11,7 @@ namespace {
 using p4_nano_overlap::SubmitInterval;
 using p4_nano_overlap::TransformInterval;
 using p4_nano_overlap::PccoreInterval;
+using p4_nano_overlap::DrawInterval;
 
 TransformInterval transform(std::uint64_t start, std::uint64_t end,
                             std::uint64_t published, bool measured = true)
@@ -39,6 +40,16 @@ PccoreInterval pccore(std::uint64_t start, std::uint64_t end,
                       std::uint32_t call_index)
 {
     PccoreInterval value{};
+    value.start_us = start;
+    value.end_us = end;
+    value.call_index = call_index;
+    return value;
+}
+
+DrawInterval draw(std::uint64_t start, std::uint64_t end,
+                  std::uint32_t call_index)
+{
+    DrawInterval value{};
     value.start_us = start;
     value.end_us = end;
     value.call_index = call_index;
@@ -345,6 +356,196 @@ void test_analysis_large_reuse_and_reset()
     }
 }
 
+void test_draw_intersection_edges_and_conditionals()
+{
+    const TransformInterval t = transform(100U, 200U, 1U);
+    {
+        const DrawInterval draws[] = {draw(0U, 100U, 1U)};
+        assert(p4_nano_overlap::calculate_draw_overlap(t, draws).total_us ==
+               0U);
+    }
+    {
+        const DrawInterval draws[] = {draw(200U, 300U, 1U)};
+        assert(p4_nano_overlap::calculate_draw_overlap(t, draws).total_us ==
+               0U);
+    }
+    {
+        const DrawInterval draws[] = {draw(50U, 125U, 1U)};
+        assert(p4_nano_overlap::calculate_draw_overlap(t, draws).total_us ==
+               25U);
+    }
+    {
+        const DrawInterval draws[] = {draw(175U, 250U, 1U)};
+        assert(p4_nano_overlap::calculate_draw_overlap(t, draws).total_us ==
+               25U);
+    }
+    {
+        const DrawInterval draws[] = {draw(125U, 175U, 1U)};
+        assert(p4_nano_overlap::calculate_draw_overlap(t, draws).total_us ==
+               50U);
+    }
+    {
+        const DrawInterval draws[] = {
+            draw(110U, 130U, 1U), draw(150U, 180U, 2U)};
+        const auto overlap = p4_nano_overlap::calculate_draw_overlap(t, draws);
+        assert(overlap.total_us == 50U);
+        assert(overlap.intersecting_draw_count == 2U);
+    }
+
+    const DrawInterval all_draw[] = {draw(0U, 1000U, 1U)};
+    const TransformInterval transforms[] = {
+        transform(0U, 10U, 1U, false), transform(100U, 200U, 2U, true),
+        transform(300U, 400U, 3U, true), transform(500U, 510U, 4U, false)};
+    p4_nano_overlap::DrawAnalysis<2U> all_result{};
+    p4_nano_overlap::analyze_draw<2U>(all_draw, transforms, 1U, false,
+                                       all_result);
+    assert(all_result.measured_transform_count == 2U);
+    assert(all_result.overlapping_transform_count == 2U);
+    assert(all_result.zero_overlap_transform_count == 0U);
+
+    const DrawInterval zero_draw[] = {draw(0U, 10U, 1U)};
+    p4_nano_overlap::DrawAnalysis<2U> zero_result{};
+    p4_nano_overlap::analyze_draw<2U>(zero_draw, transforms, 1U, false,
+                                       zero_result);
+    assert(zero_result.overlapping_transform_count == 0U);
+    assert(zero_result.zero_overlap_transform_count == 2U);
+}
+
+void test_draw_trace_validity_completeness_and_capacity()
+{
+    const DrawInterval valid[] = {
+        draw(10U, 20U, 1U), draw(20U, 30U, 2U)};
+    const auto validation = p4_nano_overlap::validate_draw_intervals(valid);
+    assert(validation.intervals_valid);
+    assert(validation.chronological);
+    assert(validation.call_indices_monotonic);
+    assert(validation.intervals_non_overlapping);
+    assert(validation.max_concurrent == 1U);
+    assert(p4_nano_overlap::draw_trace_complete(2U, 2U, false));
+    assert(!p4_nano_overlap::draw_trace_complete(1U, 2U, false));
+    assert(!p4_nano_overlap::draw_trace_complete(3U, 2U, false));
+    assert(!p4_nano_overlap::draw_trace_complete(2U, 2U, true));
+
+    const DrawInterval invalid_end[] = {draw(20U, 10U, 1U)};
+    assert(!p4_nano_overlap::validate_draw_intervals(invalid_end)
+                .intervals_valid);
+    const DrawInterval invalid_index[] = {
+        draw(10U, 20U, 2U), draw(20U, 30U, 1U)};
+    assert(!p4_nano_overlap::validate_draw_intervals(invalid_index)
+                .call_indices_monotonic);
+    const DrawInterval overlapping[] = {
+        draw(10U, 30U, 1U), draw(20U, 40U, 2U)};
+    const auto overlapping_validation =
+        p4_nano_overlap::validate_draw_intervals(overlapping);
+    assert(!overlapping_validation.intervals_non_overlapping);
+    assert(overlapping_validation.max_concurrent == 2U);
+
+    std::array<DrawInterval, 1U> bounded{};
+    std::size_t stored = 0U;
+    bool overflow = false;
+    const DrawInterval first = draw(10U, 20U, 1U);
+    assert(p4_nano_overlap::append_bounded(bounded, stored, first, overflow));
+    assert(!p4_nano_overlap::append_bounded(
+        bounded, stored, draw(20U, 30U, 2U), overflow));
+    assert(stored == 1U);
+    assert(overflow);
+    assert(bounded[0].start_us == first.start_us);
+    assert(bounded[0].end_us == first.end_us);
+    assert(bounded[0].call_index == first.call_index);
+
+    np2_pccore_draw_trace profiler_trace{};
+    np2_pccore_draw_trace_reset(&profiler_trace);
+    for (std::uint32_t index = 0U;
+         index < NP2_PCCORE_DRAW_TRACE_CAPACITY; ++index) {
+        assert(np2_pccore_draw_trace_append(&profiler_trace,
+                                            100U + index,
+                                            101U + index,
+                                            static_cast<std::uint64_t>(index) +
+                                                1U));
+    }
+    assert(profiler_trace.stored == NP2_PCCORE_DRAW_TRACE_CAPACITY);
+    assert(!profiler_trace.overflow);
+    const auto last = profiler_trace.intervals[
+        NP2_PCCORE_DRAW_TRACE_CAPACITY - 1U];
+    assert(!np2_pccore_draw_trace_append(
+        &profiler_trace, 1000U, 1001U,
+        static_cast<std::uint64_t>(NP2_PCCORE_DRAW_TRACE_CAPACITY) + 1U));
+    assert(profiler_trace.overflow);
+    assert(profiler_trace.stored == NP2_PCCORE_DRAW_TRACE_CAPACITY);
+    assert(profiler_trace.intervals[NP2_PCCORE_DRAW_TRACE_CAPACITY - 1U]
+               .start_us == last.start_us);
+    assert(profiler_trace.intervals[NP2_PCCORE_DRAW_TRACE_CAPACITY - 1U]
+               .end_us == last.end_us);
+    assert(profiler_trace.intervals[NP2_PCCORE_DRAW_TRACE_CAPACITY - 1U]
+               .call_index == last.call_index);
+}
+
+void test_hierarchy_containment_and_subtraction()
+{
+    const SubmitInterval submits[] = {submit(150U, 160U, 1U)};
+    const DrawInterval draws[] = {draw(120U, 180U, 1U)};
+    const PccoreInterval pccores[] = {pccore(100U, 200U, 1U)};
+    const TransformInterval transforms[] = {transform(100U, 200U, 1U, true)};
+    p4_nano_overlap::Analysis<1U> submit_result{};
+    p4_nano_overlap::DrawAnalysis<1U> draw_result{};
+    p4_nano_overlap::PccoreAnalysis<1U> pccore_result{};
+    p4_nano_overlap::HierarchyAnalysis<1U> hierarchy{};
+    p4_nano_overlap::analyze<1U>(submits, transforms, submit_result);
+    p4_nano_overlap::analyze_draw<1U>(draws, transforms, 1U, false,
+                                       draw_result);
+    p4_nano_overlap::analyze_pccore<1U>(pccores, transforms, 1U, false,
+                                         pccore_result);
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submits, draws, pccores, submit_result, draw_result, pccore_result,
+        hierarchy);
+    assert(hierarchy.submit_subset_draw);
+    assert(hierarchy.draw_subset_pccore);
+    assert(hierarchy.validity);
+    assert(hierarchy.submit_without_containing_draw_count == 0U);
+    assert(hierarchy.draw_without_containing_pccore_count == 0U);
+    assert(hierarchy.non_submit_draw_overlap_us[0] == 50U);
+    assert(hierarchy.non_draw_pccore_overlap_us[0] == 40U);
+    assert(hierarchy.outside_pccore_us[0] == 0U);
+
+    const SubmitInterval submit_before_draw[] = {submit(110U, 160U, 1U)};
+    p4_nano_overlap::analyze<1U>(submit_before_draw, transforms,
+                                 submit_result);
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submit_before_draw, draws, pccores, submit_result, draw_result,
+        pccore_result, hierarchy);
+    assert(!hierarchy.submit_subset_draw);
+    assert(!hierarchy.validity);
+
+    const DrawInterval draw_outside_pccore[] = {draw(90U, 180U, 1U)};
+    p4_nano_overlap::analyze_draw<1U>(draw_outside_pccore, transforms, 1U,
+                                       false, draw_result);
+    p4_nano_overlap::analyze<1U>(submits, transforms, submit_result);
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submits, draw_outside_pccore, pccores, submit_result, draw_result,
+        pccore_result, hierarchy);
+    assert(!hierarchy.draw_subset_pccore);
+    assert(!hierarchy.validity);
+
+    p4_nano_overlap::analyze_draw<1U>(draws, transforms, 1U, false,
+                                       draw_result);
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submits, draws, pccores, submit_result, draw_result, pccore_result,
+        hierarchy);
+    submit_result.overlap_us[0] = 61U;
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submits, draws, pccores, submit_result, draw_result, pccore_result,
+        hierarchy);
+    assert(!hierarchy.subtraction_order_valid);
+    assert(!hierarchy.validity);
+    submit_result.overlap_us[0] = 10U;
+    draw_result.overlap_us[0] = 101U;
+    p4_nano_overlap::analyze_hierarchy<1U>(
+        submits, draws, pccores, submit_result, draw_result, pccore_result,
+        hierarchy);
+    assert(!hierarchy.subtraction_order_valid);
+    assert(!hierarchy.validity);
+}
+
 } // namespace
 
 int main()
@@ -358,5 +559,8 @@ int main()
     test_pccore_analysis_validation_and_conditionals();
     test_pccore_trace_capacity_and_all_overlap();
     test_analysis_large_reuse_and_reset();
+    test_draw_intersection_edges_and_conditionals();
+    test_draw_trace_validity_completeness_and_capacity();
+    test_hierarchy_containment_and_subtraction();
     return 0;
 }

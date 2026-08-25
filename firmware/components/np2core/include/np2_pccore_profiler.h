@@ -42,9 +42,34 @@ typedef struct {
     uint64_t counters[NP2_PCCORE_COUNTER_COUNT];
 } np2_pccore_profile;
 
+/* This bounded benchmark-owned trace retains the exact timestamps already
+ * consumed by DRAW_NESTED profiling.  Its capacity is empirical headroom for
+ * the 8+128+1 fixture; overflow is always a measurement failure. */
+#define NP2_PCCORE_DRAW_TRACE_CAPACITY 512U
+
+typedef struct {
+    uint64_t start_us;
+    uint64_t end_us;
+    uint32_t call_index;
+} np2_pccore_draw_interval;
+
+typedef struct {
+    np2_pccore_draw_interval intervals[NP2_PCCORE_DRAW_TRACE_CAPACITY];
+    uint32_t stored;
+    bool overflow;
+    bool reentrant;
+} np2_pccore_draw_trace;
+
 void np2_pccore_profiler_reset(void);
 void np2_pccore_profiler_set_enabled(bool enabled);
 void np2_pccore_profiler_snapshot(np2_pccore_profile *profile);
+void np2_pccore_draw_trace_reset(np2_pccore_draw_trace *trace);
+bool np2_pccore_draw_trace_append(np2_pccore_draw_trace *trace,
+                                  uint64_t start_us, uint64_t end_us,
+                                  uint64_t call_index);
+/* The runner is the sole writer while profiling is enabled.  The benchmark
+ * owner reads after its completion callback's release/acquire publication. */
+void np2_pccore_profiler_set_draw_trace(np2_pccore_draw_trace *trace);
 
 #if defined(NP2_PCCORE_PHASE_PROFILER)
 void np2_pccore_profiler_phase_begin(np2_pccore_phase phase);

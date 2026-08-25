@@ -64,6 +64,8 @@ typedef struct {
     /* Optional benchmark-owned storage.  The runner is the sole writer and
      * the owner reads it only after the completion callback publication. */
     np2video_pccore_trace *pccore_trace;
+    /* Retains existing DRAW_NESTED profiler timestamps; NULL in production. */
+    np2_pccore_draw_trace *draw_trace;
     bool task_scheduling_override;
     int task_core_id;
     uint32_t task_priority;
