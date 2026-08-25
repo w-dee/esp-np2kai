@@ -108,6 +108,9 @@ private:
     static void usb_library_task_entry(void *context) noexcept;
     static void hid_event_task_entry(void *context) noexcept;
     static void producer_task_entry(void *context) noexcept;
+    static void usb_client_event_callback(
+        const usb_host_client_event_msg_t *event,
+        void *context) noexcept;
     static void hid_driver_callback(hid_host_device_handle_t handle,
                                     hid_host_driver_event_t event,
                                     void *context) noexcept;
@@ -144,16 +147,24 @@ private:
     SemaphoreHandle_t usb_done_ = nullptr;
     SemaphoreHandle_t hid_start_ = nullptr;
     SemaphoreHandle_t hid_done_ = nullptr;
+    SemaphoreHandle_t hid_disconnect_done_ = nullptr;
+    SemaphoreHandle_t direct_device_gone_done_ = nullptr;
     SemaphoreHandle_t producer_ready_ = nullptr;
     SemaphoreHandle_t producer_done_ = nullptr;
     TaskHandle_t usb_task_ = nullptr;
     TaskHandle_t hid_task_ = nullptr;
     TaskHandle_t producer_task_ = nullptr;
     std::atomic<usb_host_client_handle_t> usb_client_{nullptr};
+    std::atomic<usb_device_handle_t> direct_device_{nullptr};
     std::atomic<hid_host_device_handle_t> active_handle_{nullptr};
     std::atomic<bool> active_open_{false};
     std::atomic<bool> usb_host_installed_{false};
     std::atomic<bool> hid_installed_{false};
+    std::atomic<bool> hid_disconnect_requested_{false};
+    std::atomic<bool> hid_disconnect_callback_done_{false};
+    std::atomic<bool> direct_device_gone_{false};
+    std::atomic<bool> hid_uninstall_requested_{false};
+    std::atomic<bool> hid_event_stop_requested_{false};
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> accepting_{false};
     std::atomic<bool> producer_done_flag_{false};

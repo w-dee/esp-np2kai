@@ -40,6 +40,8 @@ struct Storage final {
     StaticSemaphore_t usb_done{};
     StaticSemaphore_t hid_start{};
     StaticSemaphore_t hid_done{};
+    StaticSemaphore_t hid_disconnect_done{};
+    StaticSemaphore_t direct_device_gone_done{};
     StaticSemaphore_t producer_ready{};
     StaticSemaphore_t producer_done{};
 };
@@ -89,12 +91,17 @@ bool Producer::start(np2_keyboard_input_bridge::KeyboardInputBridge &bridge) noe
     usb_done_ = xSemaphoreCreateBinaryStatic(&s_storage.usb_done);
     hid_start_ = xSemaphoreCreateBinaryStatic(&s_storage.hid_start);
     hid_done_ = xSemaphoreCreateBinaryStatic(&s_storage.hid_done);
+    hid_disconnect_done_ =
+        xSemaphoreCreateBinaryStatic(&s_storage.hid_disconnect_done);
+    direct_device_gone_done_ =
+        xSemaphoreCreateBinaryStatic(&s_storage.direct_device_gone_done);
     producer_ready_ =
         xSemaphoreCreateBinaryStatic(&s_storage.producer_ready);
     producer_done_ = xSemaphoreCreateBinaryStatic(&s_storage.producer_done);
     if (raw_queue_ == nullptr || usb_ready_ == nullptr || usb_done_ == nullptr ||
         hid_start_ == nullptr ||
-        hid_done_ == nullptr || producer_ready_ == nullptr ||
+        hid_done_ == nullptr || hid_disconnect_done_ == nullptr ||
+        direct_device_gone_done_ == nullptr || producer_ready_ == nullptr ||
         producer_done_ == nullptr) {
         emit_disabled_once("STATIC_STORAGE_FAILED");
         state_.store(State::Disabled, std::memory_order_release);
@@ -106,6 +113,8 @@ bool Producer::start(np2_keyboard_input_bridge::KeyboardInputBridge &bridge) noe
     (void)xSemaphoreTake(usb_done_, 0U);
     (void)xSemaphoreTake(hid_start_, 0U);
     (void)xSemaphoreTake(hid_done_, 0U);
+    (void)xSemaphoreTake(hid_disconnect_done_, 0U);
+    (void)xSemaphoreTake(direct_device_gone_done_, 0U);
     (void)xSemaphoreTake(producer_ready_, 0U);
     (void)xSemaphoreTake(producer_done_, 0U);
 
@@ -129,10 +138,16 @@ bool Producer::start(np2_keyboard_input_bridge::KeyboardInputBridge &bridge) noe
     ever_connected_ = false;
     second_keyboard_reported_ = false;
     usb_client_.store(nullptr, std::memory_order_release);
+    direct_device_.store(nullptr, std::memory_order_release);
     active_handle_.store(nullptr, std::memory_order_release);
     active_open_.store(false, std::memory_order_release);
     usb_host_installed_.store(false, std::memory_order_release);
     hid_installed_.store(false, std::memory_order_release);
+    hid_disconnect_requested_.store(false, std::memory_order_release);
+    hid_disconnect_callback_done_.store(false, std::memory_order_release);
+    direct_device_gone_.store(false, std::memory_order_release);
+    hid_uninstall_requested_.store(false, std::memory_order_release);
+    hid_event_stop_requested_.store(false, std::memory_order_release);
     state_.store(State::Starting, std::memory_order_release);
 
     usb_task_ = xTaskCreateStatic(
@@ -237,6 +252,7 @@ StopResult Producer::stop() noexcept
     usb_task_ = nullptr;
     raw_queue_ = nullptr;
     usb_client_.store(nullptr, std::memory_order_release);
+    direct_device_.store(nullptr, std::memory_order_release);
     active_handle_.store(nullptr, std::memory_order_release);
     active_open_.store(false, std::memory_order_release);
     accepting_.store(false, std::memory_order_release);
@@ -278,6 +294,70 @@ void Producer::hid_event_task_entry(void *context) noexcept
 void Producer::producer_task_entry(void *context) noexcept
 {
     static_cast<Producer *>(context)->producer_task();
+}
+
+void Producer::usb_client_event_callback(
+    const usb_host_client_event_msg_t *event,
+    void *context) noexcept
+{
+    auto *producer = static_cast<Producer *>(context);
+    if (producer == nullptr || event == nullptr) {
+        return;
+    }
+
+    const auto client = producer->usb_client_.load(std::memory_order_acquire);
+    if (client == nullptr) {
+        return;
+    }
+
+    if (event->event == USB_HOST_CLIENT_EVENT_DEV_GONE) {
+        const auto device =
+            producer->direct_device_.load(std::memory_order_acquire);
+        if (device != nullptr && device == event->dev_gone.dev_hdl) {
+            /* HID 1.0.3 keeps the parent registration alive until the USB
+             * client closes the device from its DEV_GONE callback. */
+            const esp_err_t result =
+                usb_host_device_close(client, event->dev_gone.dev_hdl);
+            if (result != ESP_OK) {
+                producer->increment_fatal_once("USB_DIRECT_DEVICE_CLOSE_FAILED");
+                if (producer->hid_disconnect_requested_.load(
+                        std::memory_order_acquire)) {
+                    producer->mark_teardown_failed(
+                        "USB_DIRECT_DEVICE_CLOSE_FAILED");
+                }
+                return;
+            }
+            producer->direct_device_.store(nullptr, std::memory_order_release);
+            producer->direct_device_gone_.store(true,
+                                                std::memory_order_release);
+            if (producer->direct_device_gone_done_ != nullptr) {
+                (void)xSemaphoreGive(producer->direct_device_gone_done_);
+            }
+        }
+        return;
+    }
+
+    if (event->event != USB_HOST_CLIENT_EVENT_NEW_DEV) {
+        return;
+    }
+
+    usb_device_handle_t device = nullptr;
+    const esp_err_t open_result =
+        usb_host_device_open(client, event->new_dev.address, &device);
+    if (open_result != ESP_OK) {
+        producer->increment_fatal_once("USB_DIRECT_DEVICE_OPEN_FAILED");
+        return;
+    }
+
+    usb_device_handle_t expected = nullptr;
+    if (!producer->direct_device_.compare_exchange_strong(
+            expected, device, std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+        /* The production port accepts one directly attached keyboard. */
+        (void)usb_host_device_close(client, device);
+        return;
+    }
+    producer->direct_device_gone_.store(false, std::memory_order_release);
 }
 
 void Producer::usb_library_task() noexcept
@@ -378,12 +458,19 @@ void Producer::hid_event_task() noexcept
         vTaskDelete(nullptr);
         return;
     }
-    while (!stop_requested_.load(std::memory_order_acquire)) {
+    while (true) {
         const esp_err_t result = hid_host_handle_events(kTaskPoll);
         if (result != ESP_OK && result != ESP_ERR_TIMEOUT) {
+            if (hid_uninstall_requested_.load(std::memory_order_acquire)) {
+                break;
+            }
             increment_fatal_once("HID_EVENT_FAILED");
             stop_requested_.store(true, std::memory_order_release);
             accepting_.store(false, std::memory_order_release);
+            hid_event_stop_requested_.store(true, std::memory_order_release);
+            break;
+        }
+        if (hid_event_stop_requested_.load(std::memory_order_acquire)) {
             break;
         }
     }
@@ -417,8 +504,7 @@ void Producer::producer_task() noexcept
         .is_synchronous = false,
         .max_num_event_msg = 8U,
         .async = {
-            .client_event_callback =
-                [](const usb_host_client_event_msg_t *, void *) {},
+            .client_event_callback = &Producer::usb_client_event_callback,
             .callback_arg = this,
         },
     };
@@ -552,7 +638,17 @@ void Producer::hid_interface_callback(hid_host_device_handle_t handle,
         raw.error = ESP_FAIL;
     } else if (event == HID_HOST_INTERFACE_EVENT_DISCONNECTED) {
         /* The HID driver requires close from the interface callback. */
-        (void)hid_host_device_close(handle);
+        const esp_err_t close_result = hid_host_device_close(handle);
+        if (close_result != ESP_OK) {
+            producer->increment_fatal_once("HID_DEVICE_CLOSE_FAILED");
+        } else if (producer->hid_disconnect_requested_.load(
+                       std::memory_order_acquire)) {
+            producer->hid_disconnect_callback_done_.store(
+                true, std::memory_order_release);
+            if (producer->hid_disconnect_done_ != nullptr) {
+                (void)xSemaphoreGive(producer->hid_disconnect_done_);
+            }
+        }
         /* Keep the active handle until the FIFO-ordered disconnect event is
          * consumed by the producer task.  Clearing it here would make the
          * queued disconnect indistinguishable from a stale device event. */
@@ -766,6 +862,9 @@ void Producer::process_transfer_error(hid_host_device_handle_t handle,
     transfer_errors_.fetch_add(1U, std::memory_order_relaxed);
     (void)error;
     stop_active_device();
+    if (active_open_.exchange(false, std::memory_order_acq_rel)) {
+        (void)hid_host_device_close(handle);
+    }
     if (bridge_calls_allowed_.load(std::memory_order_acquire) &&
         bridge_ != nullptr && !bridge_failure_.load(std::memory_order_acquire)) {
         (void)enqueue_source_disconnect();
@@ -833,11 +932,7 @@ void Producer::stop_active_device() noexcept
     }
     if (active_open_.load(std::memory_order_acquire)) {
         (void)hid_host_device_stop(handle);
-        if (active_open_.exchange(false, std::memory_order_acq_rel)) {
-            (void)hid_host_device_close(handle);
-        }
     }
-    active_handle_.store(nullptr, std::memory_order_release);
 }
 
 bool Producer::teardown_usb_and_hid() noexcept
@@ -849,13 +944,74 @@ bool Producer::teardown_usb_and_hid() noexcept
         !bridge_failure_.load(std::memory_order_acquire) && bridge_ != nullptr) {
         (void)enqueue_source_disconnect();
     }
+    const auto direct_device =
+        direct_device_.load(std::memory_order_acquire);
+    const bool wait_for_direct_device =
+        direct_device != nullptr &&
+        !direct_device_gone_.load(std::memory_order_acquire);
+    const bool wait_for_hid_disconnect =
+        hid_installed_.load(std::memory_order_acquire) &&
+        active_open_.load(std::memory_order_acquire);
+    hid_disconnect_requested_.store(wait_for_hid_disconnect,
+                                    std::memory_order_release);
+
+    /* Publish the disconnect-completion boundary before stopping the active
+     * interface: HID 1.0.3 may deliver DISCONNECTED from stop itself. */
     stop_active_device();
-    if (hid_task_ != nullptr) {
-        xTaskNotifyGive(hid_task_);
+
+    if (wait_for_direct_device || wait_for_hid_disconnect) {
+        const esp_err_t power_result = usb_host_lib_set_root_port_power(false);
+        if (power_result != ESP_OK) {
+            mark_teardown_failed("USB_ROOT_PORT_POWER_OFF_FAILED");
+            return false;
+        }
+
+        const TickType_t deadline = xTaskGetTickCount() + kShutdownTimeout;
+        while ((!direct_device_gone_.load(std::memory_order_acquire) &&
+                 wait_for_direct_device) ||
+               (!hid_disconnect_callback_done_.load(std::memory_order_acquire) &&
+                wait_for_hid_disconnect)) {
+            const auto client = usb_client_.load(std::memory_order_acquire);
+            if (client != nullptr) {
+                const esp_err_t event_result =
+                    usb_host_client_handle_events(client, kTaskPoll);
+                if (event_result != ESP_OK && event_result != ESP_ERR_TIMEOUT) {
+                    mark_teardown_failed("USB_CLIENT_EVENT_FAILED");
+                    return false;
+                }
+            } else {
+                vTaskDelay(kTaskPoll);
+            }
+            if (xTaskGetTickCount() >= deadline) {
+                if (wait_for_hid_disconnect &&
+                    !hid_disconnect_callback_done_.load(
+                        std::memory_order_acquire)) {
+                    mark_teardown_failed("HID_DISCONNECT_TIMEOUT");
+                } else {
+                    mark_teardown_failed("USB_DEVICE_GONE_TIMEOUT");
+                }
+                return false;
+            }
+        }
     }
+
     /* Release the HID task even when startup failed before hid_host_install. */
     if (hid_start_ != nullptr) {
         (void)xSemaphoreGive(hid_start_);
+    }
+    if (hid_installed_.exchange(false, std::memory_order_acq_rel)) {
+        /* hid_host_uninstall() unblocks and joins the client event handler;
+         * keep hid_event_task alive until that API performs the unblock. */
+        hid_uninstall_requested_.store(true, std::memory_order_release);
+        const esp_err_t result = hid_host_uninstall();
+        if (result != ESP_OK) {
+            mark_teardown_failed("HID_UNINSTALL_FAILED");
+            clean = false;
+        }
+    }
+    if (hid_task_ != nullptr) {
+        hid_event_stop_requested_.store(true, std::memory_order_release);
+        xTaskNotifyGive(hid_task_);
     }
     if (hid_task_ != nullptr &&
         (hid_done_ == nullptr ||
@@ -863,13 +1019,6 @@ bool Producer::teardown_usb_and_hid() noexcept
          !hid_done_flag_.load(std::memory_order_acquire))) {
         mark_teardown_failed("HID_TASK_STOP_TIMEOUT");
         return false;
-    }
-    if (hid_installed_.exchange(false, std::memory_order_acq_rel)) {
-        const esp_err_t result = hid_host_uninstall();
-        if (result != ESP_OK) {
-            mark_teardown_failed("HID_UNINSTALL_FAILED");
-            clean = false;
-        }
     }
     const auto client = usb_client_.exchange(nullptr, std::memory_order_acq_rel);
     if (client != nullptr) {
