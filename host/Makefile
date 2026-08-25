@@ -63,6 +63,7 @@ VIDEO_RUNNER_GFX_BMP := $(BUILD_DIR)/runner/np2video-gfx-vram-reference.bmp
 VIDEO_RUNNER_GDC_FIXTURE := $(abspath $(CURDIR)/../build/guest/np2video-gdc/np2video-gdc-fd1232.image)
 VIDEO_RUNNER_GDC_BMP := $(BUILD_DIR)/runner/np2video-gdc-reference.bmp
 VIDEO_RUNNER_LIVE_FIXTURE := $(abspath $(CURDIR)/../build/guest/np2video-live/np2video-live-fd1232.image)
+VIDEO_RUNNER_LIVE_BMP := $(BUILD_DIR)/runner/np2video-live-reference.bmp
 VIDEO_CONTROL_SOURCE := $(CURDIR)/runner/video_control_v1.c
 VIDEO_CONTROL_OBJECT := $(BUILD_DIR)/runner/video_control_v1.o
 VIDEO_CONTROL_DEPENDENCY := $(BUILD_DIR)/runner/video_control_v1.d
@@ -132,6 +133,9 @@ P4_NANO_PSRAM_BANDWIDTH_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_psram_bandwidt
 P4_NANO_PSRAM_READ_CONTROL_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
 P4_NANO_PSRAM_READ_CONTROL_TEST_SOURCE := $(CURDIR)/tests/p4_nano_psram_read_control_test.cpp
 P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_psram_read_control_test
+P4_NANO_PPA_ROTATION_REFERENCE_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
+P4_NANO_PPA_ROTATION_REFERENCE_TEST_SOURCE := $(CURDIR)/tests/p4_nano_ppa_rotation_reference_test.cpp
+P4_NANO_PPA_ROTATION_REFERENCE_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_ppa_rotation_reference_test
 P4_NANO_LIVE_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display/include
 P4_NANO_LIVE_SESSION_CONTRACT_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_live_display_session/include
 P4_NANO_LIVE_CONTRACT_TEST_SOURCE := $(CURDIR)/tests/p4_nano_live_display_contract_test.cpp
@@ -239,7 +243,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-ppa-rotation-reference test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -459,6 +463,14 @@ test-video-runner-live-reference: video-runner
 		--fixture-id np2video-7b2d-live-vram --scene-id 2 --multi-frame 20 \
 		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_LIVE_FIXTURE)"
 	@printf '%s\n' 'NP2VIDEO_LIVE_MULTIFRAME_RESULT=PASS'
+
+test-video-runner-live-reference-bmp: video-runner
+	@$(MAKE) --no-print-directory -C "$(CURDIR)/../tests/guest/np2video-live" image
+	@$(PYTHON) "$(VIDEO_RUNNER_SUPERVISOR)" --timeout 45 \
+		--fixture-id np2video-7b2d-live-vram --scene-id 2 \
+		--dump-framebuffer "$(VIDEO_RUNNER_LIVE_BMP)" \
+		"$(VIDEO_RUNNER_OUTPUT)" "$(VIDEO_RUNNER_LIVE_FIXTURE)"
+	@$(PYTHON) "$(VIDEO_BMP_VALIDATOR)" "$(VIDEO_RUNNER_LIVE_BMP)"
 
 test-video-runner-cli: video-runner
 	@$(PYTHON) "$(VIDEO_CLI_TEST)" "$(VIDEO_RUNNER_OUTPUT)"
@@ -697,6 +709,16 @@ test-p4-nano-psram-read-control:
 		"$(P4_NANO_PSRAM_READ_CONTROL_TEST_SOURCE)" \
 		-o "$(P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT)"
 	@"$(P4_NANO_PSRAM_READ_CONTROL_TEST_OUTPUT)"
+
+test-p4-nano-ppa-rotation-reference: test-video-runner-live-reference-bmp
+	@mkdir -p "$(dir $(P4_NANO_PPA_ROTATION_REFERENCE_TEST_OUTPUT))"
+	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
+		-I"$(P4_NANO_PPA_ROTATION_REFERENCE_HEADER_DIR)" \
+		"$(P4_NANO_PPA_ROTATION_REFERENCE_TEST_SOURCE)" \
+		-o "$(P4_NANO_PPA_ROTATION_REFERENCE_TEST_OUTPUT)"
+	@"$(P4_NANO_PPA_ROTATION_REFERENCE_TEST_OUTPUT)"
+	@$(PYTHON) "$(HOST_ROOT)/tools/test_display_p9_ppa_rotation.py" \
+		--fixture-bmp "$(VIDEO_RUNNER_LIVE_BMP)"
 
 test-p4-nano-live-display-contract:
 	@mkdir -p "$(dir $(P4_NANO_LIVE_CONTRACT_TEST_OUTPUT))"

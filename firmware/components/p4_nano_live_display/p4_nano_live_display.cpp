@@ -53,6 +53,9 @@
 #if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 #include "p4_nano_live_display/p4_nano_psram_bandwidth.hpp"
 #endif
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+#include "p4_nano_live_display/p4_nano_ppa_rotation.hpp"
+#endif
 #include "p4_nano_live_display_session/session.hpp"
 #include "scrnmng.h"
 
@@ -741,6 +744,7 @@ esp_err_t run_motion_validation()
 
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 
 constexpr std::uint32_t kBenchmarkWarmupTransforms = 8U;
@@ -1528,6 +1532,17 @@ void benchmark_print_vsync_stats(
         refresh_millihz, count_consistent ? "PASS" : "FAIL");
 }
 
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+bool benchmark_vsync_valid(
+    const p4_nano_display::DisplaySession &display)
+{
+    p4_nano_display::VsyncStatsSnapshot stats{};
+    p4_nano_display::display_session_snapshot_vsync(&display, &stats);
+    return stats.callback_registered && stats.callback_count > 0U &&
+           stats.period_count == stats.callback_count - 1U;
+}
+#endif
+
 bool benchmark_validate_frame(const np2_presentation_frame_view &view)
 {
     return view.ptr != nullptr && esp_ptr_external_ram(view.ptr) &&
@@ -2090,6 +2105,100 @@ esp_err_t run_isolated_benchmark_after_start(BenchmarkState *state)
     }
     return failed ? ESP_FAIL : ESP_OK;
 }
+
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+esp_err_t run_ppa_rotation_benchmark_after_start(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    bool failed = false;
+    esp_err_t ppa_result = ESP_FAIL;
+    if (!benchmark_hold_isolated_source(state) ||
+        !benchmark_request_isolated_pause(state)) {
+        failed = true;
+    }
+    if (!failed) {
+        const p4_nano_ppa_rotation::Input input{
+            .source = state->isolated_source_view.ptr,
+            .source_bytes = np2video_golden_visible_bytes,
+            .source_width = static_cast<std::uint32_t>(
+                state->isolated_source_view.width),
+            .source_height = static_cast<std::uint32_t>(
+                state->isolated_source_view.height),
+            .source_pitch_bytes = state->isolated_source_view.pitch,
+            .source_bpp = state->isolated_source_view.bpp,
+            .presentation_slot0 = state->slots[0].ptr,
+            .presentation_slot1 = state->slots[1].ptr,
+            .presentation_slot_bytes = kSlotBytes,
+            .native_framebuffer = state->display.framebuffer,
+            .native_framebuffer_bytes =
+                p4_nano_display::kNativeFramebufferBytes,
+        };
+        ppa_result = p4_nano_ppa_rotation::run(input);
+        if (ppa_result != ESP_OK) {
+            failed = true;
+        }
+    }
+
+    /* Stop the producer before releasing the pause.  PPA does not write the
+     * native framebuffer, so no transform/scanout ownership handoff is added
+     * here. */
+    state->stop_requested.store(true, std::memory_order_release);
+    state->isolated_cooperate_calls_at_end =
+        state->producer_cooperate_calls.load(std::memory_order_acquire);
+    const bool pause_stable =
+        state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->isolated_cooperate_calls_at_end &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
+    state->producer_pause_requested.store(false, std::memory_order_release);
+    if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
+        (void)xSemaphoreGive(state->isolated_pause_resume);
+        state->isolated_resumed = true;
+        std::printf("PRODUCER_RESUMED\n");
+    }
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (state->isolated_source_held) {
+        benchmark_release(state, &state->isolated_source_token);
+        state->isolated_source_held = false;
+    }
+    benchmark_hold_visible(state);
+    state->backlight_off_failed =
+        p4_nano_board::display_backlight_set(0U) != ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    const bool vsync_valid = benchmark_vsync_valid(state->display);
+    if (ppa_result != ESP_OK || state->publish_failed.load(
+            std::memory_order_acquire) || !pause_stable ||
+        state->producer_pause_acknowledged.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || state->backlight_off_failed ||
+        state->releases != state->acquisitions ||
+        state->producer_result.status != ESP_OK || !scheduling_contract ||
+        !vsync_valid) {
+        failed = true;
+    }
+    benchmark_print_vsync_stats(state->display);
+    std::printf("P4_NANO_PPA_ROTATION_VSYNC_VALID=%s\n",
+                vsync_valid ? "PASS" : "FAIL");
+    std::printf("P4_NANO_PPA_ROTATION_LIFECYCLE_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    return failed ? ESP_FAIL : ESP_OK;
+}
+#endif
 
 #if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
 esp_err_t run_compute_control_benchmark_after_start(BenchmarkState *state)
@@ -3439,6 +3548,7 @@ namespace p4_nano_live_display {
 
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 esp_err_t run_benchmark();
 #endif
@@ -3449,6 +3559,7 @@ esp_err_t run()
     return run_motion_validation();
 #elif defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
     return run_benchmark();
 #else
@@ -3773,6 +3884,11 @@ esp_err_t run_benchmark()
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(kBenchmarkMeasuredTransforms),
                 static_cast<unsigned>(kBenchmarkTotalTransforms));
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+    std::printf("P4_NANO_PPA_ROTATION_MODE rotation=CCW90 scale=1.0,1.0 "
+                "input=640x400 output=400x640 rgb565=1 scanout=active "
+                "native_framebuffer_write=0 blocking=1\n");
+#endif
 #if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
     std::printf("P4_NANO_TRANSFORM_ISOLATED_CONFIG producer_core=%d "
                 "producer_priority=%" PRIu32 " consumer_core=%d "
@@ -3924,7 +4040,9 @@ esp_err_t run_benchmark()
     }
     state.producer_start_us = static_cast<std::uint64_t>(esp_timer_get_time());
 
-#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE)
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+    return run_ppa_rotation_benchmark_after_start(&state);
+#elif defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE)
     return run_psram_read_control_benchmark_after_start(&state);
 #elif defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE)
     return run_compute_control_benchmark_after_start(&state);
