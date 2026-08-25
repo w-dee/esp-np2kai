@@ -12,12 +12,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <span>
 
 #include "sdkconfig.h"
 
 #include "esp_chip_info.h"
+#include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_psram.h"
@@ -36,6 +38,9 @@
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #include "p4_nano_live_display/p4_nano_live_display_contract.hpp"
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+#include "p4_nano_live_display/p4_nano_psram_bandwidth.hpp"
+#endif
 #include "p4_nano_live_display_session/session.hpp"
 #include "scrnmng.h"
 
@@ -723,7 +728,8 @@ esp_err_t run_motion_validation()
 #endif
 
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 
 constexpr std::uint32_t kBenchmarkWarmupTransforms = 8U;
 constexpr std::uint32_t kBenchmarkMeasuredTransforms = 128U;
@@ -899,6 +905,29 @@ struct BenchmarkState {
     StaticSemaphore_t isolated_pause_resume_storage{};
     SemaphoreHandle_t isolated_pause_ack = nullptr;
     SemaphoreHandle_t isolated_pause_resume = nullptr;
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+    std::uint8_t *p1_source = nullptr;
+    std::uint8_t *p1_destination = nullptr;
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms> p1_raw_samples{};
+    std::array<std::uint64_t, kBenchmarkMeasuredTransforms> p1_cache_samples{};
+    std::array<std::uint32_t, kBenchmarkMeasuredTransforms> p1_guards{};
+    std::size_t p1_raw_stored = 0U;
+    std::size_t p1_cache_stored = 0U;
+    std::uint32_t p1_expected_read_guard = 0U;
+    std::uint32_t p1_expected_source_crc = 0U;
+    std::uint32_t p1_final_pattern = 0U;
+    std::uint32_t p1_validation_crc = 0U;
+    std::uint32_t p1_phase_submit_start = 0U;
+    std::uint32_t p1_phase_submit_end = 0U;
+    std::uint32_t p1_phase_coalesced_start = 0U;
+    std::uint32_t p1_phase_coalesced_end = 0U;
+    std::uint32_t p1_phase_dropped_start = 0U;
+    std::uint32_t p1_phase_dropped_end = 0U;
+    std::atomic<std::uint32_t> p1_publish_progress{0U};
+    bool p1_producer_ended_during_phase = false;
+    bool p1_buffers_initialized = false;
+    bool p1_validation_pass = false;
+#endif
 };
 
 template <std::size_t N>
@@ -1054,6 +1083,9 @@ void benchmark_publish_hook(const SCRNMNG_PUBLISH_VIEW *view, void *context)
     }
     if (status == NP2_PRESENTATION_OK) {
         ++state->successful_submissions;
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+        state->p1_publish_progress.fetch_add(1U, std::memory_order_relaxed);
+#endif
         const std::uint64_t published_sequence = state->publisher.published_sequence;
         if (measurement_active && published_sequence == expected_sequence &&
             published_sequence != 0U) {
@@ -1690,10 +1722,470 @@ void benchmark_hold_visible(BenchmarkState *state)
 }
 
 std::uint32_t benchmark_counter_delta(std::uint32_t final_value,
-                                      std::uint32_t baseline)
+                                       std::uint32_t baseline)
 {
     return final_value >= baseline ? final_value - baseline : 0U;
 }
+
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+
+constexpr std::size_t kP1BufferBytes = 4U * 1024U * 1024U;
+constexpr std::size_t kP1AlignmentBytes = 64U;
+constexpr int kP1CacheSyncFlags = ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                                   ESP_CACHE_MSYNC_FLAG_UNALIGNED;
+
+#if defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_READ)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::Read;
+#elif defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_WRITE16)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::Write16;
+#elif defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_WRITE32)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::Write32;
+#elif defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_MEMCPY)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::Memcpy;
+#elif defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_ROW_COPY)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::RowMemcpy;
+#elif defined(P4_NANO_PSRAM_BANDWIDTH_OPERATION_PROXY)
+constexpr auto kP1Operation = p4_nano_psram_bandwidth::Operation::Proxy;
+#else
+#error "P1 PSRAM bandwidth operation is not selected"
+#endif
+
+constexpr std::uint32_t p1_pattern(std::uint32_t index)
+{
+    return 0x10203040U ^ (index * 0x9e3779b9U);
+}
+
+void benchmark_p1_free_buffers(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return;
+    }
+    heap_caps_free(state->p1_source);
+    heap_caps_free(state->p1_destination);
+    state->p1_source = nullptr;
+    state->p1_destination = nullptr;
+    state->p1_buffers_initialized = false;
+}
+
+bool benchmark_p1_prepare_buffers(BenchmarkState *state)
+{
+    if (state == nullptr) {
+        return false;
+    }
+    state->p1_source = static_cast<std::uint8_t *>(heap_caps_aligned_alloc(
+        kP1AlignmentBytes, kP1BufferBytes,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    state->p1_destination = static_cast<std::uint8_t *>(heap_caps_aligned_alloc(
+        kP1AlignmentBytes, kP1BufferBytes,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (state->p1_source == nullptr || state->p1_destination == nullptr) {
+        std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=buffer_alloc "
+                    "source=%p destination=%p free_spiram=%" PRIu32
+                    " largest_spiram=%" PRIu32 "\n",
+                    static_cast<void *>(state->p1_source),
+                    static_cast<void *>(state->p1_destination),
+                    static_cast<std::uint32_t>(heap_caps_get_free_size(
+                        MALLOC_CAP_SPIRAM)),
+                    static_cast<std::uint32_t>(heap_caps_get_largest_free_block(
+                        MALLOC_CAP_SPIRAM)));
+        benchmark_p1_free_buffers(state);
+        return false;
+    }
+    const bool layout_valid = esp_ptr_external_ram(state->p1_source) &&
+                               esp_ptr_external_ram(state->p1_destination) &&
+                               (reinterpret_cast<std::uintptr_t>(
+                                    state->p1_source) % kP1AlignmentBytes) == 0U &&
+                               (reinterpret_cast<std::uintptr_t>(
+                                    state->p1_destination) % kP1AlignmentBytes) == 0U &&
+                               !ranges_overlap(state->p1_source, kP1BufferBytes,
+                                               state->p1_destination,
+                                               kP1BufferBytes);
+    if (!layout_valid) {
+        std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=buffer_layout "
+                    "source_external=%d destination_external=%d "
+                    "source_mod64=%" PRIuPTR " destination_mod64=%" PRIuPTR
+                    "\n",
+                    esp_ptr_external_ram(state->p1_source) ? 1 : 0,
+                    esp_ptr_external_ram(state->p1_destination) ? 1 : 0,
+                    reinterpret_cast<std::uintptr_t>(state->p1_source) %
+                        kP1AlignmentBytes,
+                    reinterpret_cast<std::uintptr_t>(state->p1_destination) %
+                        kP1AlignmentBytes);
+        benchmark_p1_free_buffers(state);
+        return false;
+    }
+    for (std::size_t index = 0; index < kP1BufferBytes; ++index) {
+        state->p1_source[index] = static_cast<std::uint8_t>(
+            (index * 37U + 11U) & 0xffU);
+    }
+    std::memset(state->p1_destination, 0, kP1BufferBytes);
+    state->p1_expected_source_crc = p4_nano_display::crc32(
+        state->p1_source, kP1BufferBytes);
+    if (kP1Operation == p4_nano_psram_bandwidth::Operation::Read) {
+        state->p1_expected_read_guard =
+            p4_nano_psram_bandwidth::run_kernel(
+                kP1Operation, state->p1_source, state->p1_destination, 0U);
+    }
+    state->p1_buffers_initialized = true;
+    std::printf("P4_NANO_PSRAM_BANDWIDTH_BUFFERS result=PASS source=%p "
+                "destination=%p bytes_each=%zu alignment=%zu external=1 "
+                "disjoint=1\n",
+                static_cast<void *>(state->p1_source),
+                static_cast<void *>(state->p1_destination), kP1BufferBytes,
+                kP1AlignmentBytes);
+    report_memory("after_psram_bandwidth_buffers");
+    return true;
+}
+
+bool benchmark_p1_validate(BenchmarkState *state)
+{
+    if (state == nullptr || !state->p1_buffers_initialized) {
+        return false;
+    }
+    bool valid = true;
+    switch (kP1Operation) {
+    case p4_nano_psram_bandwidth::Operation::Read:
+        for (std::size_t index = 0; index < state->p1_raw_stored; ++index) {
+            valid = valid &&
+                    state->p1_guards[index] == state->p1_expected_read_guard;
+        }
+        state->p1_validation_crc = state->p1_expected_source_crc;
+        break;
+    case p4_nano_psram_bandwidth::Operation::Write16: {
+        const auto *output = reinterpret_cast<const std::uint16_t *>(
+            state->p1_destination);
+        const std::uint32_t pattern = p1_pattern(kBenchmarkTotalTransforms - 1U);
+        for (std::size_t index = 0; index < kP1BufferBytes / sizeof(std::uint16_t);
+             ++index) {
+            if (output[index] != static_cast<std::uint16_t>(
+                                    pattern ^ static_cast<std::uint32_t>(index))) {
+                valid = false;
+                break;
+            }
+        }
+        state->p1_validation_crc = p4_nano_display::crc32(
+            state->p1_destination, kP1BufferBytes);
+        break;
+    }
+    case p4_nano_psram_bandwidth::Operation::Write32: {
+        const auto *output = reinterpret_cast<const std::uint32_t *>(
+            state->p1_destination);
+        const std::uint32_t pattern = p1_pattern(kBenchmarkTotalTransforms - 1U);
+        for (std::size_t index = 0; index < kP1BufferBytes / sizeof(std::uint32_t);
+             ++index) {
+            const std::uint32_t pixel =
+                pattern ^ static_cast<std::uint32_t>(index);
+            if (output[index] != (pixel | (pixel << 16U))) {
+                valid = false;
+                break;
+            }
+        }
+        state->p1_validation_crc = p4_nano_display::crc32(
+            state->p1_destination, kP1BufferBytes);
+        break;
+    }
+    case p4_nano_psram_bandwidth::Operation::Memcpy:
+        valid = std::memcmp(state->p1_source, state->p1_destination,
+                            kP1BufferBytes) == 0;
+        state->p1_validation_crc = p4_nano_display::crc32(
+            state->p1_destination, kP1BufferBytes);
+        break;
+    case p4_nano_psram_bandwidth::Operation::RowMemcpy:
+        valid = std::memcmp(state->p1_source, state->p1_destination,
+                            512'000U) == 0;
+        state->p1_validation_crc = p4_nano_display::crc32(
+            state->p1_destination, 512'000U);
+        break;
+    case p4_nano_psram_bandwidth::Operation::Proxy: {
+        const auto *source = reinterpret_cast<const std::uint16_t *>(
+            state->p1_source);
+        const auto *destination = reinterpret_cast<const std::uint16_t *>(
+            state->p1_destination);
+        constexpr std::size_t source_pixels = 512'000U / sizeof(std::uint16_t);
+        for (std::size_t index = 0; index < source_pixels; ++index) {
+            const std::uint16_t pixel = source[index];
+            const std::size_t output_index = index * 4U;
+            if (destination[output_index + 0U] != pixel ||
+                destination[output_index + 1U] != pixel ||
+                destination[output_index + 2U] != pixel ||
+                destination[output_index + 3U] != pixel) {
+                valid = false;
+                break;
+            }
+        }
+        state->p1_validation_crc = p4_nano_display::crc32(
+            state->p1_destination, 2'048'000U);
+        break;
+    }
+    }
+    state->p1_validation_pass = valid;
+    return valid;
+}
+
+void benchmark_p1_print_metric(const char *metric,
+                               std::array<std::uint64_t,
+                                          kBenchmarkMeasuredTransforms> &samples,
+                               std::size_t stored, std::size_t read_bytes,
+                               std::size_t write_bytes)
+{
+    if (stored == 0U) {
+        std::printf("P4_NANO_PSRAM_TIMING metric=%s count=0\n", metric);
+        return;
+    }
+    std::uint64_t total = 0U;
+    std::uint64_t minimum = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t maximum = 0U;
+    for (std::size_t index = 0; index < stored; ++index) {
+        total += samples[index];
+        minimum = std::min(minimum, samples[index]);
+        maximum = std::max(maximum, samples[index]);
+    }
+    const std::uint64_t average = total / stored;
+    const std::uint64_t p50 = benchmark_percentile(samples, stored, 50U);
+    const std::uint64_t p95 = benchmark_percentile(samples, stored, 95U);
+    const std::uint64_t p99 = benchmark_percentile(samples, stored, 99U);
+    const std::size_t payload = read_bytes + write_bytes;
+    const double mib_per_second =
+        average == 0U
+            ? 0.0
+            : static_cast<double>(payload) * 1'000'000.0 /
+                  static_cast<double>(average) / 1'048'576.0;
+    std::printf("P4_NANO_PSRAM_TIMING metric=%s count=%zu stored=%zu "
+                "read_bytes=%zu write_bytes=%zu min_us=%" PRIu64
+                " max_us=%" PRIu64 " average_us=%" PRIu64
+                " p50_us=%" PRIu64 " p95_us=%" PRIu64
+                " p99_us=%" PRIu64 " payload_mib_s=%.3f\n",
+                metric, stored, stored, read_bytes, write_bytes, minimum,
+                maximum, average, p50, p95, p99, mib_per_second);
+}
+
+bool benchmark_p1_run_samples(BenchmarkState *state)
+{
+    if (state == nullptr || !state->p1_buffers_initialized ||
+        !state->scene_ready.load(std::memory_order_acquire)) {
+        return false;
+    }
+    state->p1_phase_submit_start = state->p1_publish_progress.load(
+        std::memory_order_acquire);
+    state->p1_phase_coalesced_start =
+        np2_presentation_coalesced_count(&state->publisher);
+    state->p1_phase_dropped_start =
+        np2_presentation_dropped_count(&state->publisher);
+    bool valid = true;
+    for (std::uint32_t index = 0U; index < kBenchmarkTotalTransforms;
+         ++index) {
+        if (state->producer_done.load(std::memory_order_acquire)) {
+            state->p1_producer_ended_during_phase = true;
+            valid = false;
+            break;
+        }
+        const std::uint32_t pattern = p1_pattern(index);
+        const std::uint64_t raw_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const std::uint32_t guard = p4_nano_psram_bandwidth::run_kernel(
+            kP1Operation, state->p1_source, state->p1_destination, pattern);
+        const std::uint64_t raw_us = static_cast<std::uint64_t>(
+            esp_timer_get_time()) - raw_start;
+        std::uint64_t cache_us = 0U;
+        if (p4_nano_psram_bandwidth::write_bytes(kP1Operation) != 0U) {
+            const std::uint64_t cache_start =
+                static_cast<std::uint64_t>(esp_timer_get_time());
+            const esp_err_t sync_result = esp_cache_msync(
+                state->p1_destination,
+                p4_nano_psram_bandwidth::write_bytes(kP1Operation),
+                kP1CacheSyncFlags);
+            cache_us = static_cast<std::uint64_t>(esp_timer_get_time()) -
+                       cache_start;
+            if (sync_result != ESP_OK) {
+                valid = false;
+                break;
+            }
+        }
+        if (benchmark_is_measured_sample(index)) {
+            const std::size_t measured_index =
+                index - kBenchmarkWarmupTransforms;
+            state->p1_raw_samples[measured_index] = raw_us;
+            state->p1_guards[measured_index] = guard;
+            state->p1_raw_stored = measured_index + 1U;
+            if (p4_nano_psram_bandwidth::write_bytes(kP1Operation) != 0U) {
+                state->p1_cache_samples[measured_index] = cache_us;
+                state->p1_cache_stored = measured_index + 1U;
+            }
+        }
+        np2_host_taskmng_cooperate();
+    }
+    if (valid && state->p1_raw_stored == kBenchmarkMeasuredTransforms) {
+        const std::uint32_t final_pattern =
+            p1_pattern(kBenchmarkTotalTransforms - 1U);
+        (void)p4_nano_psram_bandwidth::run_kernel(
+            kP1Operation, state->p1_source, state->p1_destination,
+            final_pattern);
+        state->p1_final_pattern = final_pattern;
+        valid = benchmark_p1_validate(state);
+    }
+    state->p1_phase_submit_end = state->p1_publish_progress.load(
+        std::memory_order_acquire);
+    state->p1_phase_coalesced_end =
+        np2_presentation_coalesced_count(&state->publisher);
+    state->p1_phase_dropped_end =
+        np2_presentation_dropped_count(&state->publisher);
+    return valid;
+}
+
+void benchmark_p1_print_report(BenchmarkState *state, const char *condition,
+                               bool valid)
+{
+    const std::size_t read_bytes =
+        p4_nano_psram_bandwidth::read_bytes(kP1Operation);
+    const std::size_t write_bytes =
+        p4_nano_psram_bandwidth::write_bytes(kP1Operation);
+    const std::uint32_t submit_delta = benchmark_counter_delta(
+        state->p1_phase_submit_end, state->p1_phase_submit_start);
+    const std::uint32_t coalesced_delta = benchmark_counter_delta(
+        state->p1_phase_coalesced_end, state->p1_phase_coalesced_start);
+    const std::uint32_t dropped_delta = benchmark_counter_delta(
+        state->p1_phase_dropped_end, state->p1_phase_dropped_start);
+    benchmark_p1_print_metric("raw", state->p1_raw_samples,
+                              state->p1_raw_stored, read_bytes, write_bytes);
+    if (state->p1_cache_stored != 0U) {
+        benchmark_p1_print_metric("cache_sync", state->p1_cache_samples,
+                                  state->p1_cache_stored, 0U, write_bytes);
+    }
+    std::printf("P4_NANO_PSRAM_BANDWIDTH operation=%s condition=%s "
+                "read_bytes=%zu write_bytes=%zu result=%s "
+                "validation=%s validation_crc=0x%08" PRIx32
+                " producer_done_at_end=%d producer_ended_during_phase=%d"
+                " publish_delta=%" PRIu32
+                " coalesced_delta=%" PRIu32 " dropped_delta=%" PRIu32
+                " pccore_exec_count=%" PRIu64 "\n",
+                p4_nano_psram_bandwidth::operation_name(kP1Operation),
+                condition, read_bytes, write_bytes, valid ? "PASS" : "FAIL",
+                state->p1_validation_pass ? "PASS" : "FAIL",
+                state->p1_validation_crc, state->producer_done.load(
+                    std::memory_order_acquire) ? 1 : 0,
+                state->p1_producer_ended_during_phase ? 1 : 0, submit_delta,
+                coalesced_delta, dropped_delta,
+                state->producer_result.pccore_exec_count);
+    benchmark_print_vsync_stats(state->display);
+}
+
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+esp_err_t benchmark_p1_run_isolated_after_start(BenchmarkState *state)
+{
+    bool failed = !benchmark_hold_isolated_source(state) ||
+                  !benchmark_request_isolated_pause(state);
+    if (!failed) {
+        failed = !benchmark_p1_run_samples(state);
+    }
+    state->stop_requested.store(true, std::memory_order_release);
+    const bool pause_stable =
+        state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->producer_cooperate_calls.load(std::memory_order_acquire) &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
+    if (!pause_stable) {
+        failed = true;
+    }
+    state->producer_pause_requested.store(false, std::memory_order_release);
+    if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
+        (void)xSemaphoreGive(state->isolated_pause_resume);
+        state->isolated_resumed = true;
+        std::printf("PRODUCER_RESUMED\n");
+    }
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (state->isolated_source_held) {
+        benchmark_release(state, &state->isolated_source_token);
+        state->isolated_source_held = false;
+    }
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    if (state->producer_result.status != ESP_OK ||
+        state->publish_failed.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || !scheduling_contract ||
+        state->releases != state->acquisitions) {
+        failed = true;
+    }
+    benchmark_p1_print_report(state, "isolated", !failed);
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    benchmark_p1_free_buffers(state);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    return failed ? ESP_FAIL : ESP_OK;
+}
+#endif
+
+#if !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+esp_err_t benchmark_p1_run_live_after_start(BenchmarkState *state)
+{
+    bool failed = false;
+    const std::uint64_t wait_start =
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    while (!state->scene_ready.load(std::memory_order_acquire) &&
+           !state->producer_done.load(std::memory_order_acquire)) {
+        if (static_cast<std::uint64_t>(esp_timer_get_time()) - wait_start >
+            kBenchmarkWatchdogUs) {
+            failed = true;
+            break;
+        }
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (!failed) {
+        failed = !benchmark_p1_run_samples(state);
+    }
+    if (state->p1_phase_submit_end <= state->p1_phase_submit_start) {
+        failed = true;
+    }
+    state->stop_requested.store(true, std::memory_order_release);
+    const std::uint64_t stop_start =
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        if (static_cast<std::uint64_t>(esp_timer_get_time()) - stop_start >
+            kBenchmarkWatchdogUs) {
+            failed = true;
+            break;
+        }
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (!state->producer_done.load(std::memory_order_acquire)) {
+        failed = true;
+    }
+    if (state->producer_result.status != ESP_OK ||
+        state->publish_failed.load(std::memory_order_acquire) ||
+        state->producer_core.load(std::memory_order_relaxed) !=
+            kBenchmarkProducerCore ||
+        state->producer_priority.load(std::memory_order_relaxed) !=
+            kBenchmarkProducerPriority || xPortGetCoreID() != 0 ||
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) != 1U) {
+        failed = true;
+    }
+    benchmark_p1_print_report(state, "live", !failed);
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    benchmark_p1_free_buffers(state);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    return failed ? ESP_FAIL : ESP_OK;
+}
+#endif
+
+#endif
 
 #endif
 
@@ -1702,7 +2194,8 @@ std::uint32_t benchmark_counter_delta(std::uint32_t final_value,
 namespace p4_nano_live_display {
 
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 esp_err_t run_benchmark();
 #endif
 
@@ -1711,7 +2204,8 @@ esp_err_t run()
 #if defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE)
     return run_motion_validation();
 #elif defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
     return run_benchmark();
 #else
     LiveState state;
@@ -1873,11 +2367,151 @@ esp_err_t run()
 #endif
 }
 
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+esp_err_t run_psram_bandwidth_benchmark()
+{
+    static BenchmarkState state;
+    esp_chip_info_t chip_info{};
+    esp_chip_info(&chip_info);
+    const char *condition =
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+        "isolated";
+#else
+        "live";
+#endif
+    std::printf("P4_NANO_PSRAM_BANDWIDTH_START operation=%s condition=%s "
+                "chip_revision=%d fixture_id=%s scene_id=%u warmup=%u "
+                "measured=%u final_validation=%u scanout=active num_fbs=1\n",
+                p4_nano_psram_bandwidth::operation_name(kP1Operation),
+                condition, chip_info.revision, np2video_golden_fixture_id,
+                static_cast<unsigned>(np2video_golden_scene_id),
+                static_cast<unsigned>(kBenchmarkWarmupTransforms),
+                static_cast<unsigned>(kBenchmarkMeasuredTransforms),
+                static_cast<unsigned>(kBenchmarkFinalValidationTransforms));
+    report_memory("before_psram_bandwidth_slots");
+    for (std::size_t index = 0; index < kSlotCount; ++index) {
+        state.slots[index].ptr = static_cast<std::uint8_t *>(heap_caps_calloc(
+            1, kSlotBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        state.slots[index].capacity = kSlotBytes;
+        if (state.slots[index].ptr == nullptr) {
+            for (std::size_t release = 0; release < index; ++release) {
+                heap_caps_free(state.slots[release].ptr);
+            }
+            std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=slot_alloc\n");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (!esp_ptr_external_ram(state.slots[0].ptr) ||
+        !esp_ptr_external_ram(state.slots[1].ptr) ||
+        ranges_overlap(state.slots[0].ptr, kSlotBytes,
+                       state.slots[1].ptr, kSlotBytes)) {
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=slot_layout\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (np2_presentation_init(&state.publisher, state.slots) !=
+        NP2_PRESENTATION_OK) {
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=publisher_init\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    state.slots_initialized = true;
+    report_memory("after_psram_bandwidth_slots");
+
+    esp_err_t result =
+        p4_nano_display::display_session_initialize(&state.display);
+    if (result != ESP_OK) {
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return result;
+    }
+    if (ranges_overlap(state.slots[0].ptr, kSlotBytes,
+                       state.display.framebuffer,
+                       p4_nano_display::kNativeFramebufferBytes) ||
+        ranges_overlap(state.slots[1].ptr, kSlotBytes,
+                       state.display.framebuffer,
+                       p4_nano_display::kNativeFramebufferBytes)) {
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        std::printf("P4_NANO_PSRAM_BANDWIDTH_RESULT=FAIL reason=dsi_alias\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    report_memory("after_psram_bandwidth_framebuffer");
+    result = p4_nano_board::display_backlight_set(0U);
+    if (result != ESP_OK || !benchmark_p1_prepare_buffers(&state)) {
+        (void)p4_nano_board::display_backlight_set(0U);
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        benchmark_p1_free_buffers(&state);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return result == ESP_OK ? ESP_ERR_NO_MEM : result;
+    }
+
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    state.isolated_pause_ack =
+        xSemaphoreCreateBinaryStatic(&state.isolated_pause_ack_storage);
+    state.isolated_pause_resume =
+        xSemaphoreCreateBinaryStatic(&state.isolated_pause_resume_storage);
+    if (state.isolated_pause_ack == nullptr ||
+        state.isolated_pause_resume == nullptr) {
+        benchmark_p1_free_buffers(&state);
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return ESP_ERR_NO_MEM;
+    }
+#endif
+
+    const np2video_runner_config runner_config{
+        .output = benchmark_runner_output,
+        .output_context = nullptr,
+        .ready = benchmark_runner_ready,
+        .scene_ready = benchmark_scene_ready,
+        .stopping = benchmark_runner_stopping,
+        .complete = benchmark_runner_complete,
+        .complete_context = &state,
+        .lifecycle_context = &state,
+        .stop_requested = benchmark_stop_requested,
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+        .cooperate = benchmark_producer_cooperate,
+        .pause_at_cooperate = benchmark_pause_at_cooperate,
+#else
+        .cooperate = nullptr,
+        .pause_at_cooperate = nullptr,
+#endif
+        .task_scheduling_override = true,
+        .task_core_id = kBenchmarkProducerCore,
+        .task_priority = kBenchmarkProducerPriority,
+    };
+    result = np2video_runner_start_ex(&runner_config);
+    if (result != ESP_OK) {
+        benchmark_p1_free_buffers(&state);
+        (void)p4_nano_display::display_session_cleanup(&state.display);
+        heap_caps_free(state.slots[0].ptr);
+        heap_caps_free(state.slots[1].ptr);
+        return result;
+    }
+    state.producer_start_us = static_cast<std::uint64_t>(esp_timer_get_time());
+#if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    return benchmark_p1_run_isolated_after_start(&state);
+#else
+    return benchmark_p1_run_live_after_start(&state);
+#endif
+}
+#endif
+
 #if defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
+    defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
 
 esp_err_t run_benchmark()
 {
+#if defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
+    return run_psram_bandwidth_benchmark();
+#else
     /* The fixed statistics arrays are deliberately static: keeping them out
      * of app_main's task stack avoids turning bounded instrumentation storage
      * into a stack-overflow risk. */
@@ -2397,6 +3031,7 @@ esp_err_t run_benchmark()
         return cleanup_result;
     }
     return failed ? ESP_FAIL : ESP_OK;
+#endif
 #endif
 }
 

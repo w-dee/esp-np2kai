@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -28,6 +28,9 @@ live_display_benchmark=0
 live_display_benchmark_variant=""
 live_display_transform_isolated_benchmark=0
 live_display_transform_isolated_benchmark_variant=""
+psram_bandwidth=0
+psram_bandwidth_mode=""
+psram_bandwidth_operation=""
 real_runtime=0
 real_runtime_variant=""
 runtime_validation=0
@@ -116,6 +119,25 @@ while (($# > 0)); do
             live_display_transform_isolated_benchmark=1
             shift
             ;;
+        --psram-bandwidth-live)
+            psram_bandwidth=1
+            psram_bandwidth_mode="live"
+            shift
+            ;;
+        --psram-bandwidth-isolated)
+            psram_bandwidth=1
+            psram_bandwidth_mode="isolated"
+            shift
+            ;;
+        --psram-bandwidth-op)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            psram_bandwidth_operation="$2"
+            shift 2
+            ;;
+        --psram-bandwidth-op=*)
+            psram_bandwidth_operation="${1#*=}"
+            shift
+            ;;
         --real-runtime)
             real_runtime=1
             shift
@@ -151,6 +173,33 @@ while (($# > 0)); do
             ;;
     esac
 done
+
+if (( psram_bandwidth )); then
+    if (( live_display_benchmark || live_display_transform_isolated_benchmark )); then
+        printf 'ERROR: PSRAM bandwidth cannot be combined with an explicit display benchmark profile\n' >&2
+        exit 2
+    fi
+    case "${psram_bandwidth_mode}" in
+        live)
+            live_display_benchmark=1
+            ;;
+        isolated)
+            live_display_transform_isolated_benchmark=1
+            ;;
+        *)
+            printf 'ERROR: PSRAM bandwidth requires --psram-bandwidth-live or --psram-bandwidth-isolated\n' >&2
+            exit 2
+            ;;
+    esac
+    case "${psram_bandwidth_operation}" in
+        read|write16|write32|memcpy|row-copy|proxy)
+            ;;
+        *)
+            printf 'ERROR: --psram-bandwidth-op requires read, write16, write32, memcpy, row-copy, or proxy\n' >&2
+            exit 2
+            ;;
+    esac
+fi
 
 case "${i286_inline_mem_fastpath}" in
     0|1)
@@ -451,6 +500,8 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=${live_display_transform_isolated_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=${live_display_transform_isolated_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant}"
+    -D "P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE=${psram_bandwidth}"
+    -D "P4_NANO_PSRAM_BANDWIDTH_OPERATION=${psram_bandwidth_operation}"
     -D "P4_NANO_REAL_RUNTIME_PROFILE=${real_runtime}"
     -D "P4_NANO_REAL_RUNTIME_BOARD=${real_runtime}"
     -D "P4_NANO_REAL_RUNTIME_VARIANT=${real_runtime_variant}"
@@ -563,6 +614,13 @@ else
     unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE
     unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD
     unset P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT
+fi
+if (( psram_bandwidth )); then
+    export P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE=1
+    export P4_NANO_PSRAM_BANDWIDTH_OPERATION="${psram_bandwidth_operation}"
+else
+    unset P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE
+    unset P4_NANO_PSRAM_BANDWIDTH_OPERATION
 fi
 if (( display_transform_diagnostic )); then
     export P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE=1
