@@ -93,6 +93,10 @@ def main() -> int:
             "PIE availability must be explicit until zip semantics are proven")
     require("P4_NANO_EXACT2X_PIE_CORRECTNESS PIE_AVAILABLE=0 status=BLOCKED" in live,
             "missing blocked PIE correctness status")
+    for fragment in ("kExact2xWarmupSamples = 8U",
+                     "kExact2xMeasuredSamples = 128U",
+                     "kExact2xFinalValidationSamples = 1U"):
+        require(fragment in header, f"P10 sample-count contract changed: {fragment}")
     metric_start = live.index("void exact2x_print_metric")
     metric_end = live.index("bool exact2x_full_match", metric_start)
     metric = live[metric_start:metric_end]
@@ -104,6 +108,35 @@ def main() -> int:
     samples_start = live.index("bool exact2x_run_samples")
     samples_end = live.index("esp_err_t run_exact2x_benchmark_after_start", samples_start)
     samples_function = live[samples_start:samples_end]
+    require("constexpr std::size_t kExact2xCooperateInterval = 64U;" in live,
+            "P10 cooperation interval must be a fixed 64-iteration constant")
+    require("constexpr TickType_t kExact2xCooperateDelayTicks = 1;" in live,
+            "P10 cooperation delay must be exactly one tick")
+    require("P4_NANO_EXACT2X_COOPERATE interval=%zu delay_ticks=%u" in
+            samples_function,
+            "P10 cooperation configuration must be reported once")
+    loop_start = samples_function.index("for (std::size_t index = 0U;")
+    loop_end = samples_function.index(
+        "    // Keep the required final validation outside the measured sample window.",
+        loop_start)
+    loop = samples_function[loop_start:loop_end]
+    delay_index = loop.index("vTaskDelay(kExact2xCooperateDelayTicks);")
+    require("completed_iterations % kExact2xCooperateInterval == 0U" in loop,
+            "P10 cooperation must occur every 64 completed iterations")
+    require("exact2x_add_sample" in loop[:delay_index],
+            "P10 delay must follow measured sample storage")
+    for fragment in ("kernel_start", "kernel_us", "cache_start", "cache_us"):
+        require(fragment in loop[:delay_index],
+                f"P10 delay must follow {fragment} timing")
+    require("vTaskDelay(0)" not in loop and "pdMS_TO_TICKS(1)" not in loop,
+            "P10 cooperation must use one explicit tick, not zero/ms conversion")
+    require(loop.find("vTaskDelay") == delay_index,
+            "P10 loop must have exactly one cooperative delay point")
+    for twdt_api in ("esp_task_wdt_init", "esp_task_wdt_reconfigure",
+                     "esp_task_wdt_add", "esp_task_wdt_delete",
+                     "esp_task_wdt_reset"):
+        require(twdt_api not in samples_function,
+                f"P10 must not change TWDT policy: {twdt_api}")
     normalize_start = live.index("bool exact2x_normalize")
     normalize_end = live.index("bool exact2x_run_samples", normalize_start)
     normalize = live[normalize_start:normalize_end]

@@ -3449,6 +3449,11 @@ struct Exact2xStats final {
 
 static Exact2xStats exact2x_stats;
 
+constexpr std::size_t kExact2xCooperateInterval = 64U;
+constexpr TickType_t kExact2xCooperateDelayTicks = 1;
+static_assert(kExact2xCooperateDelayTicks == 1,
+              "exact2x cooperation must block for exactly one tick");
+
 void exact2x_add_sample(std::uint64_t kernel, std::uint64_t cache,
                         std::uint64_t service, std::size_t index) noexcept
 {
@@ -3599,6 +3604,9 @@ bool exact2x_run_samples(BenchmarkState *state)
         heap_caps_free(source);
         return false;
     }
+    std::printf("P4_NANO_EXACT2X_COOPERATE interval=%zu delay_ticks=%u\n",
+                kExact2xCooperateInterval,
+                static_cast<unsigned>(kExact2xCooperateDelayTicks));
     for (std::size_t index = 0U;
          index < p4_nano_display::kExact2xWarmupSamples +
                      p4_nano_display::kExact2xMeasuredSamples;
@@ -3622,6 +3630,10 @@ bool exact2x_run_samples(BenchmarkState *state)
         if (index >= p4_nano_display::kExact2xWarmupSamples) {
             exact2x_add_sample(kernel_us, cache_us, kernel_us + cache_us,
                                index - p4_nano_display::kExact2xWarmupSamples);
+        }
+        const std::size_t completed_iterations = index + 1U;
+        if (completed_iterations % kExact2xCooperateInterval == 0U) {
+            vTaskDelay(kExact2xCooperateDelayTicks);
         }
     }
     // Keep the required final validation outside the measured sample window.
