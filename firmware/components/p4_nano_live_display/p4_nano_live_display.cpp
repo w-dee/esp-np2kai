@@ -39,6 +39,7 @@
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #if defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE) || \
     defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE)
 #include "p4_nano_display/p4_nano_display_exact2x.hpp"
@@ -68,6 +69,9 @@
 #if defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
 #include "driver/ppa.h"
 #include "p4_nano_live_display/p4_nano_exact2x_internal_source.hpp"
+#endif
+#if defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE)
+#include "p4_nano_live_display/p4_nano_exact2x_grouped_store.hpp"
 #endif
 #if defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE)
@@ -1554,6 +1558,7 @@ void benchmark_print_vsync_stats(
 #if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE) || \
     defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE)
 bool benchmark_vsync_valid(
@@ -3936,6 +3941,75 @@ esp_err_t run_exact2x_benchmark_after_start(BenchmarkState *state)
     }
     return failed ? ESP_FAIL : ESP_OK;
 }
+#elif defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE)
+esp_err_t run_exact2x_grouped_store_benchmark_after_start(BenchmarkState *state)
+{
+    bool failed = !benchmark_hold_isolated_source(state) ||
+                  !benchmark_request_isolated_pause(state);
+    esp_err_t grouped_store_result = ESP_FAIL;
+    if (!failed) {
+        const p4_nano_exact2x_grouped_store::Input input{
+            .original_source = state->isolated_source_view.ptr,
+            .original_source_bytes = np2video_golden_visible_bytes,
+            .presentation_slot0 = state->slots[0].ptr,
+            .presentation_slot1 = state->slots[1].ptr,
+            .presentation_slot_bytes = kSlotBytes,
+            .active_framebuffer = state->display.framebuffer,
+            .active_framebuffer_bytes = p4_nano_display::kNativeFramebufferBytes,
+        };
+        grouped_store_result = p4_nano_exact2x_grouped_store::run(input);
+        failed = grouped_store_result != ESP_OK;
+    }
+    state->stop_requested.store(true, std::memory_order_release);
+    const bool pause_stable = state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->producer_cooperate_calls.load(std::memory_order_acquire) &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
+    state->producer_pause_requested.store(false, std::memory_order_release);
+    if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
+        (void)xSemaphoreGive(state->isolated_pause_resume);
+        state->isolated_resumed = true;
+    }
+    while (!state->producer_done.load(std::memory_order_acquire)) {
+        vTaskDelay(kConsumerPollDelayTicks);
+    }
+    if (state->isolated_source_held) {
+        benchmark_release(state, &state->isolated_source_token);
+        state->isolated_source_held = false;
+    }
+    benchmark_hold_visible(state);
+    state->backlight_off_failed =
+        p4_nano_board::display_backlight_set(0U) != ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) == kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    const bool vsync_valid = benchmark_vsync_valid(state->display);
+    if (grouped_store_result != ESP_OK ||
+        state->publish_failed.load(std::memory_order_acquire) ||
+        !pause_stable ||
+        state->producer_pause_acknowledged.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || state->backlight_off_failed ||
+        state->releases != state->acquisitions ||
+        state->producer_result.status != ESP_OK || !scheduling_contract ||
+        !vsync_valid) {
+        failed = true;
+    }
+    benchmark_print_vsync_stats(state->display);
+    std::printf("P4_NANO_EXACT2X_GROUPED_VSYNC_VALID=%s\n",
+                vsync_valid ? "PASS" : "FAIL");
+    std::printf("P4_NANO_EXACT2X_GROUPED_LIFECYCLE_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    heap_caps_free(state->slots[0].ptr);
+    heap_caps_free(state->slots[1].ptr);
+    if (cleanup_result != ESP_OK) {
+        return cleanup_result;
+    }
+    return failed ? ESP_FAIL : ESP_OK;
+}
 #elif defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
 esp_err_t run_exact2x_internal_source_benchmark_after_start(BenchmarkState *state)
 {
@@ -4277,6 +4351,7 @@ namespace p4_nano_live_display {
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
@@ -4291,6 +4366,7 @@ esp_err_t run()
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
     defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE) || \
     defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE) || \
@@ -4621,6 +4697,9 @@ esp_err_t run_benchmark()
 #if defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
     p4_nano_display::print_benchmark_display_config();
 #endif
+#if defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE)
+    p4_nano_display::print_benchmark_display_config();
+#endif
 #if defined(P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE)
     p4_nano_display::print_benchmark_display_config();
@@ -4795,6 +4874,8 @@ esp_err_t run_benchmark()
     return run_ppa_rotation_benchmark_after_start(&state);
 #elif defined(P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE)
     return run_ppa_internal_tile_benchmark_after_start(&state);
+#elif defined(P4_NANO_EXACT2X_GROUPED_STORE_BENCHMARK_PROFILE)
+    return run_exact2x_grouped_store_benchmark_after_start(&state);
 #elif defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
     return run_exact2x_internal_source_benchmark_after_start(&state);
 #elif defined(P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE)
