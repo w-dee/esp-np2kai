@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host/static contract for the P10K-B0 grouped-PIE preemption harness."""
+"""Host/static contract for the P10K-B1 grouped-PIE preemption harness."""
 
 from __future__ import annotations
 
@@ -81,6 +81,14 @@ def main() -> int:
     main_cmake = MAIN_CMAKE.read_text(encoding="utf-8")
     display_cmake = DISPLAY_CMAKE.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
+    run_start = component.index("esp_err_t run()")
+    run_body = component[run_start:]
+    join_start = component.index("HighTaskCleanupStatus stop_and_join_high_task")
+    join_end = component.index("esp_err_t fail_run", join_start)
+    join_body = component[join_start:join_end]
+    fail_start = component.index("esp_err_t fail_run")
+    fail_end = component.index("} // namespace", fail_start)
+    fail_body = component[fail_start:fail_end]
 
     grouped_name = "exact2x_pie_tile128_grouped64_aligned"
     clobber_name = "exact2x_pie_preemption_clobber_q0_q1"
@@ -143,6 +151,53 @@ def main() -> int:
     require(component.count("exact2x_pie_preemption_clobber_q0_q1") >= 1,
             "harness does not invoke q0/q1 clobber helper")
 
+    # Failure-lifetime contract: task/timer callbacks point into static
+    # harness storage, and timeout handling retains the task handle/context.
+    require("struct HarnessContext final" in component and
+            "static HarnessContext context{}" in component,
+            "task-reachable state must use static harness storage")
+    require("HarnessState &state = context.state" in run_body and
+            "HarnessState state{}" not in run_body and
+            "StaticSemaphore_t high_started_storage{}" not in run_body and
+            "StaticSemaphore_t high_handled_storage{}" not in run_body,
+            "run() must not expose automatic task-reachable storage")
+    require("StaticSemaphore_t high_started_storage{}" in component and
+            "StaticSemaphore_t high_handled_storage{}" in component,
+            "static semaphore backing storage is missing")
+    require("reset_harness_state(&state)" in run_body,
+            "static harness state lacks an explicit one-shot reset")
+    require("state->high_done.load(std::memory_order_acquire)" in join_body and
+            "state->high_task = nullptr" in join_body and
+            join_body.index("state->high_done.load(std::memory_order_acquire)") <
+            join_body.index("state->high_task = nullptr"),
+            "high-task handle must clear only after high_done")
+    require("P4_NANO_PIE_PREEMPT_HIGH_TASK_CLEANUP stopped=0" in join_body and
+            "retained=1 result=FAIL_TIMEOUT" in join_body,
+            "timeout path must emit explicit retained failure marker")
+    timeout_return = join_body.index("return HighTaskCleanupStatus::StopTimeoutRetained")
+    require(join_body.index("state->high_task = nullptr") > timeout_return,
+            "timeout path must not clear the high-task handle")
+    require("vTaskDelete(state->high_task)" not in component,
+            "low task must not externally delete the PIE task")
+
+    # Timer destruction always precedes task join; failed destruction retains
+    # the callback handle and therefore the static context remains reachable.
+    require("DeleteFailedRetained" in component and
+            "return TimerCleanupStatus::DeleteFailedRetained" in component,
+            "timer-delete failure must retain its handle")
+    require(fail_body.index("stop_and_delete_timer(state") <
+            fail_body.index("stop_and_join_high_task(state"),
+            "failure cleanup must destroy the timer before joining the task")
+    success_cleanup = run_body[run_body.index("bool cleanup_ok = true;"):]
+    require(success_cleanup.index("stop_and_delete_timer(&state") <
+            success_cleanup.index("stop_and_join_high_task(&state"),
+            "success cleanup must destroy the timer before joining the task")
+    require("state.high_started = nullptr" in success_cleanup and
+            "state.high_handled = nullptr" in success_cleanup and
+            "retained=%d buffers=freed" in success_cleanup,
+            "normal cleanup must release synchronization and report retention")
+    require("timer_callback" in component and "arg = &state" in run_body,
+            "timer callback must retain static harness context")
     # Runtime model: low app task, higher-priority same-core task, one-shot
     # timer wake, bounded waits, control-before-stress, and full memcmp.
     for fragment in (
@@ -210,7 +265,7 @@ def main() -> int:
     if args.elf is not None:
         check_elf(args.elf, grouped_name, clobber_name)
 
-    print("Display Performance P10K-B0 grouped PIE preemption host/static contract passed")
+    print("Display Performance P10K-B1 grouped PIE preemption host/static contract passed")
     print("P10K_HARDWARE_ACCESS=NOT_PERFORMED")
     print("GROUPED_PIE_PERFORMANCE=NOT_MEASURED")
     return 0

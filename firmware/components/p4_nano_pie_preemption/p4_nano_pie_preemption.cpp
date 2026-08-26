@@ -77,6 +77,44 @@ struct HarnessState final {
     alignas(16) std::uint8_t clobber_output[32]{};
 };
 
+/* The high task and ESP timer both retain this context through asynchronous
+ * callbacks.  Keep it in static storage so a failed join cannot leave either
+ * actor pointing into run()'s stack frame. */
+struct HarnessContext final {
+    HarnessState state{};
+    StaticSemaphore_t high_started_storage{};
+    StaticSemaphore_t high_handled_storage{};
+};
+
+HarnessContext &harness_context()
+{
+    static HarnessContext context{};
+    return context;
+}
+
+void reset_harness_state(HarnessState *state)
+{
+    state->high_task = nullptr;
+    state->wake_timer = nullptr;
+    state->high_started = nullptr;
+    state->high_handled = nullptr;
+    state->stop_requested.store(false, std::memory_order_relaxed);
+    state->helper_active.store(false, std::memory_order_relaxed);
+    state->high_done.store(false, std::memory_order_relaxed);
+    state->timer_callback_failed.store(false, std::memory_order_relaxed);
+    state->trigger_count.store(0U, std::memory_order_relaxed);
+    state->timer_wake_count.store(0U, std::memory_order_relaxed);
+    state->high_wake_count.store(0U, std::memory_order_relaxed);
+    state->high_pie_count.store(0U, std::memory_order_relaxed);
+    state->helper_active_handoff_count.store(0U, std::memory_order_relaxed);
+    state->low_core.store(UINT32_MAX, std::memory_order_relaxed);
+    state->low_priority.store(0U, std::memory_order_relaxed);
+    state->high_core.store(UINT32_MAX, std::memory_order_relaxed);
+    state->high_priority.store(0U, std::memory_order_relaxed);
+    std::memset(state->clobber_source, 0, sizeof(state->clobber_source));
+    std::memset(state->clobber_output, 0, sizeof(state->clobber_output));
+}
+
 void timer_callback(void *arg)
 {
     auto *state = static_cast<HarnessState *>(arg);
@@ -180,10 +218,17 @@ bool validate_output(const std::uint8_t *candidate,
     return false;
 }
 
-void stop_and_delete_timer(HarnessState *state, bool *cleanup_ok)
+enum class TimerCleanupStatus {
+    NotPresent,
+    StoppedDeleted,
+    DeleteFailedRetained,
+};
+
+TimerCleanupStatus stop_and_delete_timer(HarnessState *state,
+                                         bool *cleanup_ok)
 {
     if (state->wake_timer == nullptr) {
-        return;
+        return TimerCleanupStatus::NotPresent;
     }
     if (esp_timer_is_active(state->wake_timer)) {
         if (esp_timer_stop(state->wake_timer) != ESP_OK) {
@@ -192,18 +237,29 @@ void stop_and_delete_timer(HarnessState *state, bool *cleanup_ok)
     }
     if (esp_timer_delete(state->wake_timer) != ESP_OK) {
         *cleanup_ok = false;
+        return TimerCleanupStatus::DeleteFailedRetained;
     }
     state->wake_timer = nullptr;
+    return TimerCleanupStatus::StoppedDeleted;
 }
 
-void stop_and_join_high_task(HarnessState *state, bool *cleanup_ok)
+enum class HighTaskCleanupStatus {
+    NotPresent,
+    StoppedConfirmed,
+    StopTimeoutRetained,
+};
+
+HighTaskCleanupStatus stop_and_join_high_task(HarnessState *state,
+                                              bool *cleanup_ok)
 {
     if (state->high_task == nullptr) {
-        return;
+        return HighTaskCleanupStatus::NotPresent;
     }
     state->stop_requested.store(true, std::memory_order_release);
+    bool notify_ok = true;
     if (xTaskNotifyGive(state->high_task) != pdPASS) {
         *cleanup_ok = false;
+        notify_ok = false;
     }
     for (std::size_t attempt = 0U;
          attempt < kCleanupWaitAttempts &&
@@ -213,8 +269,15 @@ void stop_and_join_high_task(HarnessState *state, bool *cleanup_ok)
     }
     if (!state->high_done.load(std::memory_order_acquire)) {
         *cleanup_ok = false;
+        std::printf("P4_NANO_PIE_PREEMPT_HIGH_TASK_CLEANUP stopped=0"
+                    " retained=1 result=FAIL_TIMEOUT\n");
+        return HighTaskCleanupStatus::StopTimeoutRetained;
     }
     state->high_task = nullptr;
+    std::printf("P4_NANO_PIE_PREEMPT_HIGH_TASK_CLEANUP stopped=1"
+                " retained=0 result=%s\n",
+                notify_ok ? "PASS" : "FAIL_NOTIFY");
+    return HighTaskCleanupStatus::StoppedConfirmed;
 }
 
 esp_err_t fail_run(HarnessState *state, std::uint16_t *source,
@@ -222,16 +285,24 @@ esp_err_t fail_run(HarnessState *state, std::uint16_t *source,
                    const char *reason)
 {
     bool cleanup_ok = true;
-    stop_and_delete_timer(state, &cleanup_ok);
-    stop_and_join_high_task(state, &cleanup_ok);
+    (void)stop_and_delete_timer(state, &cleanup_ok);
+    (void)stop_and_join_high_task(state, &cleanup_ok);
+    if (state->high_task == nullptr && state->wake_timer == nullptr) {
+        state->high_started = nullptr;
+        state->high_handled = nullptr;
+    }
+    /* The high task receives only static HarnessState; these buffers are no
+     * longer reachable once the low task has returned from the helper. */
     heap_caps_free(source);
     heap_caps_free(candidate);
     heap_caps_free(golden);
-    std::printf("P4_NANO_PIE_PREEMPT_CLEANUP timer=%s high_task=%s buffers=freed"
-                " result=%s reason=%s\n",
-                state->wake_timer == nullptr ? "stopped" : "active",
-                state->high_task == nullptr ? "stopped" : "active",
-                cleanup_ok ? "PASS" : "FAIL", reason);
+    const bool retained = state->wake_timer != nullptr ||
+                          state->high_task != nullptr;
+    std::printf("P4_NANO_PIE_PREEMPT_CLEANUP timer=%s high_task=%s"
+                " retained=%d buffers=freed result=%s reason=%s\n",
+                state->wake_timer == nullptr ? "stopped" : "retained",
+                state->high_task == nullptr ? "stopped" : "retained",
+                retained ? 1 : 0, cleanup_ok ? "PASS" : "FAIL", reason);
     std::printf("P4_NANO_PIE_PREEMPT_RESULT=FAIL\n");
     return ESP_FAIL;
 }
@@ -242,7 +313,15 @@ namespace p4_nano_pie_preemption {
 
 esp_err_t run()
 {
-    HarnessState state{};
+    HarnessContext &context = harness_context();
+    HarnessState &state = context.state;
+    if (state.high_task != nullptr || state.wake_timer != nullptr) {
+        std::printf("P4_NANO_PIE_PREEMPT_HIGH_TASK_CLEANUP stopped=0"
+                    " retained=1 result=FAIL_RETAINED_STATE\n");
+        std::printf("P4_NANO_PIE_PREEMPT_RESULT=FAIL reason=retained_state\n");
+        return ESP_ERR_INVALID_STATE;
+    }
+    reset_harness_state(&state);
     state.low_core.store(static_cast<std::uint32_t>(xPortGetCoreID()),
                          std::memory_order_release);
     state.low_priority.store(
@@ -304,10 +383,10 @@ esp_err_t run()
         return fail_run(&state, source, candidate, golden, "scalar_golden");
     }
 
-    StaticSemaphore_t high_started_storage{};
-    StaticSemaphore_t high_handled_storage{};
-    state.high_started = xSemaphoreCreateBinaryStatic(&high_started_storage);
-    state.high_handled = xSemaphoreCreateBinaryStatic(&high_handled_storage);
+    state.high_started =
+        xSemaphoreCreateBinaryStatic(&context.high_started_storage);
+    state.high_handled =
+        xSemaphoreCreateBinaryStatic(&context.high_handled_storage);
     if (state.high_started == nullptr || state.high_handled == nullptr) {
         return fail_run(&state, source, candidate, golden, "semaphore_create");
     }
@@ -398,15 +477,23 @@ esp_err_t run()
                 state.high_pie_count.load(std::memory_order_relaxed), handoffs);
 
     bool cleanup_ok = true;
-    stop_and_delete_timer(&state, &cleanup_ok);
-    stop_and_join_high_task(&state, &cleanup_ok);
+    (void)stop_and_delete_timer(&state, &cleanup_ok);
+    (void)stop_and_join_high_task(&state, &cleanup_ok);
+    if (state.high_task == nullptr && state.wake_timer == nullptr) {
+        state.high_started = nullptr;
+        state.high_handled = nullptr;
+    }
+    /* The high task receives only static HarnessState; these buffers are no
+     * longer reachable once the low task has returned from the helper. */
     heap_caps_free(source);
     heap_caps_free(candidate);
     heap_caps_free(golden);
-    std::printf("P4_NANO_PIE_PREEMPT_CLEANUP timer=%s high_task=%s buffers=freed"
-                " result=%s\n",
-                state.wake_timer == nullptr ? "stopped" : "active",
-                state.high_task == nullptr ? "stopped" : "active",
+    const bool retained = state.wake_timer != nullptr || state.high_task != nullptr;
+    std::printf("P4_NANO_PIE_PREEMPT_CLEANUP timer=%s high_task=%s"
+                " retained=%d buffers=freed result=%s\n",
+                state.wake_timer == nullptr ? "stopped" : "retained",
+                state.high_task == nullptr ? "stopped" : "retained",
+                retained ? 1 : 0,
                 cleanup_ok ? "PASS" : "FAIL");
     if (!cleanup_ok) {
         std::printf("P4_NANO_PIE_PREEMPT_RESULT=FAIL reason=cleanup\n");
