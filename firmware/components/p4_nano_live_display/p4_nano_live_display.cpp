@@ -3447,27 +3447,52 @@ struct Exact2xStats final {
     bool cache_ok = true;
 };
 
-static Exact2xStats exact2x_stats;
+static Exact2xStats exact2x_scalar_stats;
+static Exact2xStats exact2x_pie_stats;
 
 constexpr std::size_t kExact2xCooperateInterval = 64U;
 constexpr TickType_t kExact2xCooperateDelayTicks = 1;
 static_assert(kExact2xCooperateDelayTicks == 1,
               "exact2x cooperation must block for exactly one tick");
 
-void exact2x_add_sample(std::uint64_t kernel, std::uint64_t cache,
-                        std::uint64_t service, std::size_t index) noexcept
+using Exact2xKernel = bool (*)(const std::uint16_t *, std::uint16_t *) noexcept;
+
+void exact2x_reset_stats(Exact2xStats *stats) noexcept
 {
-    if (index >= exact2x_stats.kernel.size()) {
+    if (stats == nullptr) {
         return;
     }
-    exact2x_stats.kernel[index] = kernel;
-    exact2x_stats.cache[index] = cache;
-    exact2x_stats.service[index] = service;
-    exact2x_stats.stored = index + 1U;
+    // Keep the bounded report arrays in static storage. In particular, avoid
+    // materializing an aggregate temporary on this task's constrained stack.
+    stats->kernel.fill(0U);
+    stats->cache.fill(0U);
+    stats->service.fill(0U);
+    stats->stored = 0U;
+    stats->source_crc_before = 0U;
+    stats->source_crc_after = 0U;
+    stats->output_crc = 0U;
+    stats->source_immutable = false;
+    stats->byte_exact = false;
+    stats->final_validation_ok = false;
+    stats->cache_ok = true;
+}
+
+void exact2x_add_sample(Exact2xStats *stats, std::uint64_t kernel,
+                        std::uint64_t cache, std::uint64_t service,
+                        std::size_t index) noexcept
+{
+    if (stats == nullptr || index >= stats->kernel.size()) {
+        return;
+    }
+    stats->kernel[index] = kernel;
+    stats->cache[index] = cache;
+    stats->service[index] = service;
+    stats->stored = index + 1U;
 }
 
 template <std::size_t N>
-void exact2x_print_metric(const char *name, std::array<std::uint64_t, N> &samples,
+void exact2x_print_metric(const char *phase, const char *metric,
+                          std::array<std::uint64_t, N> &samples,
                           std::size_t count)
 {
     // Statistics are emitted only after sampling; chronological order is no
@@ -3487,10 +3512,10 @@ void exact2x_print_metric(const char *name, std::array<std::uint64_t, N> &sample
             std::min(count - 1U, (count * rank + 99U) / 100U - 1U);
         return samples[index];
     };
-    std::printf("P4_NANO_EXACT2X_TIMING metric=%s count=%zu min_us=%" PRIu64
+    std::printf("P4_NANO_EXACT2X_%s_%s count=%zu min_us=%" PRIu64
                 " average_us=%" PRIu64 " p50_us=%" PRIu64
                 " p95_us=%" PRIu64 " p99_us=%" PRIu64 " max_us=%" PRIu64 "\n",
-                name, count, count == 0U ? 0U : samples[0],
+                phase, metric, count, count == 0U ? 0U : samples[0],
                 count == 0U ? 0U : total / count, percentile(50U),
                 percentile(95U), percentile(99U),
                 count == 0U ? 0U : samples[count - 1U]);
@@ -3529,25 +3554,143 @@ bool exact2x_normalize(const std::uint16_t *source, std::uint16_t *destination) 
     return source_result == ESP_OK && destination_result == ESP_OK;
 }
 
+bool exact2x_scalar_kernel(const std::uint16_t *source,
+                           std::uint16_t *destination) noexcept
+{
+    return p4_nano_display::exact2x_scalar(
+        source, p4_nano_display::kExact2xSourceBytes, destination,
+        p4_nano_display::kExact2xDestinationBytes);
+}
+
+bool exact2x_pie_kernel(const std::uint16_t *source,
+                        std::uint16_t *destination) noexcept
+{
+    p4_nano_display::exact2x_pie_aligned(source, destination);
+    return true;
+}
+
+bool exact2x_phase_result(const Exact2xStats &stats) noexcept
+{
+    return stats.cache_ok && stats.source_immutable && stats.byte_exact &&
+           stats.final_validation_ok &&
+           stats.stored == p4_nano_display::kExact2xMeasuredSamples;
+}
+
+void exact2x_report_invalid_phase(Exact2xStats *stats, const char *phase)
+{
+    if (stats == nullptr || phase == nullptr) {
+        return;
+    }
+    exact2x_reset_stats(stats);
+    stats->cache_ok = false;
+    exact2x_print_metric(phase, "KERNEL", stats->kernel, stats->stored);
+    exact2x_print_metric(phase, "CACHE_SYNC", stats->cache, stats->stored);
+    exact2x_print_metric(phase, "SERVICE", stats->service, stats->stored);
+    std::printf("P4_NANO_EXACT2X_%s_CORRECTNESS source_crc_before=0x00000000"
+                " source_crc_after=0x00000000 output_crc=0x00000000"
+                " source_immutable=0 byte_exact=0 final_validation=0"
+                " samples=0 result=FAIL\n",
+                phase);
+    std::printf("P4_NANO_EXACT2X_%s_RESULT=FAIL\n", phase);
+}
+
+bool exact2x_run_phase(BenchmarkState *state, Exact2xStats *stats,
+                       Exact2xKernel kernel, const char *phase,
+                       const std::uint16_t *source, std::uint16_t *destination,
+                       bool kernel_layout_ok)
+{
+    if (state == nullptr || stats == nullptr || kernel == nullptr || phase == nullptr ||
+        source == nullptr || destination == nullptr) {
+        return false;
+    }
+    exact2x_reset_stats(stats);
+    stats->source_crc_before = p4_nano_display::crc32(
+        reinterpret_cast<const std::uint8_t *>(source),
+        p4_nano_display::kExact2xSourceBytes);
+    if (!kernel_layout_ok ||
+        stats->source_crc_before != p4_nano_display::kExact2xExpectedSourceCrc ||
+        esp_cache_msync(const_cast<std::uint16_t *>(source),
+                        p4_nano_display::kExact2xSourceBytes,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                            ESP_CACHE_MSYNC_FLAG_UNALIGNED) != ESP_OK) {
+        stats->cache_ok = false;
+    }
+    for (std::size_t index = 0U;
+         stats->cache_ok &&
+         index < p4_nano_display::kExact2xWarmupSamples +
+                     p4_nano_display::kExact2xMeasuredSamples;
+         ++index) {
+        if (!exact2x_normalize(source, destination)) {
+            stats->cache_ok = false;
+            break;
+        }
+        const std::uint64_t kernel_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const bool transformed = kernel(source, destination);
+        const std::uint64_t kernel_us =
+            static_cast<std::uint64_t>(esp_timer_get_time()) - kernel_start;
+        const std::uint64_t cache_start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        const esp_err_t sync_result =
+            p4_nano_display::display_session_sync_framebuffer(&state->display);
+        const std::uint64_t cache_us =
+            static_cast<std::uint64_t>(esp_timer_get_time()) - cache_start;
+        if (!transformed || sync_result != ESP_OK) {
+            stats->cache_ok = false;
+            break;
+        }
+        if (index >= p4_nano_display::kExact2xWarmupSamples) {
+            exact2x_add_sample(stats, kernel_us, cache_us, kernel_us + cache_us,
+                               index - p4_nano_display::kExact2xWarmupSamples);
+        }
+        const std::size_t completed_iterations = index + 1U;
+        if (completed_iterations % kExact2xCooperateInterval == 0U) {
+            vTaskDelay(kExact2xCooperateDelayTicks);
+        }
+    }
+    // Keep this required one-call validation outside the measured window.
+    if (stats->cache_ok && exact2x_normalize(source, destination)) {
+        const bool transformed = kernel(source, destination);
+        const esp_err_t sync_result =
+            p4_nano_display::display_session_sync_framebuffer(&state->display);
+        stats->final_validation_ok = transformed && sync_result == ESP_OK;
+    }
+    if (stats->cache_ok) {
+        stats->source_crc_after = p4_nano_display::crc32(
+            reinterpret_cast<const std::uint8_t *>(source),
+            p4_nano_display::kExact2xSourceBytes);
+        stats->output_crc = p4_nano_display::crc32(
+            reinterpret_cast<const std::uint8_t *>(destination),
+            p4_nano_display::kExact2xDestinationBytes);
+        stats->source_immutable =
+            stats->source_crc_before == stats->source_crc_after;
+        stats->byte_exact =
+            stats->output_crc == p4_nano_display::kExact2xExpectedDestinationCrc &&
+            exact2x_full_match(source, destination);
+    }
+    exact2x_print_metric(phase, "KERNEL", stats->kernel, stats->stored);
+    exact2x_print_metric(phase, "CACHE_SYNC", stats->cache, stats->stored);
+    exact2x_print_metric(phase, "SERVICE", stats->service, stats->stored);
+    const bool result = exact2x_phase_result(*stats);
+    std::printf("P4_NANO_EXACT2X_%s_CORRECTNESS source_crc_before=0x%08" PRIx32
+                " source_crc_after=0x%08" PRIx32 " output_crc=0x%08" PRIx32
+                " source_immutable=%d byte_exact=%d final_validation=%d"
+                " samples=%zu result=%s\n",
+                phase, stats->source_crc_before, stats->source_crc_after,
+                stats->output_crc, stats->source_immutable ? 1 : 0,
+                stats->byte_exact ? 1 : 0, stats->final_validation_ok ? 1 : 0,
+                stats->stored, result ? "PASS" : "FAIL");
+    std::printf("P4_NANO_EXACT2X_%s_RESULT=%s\n", phase,
+                result ? "PASS" : "FAIL");
+    return result;
+}
+
 bool exact2x_run_samples(BenchmarkState *state)
 {
     if (state == nullptr || !state->isolated_source_held ||
         state->isolated_source_view.ptr == nullptr) {
         return false;
     }
-    // Clear the static report storage without materializing a ~3 KiB
-    // aggregate temporary in this task's automatic frame.
-    exact2x_stats.kernel.fill(0U);
-    exact2x_stats.cache.fill(0U);
-    exact2x_stats.service.fill(0U);
-    exact2x_stats.stored = 0U;
-    exact2x_stats.source_crc_before = 0U;
-    exact2x_stats.source_crc_after = 0U;
-    exact2x_stats.output_crc = 0U;
-    exact2x_stats.source_immutable = false;
-    exact2x_stats.byte_exact = false;
-    exact2x_stats.final_validation_ok = false;
-    exact2x_stats.cache_ok = true;
     auto *source = static_cast<std::uint16_t *>(heap_caps_aligned_alloc(
         64U, p4_nano_display::kExact2xSourceBytes,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -3582,7 +3725,23 @@ bool exact2x_run_samples(BenchmarkState *state)
                 destination == nullptr ? 0U : reinterpret_cast<std::uintptr_t>(destination) % 64U,
                 p4_nano_display::kExact2xDestinationBytes,
                 destination_m2c_alignment_ok ? "PASS" : "FAIL");
+    const bool pie_layout_ok = source != nullptr && destination != nullptr &&
+        esp_ptr_external_ram(source) && esp_ptr_external_ram(destination) &&
+        reinterpret_cast<std::uintptr_t>(source) %
+                p4_nano_display::kExact2xRequiredAlignmentBytes == 0U &&
+        reinterpret_cast<std::uintptr_t>(destination) %
+                p4_nano_display::kExact2xRequiredAlignmentBytes == 0U;
+    std::printf("P4_NANO_EXACT2X_PIE_LAYOUT source_mod16=%zu destination_mod16=%zu "
+                "aligned=%s\n",
+                source == nullptr ? 0U :
+                    reinterpret_cast<std::uintptr_t>(source) %
+                        p4_nano_display::kExact2xRequiredAlignmentBytes,
+                destination == nullptr ? 0U :
+                    reinterpret_cast<std::uintptr_t>(destination) %
+                        p4_nano_display::kExact2xRequiredAlignmentBytes,
+                pie_layout_ok ? "PASS" : "FAIL");
     if (!layout_ok) {
+        exact2x_report_invalid_phase(&exact2x_pie_stats, "PIE");
         heap_caps_free(source);
         return false;
     }
@@ -3593,95 +3752,24 @@ bool exact2x_run_samples(BenchmarkState *state)
                 original[y * 640U + x];
         }
     }
-    exact2x_stats.source_crc_before = p4_nano_display::crc32(
-        reinterpret_cast<const std::uint8_t *>(source),
-        p4_nano_display::kExact2xSourceBytes);
-    if (exact2x_stats.source_crc_before !=
-        p4_nano_display::kExact2xExpectedSourceCrc ||
-        esp_cache_msync(source, p4_nano_display::kExact2xSourceBytes,
-                        ESP_CACHE_MSYNC_FLAG_DIR_C2M |
-                            ESP_CACHE_MSYNC_FLAG_UNALIGNED) != ESP_OK) {
-        heap_caps_free(source);
-        return false;
-    }
     std::printf("P4_NANO_EXACT2X_COOPERATE interval=%zu delay_ticks=%u\n",
                 kExact2xCooperateInterval,
                 static_cast<unsigned>(kExact2xCooperateDelayTicks));
-    for (std::size_t index = 0U;
-         index < p4_nano_display::kExact2xWarmupSamples +
-                     p4_nano_display::kExact2xMeasuredSamples;
-         ++index) {
-        if (!exact2x_normalize(source, destination)) {
-            exact2x_stats.cache_ok = false;
-            break;
-        }
-        const std::uint64_t kernel_start = static_cast<std::uint64_t>(esp_timer_get_time());
-        const bool transformed = p4_nano_display::exact2x_scalar(
-            source, p4_nano_display::kExact2xSourceBytes, destination,
-            p4_nano_display::kExact2xDestinationBytes);
-        const std::uint64_t kernel_us = static_cast<std::uint64_t>(esp_timer_get_time()) - kernel_start;
-        const std::uint64_t cache_start = static_cast<std::uint64_t>(esp_timer_get_time());
-        const esp_err_t sync_result = p4_nano_display::display_session_sync_framebuffer(&state->display);
-        const std::uint64_t cache_us = static_cast<std::uint64_t>(esp_timer_get_time()) - cache_start;
-        if (!transformed || sync_result != ESP_OK) {
-            exact2x_stats.cache_ok = false;
-            break;
-        }
-        if (index >= p4_nano_display::kExact2xWarmupSamples) {
-            exact2x_add_sample(kernel_us, cache_us, kernel_us + cache_us,
-                               index - p4_nano_display::kExact2xWarmupSamples);
-        }
-        const std::size_t completed_iterations = index + 1U;
-        if (completed_iterations % kExact2xCooperateInterval == 0U) {
-            vTaskDelay(kExact2xCooperateDelayTicks);
-        }
-    }
-    // Keep the required final validation outside the measured sample window.
-    // It has no timing sample and is used only for the final CRC/pixel check.
-    if (exact2x_stats.cache_ok && exact2x_normalize(source, destination)) {
-        const bool transformed = p4_nano_display::exact2x_scalar(
-            source, p4_nano_display::kExact2xSourceBytes, destination,
-            p4_nano_display::kExact2xDestinationBytes);
-        const esp_err_t sync_result =
-            p4_nano_display::display_session_sync_framebuffer(&state->display);
-        exact2x_stats.final_validation_ok = transformed && sync_result == ESP_OK;
-    }
-    if (exact2x_stats.cache_ok) {
-        exact2x_stats.source_crc_after = p4_nano_display::crc32(
-            reinterpret_cast<const std::uint8_t *>(source),
-            p4_nano_display::kExact2xSourceBytes);
-        exact2x_stats.output_crc = p4_nano_display::crc32(
-            reinterpret_cast<const std::uint8_t *>(destination),
-            p4_nano_display::kExact2xDestinationBytes);
-        exact2x_stats.source_immutable =
-            exact2x_stats.source_crc_before == exact2x_stats.source_crc_after;
-        exact2x_stats.byte_exact =
-            exact2x_stats.output_crc == p4_nano_display::kExact2xExpectedDestinationCrc &&
-            exact2x_full_match(source, destination);
-    }
-    exact2x_print_metric("scalar_kernel_us", exact2x_stats.kernel, exact2x_stats.stored);
-    exact2x_print_metric("scalar_cache_sync_us", exact2x_stats.cache, exact2x_stats.stored);
-    exact2x_print_metric("scalar_service_us", exact2x_stats.service, exact2x_stats.stored);
-    std::printf("P4_NANO_EXACT2X_SCALAR_CORRECTNESS source_crc_before=0x%08" PRIx32
-                " source_crc_after=0x%08" PRIx32 " output_crc=0x%08" PRIx32
-                " source_immutable=%d byte_exact=%d result=%s\n",
-                exact2x_stats.source_crc_before, exact2x_stats.source_crc_after,
-                exact2x_stats.output_crc, exact2x_stats.source_immutable ? 1 : 0,
-                exact2x_stats.byte_exact ? 1 : 0,
-                exact2x_stats.source_immutable && exact2x_stats.byte_exact &&
-                    exact2x_stats.final_validation_ok &&
-                    exact2x_stats.stored == p4_nano_display::kExact2xMeasuredSamples
-                    ? "PASS" : "FAIL");
-    std::printf("P4_NANO_EXACT2X_PIE_TIMING PIE_AVAILABLE=0 status=NOT_MEASURED\n");
-    std::printf("P4_NANO_EXACT2X_PIE_CORRECTNESS PIE_AVAILABLE=0 status=BLOCKED "
-                "reason=PIE_zip_operand_result_semantics_not_authoritatively_established\n");
+    const bool scalar_result = exact2x_run_phase(
+        state, &exact2x_scalar_stats, exact2x_scalar_kernel, "SCALAR", source,
+        destination, true);
+    const bool pie_result = exact2x_run_phase(
+        state, &exact2x_pie_stats, exact2x_pie_kernel, "PIE", source,
+        destination, pie_layout_ok);
     std::printf("P4_NANO_EXACT2X_SAMPLE_COUNTS warmup=%zu measured=%zu final_validation=%zu "
-                "final_validation_ok=%d scalar_stored=%zu cache_normalization=outside_kernel\n",
+                "scalar_final_validation_ok=%d pie_final_validation_ok=%d "
+                "scalar_stored=%zu pie_stored=%zu cache_normalization=outside_kernel\n",
                 p4_nano_display::kExact2xWarmupSamples,
                 p4_nano_display::kExact2xMeasuredSamples,
                 p4_nano_display::kExact2xFinalValidationSamples,
-                exact2x_stats.final_validation_ok ? 1 : 0,
-                exact2x_stats.stored);
+                exact2x_scalar_stats.final_validation_ok ? 1 : 0,
+                exact2x_pie_stats.final_validation_ok ? 1 : 0,
+                exact2x_scalar_stats.stored, exact2x_pie_stats.stored);
     p4_nano_display::VsyncStatsSnapshot vsync{};
     p4_nano_display::display_session_snapshot_vsync(&state->display, &vsync);
     std::printf("P4_NANO_EXACT2X_VSYNC callback_registered=%d callback_count=%" PRIu32
@@ -3693,9 +3781,7 @@ bool exact2x_run_samples(BenchmarkState *state)
                 vsync.period_min_us, vsync.period_max_us,
                 vsync.callback_count > 0U && vsync.period_count == vsync.callback_count - 1U
                     ? "PASS" : "FAIL");
-    const bool result = exact2x_stats.cache_ok && exact2x_stats.source_immutable &&
-                        exact2x_stats.byte_exact && exact2x_stats.final_validation_ok &&
-                        exact2x_stats.stored == p4_nano_display::kExact2xMeasuredSamples;
+    const bool result = scalar_result && pie_result;
     std::printf("P4_NANO_EXACT2X_RESULT=%s\n", result ? "PASS" : "FAIL");
     heap_caps_free(source);
     return result;
@@ -4213,7 +4299,7 @@ esp_err_t run_benchmark()
 #if defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
     std::printf("P4_NANO_EXACT2X_MODE source=400x640 destination=800x1280 "
                 "format=RGB565 mapping=nearest_neighbor_2x scanout=active "
-                "native_framebuffer=1 pie_available=0\n");
+                "native_framebuffer=1 pie_available=1\n");
 #endif
 #if defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE)
     std::printf("P4_NANO_TRANSFORM_ISOLATED_CONFIG producer_core=%d "

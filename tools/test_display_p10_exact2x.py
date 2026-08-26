@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Host contract and independent golden test for the P10 exact-2x scaler."""
+"""Host contract, lane model, and golden test for the P10 exact-2x A/B path."""
 
 from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import struct
 import zlib
 
@@ -12,8 +13,10 @@ import zlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_exact2x.hpp"
 SOURCE = ROOT / "firmware/components/p4_nano_display/p4_nano_display_exact2x.cpp"
+PIE_SOURCE = ROOT / "firmware/components/p4_nano_display/p4_nano_display_exact2x_pie.S"
 LIVE = ROOT / "firmware/components/p4_nano_live_display/p4_nano_live_display.cpp"
 DISPLAY = ROOT / "firmware/components/p4_nano_display/p4_nano_display.cpp"
+DISPLAY_CMAKE = ROOT / "firmware/components/p4_nano_display/CMakeLists.txt"
 MAIN = ROOT / "firmware/main/main.cpp"
 BUILD = ROOT / "tools/emu/build-production.sh"
 GOLDEN = ROOT / "tests/guest/np2video-live/golden.json"
@@ -69,8 +72,10 @@ def main() -> int:
     args = parser.parse_args()
     header = HEADER.read_text(encoding="utf-8")
     source = SOURCE.read_text(encoding="utf-8")
+    pie = PIE_SOURCE.read_text(encoding="utf-8")
     live = LIVE.read_text(encoding="utf-8")
     display = DISPLAY.read_text(encoding="utf-8")
+    display_cmake = DISPLAY_CMAKE.read_text(encoding="utf-8")
     main = MAIN.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     golden = GOLDEN.read_text(encoding="utf-8")
@@ -78,6 +83,7 @@ def main() -> int:
                      "kExact2xSourceHeight = 640U",
                      "kExact2xDestinationWidth = 800U",
                      "kExact2xDestinationHeight = 1280U",
+                     "kExact2xGroupsPerSourceRow",
                      "kExact2xSourceBytes",
                      "kExact2xDestinationBytes",
                      "kExact2xM2CAlignmentBytes = 64U",
@@ -89,10 +95,12 @@ def main() -> int:
         require(fragment in source, f"missing scalar packed store: {fragment}")
     require("P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE" in live,
             "missing isolated P10 selector")
-    require("P4_NANO_EXACT2X_PIE_TIMING PIE_AVAILABLE=0" in live,
-            "PIE availability must be explicit until zip semantics are proven")
-    require("P4_NANO_EXACT2X_PIE_CORRECTNESS PIE_AVAILABLE=0 status=BLOCKED" in live,
-            "missing blocked PIE correctness status")
+    require("exact2x_pie_available() noexcept { return true; }" in header,
+            "PIE availability must reflect the linked P10 A/B helper")
+    require("exact2x_pie_aligned" in header,
+            "missing PIE helper declaration")
+    require("p4_nano_display_exact2x_pie.S" in display_cmake,
+            "P10 profile must link the PIE helper")
     for fragment in ("kExact2xWarmupSamples = 8U",
                      "kExact2xMeasuredSamples = 128U",
                      "kExact2xFinalValidationSamples = 1U"):
@@ -105,6 +113,9 @@ def main() -> int:
     if "std::array<std::uint64_t, N> sorted" in metric or \
             "std::array<std::uint64_t, 128>" in metric:
         raise AssertionError("P10 metric reporting must not copy 128 samples on the stack")
+    phase_start = live.index("bool exact2x_run_phase")
+    phase_end = live.index("bool exact2x_run_samples", phase_start)
+    phase_function = live[phase_start:phase_end]
     samples_start = live.index("bool exact2x_run_samples")
     samples_end = live.index("esp_err_t run_exact2x_benchmark_after_start", samples_start)
     samples_function = live[samples_start:samples_end]
@@ -115,11 +126,11 @@ def main() -> int:
     require("P4_NANO_EXACT2X_COOPERATE interval=%zu delay_ticks=%u" in
             samples_function,
             "P10 cooperation configuration must be reported once")
-    loop_start = samples_function.index("for (std::size_t index = 0U;")
-    loop_end = samples_function.index(
-        "    // Keep the required final validation outside the measured sample window.",
+    loop_start = phase_function.index("for (std::size_t index = 0U;")
+    loop_end = phase_function.index(
+        "    // Keep this required one-call validation outside the measured window.",
         loop_start)
-    loop = samples_function[loop_start:loop_end]
+    loop = phase_function[loop_start:loop_end]
     delay_index = loop.index("vTaskDelay(kExact2xCooperateDelayTicks);")
     require("completed_iterations % kExact2xCooperateInterval == 0U" in loop,
             "P10 cooperation must occur every 64 completed iterations")
@@ -138,7 +149,7 @@ def main() -> int:
         require(twdt_api not in samples_function,
                 f"P10 must not change TWDT policy: {twdt_api}")
     normalize_start = live.index("bool exact2x_normalize")
-    normalize_end = live.index("bool exact2x_run_samples", normalize_start)
+    normalize_end = live.index("bool exact2x_scalar_kernel", normalize_start)
     normalize = live[normalize_start:normalize_end]
     require(normalize.count("ESP_CACHE_MSYNC_FLAG_DIR_M2C") == 2,
             "P10 must normalize both source and destination with M2C")
@@ -162,18 +173,65 @@ def main() -> int:
                 f"P10 M2C alignment contract missing: {fragment}")
     require("m2c_alignment=%s" in samples_function,
             "P10 layout reporting must expose M2C alignment")
-    require("ESP_CACHE_MSYNC_FLAG_DIR_C2M" in samples_function and
-            "ESP_CACHE_MSYNC_FLAG_UNALIGNED" in samples_function,
+    require("ESP_CACHE_MSYNC_FLAG_DIR_C2M" in phase_function and
+            "ESP_CACHE_MSYNC_FLAG_UNALIGNED" in phase_function,
             "P10 initial source C2M path must remain unchanged")
-    require("display_session_sync_framebuffer(&state->display)" in samples_function,
+    require("display_session_sync_framebuffer(&state->display)" in phase_function,
             "P10 framebuffer visibility sync must remain in the benchmark")
     require("ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED" in
             display,
             "P10 framebuffer post-scalar C2M path must remain unchanged")
-    require("exact2x_stats.kernel.fill(0U)" in samples_function,
+    require("stats->kernel.fill(0U)" in live,
             "P10 stats reset must use static storage")
-    if "exact2x_stats = Exact2xStats{}" in samples_function:
+    if "Exact2xStats{}" in live:
         raise AssertionError("P10 stats reset must not materialize an aggregate stack temporary")
+    for phase in ("SCALAR", "PIE"):
+        require(f'"{phase}"' in samples_function,
+                f"missing same-binary {phase} phase")
+    for marker in ("P4_NANO_EXACT2X_%s_%s",
+                   "P4_NANO_EXACT2X_%s_CORRECTNESS",
+                   "P4_NANO_EXACT2X_%s_RESULT"):
+        require(marker in live, f"missing phase-specific marker: {marker}")
+    require("scalar_result && pie_result" in samples_function,
+            "overall P10 result must require both phases")
+    require("P4_NANO_EXACT2X_PIE_LAYOUT" in samples_function,
+            "missing PIE layout report")
+    require("pie_layout_ok" in samples_function,
+            "PIE invocation must be gated by its layout contract")
+    require('exact2x_report_invalid_phase(&exact2x_pie_stats, "PIE")' in
+            samples_function,
+            "PIE layout failure must report an invalid phase without invocation")
+    require("pie_available=1" in live,
+            "P10 mode report must describe the implemented PIE helper")
+    for twdt_api in ("esp_task_wdt_init", "esp_task_wdt_reconfigure",
+                     "esp_task_wdt_add", "esp_task_wdt_delete",
+                     "esp_task_wdt_reset"):
+        require(twdt_api not in phase_function,
+                f"P10 must not change TWDT policy: {twdt_api}")
+
+    require("li      a5, 640" in pie, "PIE helper must iterate 640 source rows")
+    require("li      a4, 50" in pie, "PIE helper must use 50 groups per row")
+    for instruction in ("esp.vld.128.ip  q0, a0, 16",
+                        "esp.orq         q1, q0, q0",
+                        "esp.vzip.16     q0, q1",
+                        "esp.vst.128.ip  q0, a2, 16",
+                        "esp.vst.128.ip  q1, a2, 16",
+                        "esp.vst.128.ip  q0, a3, 16",
+                        "esp.vst.128.ip  q1, a3, 16"):
+        require(instruction in pie, f"PIE inner-loop instruction missing: {instruction}")
+    require("esp.vzip.16     q0, q0" not in pie,
+            "PIE helper must use distinct q0/q1 VZIP operands")
+    require(not re.search(r"\\bq[2-7]\\b", pie),
+            "PIE helper must use q0/q1 only")
+    require(".size exact2x_pie_aligned" in pie and "ret" in pie,
+            "PIE helper must have normal function metadata and return")
+    lanes = list("ABCDEFGH")
+    zipped_low = [lanes[0], lanes[0], lanes[1], lanes[1],
+                  lanes[2], lanes[2], lanes[3], lanes[3]]
+    zipped_high = [lanes[4], lanes[4], lanes[5], lanes[5],
+                   lanes[6], lanes[6], lanes[7], lanes[7]]
+    require(zipped_low + zipped_high ==
+            list("AABBCCDDEEFFGGHH"), "PIE host lane model mismatch")
     route_start = main.index(
         "constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart")
     route_guard_start = main.rfind(
@@ -224,7 +282,7 @@ def main() -> int:
                 offset = (row * 800 + 2 * x) * 2
                 model[offset:offset + 4] = pair
     require(bytes(model) == expected, "scalar packed model mismatch")
-    print("Display Performance P10B exact2x host contract passed")
+    print("Display Performance P10D-B exact2x host contract and PIE lane model passed")
     print(f"P10_EXACT2X_SOURCE_CRC=0x{zlib.crc32(rotated) & 0xffffffff:08x}")
     print(f"P10_EXACT2X_EXPECTED_CRC=0x{expected_crc:08x}")
     return 0

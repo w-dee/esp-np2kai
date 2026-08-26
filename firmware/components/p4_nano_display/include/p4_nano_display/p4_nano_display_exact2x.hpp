@@ -16,6 +16,8 @@ inline constexpr std::size_t kExact2xSourceStrideBytes =
     kExact2xSourceWidth * sizeof(std::uint16_t);
 inline constexpr std::size_t kExact2xSourceBytes =
     kExact2xSourceStrideBytes * kExact2xSourceHeight;
+inline constexpr std::size_t kExact2xGroupsPerSourceRow =
+    kExact2xSourceWidth / 8U;
 inline constexpr std::size_t kExact2xDestinationWidth = 800U;
 inline constexpr std::size_t kExact2xDestinationHeight = 1280U;
 inline constexpr std::size_t kExact2xDestinationStrideBytes =
@@ -37,8 +39,11 @@ bool exact2x_scalar(const std::uint16_t *source, std::size_t source_bytes,
                    std::uint16_t *destination,
                    std::size_t destination_bytes) noexcept;
 
-/* P10B deliberately leaves this false until the P4 PIE zip operand/result
- * semantics are established from authoritative ISA/toolchain evidence. */
-inline constexpr bool exact2x_pie_available() noexcept { return false; }
+/* Fixed-geometry P4 PIE helper. Its caller owns all pointer, external-RAM,
+ * alignment, cache, timing, and correctness checks. */
+extern "C" void exact2x_pie_aligned(const std::uint16_t *source,
+                                    std::uint16_t *destination);
+
+inline constexpr bool exact2x_pie_available() noexcept { return true; }
 
 } // namespace p4_nano_display

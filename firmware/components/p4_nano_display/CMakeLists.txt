@@ -8,7 +8,8 @@ idf_component_register(
 
 if(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE OR
    "$ENV{P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE}" STREQUAL "1")
-    target_sources(${COMPONENT_LIB} PRIVATE p4_nano_display_exact2x.cpp)
+    target_sources(${COMPONENT_LIB} PRIVATE
+        p4_nano_display_exact2x.cpp p4_nano_display_exact2x_pie.S)
 endif()
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
