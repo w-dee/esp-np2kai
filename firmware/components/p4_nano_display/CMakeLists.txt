@@ -14,6 +14,33 @@ if(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE OR
         p4_nano_display_exact2x.cpp p4_nano_display_exact2x_pie.S)
 endif()
 
+set(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED "")
+if(P4_NANO_REFRESH_VISUAL_PROFILE)
+    set(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED
+        "${P4_NANO_REFRESH_VISUAL_PROFILE}")
+elseif(DEFINED ENV{P4_NANO_REFRESH_VISUAL_PROFILE})
+    set(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED
+        "$ENV{P4_NANO_REFRESH_VISUAL_PROFILE}")
+endif()
+if(NOT P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED STREQUAL "")
+    target_sources(${COMPONENT_LIB} PRIVATE p4_nano_refresh_visual.cpp)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_REFRESH_VISUAL_PROFILE=1)
+    if(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED STREQUAL "baseline")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            P4_NANO_REFRESH_VISUAL_BASELINE_PROFILE=1)
+    elseif(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED STREQUAL "lower1")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            P4_NANO_REFRESH_VISUAL_LOWER1_PROFILE=1)
+    elseif(P4_NANO_REFRESH_VISUAL_PROFILE_SELECTED STREQUAL "lower2")
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            P4_NANO_REFRESH_VISUAL_LOWER2_PROFILE=1)
+    else()
+        message(FATAL_ERROR
+            "P4_NANO_REFRESH_VISUAL_PROFILE must be baseline, lower1, or lower2")
+    endif()
+endif()
+
 target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>"
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"

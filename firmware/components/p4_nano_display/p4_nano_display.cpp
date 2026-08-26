@@ -30,6 +30,9 @@
 #include "freertos/task.h"
 
 #include "p4_nano_board/p4_nano_board.hpp"
+#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+#include "p4_nano_display/p4_nano_refresh_visual.hpp"
+#endif
 #include "p4_nano_display/p4_nano_display_pattern.hpp"
 #include "p4_nano_display/p4_nano_display_transform.hpp"
 #include "p4_nano_display/p4_nano_display_transform_pattern.hpp"
@@ -39,8 +42,18 @@ namespace {
 
 constexpr char kTag[] = "p4_nano_display";
 constexpr std::uint8_t kDsiLaneCount = 2;
+#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+constexpr auto kDpiClockSource =
+    p4_nano_display::kRefreshVisualConfig.dpi_clock_source;
+constexpr float kDsiLaneBitrateMbps =
+    p4_nano_display::kRefreshVisualConfig.requested_lane_mbps;
+constexpr float kDpiClockMHz =
+    p4_nano_display::kRefreshVisualConfig.requested_dpi_mhz;
+#else
+constexpr auto kDpiClockSource = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
 constexpr float kDsiLaneBitrateMbps = 1500.0F;
 constexpr float kDpiClockMHz = 80.0F;
+#endif
 constexpr int kDsiLdoChannel = 3;
 constexpr int kDsiLdoMillivolts = 2500;
 constexpr std::size_t kFramebufferCount = 1;
@@ -242,7 +255,11 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     ESP_LOGI(kTag, "foundation stage=dbi_io result=PASS");
 
     esp_lcd_dpi_panel_config_t dpi_config{};
+#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+    dpi_config.dpi_clk_src = kDpiClockSource;
+#else
     dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
+#endif
     dpi_config.dpi_clock_freq_mhz = kDpiClockMHz;
     dpi_config.virtual_channel = 0;
     dpi_config.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565;
@@ -389,6 +406,16 @@ esp_err_t run_foundation()
     esp_chip_info_t chip_info{};
     esp_chip_info(&chip_info);
     ESP_LOGI(kTag, "chip revision=%d", chip_info.revision);
+#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+    ESP_LOGI(kTag,
+             "configuration native=%zux%zu RGB565 lanes=%u bitrate=%.0fMbps/lane "
+             "stride=%zu dpi=%.9fMHz num_fbs=%zu predicted_refresh=%.9fHz",
+             kNativeWidth, kNativeHeight, kDsiLaneCount,
+             static_cast<double>(kDsiLaneBitrateMbps),
+             kNativeStrideBytes, static_cast<double>(kDpiClockMHz),
+             kFramebufferCount,
+             static_cast<double>(p4_nano_display::kRefreshVisualConfig.predicted_refresh_hz));
+#else
     ESP_LOGI(kTag,
              "configuration native=%zux%zu RGB565 lanes=%u bitrate=%.0fMbps/lane "
              "stride=%zu dpi=%.0fMHz num_fbs=%zu nominal_refresh=68.66Hz",
@@ -396,6 +423,7 @@ esp_err_t run_foundation()
              static_cast<double>(kDsiLaneBitrateMbps),
              kNativeStrideBytes, static_cast<double>(kDpiClockMHz),
              kFramebufferCount);
+#endif
     report_memory("before_display_init");
 
     esp_err_t ret = display_session_initialize(&resources);

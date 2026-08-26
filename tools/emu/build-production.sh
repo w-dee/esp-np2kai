@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2 | --display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -17,6 +17,8 @@ i286_inline_mem_fastpath=0
 transform_opt=""
 display_foundation=0
 display_foundation_variant=""
+refresh_visual_profile=""
+refresh_visual_variant=""
 display_transform_diagnostic=0
 display_transform_diagnostic_variant=""
 display_transform_diagnostic_rotation=""
@@ -109,6 +111,15 @@ while (($# > 0)); do
             ;;
         --display-foundation)
             display_foundation=1
+            shift
+            ;;
+        --display-refresh-visual)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            refresh_visual_profile="$2"
+            shift 2
+            ;;
+        --display-refresh-visual=*)
+            refresh_visual_profile="${1#*=}"
             shift
             ;;
         --display-transform-diagnostic)
@@ -255,6 +266,15 @@ case "${transform_opt}" in
         ;;
 esac
 
+case "${refresh_visual_profile}" in
+    ""|baseline|lower1|lower2)
+        ;;
+    *)
+        printf 'ERROR: --display-refresh-visual requires baseline, lower1, or lower2\n' >&2
+        exit 2
+        ;;
+esac
+
 if (( live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark || exact2x_internal_source_benchmark )) &&
    [[ "${i286_inline_mem_fastpath}" != "0" ]]; then
     printf 'ERROR: --live-display-transform-isolated-benchmark requires --i286-inline-mem-fastpath 0 (all isolated transform benchmark profiles require --i286-inline-mem-fastpath 0)\n' >&2
@@ -270,13 +290,25 @@ case "${variant}" in
         ;;
 esac
 
+if [[ -n "${refresh_visual_profile}" ]] &&
+   [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+    printf 'ERROR: --display-refresh-visual requires --variant p4-v1x --board p4-nano\n' >&2
+    exit 2
+fi
+
 if (( display_foundation )) &&
    [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
     printf 'ERROR: --display-foundation requires --variant p4-v1x --board p4-nano\n' >&2
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
+refresh_visual_selected=0
+refresh_visual_board=0
+if [[ -n "${refresh_visual_profile}" ]]; then
+    refresh_visual_selected=1
+    refresh_visual_board=1
+fi
+if (( display_foundation + refresh_visual_selected + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
     printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
 fi
@@ -572,7 +604,9 @@ if [[ "${transform_opt}" == "o2" ]] && (( ! transform_profile )); then
 fi
 
 if [[ -z "${build_dir}" ]]; then
-    if (( usb_keyboard_validation )); then
+    if [[ -n "${refresh_visual_profile}" ]]; then
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-refresh-visual-${refresh_visual_profile}"
+    elif (( usb_keyboard_validation )); then
         build_dir="${FIRMWARE_DIR}/build-usb-keyboard-validation-${board}-${variant}"
     elif (( keyboard_validation )); then
         build_dir="${FIRMWARE_DIR}/build-keyboard-validation-${board}-${variant}"
@@ -643,6 +677,9 @@ fi
 if (( display_foundation )); then
     display_foundation_variant="${variant}"
 fi
+if [[ -n "${refresh_visual_profile}" ]]; then
+    refresh_visual_variant="${variant}"
+fi
 if (( display_transform_diagnostic )); then
     display_transform_diagnostic_variant="${variant}"
 fi
@@ -656,6 +693,9 @@ cmake_args=(
     -D "P4_NANO_DISPLAY_FOUNDATION_PROFILE=${display_foundation}"
     -D "P4_NANO_DISPLAY_FOUNDATION_BOARD=${display_foundation}"
     -D "P4_NANO_DISPLAY_FOUNDATION_VARIANT=${display_foundation_variant}"
+    -D "P4_NANO_REFRESH_VISUAL_PROFILE=${refresh_visual_profile}"
+    -D "P4_NANO_REFRESH_VISUAL_BOARD=${refresh_visual_board}"
+    -D "P4_NANO_REFRESH_VISUAL_VARIANT=${refresh_visual_variant}"
     -D "P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE=${display_transform_diagnostic}"
     -D "P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_BOARD=${display_transform_diagnostic}"
     -D "P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_VARIANT=${display_transform_diagnostic_variant}"
@@ -715,6 +755,15 @@ else
     unset P4_NANO_DISPLAY_FOUNDATION_PROFILE
     unset P4_NANO_DISPLAY_FOUNDATION_BOARD
     unset P4_NANO_DISPLAY_FOUNDATION_VARIANT
+fi
+if [[ -n "${refresh_visual_profile}" ]]; then
+    export P4_NANO_REFRESH_VISUAL_PROFILE="${refresh_visual_profile}"
+    export P4_NANO_REFRESH_VISUAL_BOARD=1
+    export P4_NANO_REFRESH_VISUAL_VARIANT="${refresh_visual_variant}"
+else
+    unset P4_NANO_REFRESH_VISUAL_PROFILE
+    unset P4_NANO_REFRESH_VISUAL_BOARD
+    unset P4_NANO_REFRESH_VISUAL_VARIANT
 fi
 if (( real_runtime )); then
     export P4_NANO_REAL_RUNTIME_PROFILE=1
@@ -915,8 +964,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
     "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"

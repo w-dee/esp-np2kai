@@ -118,3 +118,22 @@ files, or work on `main`. Push only when a human explicitly requests it.
 `~/.codex/AGENTS.md` is the appropriate place for workstation-specific
 elevation behavior, the exact P4-NANO serial by-id value, and local ESP-IDF
 activation details. Keep those literal values out of this repository.
+
+## P10G-B lower-refresh visual profile
+
+The diagnostic-only P10G-B visual profiles are built independently with one
+of these commands:
+
+```bash
+bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+  --display-refresh-visual baseline
+bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+  --display-refresh-visual lower1
+bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+  --display-refresh-visual lower2
+```
+
+The selected profile is encoded in the build directory and in the image's
+configuration log. These profiles are mutually exclusive with the normal
+runtime and other display diagnostics; they do not change the production
+configuration.
