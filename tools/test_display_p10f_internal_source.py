@@ -147,7 +147,8 @@ def main() -> int:
     require("exact2x_pie_tile128_aligned" in asm and "li      a5, 128" in asm,
             "T128 PIE helper missing")
     tile_start = asm.index("exact2x_pie_tile128_aligned:")
-    tile = asm[tile_start:]
+    tile_end = asm.index(".size exact2x_pie_tile128_aligned", tile_start)
+    tile = asm[tile_start:tile_end]
     for instruction in (
             "esp.vld.128.ip  q0, a0, 16",
             "esp.orq         q1, q0, q0",

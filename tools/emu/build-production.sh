@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -48,6 +48,8 @@ ppa_pie_overlap_benchmark=0
 ppa_pie_overlap_benchmark_variant=""
 ppa_pie_burst_benchmark=0
 ppa_pie_burst_benchmark_variant=""
+pie_preemption_correctness=0
+pie_preemption_correctness_variant=""
 psram_bandwidth=0
 psram_bandwidth_mode=""
 psram_bandwidth_operation=""
@@ -189,6 +191,10 @@ while (($# > 0)); do
             ;;
         --ppa-pie-burst-benchmark)
             ppa_pie_burst_benchmark=1
+            shift
+            ;;
+        --pie-preemption-correctness)
+            pie_preemption_correctness=1
             shift
             ;;
         --psram-bandwidth-live)
@@ -355,9 +361,17 @@ if [[ -n "${refresh_visual_profile}" ]]; then
     refresh_visual_selected=1
     refresh_visual_board=1
 fi
-if (( display_foundation + refresh_visual_selected + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + ppa_pie_overlap_benchmark + ppa_pie_burst_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
+if (( display_foundation + refresh_visual_selected + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + ppa_pie_overlap_benchmark + ppa_pie_burst_benchmark + pie_preemption_correctness + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
     printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
+fi
+
+if (( pie_preemption_correctness )); then
+    if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --pie-preemption-correctness requires --variant p4-v1x --board p4-nano\n' >&2
+        exit 2
+    fi
+    pie_preemption_correctness_variant="${variant}"
 fi
 
 if (( live_display )); then
@@ -664,6 +678,10 @@ if (( esp_emu_test && ppa_internal_tile_benchmark )); then
     printf 'ERROR: --ppa-internal-tile-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
 fi
+if (( esp_emu_test && pie_preemption_correctness )); then
+    printf 'ERROR: --pie-preemption-correctness cannot be combined with --esp-emu-test\n' >&2
+    exit 2
+fi
 if (( esp_emu_test && (exact2x_scaler_benchmark || exact2x_internal_source_benchmark) )); then
     printf 'ERROR: --exact2x-scaler-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
@@ -694,6 +712,8 @@ fi
 if [[ -z "${build_dir}" ]]; then
     if [[ -n "${refresh_visual_profile}" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-refresh-visual-${refresh_visual_profile}"
+    elif (( pie_preemption_correctness )); then
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-pie-preemption-correctness"
     elif (( ppa_pie_burst_benchmark )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-ppa-pie-burst"
     elif (( ppa_pie_overlap_benchmark )); then
@@ -821,6 +841,9 @@ cmake_args=(
     -D "P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE=${ppa_pie_burst_benchmark}"
     -D "P4_NANO_PPA_PIE_BURST_BENCHMARK_BOARD=${ppa_pie_burst_benchmark}"
     -D "P4_NANO_PPA_PIE_BURST_BENCHMARK_VARIANT=${ppa_pie_burst_benchmark_variant}"
+    -D "P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE=${pie_preemption_correctness}"
+    -D "P4_NANO_PIE_PREEMPTION_CORRECTNESS_BOARD=${pie_preemption_correctness}"
+    -D "P4_NANO_PIE_PREEMPTION_CORRECTNESS_VARIANT=${pie_preemption_correctness_variant}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE=${transform_isolated_compute_control_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_BOARD=${transform_isolated_compute_control_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_VARIANT=${transform_isolated_compute_control_benchmark_variant}"
@@ -906,6 +929,15 @@ if (( runtime_emu_backend )); then
     export P4_NANO_RUNTIME_EMU_BACKEND=1
 else
     unset P4_NANO_RUNTIME_EMU_BACKEND
+fi
+if (( pie_preemption_correctness )); then
+    export P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE=1
+    export P4_NANO_PIE_PREEMPTION_CORRECTNESS_BOARD=1
+    export P4_NANO_PIE_PREEMPTION_CORRECTNESS_VARIANT="${pie_preemption_correctness_variant}"
+else
+    unset P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE
+    unset P4_NANO_PIE_PREEMPTION_CORRECTNESS_BOARD
+    unset P4_NANO_PIE_PREEMPTION_CORRECTNESS_VARIANT
 fi
 if (( live_display )); then
     export P4_NANO_LIVE_DISPLAY_PROFILE=1
@@ -1087,10 +1119,10 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
     "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
-    "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${ppa_pie_overlap_benchmark}" "${ppa_pie_burst_benchmark}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
+    "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${ppa_pie_overlap_benchmark}" "${ppa_pie_burst_benchmark}" "${pie_preemption_correctness}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
     "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \

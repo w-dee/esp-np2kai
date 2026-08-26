@@ -73,6 +73,9 @@ def main() -> int:
     header = HEADER.read_text(encoding="utf-8")
     source = SOURCE.read_text(encoding="utf-8")
     pie = PIE_SOURCE.read_text(encoding="utf-8")
+    legacy_start = pie.index("exact2x_pie_aligned:")
+    legacy_end = pie.index(".size exact2x_pie_aligned", legacy_start)
+    legacy_pie = pie[legacy_start:legacy_end]
     live = LIVE.read_text(encoding="utf-8")
     display = DISPLAY.read_text(encoding="utf-8")
     display_cmake = DISPLAY_CMAKE.read_text(encoding="utf-8")
@@ -209,8 +212,8 @@ def main() -> int:
         require(twdt_api not in phase_function,
                 f"P10 must not change TWDT policy: {twdt_api}")
 
-    require("li      a5, 640" in pie, "PIE helper must iterate 640 source rows")
-    require("li      a4, 50" in pie, "PIE helper must use 50 groups per row")
+    require("li      a5, 640" in legacy_pie, "PIE helper must iterate 640 source rows")
+    require("li      a4, 50" in legacy_pie, "PIE helper must use 50 groups per row")
     for instruction in ("esp.vld.128.ip  q0, a0, 16",
                         "esp.orq         q1, q0, q0",
                         "esp.vzip.16     q0, q1",
@@ -218,16 +221,16 @@ def main() -> int:
                         "esp.vst.128.ip  q1, a2, 16",
                         "esp.vst.128.ip  q0, a3, 16",
                         "esp.vst.128.ip  q1, a3, 16"):
-        require(instruction in pie, f"PIE inner-loop instruction missing: {instruction}")
-    require("esp.vzip.16     q0, q0" not in pie,
+        require(instruction in legacy_pie, f"PIE inner-loop instruction missing: {instruction}")
+    require("esp.vzip.16     q0, q0" not in legacy_pie,
             "PIE helper must use distinct q0/q1 VZIP operands")
-    require(not re.search(r"\\bq[2-7]\\b", pie),
+    require(not re.search(r"\\bq[2-7]\\b", legacy_pie),
             "PIE helper must use q0/q1 only")
-    require(re.search(r"(?m)^\s*mv\s+a1,\s*a3\s*$", pie),
+    require(re.search(r"(?m)^\s*mv\s+a1,\s*a3\s*$", legacy_pie),
             "PIE row progression must use the post-inner-loop a3 pair base")
-    require(not re.search(r"(?m)^\s*addi\s+a1,\s*a3,\s*1600\s*$", pie),
+    require(not re.search(r"(?m)^\s*addi\s+a1,\s*a3,\s*1600\s*$", legacy_pie),
             "PIE row progression must not add an extra destination-row stride")
-    require(".size exact2x_pie_aligned" in pie and "ret" in pie,
+    require(".size exact2x_pie_aligned" in pie and "ret" in legacy_pie,
             "PIE helper must have normal function metadata and return")
     lanes = list("ABCDEFGH")
     zipped_low = [lanes[0], lanes[0], lanes[1], lanes[1],

@@ -41,8 +41,8 @@ inline constexpr std::size_t kExact2xMeasuredSamples = 128U;
 inline constexpr std::size_t kExact2xFinalValidationSamples = 1U;
 
 /* Scalar packed baseline.  The source and destination are contiguous with
- * the exact strides above; no allocation or cache maintenance is performed
- * by this kernel. */
+ * either the full-frame or fixed 128-row tile geometry above; no allocation
+ * or cache maintenance is performed by this kernel. */
 bool exact2x_scalar(const std::uint16_t *source, std::size_t source_bytes,
                    std::uint16_t *destination,
                    std::size_t destination_bytes) noexcept;
@@ -56,6 +56,20 @@ extern "C" void exact2x_pie_aligned(const std::uint16_t *source,
  * tile and its corresponding 800x256 destination tile. */
 extern "C" void exact2x_pie_tile128_aligned(
     const std::uint16_t *source, std::uint16_t *destination);
+
+/* Dedicated P10K-B0 fixed-geometry T128 correctness candidate.  Its caller
+ * owns pointer, cache, and correctness handling; this benchmark/test fixture
+ * currently requires 64-byte-aligned buffers while the generic 16-byte
+ * kExact2xRequiredAlignmentBytes contract remains unchanged.  It is not
+ * selected by any production or performance profile.  q3 is intentionally
+ * avoided because ESP-IDF v5.5.4 omits q3 from its FreeRTOS PIE context
+ * save/restore path. */
+extern "C" void exact2x_pie_tile128_grouped64_aligned(
+    const std::uint16_t *source, std::uint16_t *destination);
+
+/* Correctness-harness-only owner-transfer helper. */
+extern "C" void exact2x_pie_preemption_clobber_q0_q1(
+    const std::uint8_t *source, std::uint8_t *destination);
 
 inline constexpr bool exact2x_pie_available() noexcept { return true; }
 

@@ -16,6 +16,8 @@
 #endif
 #elif defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE)
 #include "p4_nano_display/p4_nano_display_transform_diagnostic.hpp"
+#elif defined(P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE)
+#include "p4_nano_pie_preemption/p4_nano_pie_preemption.hpp"
 #elif defined(P4_NANO_LIVE_DISPLAY_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
@@ -119,6 +121,7 @@ esp_err_t route_display_benchmark_application_console()
 #if !defined(P4_NANO_REFRESH_VISUAL_PROFILE) && \
     !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE) && \
     !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE) && \
+    !defined(P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_MOTION_VALIDATION_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
@@ -208,6 +211,12 @@ extern "C" void app_main(void)
         p4_nano_display::run_transform_diagnostic(transform_rotation);
     std::printf("P4_NANO_TRANSFORM_DIAGNOSTIC_RESULT=%s\n",
                 transform_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE)
+    const esp_err_t preemption_result = p4_nano_pie_preemption::run();
+    std::printf("P4_NANO_PIE_PREEMPTION_APP_RESULT=%s\n",
+                preemption_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(P4_NANO_LIVE_DISPLAY_PROFILE) || \

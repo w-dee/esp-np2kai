@@ -13,9 +13,12 @@ bool exact2x_scalar(const std::uint16_t *source, std::size_t source_bytes,
                    std::uint16_t *destination,
                    std::size_t destination_bytes) noexcept
 {
+    const bool full_frame = source_bytes == kExact2xSourceBytes &&
+                            destination_bytes == kExact2xDestinationBytes;
+    const bool tile = source_bytes == kExact2xTileSourceBytes &&
+                      destination_bytes == kExact2xTileDestinationBytes;
     if (source == nullptr || destination == nullptr ||
-        source_bytes != kExact2xSourceBytes ||
-        destination_bytes != kExact2xDestinationBytes ||
+        (!full_frame && !tile) ||
         (reinterpret_cast<std::uintptr_t>(destination) &
          (kExact2xRequiredAlignmentBytes - 1U)) != 0U) {
         return false;
@@ -23,7 +26,9 @@ bool exact2x_scalar(const std::uint16_t *source, std::size_t source_bytes,
 
     constexpr std::size_t source_stride = kExact2xSourceWidth;
     constexpr std::size_t destination_stride = kExact2xDestinationWidth;
-    for (std::size_t y = 0U; y < kExact2xSourceHeight; ++y) {
+    const std::size_t source_height =
+        tile ? kExact2xTileSourceHeight : kExact2xSourceHeight;
+    for (std::size_t y = 0U; y < source_height; ++y) {
         const std::uint16_t *source_row = source + y * source_stride;
         std::uint16_t *destination_row0 =
             destination + (2U * y) * destination_stride;
