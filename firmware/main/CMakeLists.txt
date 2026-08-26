@@ -644,9 +644,11 @@ elseif(P4_NANO_LIVE_DISPLAY_PROFILE_ACTIVE OR
        P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE_ACTIVE OR
        P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE_ACTIVE)
     list(APPEND NP2_MAIN_PRIV_REQUIRES p4_nano_live_display)
-    if(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE_ACTIVE)
-        # P9 uses the public UART API and GPIO enum for its application-only
-        # console observation route; no GPIO configuration API is used.
+    if(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE_ACTIVE OR
+       P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE_ACTIVE)
+        # P9/P10 use the public UART API and GPIO enum for their
+        # benchmark-only application console route; no GPIO configuration API
+        # is used.
         list(APPEND NP2_MAIN_PRIV_REQUIRES esp_driver_uart esp_driver_gpio)
     endif()
 elseif(NP2_PRESENTATION_PROFILE_ACTIVE)

@@ -101,10 +101,12 @@ def main() -> int:
     require(main, "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE", "P9 dispatch")
     require(main, '#include "driver/gpio.h"', "P9 GPIO enum include")
     require(main, '#include "driver/uart.h"', "P9 public UART API include")
+    require(main, "P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE", "P10 dispatch/gate")
     require(main_cmake,
             "list(APPEND NP2_MAIN_PRIV_REQUIRES esp_driver_uart esp_driver_gpio)",
             "P9 UART component dependency")
-    route_start = main.index("constexpr uart_port_t kP9ApplicationConsoleUart")
+    route_start = main.index(
+        "constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart")
     route_end = main.index("} // namespace", route_start)
     route = main[route_start:route_end]
     for fragment, name in (
@@ -121,9 +123,15 @@ def main() -> int:
     app_start = main.index('extern "C" void app_main(void)')
     hello = main.index('ESP-NP2KAI HELLO WORLD OK', app_start)
     app_prefix = main[app_start:hello]
-    require(app_prefix, "route_p9_application_console()", "route before HELLO")
-    require(app_prefix, "p9_uart_route_result != ESP_OK", "route failure check")
+    require(app_prefix, "route_display_benchmark_application_console()",
+            "route before HELLO")
+    require(app_prefix, "benchmark_uart_route_result != ESP_OK",
+            "route failure check")
     require(app_prefix, "return;", "route failure stops app")
+    require(main, "#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) ||",
+            "P9/P10 benchmark-only route gate")
+    require(main, "defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)",
+            "P9/P10 exact2x route gate")
     measured_start = source.index(
         "if (all_operations_succeeded) {\n        for (std::size_t index = 0U;")
     measured_end = source.index("bool final_operation_succeeded", measured_start)
@@ -131,6 +139,7 @@ def main() -> int:
     if "printf" in measured or "uart_set_pin" in measured:
         raise AssertionError("P9 measured PPA loop must not log or reroute UART")
     require(build, "--ppa-rotation-benchmark", "P9 selector")
+    require(build, "--exact2x-scaler-benchmark", "P10 selector")
     require(build, "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE", "P9 build export")
     require(golden, '"crc32": "0x8dadbf82"', "tracked source golden")
 

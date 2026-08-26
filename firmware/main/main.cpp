@@ -4,7 +4,8 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #endif
@@ -17,6 +18,7 @@
     defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
@@ -87,19 +89,19 @@
 
 #endif
 
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
 namespace {
 
-constexpr uart_port_t kP9ApplicationConsoleUart = UART_NUM_0;
-constexpr gpio_num_t kP9ApplicationConsoleTxGpio = GPIO_NUM_20;
+constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart = UART_NUM_0;
+constexpr gpio_num_t kDisplayBenchmarkApplicationConsoleTxGpio = GPIO_NUM_20;
 
-esp_err_t route_p9_application_console()
+esp_err_t route_display_benchmark_application_console()
 {
-    // GPIO20 is the P9 application-only TX observation point (P1 pin 13).
-    // A future RX-only observer can monitor it with the LCD still connected.
+    // GPIO20 is the benchmark-only TX observation point (P1 pin 13).
     // Keep the bootloader UART and UART0 RX/flow-control routing unchanged.
-    return uart_set_pin(kP9ApplicationConsoleUart,
-                        kP9ApplicationConsoleTxGpio,
+    return uart_set_pin(kDisplayBenchmarkApplicationConsoleUart,
+                        kDisplayBenchmarkApplicationConsoleTxGpio,
                         UART_PIN_NO_CHANGE,
                         UART_PIN_NO_CHANGE,
                         UART_PIN_NO_CHANGE);
@@ -115,6 +117,7 @@ esp_err_t route_p9_application_console()
     !defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE) && \
@@ -156,11 +159,13 @@ storage_fatfs::StorageFatfs s_sd_np2test_storage(
 
 extern "C" void app_main(void)
 {
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
-    const esp_err_t p9_uart_route_result = route_p9_application_console();
-    if (p9_uart_route_result != ESP_OK) {
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
+    const esp_err_t benchmark_uart_route_result =
+        route_display_benchmark_application_console();
+    if (benchmark_uart_route_result != ESP_OK) {
         std::printf("P4_NANO_P9_UART_ROUTE_RESULT=FAIL error=%s\n",
-                    esp_err_to_name(p9_uart_route_result));
+                    esp_err_to_name(benchmark_uart_route_result));
         std::fflush(stdout);
         return;
     }
@@ -193,6 +198,7 @@ extern "C" void app_main(void)
     defined(P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE) || \
     defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE) || \
     defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)
