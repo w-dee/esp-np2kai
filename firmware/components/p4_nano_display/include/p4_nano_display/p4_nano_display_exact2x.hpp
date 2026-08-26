@@ -22,6 +22,7 @@ inline constexpr std::size_t kExact2xDestinationStrideBytes =
     kExact2xDestinationWidth * sizeof(std::uint16_t);
 inline constexpr std::size_t kExact2xDestinationBytes =
     kExact2xDestinationStrideBytes * kExact2xDestinationHeight;
+inline constexpr std::size_t kExact2xM2CAlignmentBytes = 64U;
 inline constexpr std::size_t kExact2xRequiredAlignmentBytes = 16U;
 inline constexpr std::uint32_t kExact2xExpectedSourceCrc = 0x379511d7U;
 inline constexpr std::uint32_t kExact2xExpectedDestinationCrc = 0xc8a10b55U;

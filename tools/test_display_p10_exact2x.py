@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_exact2x.hpp"
 SOURCE = ROOT / "firmware/components/p4_nano_display/p4_nano_display_exact2x.cpp"
 LIVE = ROOT / "firmware/components/p4_nano_live_display/p4_nano_live_display.cpp"
+DISPLAY = ROOT / "firmware/components/p4_nano_display/p4_nano_display.cpp"
 MAIN = ROOT / "firmware/main/main.cpp"
 BUILD = ROOT / "tools/emu/build-production.sh"
 GOLDEN = ROOT / "tests/guest/np2video-live/golden.json"
@@ -69,6 +70,7 @@ def main() -> int:
     header = HEADER.read_text(encoding="utf-8")
     source = SOURCE.read_text(encoding="utf-8")
     live = LIVE.read_text(encoding="utf-8")
+    display = DISPLAY.read_text(encoding="utf-8")
     main = MAIN.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     golden = GOLDEN.read_text(encoding="utf-8")
@@ -78,6 +80,7 @@ def main() -> int:
                      "kExact2xDestinationHeight = 1280U",
                      "kExact2xSourceBytes",
                      "kExact2xDestinationBytes",
+                     "kExact2xM2CAlignmentBytes = 64U",
                      "kExact2xExpectedDestinationCrc = 0xc8a10b55U"):
         require(fragment in header, f"missing geometry/CRC contract: {fragment}")
     for fragment in ("const std::uint32_t packed",
@@ -101,6 +104,39 @@ def main() -> int:
     samples_start = live.index("bool exact2x_run_samples")
     samples_end = live.index("esp_err_t run_exact2x_benchmark_after_start", samples_start)
     samples_function = live[samples_start:samples_end]
+    normalize_start = live.index("bool exact2x_normalize")
+    normalize_end = live.index("bool exact2x_run_samples", normalize_start)
+    normalize = live[normalize_start:normalize_end]
+    require(normalize.count("ESP_CACHE_MSYNC_FLAG_DIR_M2C") == 2,
+            "P10 must normalize both source and destination with M2C")
+    require("ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED" not in normalize,
+            "P10 M2C normalization must not use UNALIGNED")
+    require("kExact2xM2CAlignmentBytes" in samples_function,
+            "P10 layout must enforce the M2C alignment contract")
+    require("source_m2c_alignment_ok" in samples_function and
+            "destination_m2c_alignment_ok" in samples_function,
+            "P10 must validate source and destination M2C alignment")
+    for fragment in (
+            "reinterpret_cast<std::uintptr_t>(source) %\n"
+            "                p4_nano_display::kExact2xM2CAlignmentBytes == 0U",
+            "reinterpret_cast<std::uintptr_t>(destination) %\n"
+            "                p4_nano_display::kExact2xM2CAlignmentBytes == 0U",
+            "p4_nano_display::kExact2xSourceBytes %\n"
+            "                p4_nano_display::kExact2xM2CAlignmentBytes == 0U",
+            "p4_nano_display::kExact2xDestinationBytes %\n"
+            "                p4_nano_display::kExact2xM2CAlignmentBytes == 0U"):
+        require(fragment in samples_function,
+                f"P10 M2C alignment contract missing: {fragment}")
+    require("m2c_alignment=%s" in samples_function,
+            "P10 layout reporting must expose M2C alignment")
+    require("ESP_CACHE_MSYNC_FLAG_DIR_C2M" in samples_function and
+            "ESP_CACHE_MSYNC_FLAG_UNALIGNED" in samples_function,
+            "P10 initial source C2M path must remain unchanged")
+    require("display_session_sync_framebuffer(&state->display)" in samples_function,
+            "P10 framebuffer visibility sync must remain in the benchmark")
+    require("ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED" in
+            display,
+            "P10 framebuffer post-scalar C2M path must remain unchanged")
     require("exact2x_stats.kernel.fill(0U)" in samples_function,
             "P10 stats reset must use static storage")
     if "exact2x_stats = Exact2xStats{}" in samples_function:

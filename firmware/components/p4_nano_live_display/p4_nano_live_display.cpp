@@ -3517,10 +3517,10 @@ bool exact2x_normalize(const std::uint16_t *source, std::uint16_t *destination) 
 {
     const esp_err_t source_result = esp_cache_msync(
         const_cast<std::uint16_t *>(source), p4_nano_display::kExact2xSourceBytes,
-        ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     const esp_err_t destination_result = esp_cache_msync(
         destination, p4_nano_display::kExact2xDestinationBytes,
-        ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     return source_result == ESP_OK && destination_result == ESP_OK;
 }
 
@@ -3549,21 +3549,34 @@ bool exact2x_run_samples(BenchmarkState *state)
     auto *destination = state->display.framebuffer;
     const auto *original = reinterpret_cast<const std::uint16_t *>(
         state->isolated_source_view.ptr);
+    const bool source_m2c_alignment_ok = source != nullptr &&
+        reinterpret_cast<std::uintptr_t>(source) %
+                p4_nano_display::kExact2xM2CAlignmentBytes == 0U &&
+        p4_nano_display::kExact2xSourceBytes %
+                p4_nano_display::kExact2xM2CAlignmentBytes == 0U;
+    const bool destination_m2c_alignment_ok = destination != nullptr &&
+        reinterpret_cast<std::uintptr_t>(destination) %
+                p4_nano_display::kExact2xM2CAlignmentBytes == 0U &&
+        p4_nano_display::kExact2xDestinationBytes %
+                p4_nano_display::kExact2xM2CAlignmentBytes == 0U;
     const bool layout_ok = source != nullptr && destination != nullptr &&
         esp_ptr_external_ram(source) && esp_ptr_external_ram(destination) &&
         reinterpret_cast<std::uintptr_t>(source) % 64U == 0U &&
-        reinterpret_cast<std::uintptr_t>(destination) % 16U == 0U;
+        reinterpret_cast<std::uintptr_t>(destination) % 16U == 0U &&
+        source_m2c_alignment_ok && destination_m2c_alignment_ok;
     std::printf("P4_NANO_EXACT2X_SOURCE ptr=%p external=%d mod64=%zu bytes=%zu "
-                "geometry=400x640 stride=800 immutable=1\n",
+                "m2c_alignment=%s geometry=400x640 stride=800 immutable=1\n",
                 static_cast<void *>(source), source != nullptr && esp_ptr_external_ram(source) ? 1 : 0,
                 source == nullptr ? 0U : reinterpret_cast<std::uintptr_t>(source) % 64U,
-                p4_nano_display::kExact2xSourceBytes);
+                p4_nano_display::kExact2xSourceBytes,
+                source_m2c_alignment_ok ? "PASS" : "FAIL");
     std::printf("P4_NANO_EXACT2X_FRAMEBUFFER ptr=%p external=%d mod16=%zu mod64=%zu "
-                "bytes=%zu geometry=800x1280 stride=1600 num_fbs=1\n",
+                "bytes=%zu m2c_alignment=%s geometry=800x1280 stride=1600 num_fbs=1\n",
                 static_cast<void *>(destination), destination != nullptr && esp_ptr_external_ram(destination) ? 1 : 0,
                 destination == nullptr ? 0U : reinterpret_cast<std::uintptr_t>(destination) % 16U,
                 destination == nullptr ? 0U : reinterpret_cast<std::uintptr_t>(destination) % 64U,
-                p4_nano_display::kExact2xDestinationBytes);
+                p4_nano_display::kExact2xDestinationBytes,
+                destination_m2c_alignment_ok ? "PASS" : "FAIL");
     if (!layout_ok) {
         heap_caps_free(source);
         return false;
