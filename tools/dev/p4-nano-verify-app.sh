@@ -214,7 +214,7 @@ printf 'P4_NANO_FLASH_APP_IDENTITY build_dir=%q app=%q offset=0x%x bytes=%s sha2
 if (( print_plan )); then
     printf 'P4_NANO_FLASH_VERIFY_PLAN command='
     printf '%q ' python -m esptool --chip "${esptool_chip}" -p '<P4_NANO_SERIAL>' -b "${VERIFY_BAUD}" \
-        --before default-reset --after hard-reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
+        --before default_reset --after hard_reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
     printf '\nhardware_touched=NO\n'
     exit 0
 fi
@@ -276,12 +276,12 @@ fi
 
 printf 'P4_NANO_FLASH_VERIFY command='
 printf '%q ' python -m esptool --chip "${esptool_chip}" -p "${P4_NANO_SERIAL}" -b "${VERIFY_BAUD}" \
-    --before default-reset --after hard-reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
+    --before default_reset --after hard_reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
 printf '\n'
 
 set +e
 python -m esptool --chip "${esptool_chip}" -p "${P4_NANO_SERIAL}" -b "${VERIFY_BAUD}" \
-    --before default-reset --after hard-reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
+    --before default_reset --after hard_reset verify_flash "$(printf '0x%x' "${app_offset}")" "${app_path}"
 verify_status=$?
 set -e
 if (( verify_status != 0 )); then

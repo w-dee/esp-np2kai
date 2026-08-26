@@ -84,7 +84,7 @@ or call the benchmark. A target-no-response transport failure permits the
 same verify operation to be retried, at most three total attempts. An actual
 flash-content mismatch is not a transport retry case.
 
-The verification command uses `--before default-reset --after hard-reset`.
+The verification command uses `--before default_reset --after hard_reset`.
 Any reset and application boot caused by verification is **SETUP /
 POST-VERIFICATION BOOT**, not the canonical measurement epoch. After a passing
 gate, attach the monitor with `--no-reset`, drain setup output to quiescence,
