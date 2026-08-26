@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -101,6 +102,41 @@ def main() -> int:
     require("kWarmupSamples + kMeasuredSamples" in source and
             "final_validation" in source,
             "P10I sample/final-validation envelope missing")
+    require(
+        "P4_NANO_PPA_PIE_OVERLAP_MEASUREMENT_CONTRACT" in source and
+        "timed_rotated_crc=0" in source and
+        "timed_output_crc=0" in source and
+        "timed_pixel_validation=0" in source and
+        "final_validation_crc=1" in source and
+        "final_pixel_validation=1" in source,
+        "P10I timed/final validation contract marker missing")
+    require("std::uint32_t *final_rotated_crc" in source,
+            "P10I frame helpers must expose optional final CRC output")
+    crc_guards = re.findall(
+        r"if \(final_rotated_crc != nullptr\)\s*\{\s*"
+        r"rotated_crc = exact2x::crc32_update",
+        source)
+    require(len(crc_guards) == 3,
+            "every P10I rotated CRC update must be final-validation guarded")
+    measured_loop_start = source.index("for (std::size_t index = 0U;")
+    measured_loop_end = source.index(
+        "if (context->callback_failures", measured_loop_start)
+    measured_loop = source[measured_loop_start:measured_loop_end]
+    require(measured_loop.count("nullptr, &metrics") == 2,
+            "warmup/measured frames must disable rotated CRC")
+    require(measured_loop.index("const std::uint64_t start") <
+            measured_loop.index("run_overlap_frame") and
+            measured_loop.index("metrics.total_us") >
+            measured_loop.index("sync_destination"),
+            "TOTAL_FRAME_SERVICE timer envelope changed")
+    final_validation = source[source.index("FrameMetrics final_metrics{}"):source.index(
+        "stats->original_crc_after", source.index("FrameMetrics final_metrics{}"))]
+    require(final_validation.count("&final_metrics.rotated_crc") == 2 and
+            "validate_frame(source, destination, final_metrics" in final_validation,
+            "final validation must retain CRC and pixel validation")
+    require(source.index("validate_frame(source, destination, final_metrics") >
+            source.index("if (context->callback_failures"),
+            "full validation must remain outside measured samples")
     require("benchmark_display_refresh_profile=lower2" in build and
             "P4_NANO_BENCHMARK_DISPLAY_REFRESH_PROFILE" in build,
             "P10I must bind LOWER2 through the selector")

@@ -310,6 +310,9 @@ bool run_sequential_frame(ppa_client_handle_t client,
                           CompletionContext *context,
                           const std::uint8_t *source,
                           TileBuffers *buffers, std::uint8_t *destination,
+                          // Timed frames pass nullptr; only final validation
+                          // requests the expensive rotated-tile CRC.
+                          std::uint32_t *final_rotated_crc,
                           FrameMetrics *metrics) noexcept
 {
     if (client == nullptr || context == nullptr || source == nullptr ||
@@ -348,8 +351,10 @@ bool run_sequential_frame(ppa_client_handle_t client,
         metrics->produced_mask |= 1U << tile_index;
         metrics->completed_mask |= 1U << tile_index;
         buffers->state[buffer_index] = BufferState::PpaReady;
-        rotated_crc = exact2x::crc32_update(
-            rotated_crc, buffers->tile[buffer_index], kTileBytes);
+        if (final_rotated_crc != nullptr) {
+            rotated_crc = exact2x::crc32_update(
+                rotated_crc, buffers->tile[buffer_index], kTileBytes);
+        }
         buffers->state[buffer_index] = BufferState::PieConsuming;
         std::uint64_t pie_us = 0U;
         auto *tile_destination = destination + tile_index * kTileDestinationBytes;
@@ -362,7 +367,10 @@ bool run_sequential_frame(ppa_client_handle_t client,
         metrics->written_mask |= 1U << tile_index;
         buffers->state[buffer_index] = BufferState::Free;
     }
-    metrics->rotated_crc = rotated_crc ^ 0xffffffffU;
+    if (final_rotated_crc != nullptr) {
+        *final_rotated_crc = rotated_crc ^ 0xffffffffU;
+        metrics->rotated_crc = *final_rotated_crc;
+    }
     metrics->callback_count = context->callback_count.load(
         std::memory_order_relaxed) - static_cast<std::uint32_t>(callback_start);
     metrics->ok = validate_masks(*metrics) && metrics->callback_count == kTileCount;
@@ -373,6 +381,9 @@ bool run_overlap_frame(ppa_client_handle_t client,
                        CompletionContext *context,
                        const std::uint8_t *source,
                        TileBuffers *buffers, std::uint8_t *destination,
+                       // Timed frames pass nullptr; only final validation
+                       // requests the expensive rotated-tile CRC.
+                       std::uint32_t *final_rotated_crc,
                        FrameMetrics *metrics) noexcept
 {
     if (client == nullptr || context == nullptr || source == nullptr ||
@@ -404,8 +415,10 @@ bool run_overlap_frame(ppa_client_handle_t client,
     metrics->ppa_completion_observed_us += metrics->first_ppa_latency_us;
     metrics->completed_mask |= 1U;
     buffers->state[current_buffer] = BufferState::PpaReady;
-    rotated_crc = exact2x::crc32_update(
-        rotated_crc, buffers->tile[current_buffer], kTileBytes);
+    if (final_rotated_crc != nullptr) {
+        rotated_crc = exact2x::crc32_update(
+            rotated_crc, buffers->tile[current_buffer], kTileBytes);
+    }
 
     for (std::size_t tile_index = 0U; tile_index < kTileCount; ++tile_index) {
         const std::size_t next_buffer = current_buffer ^ 1U;
@@ -449,12 +462,17 @@ bool run_overlap_frame(ppa_client_handle_t client,
                 static_cast<std::uint64_t>(esp_timer_get_time()) - ppa_start;
             metrics->completed_mask |= 1U << (tile_index + 1U);
             buffers->state[next_buffer] = BufferState::PpaReady;
-            rotated_crc = exact2x::crc32_update(
-                rotated_crc, buffers->tile[next_buffer], kTileBytes);
+            if (final_rotated_crc != nullptr) {
+                rotated_crc = exact2x::crc32_update(
+                    rotated_crc, buffers->tile[next_buffer], kTileBytes);
+            }
             current_buffer = next_buffer;
         }
     }
-    metrics->rotated_crc = rotated_crc ^ 0xffffffffU;
+    if (final_rotated_crc != nullptr) {
+        *final_rotated_crc = rotated_crc ^ 0xffffffffU;
+        metrics->rotated_crc = *final_rotated_crc;
+    }
     metrics->callback_count = context->callback_count.load(
         std::memory_order_relaxed) - static_cast<std::uint32_t>(callback_start);
     metrics->ok = validate_masks(*metrics) && metrics->callback_count == kTileCount;
@@ -532,9 +550,9 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
             static_cast<std::uint64_t>(esp_timer_get_time());
         const bool frame_ok = overlap
             ? run_overlap_frame(client, context, source, buffers, destination,
-                                &metrics)
+                                nullptr, &metrics)
             : run_sequential_frame(client, context, source, buffers, destination,
-                                   &metrics);
+                                   nullptr, &metrics);
         if (!frame_ok) {
             return false;
         }
@@ -566,9 +584,10 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
     if (!normalize_destination(destination) ||
         (overlap
              ? !run_overlap_frame(client, context, source, buffers, destination,
-                                  &final_metrics)
+                                  &final_metrics.rotated_crc, &final_metrics)
              : !run_sequential_frame(client, context, source, buffers,
-                                     destination, &final_metrics)) ||
+                                     destination, &final_metrics.rotated_crc,
+                                     &final_metrics)) ||
         !sync_destination(destination, &final_metrics.cache_sync_us) ||
         !validate_frame(source, destination, final_metrics, &destination_crc)) {
         return false;
@@ -785,6 +804,10 @@ esp_err_t run(const Input &input)
                 " ppa_mode_candidate=non_blocking ppa_queue_depth=1"
                 " framebuffer_count=1 dma2d=0"
                 " destination_mode=benchmark_psram_destination\n");
+    std::printf("P4_NANO_PPA_PIE_OVERLAP_MEASUREMENT_CONTRACT"
+                " timed_rotated_crc=0 timed_output_crc=0"
+                " timed_pixel_validation=0 final_validation_crc=1"
+                " final_pixel_validation=1\n");
     print_timer_control();
     const bool control_ok = run_phase(
         "sequential", false, client, context, input.original_source, &buffers,
