@@ -3462,29 +3462,33 @@ void exact2x_add_sample(std::uint64_t kernel, std::uint64_t cache,
 }
 
 template <std::size_t N>
-void exact2x_print_metric(const char *name, const std::array<std::uint64_t, N> &samples,
+void exact2x_print_metric(const char *name, std::array<std::uint64_t, N> &samples,
                           std::size_t count)
 {
-    std::array<std::uint64_t, N> sorted = samples;
-    std::sort(sorted.begin(), sorted.begin() + count);
+    // Statistics are emitted only after sampling; chronological order is no
+    // longer needed, so sort the static sample storage in place.  Keeping the
+    // 128-sample arrays out of this task's automatic frame avoids a stack
+    // copy of roughly 1 KiB before printf/vfprintf runs.
+    std::sort(samples.begin(), samples.begin() + count);
     std::uint64_t total = 0U;
     for (std::size_t index = 0U; index < count; ++index) {
-        total += sorted[index];
+        total += samples[index];
     }
-    const auto percentile = [&sorted, count](std::size_t rank) {
+    const auto percentile = [&samples, count](std::size_t rank) {
         if (count == 0U) {
             return std::uint64_t{0U};
         }
         const std::size_t index =
             std::min(count - 1U, (count * rank + 99U) / 100U - 1U);
-        return sorted[index];
+        return samples[index];
     };
     std::printf("P4_NANO_EXACT2X_TIMING metric=%s count=%zu min_us=%" PRIu64
                 " average_us=%" PRIu64 " p50_us=%" PRIu64
                 " p95_us=%" PRIu64 " p99_us=%" PRIu64 " max_us=%" PRIu64 "\n",
-                name, count, count == 0U ? 0U : sorted[0],
+                name, count, count == 0U ? 0U : samples[0],
                 count == 0U ? 0U : total / count, percentile(50U),
-                percentile(95U), percentile(99U), count == 0U ? 0U : sorted[count - 1U]);
+                percentile(95U), percentile(99U),
+                count == 0U ? 0U : samples[count - 1U]);
 }
 
 bool exact2x_full_match(const std::uint16_t *source,
@@ -3526,7 +3530,19 @@ bool exact2x_run_samples(BenchmarkState *state)
         state->isolated_source_view.ptr == nullptr) {
         return false;
     }
-    exact2x_stats = Exact2xStats{};
+    // Clear the static report storage without materializing a ~3 KiB
+    // aggregate temporary in this task's automatic frame.
+    exact2x_stats.kernel.fill(0U);
+    exact2x_stats.cache.fill(0U);
+    exact2x_stats.service.fill(0U);
+    exact2x_stats.stored = 0U;
+    exact2x_stats.source_crc_before = 0U;
+    exact2x_stats.source_crc_after = 0U;
+    exact2x_stats.output_crc = 0U;
+    exact2x_stats.source_immutable = false;
+    exact2x_stats.byte_exact = false;
+    exact2x_stats.final_validation_ok = false;
+    exact2x_stats.cache_ok = true;
     auto *source = static_cast<std::uint16_t *>(heap_caps_aligned_alloc(
         64U, p4_nano_display::kExact2xSourceBytes,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

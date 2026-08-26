@@ -125,13 +125,15 @@ def main() -> int:
     app_prefix = main[app_start:hello]
     require(app_prefix, "route_display_benchmark_application_console()",
             "route before HELLO")
-    require(app_prefix, "benchmark_uart_route_result != ESP_OK",
+    require(app_prefix, "p9_uart_route_result != ESP_OK",
             "route failure check")
     require(app_prefix, "return;", "route failure stops app")
-    require(main, "#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) ||",
-            "P9/P10 benchmark-only route gate")
-    require(main, "defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)",
-            "P9/P10 exact2x route gate")
+    route_guard_start = main.rfind("#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)",
+                                   0, route_start)
+    route_guard_end = main.index("#endif", route_guard_start)
+    route_guard = main[route_guard_start:route_guard_end]
+    if "P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE" in route_guard:
+        raise AssertionError("P10 must not trigger the P9 GPIO20 route")
     measured_start = source.index(
         "if (all_operations_succeeded) {\n        for (std::size_t index = 0U;")
     measured_end = source.index("bool final_operation_succeeded", measured_start)

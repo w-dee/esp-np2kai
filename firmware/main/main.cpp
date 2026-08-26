@@ -4,8 +4,7 @@
 #include "esp_app_desc.h"
 #include "esp_err.h"
 #include "esp_idf_version.h"
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #endif
@@ -89,8 +88,7 @@
 
 #endif
 
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
 namespace {
 
 constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart = UART_NUM_0;
@@ -159,13 +157,12 @@ storage_fatfs::StorageFatfs s_sd_np2test_storage(
 
 extern "C" void app_main(void)
 {
-#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE)
-    const esp_err_t benchmark_uart_route_result =
+#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
+    const esp_err_t p9_uart_route_result =
         route_display_benchmark_application_console();
-    if (benchmark_uart_route_result != ESP_OK) {
+    if (p9_uart_route_result != ESP_OK) {
         std::printf("P4_NANO_P9_UART_ROUTE_RESULT=FAIL error=%s\n",
-                    esp_err_to_name(benchmark_uart_route_result));
+                    esp_err_to_name(p9_uart_route_result));
         std::fflush(stdout);
         return;
     }

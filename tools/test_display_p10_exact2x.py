@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_exact2x.hpp"
 SOURCE = ROOT / "firmware/components/p4_nano_display/p4_nano_display_exact2x.cpp"
 LIVE = ROOT / "firmware/components/p4_nano_live_display/p4_nano_live_display.cpp"
+MAIN = ROOT / "firmware/main/main.cpp"
 BUILD = ROOT / "tools/emu/build-production.sh"
 GOLDEN = ROOT / "tests/guest/np2video-live/golden.json"
 
@@ -68,6 +69,7 @@ def main() -> int:
     header = HEADER.read_text(encoding="utf-8")
     source = SOURCE.read_text(encoding="utf-8")
     live = LIVE.read_text(encoding="utf-8")
+    main = MAIN.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     golden = GOLDEN.read_text(encoding="utf-8")
     for fragment in ("kExact2xSourceWidth = 400U",
@@ -88,6 +90,35 @@ def main() -> int:
             "PIE availability must be explicit until zip semantics are proven")
     require("P4_NANO_EXACT2X_PIE_CORRECTNESS PIE_AVAILABLE=0 status=BLOCKED" in live,
             "missing blocked PIE correctness status")
+    metric_start = live.index("void exact2x_print_metric")
+    metric_end = live.index("bool exact2x_full_match", metric_start)
+    metric = live[metric_start:metric_end]
+    require("std::sort(samples.begin(), samples.begin() + count)" in metric,
+            "metric sorting must use static sample storage")
+    if "std::array<std::uint64_t, N> sorted" in metric or \
+            "std::array<std::uint64_t, 128>" in metric:
+        raise AssertionError("P10 metric reporting must not copy 128 samples on the stack")
+    samples_start = live.index("bool exact2x_run_samples")
+    samples_end = live.index("esp_err_t run_exact2x_benchmark_after_start", samples_start)
+    samples_function = live[samples_start:samples_end]
+    require("exact2x_stats.kernel.fill(0U)" in samples_function,
+            "P10 stats reset must use static storage")
+    if "exact2x_stats = Exact2xStats{}" in samples_function:
+        raise AssertionError("P10 stats reset must not materialize an aggregate stack temporary")
+    route_start = main.index(
+        "constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart")
+    route_guard_start = main.rfind(
+        "#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)", 0, route_start)
+    route_guard_end = main.index("#endif", route_guard_start)
+    route_guard = main[route_guard_start:route_guard_end]
+    require("P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE" in route_guard,
+            "P9 route guard missing")
+    if "P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE" in route_guard:
+        raise AssertionError("P10 must not trigger the GPIO20 route")
+    app_start = main.index('extern "C" void app_main(void)')
+    hello = main.index("ESP-NP2KAI HELLO WORLD OK", app_start)
+    if "uart_set_pin" in main[app_start:hello]:
+        raise AssertionError("P10 app_main must not reroute UART before HELLO")
     require("--exact2x-scaler-benchmark" in build,
             "missing P10 build selector")
     require('"crc32": "0x8dadbf82"' in golden,
