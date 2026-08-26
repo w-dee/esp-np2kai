@@ -77,6 +77,16 @@ def main() -> int:
     main_cmake = MAIN_CMAKE.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
 
+    p10f_start = live.index(
+        "esp_err_t run_exact2x_internal_source_benchmark_after_start")
+    p10f_end = live.index(
+        "#elif defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE)",
+        p10f_start)
+    p10f_lifecycle = live[p10f_start:p10f_end]
+    vsync_guard = live[live.index(
+        "#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \\\n    defined(P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE)"):live.index(
+        "bool benchmark_vsync_valid(")]
+
     for fragment in (
             "P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE",
             "--exact2x-internal-source-benchmark",
@@ -89,6 +99,42 @@ def main() -> int:
 
     require("P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE" in main,
             "P10F app dispatch/profile guard missing")
+    require("P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE" in
+            vsync_guard,
+            "P10F profile missing from benchmark_vsync_valid guard")
+    for fragment, name in (
+            ("benchmark_vsync_valid(state->display)",
+             "P10F VSYNC validity call"),
+            ("!vsync_valid", "P10F VSYNC failure gate"),
+            ("benchmark_print_vsync_stats(state->display)",
+             "P10F generic VSYNC report"),
+            ("P4_NANO_EXACT2X_INTERNAL_SOURCE_VSYNC_VALID",
+             "P10F VSYNC marker"),
+            ("P4_NANO_EXACT2X_INTERNAL_SOURCE_LIFECYCLE_RESULT",
+             "P10F lifecycle marker"),
+            ("const bool scheduling_contract", "P10F scheduling contract"),
+            ("esp_err_t internal_source_result", "P10F module result"),
+            ("state->publish_failed.load(", "P10F publish failure"),
+            ("const bool pause_stable", "P10F pause stability"),
+            ("state->backlight_off_failed =",
+             "P10F backlight result"),
+            ("state->producer_pause_acknowledged.load(",
+             "P10F cleared pause acknowledgement"),
+            ("!state->isolated_resumed", "P10F resumed-state check"),
+            ("state->releases != state->acquisitions",
+             "P10F acquisition/release balance"),
+            ("state->producer_result.status != ESP_OK",
+             "P10F producer result"),
+            ("benchmark_hold_visible(state)", "P10F visible hold")):
+        require(fragment in p10f_lifecycle, f"missing {name}")
+    require("P4_NANO_PPA_ROTATION_VSYNC_VALID" in live and
+            "P4_NANO_PPA_ROTATION_LIFECYCLE_RESULT" in live and
+            "P4_NANO_PPA_INTERNAL_TILE_VSYNC_VALID" in live and
+            "P4_NANO_PPA_INTERNAL_TILE_LIFECYCLE_RESULT" in live,
+            "existing P9/P10E lifecycle markers changed or disappeared")
+    for forbidden in ("GPIO_NUM_20", "vsync_front_porch", "refresh_rate"):
+        require(forbidden not in p10f_lifecycle,
+                f"P10F lifecycle changed forbidden display setting: {forbidden}")
     route_guard_start = main.index(
         "#if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)")
     route_guard_end = main.index("#endif", route_guard_start)

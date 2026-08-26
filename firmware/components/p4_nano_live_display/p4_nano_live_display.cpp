@@ -1545,7 +1545,8 @@ void benchmark_print_vsync_stats(
 }
 
 #if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE) || \
-    defined(P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE)
+    defined(P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE) || \
+    defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
 bool benchmark_vsync_valid(
     const p4_nano_display::DisplaySession &display)
 {
@@ -3931,6 +3932,7 @@ esp_err_t run_exact2x_internal_source_benchmark_after_start(BenchmarkState *stat
 {
     bool failed = !benchmark_hold_isolated_source(state) ||
                   !benchmark_request_isolated_pause(state);
+    esp_err_t internal_source_result = ESP_FAIL;
     if (!failed) {
         const p4_nano_exact2x_internal_source::Input input{
             .original_source = state->isolated_source_view.ptr,
@@ -3942,16 +3944,14 @@ esp_err_t run_exact2x_internal_source_benchmark_after_start(BenchmarkState *stat
             .active_framebuffer_bytes =
                 p4_nano_display::kNativeFramebufferBytes,
         };
-        failed = p4_nano_exact2x_internal_source::run(input) != ESP_OK;
+        internal_source_result = p4_nano_exact2x_internal_source::run(input);
+        failed = internal_source_result != ESP_OK;
     }
     state->stop_requested.store(true, std::memory_order_release);
     const bool pause_stable = state->isolated_pause_acknowledged &&
         state->isolated_pause_cooperate_calls ==
             state->producer_cooperate_calls.load(std::memory_order_acquire) &&
         state->producer_pause_acknowledged.load(std::memory_order_acquire);
-    if (!pause_stable) {
-        failed = true;
-    }
     state->producer_pause_requested.store(false, std::memory_order_release);
     if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
         (void)xSemaphoreGive(state->isolated_pause_resume);
@@ -3964,11 +3964,31 @@ esp_err_t run_exact2x_internal_source_benchmark_after_start(BenchmarkState *stat
         benchmark_release(state, &state->isolated_source_token);
         state->isolated_source_held = false;
     }
-    if (state->producer_result.status != ESP_OK ||
+    benchmark_hold_visible(state);
+    state->backlight_off_failed =
+        p4_nano_board::display_backlight_set(0U) != ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    const bool vsync_valid = benchmark_vsync_valid(state->display);
+    if (internal_source_result != ESP_OK ||
         state->publish_failed.load(std::memory_order_acquire) ||
-        state->releases != state->acquisitions || !state->isolated_resumed) {
+        !pause_stable ||
+        state->producer_pause_acknowledged.load(std::memory_order_acquire) ||
+        !state->isolated_resumed || state->backlight_off_failed ||
+        state->releases != state->acquisitions ||
+        state->producer_result.status != ESP_OK || !scheduling_contract ||
+        !vsync_valid) {
         failed = true;
     }
+    benchmark_print_vsync_stats(state->display);
+    std::printf("P4_NANO_EXACT2X_INTERNAL_SOURCE_VSYNC_VALID=%s\n",
+                vsync_valid ? "PASS" : "FAIL");
+    std::printf("P4_NANO_EXACT2X_INTERNAL_SOURCE_LIFECYCLE_RESULT=%s\n",
+                failed ? "FAIL" : "PASS");
     const esp_err_t cleanup_result =
         p4_nano_display::display_session_cleanup(&state->display);
     heap_caps_free(state->slots[0].ptr);
