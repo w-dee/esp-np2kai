@@ -18,6 +18,7 @@ DISPLAY = ROOT / "firmware/components/p4_nano_display/p4_nano_display.cpp"
 DISPLAY_CMAKE = ROOT / "firmware/components/p4_nano_display/CMakeLists.txt"
 VISUAL = ROOT / "firmware/components/p4_nano_display/p4_nano_refresh_visual.cpp"
 HEADER = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_refresh_visual.hpp"
+TIMING_HEADER = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_timing_profiles.hpp"
 
 
 def require(condition: bool, message: str) -> None:
@@ -110,6 +111,7 @@ def main() -> int:
     display_cmake = DISPLAY_CMAKE.read_text(encoding="utf-8")
     visual = VISUAL.read_text(encoding="utf-8")
     header = HEADER.read_text(encoding="utf-8")
+    timing_header = TIMING_HEADER.read_text(encoding="utf-8")
 
     for fragment in (
         "--display-refresh-visual",
@@ -146,7 +148,8 @@ def main() -> int:
         'predicted_divider == 5U', 'predicted_divider == 7U',
         'MIPI_DSI_DPI_CLK_SRC_PLL_F240M', 'htotal == 880U', 'vtotal == 1324U',
     ):
-        require(fragment in header, f"missing timing constant/static check: {fragment}")
+        require(fragment in timing_header,
+                f"missing shared timing constant/static check: {fragment}")
     require("MIPI_DSI_DPI_CLK_SRC_DEFAULT" in display and
             "kRefreshVisualConfig.dpi_clock_source" in display,
             "production default and visual source isolation changed")

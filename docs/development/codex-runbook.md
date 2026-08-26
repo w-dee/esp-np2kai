@@ -143,3 +143,37 @@ The selected profile is encoded in the build directory and in the image's
 configuration log. These profiles are mutually exclusive with the normal
 runtime and other display diagnostics; they do not change the production
 configuration.
+
+## P10H-B paired P10F display-refresh profiles
+
+The P10H-B selector prepares separate P10F benchmark images from one source
+revision. It is diagnostic-only, does not retune DSI at runtime, and does not
+run the P10G visual runner. The standard runtime configuration is unaffected.
+
+CONTROL:
+
+```bash
+bash tools/emu/build-production.sh \
+  --variant p4-v1x \
+  --board p4-nano \
+  --exact2x-internal-source-benchmark \
+  --benchmark-display-refresh baseline \
+  --transform-opt o2
+```
+
+LOWER2:
+
+```bash
+bash tools/emu/build-production.sh \
+  --variant p4-v1x \
+  --board p4-nano \
+  --exact2x-internal-source-benchmark \
+  --benchmark-display-refresh lower2 \
+  --transform-opt o2
+```
+
+Use separate fresh build directories for the paired images. P10H performance
+runs retain both PSRAM-source and INTERNAL-source phases; no human visual
+verdict is part of this benchmark. The pair changes both DPI refresh and DSI
+lane bitrate, so results support the LOWER2 DSI/display-load configuration,
+not an isolated physical PSRAM scanout-bandwidth attribution.

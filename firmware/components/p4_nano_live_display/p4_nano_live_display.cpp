@@ -4463,6 +4463,9 @@ esp_err_t run_benchmark()
                 static_cast<unsigned>(kBenchmarkWarmupTransforms),
                 static_cast<unsigned>(kBenchmarkMeasuredTransforms),
                 static_cast<unsigned>(kBenchmarkTotalTransforms));
+#if defined(P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE)
+    p4_nano_display::print_benchmark_display_config();
+#endif
 #if defined(P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE)
     std::printf("P4_NANO_PPA_ROTATION_MODE rotation=CCW90 scale=1.0,1.0 "
                 "input=640x400 output=400x640 rgb565=1 scanout=active "

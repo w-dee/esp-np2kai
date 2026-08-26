@@ -9,6 +9,7 @@
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <span>
 
@@ -30,6 +31,7 @@
 #include "freertos/task.h"
 
 #include "p4_nano_board/p4_nano_board.hpp"
+#include "p4_nano_display/p4_nano_display_timing_profiles.hpp"
 #if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
 #include "p4_nano_display/p4_nano_refresh_visual.hpp"
 #endif
@@ -49,6 +51,20 @@ constexpr float kDsiLaneBitrateMbps =
     p4_nano_display::kRefreshVisualConfig.requested_lane_mbps;
 constexpr float kDpiClockMHz =
     p4_nano_display::kRefreshVisualConfig.requested_dpi_mhz;
+#elif defined(P4_NANO_BENCHMARK_DISPLAY_REFRESH_BASELINE_PROFILE)
+constexpr auto kDpiClockSource =
+    p4_nano_display::kDisplayTimingBaseline.dpi_clock_source;
+constexpr float kDsiLaneBitrateMbps =
+    p4_nano_display::kDisplayTimingBaseline.requested_lane_mbps;
+constexpr float kDpiClockMHz =
+    p4_nano_display::kDisplayTimingBaseline.requested_dpi_mhz;
+#elif defined(P4_NANO_BENCHMARK_DISPLAY_REFRESH_LOWER2_PROFILE)
+constexpr auto kDpiClockSource =
+    p4_nano_display::kDisplayTimingLower2.dpi_clock_source;
+constexpr float kDsiLaneBitrateMbps =
+    p4_nano_display::kDisplayTimingLower2.requested_lane_mbps;
+constexpr float kDpiClockMHz =
+    p4_nano_display::kDisplayTimingLower2.requested_dpi_mhz;
 #else
 constexpr auto kDpiClockSource = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
 constexpr float kDsiLaneBitrateMbps = 1500.0F;
@@ -255,7 +271,8 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     ESP_LOGI(kTag, "foundation stage=dbi_io result=PASS");
 
     esp_lcd_dpi_panel_config_t dpi_config{};
-#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+#if defined(P4_NANO_REFRESH_VISUAL_PROFILE) || \
+    defined(P4_NANO_BENCHMARK_DISPLAY_REFRESH_PROFILE)
     dpi_config.dpi_clk_src = kDpiClockSource;
 #else
     dpi_config.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT;
@@ -341,6 +358,37 @@ esp_err_t display_session_initialize(DisplaySession *resources)
     ESP_LOGI(kTag, "foundation stage=dpi_refresh_callback result=PASS");
     return ESP_OK;
 #endif
+}
+
+void print_benchmark_display_config() noexcept
+{
+    const DisplayTimingProfile *config = nullptr;
+#if defined(P4_NANO_BENCHMARK_DISPLAY_REFRESH_BASELINE_PROFILE)
+    config = &kDisplayTimingBaseline;
+#elif defined(P4_NANO_BENCHMARK_DISPLAY_REFRESH_LOWER2_PROFILE)
+    config = &kDisplayTimingLower2;
+#else
+    std::printf(
+        "P4_NANO_BENCHMARK_DISPLAY_CONFIG profile=legacy-default "
+        "dpi_source=DEFAULT requested_dpi_mhz=80.000000000 "
+        "predicted_divider=0 predicted_real_dpi_mhz=80.000000000 "
+        "htotal=880 vtotal=1324 predicted_refresh_hz=68.662455000 "
+        "requested_lane_mbps=1500 lanes=2 format=RGB565 num_fbs=1\n");
+    std::fflush(stdout);
+    return;
+#endif
+    std::printf(
+        "P4_NANO_BENCHMARK_DISPLAY_CONFIG profile=%s dpi_source=%s "
+        "requested_dpi_mhz=%.9f predicted_divider=%" PRIu32 " "
+        "predicted_real_dpi_mhz=%.9f htotal=%zu vtotal=%zu "
+        "predicted_refresh_hz=%.9f requested_lane_mbps=%.0f lanes=2 "
+        "format=RGB565 num_fbs=1\n",
+        config->name, config->dpi_source_name,
+        static_cast<double>(config->requested_dpi_mhz), config->predicted_divider,
+        static_cast<double>(config->predicted_real_dpi_mhz), config->htotal,
+        config->vtotal, static_cast<double>(config->predicted_refresh_hz),
+        static_cast<double>(config->requested_lane_mbps));
+    std::fflush(stdout);
 }
 
 esp_err_t display_session_sync_framebuffer(DisplaySession *session)

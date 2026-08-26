@@ -198,7 +198,7 @@ esp_err_t run_refresh_visual()
         "predicted_real_dpi_mhz=%.9f htotal=%zu vtotal=%zu "
         "predicted_refresh_hz=%.9f requested_lane_mbps=%.0f lanes=2 "
         "format=RGB565 num_fbs=1\n",
-        config.mode, config.dpi_source_name,
+        config.name, config.dpi_source_name,
         static_cast<double>(config.requested_dpi_mhz),
         config.predicted_divider, static_cast<double>(config.predicted_real_dpi_mhz),
         config.htotal, config.vtotal, static_cast<double>(config.predicted_refresh_hz),

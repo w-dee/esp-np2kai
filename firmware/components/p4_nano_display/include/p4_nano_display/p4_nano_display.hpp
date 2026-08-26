@@ -78,6 +78,9 @@ void display_session_reset_vsync(DisplaySession *session) noexcept;
 void display_session_snapshot_vsync(const DisplaySession *session,
                                     VsyncStatsSnapshot *snapshot) noexcept;
 
+/* Prints the selected benchmark timing identity before P10F measurement. */
+void print_benchmark_display_config() noexcept;
+
 /* Runs the bounded, static native-panel foundation validation. */
 esp_err_t run_foundation();
 
