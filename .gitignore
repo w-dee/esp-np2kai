@@ -37,6 +37,7 @@ venv/
 *.tmp
 *.temp
 *.log
+log.*
 
 # Keep dependency lock files (for example, dependencies.lock) trackable.
 # Do not add broad documentation or VS Code extension-recommendation ignores.
