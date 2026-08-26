@@ -113,7 +113,50 @@ def main() -> int:
     require("P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE" in main_cpp,
             "P10I main dispatch guard missing")
 
-    print("Display Performance P10I-B PPA/PIE overlap host/static contract passed")
+    metric_print = source[source.index("void print_metric"):source.index(
+        "struct CompletionContext")]
+    require("std::sort(stats.samples.begin(), stats.samples.begin() + stats.stored)"
+            in metric_print,
+            "metric samples must be sorted before reporting")
+    require(metric_print.index("std::sort") < metric_print.index("std::printf"),
+            "metric sort must precede printf evaluation")
+    percentile_body = source[source.index("percentile_from_sorted"):source.index(
+        "void print_metric")]
+    require("const MetricStats &stats" in percentile_body and
+            "std::sort" not in percentile_body,
+            "percentile extraction must not mutate samples")
+    for fragment in ("const std::uint64_t minimum", "const std::uint64_t p50",
+                     "const std::uint64_t p95", "const std::uint64_t p99",
+                     "const std::uint64_t maximum", "const bool ordered",
+                     "PPA_COMPLETION_OBSERVED_LATENCY", "PPA_API_CALL_WALL"):
+        require(fragment in source, f"deterministic metric contract missing: {fragment}")
+    require("PPA_SUBMIT_OVERHEAD" not in source and
+            "PPA_LATENCY_AGGREGATE" not in source,
+            "blocking API wall time must not be labeled as async submit/latency")
+    for fragment in ("in_flight", "fetch_add(1U", "fetch_sub(1U",
+                     "drain_outstanding_ppa", "kCleanupWaitAttempts",
+                     "P4_NANO_PPA_PIE_OVERLAP_CLEANUP=", "FAIL_IN_FLIGHT",
+                     "FAIL_UNREGISTER", "transaction_lifetime_must_be_retained",
+                     "deliberately retain the client"):
+        require(fragment in source + live,
+                f"async cleanup contract missing: {fragment}")
+    require("if (!cleanup_pass)" in source and
+            "else {\n        heap_caps_free(destination);" in source,
+            "PPA buffers must only be freed after cleanup passes")
+    require("while (" not in source,
+            "P10I failure recovery must not use a spin loop")
+    require("PPA_TRANS_MODE_BLOCKING" in source and
+            "callback_count" in source and "PPA_API_CALL_WALL" in source,
+            "sequential blocking callback contract changed")
+    require("P4_NANO_PPA_PIE_OVERLAP_CPU_HEADROOM" in source and
+            "wall_margin_is_not_free_cpu=1" in source,
+            "CPU headroom semantics marker missing")
+    require("TOTAL_FRAME_SERVICE" in source and
+            "kWarmupSamples + kMeasuredSamples" in source and
+            "kFinalValidationSamples" in source,
+            "primary timing envelope changed")
+
+    print("Display Performance P10I-B1 PPA/PIE overlap hardening host/static contract passed")
     print("P10I_HARDWARE_ACCESS=NOT_PERFORMED")
     return 0
 

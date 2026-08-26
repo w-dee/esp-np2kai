@@ -83,12 +83,12 @@ struct MetricStats final {
     }
 };
 
-std::uint64_t percentile(MetricStats &stats, std::size_t numerator)
+std::uint64_t percentile_from_sorted(const MetricStats &stats,
+                                     std::size_t numerator) noexcept
 {
     if (stats.stored == 0U) {
         return 0U;
     }
-    std::sort(stats.samples.begin(), stats.samples.begin() + stats.stored);
     const std::size_t index = std::min(
         stats.stored - 1U, (stats.stored * numerator + 99U) / 100U - 1U);
     return stats.samples[index];
@@ -96,23 +96,27 @@ std::uint64_t percentile(MetricStats &stats, std::size_t numerator)
 
 void print_metric(const char *mode, const char *metric, MetricStats &stats)
 {
-    const std::uint64_t total = [&stats]() {
-        std::uint64_t sum = 0U;
-        for (std::size_t index = 0U; index < stats.stored; ++index) {
-            sum += stats.samples[index];
-        }
-        return sum;
-    }();
+    // Establish one deterministic order before deriving any distribution
+    // statistic.  The printf call only consumes already-computed values.
+    std::sort(stats.samples.begin(), stats.samples.begin() + stats.stored);
+    const std::size_t count = stats.stored;
+    std::uint64_t total = 0U;
+    for (std::size_t index = 0U; index < count; ++index) {
+        total += stats.samples[index];
+    }
+    const std::uint64_t minimum = count == 0U ? 0U : stats.samples.front();
+    const std::uint64_t p50 = percentile_from_sorted(stats, 50U);
+    const std::uint64_t p95 = percentile_from_sorted(stats, 95U);
+    const std::uint64_t p99 = percentile_from_sorted(stats, 99U);
+    const std::uint64_t maximum = count == 0U ? 0U : stats.samples[count - 1U];
+    const bool ordered = minimum <= p50 && p50 <= p95 && p95 <= p99 &&
+        p99 <= maximum;
     std::printf("P4_NANO_PPA_PIE_OVERLAP_METRIC mode=%s metric=%s count=%zu"
                 " min_us=%" PRIu64 " average_us=%" PRIu64
                 " p50_us=%" PRIu64 " p95_us=%" PRIu64
-                " p99_us=%" PRIu64 " max_us=%" PRIu64 "\n",
-                mode, metric, stats.stored,
-                stats.stored == 0U ? 0U : stats.samples[0],
-                stats.stored == 0U ? 0U : total / stats.stored,
-                percentile(stats, 50U), percentile(stats, 95U),
-                percentile(stats, 99U),
-                stats.stored == 0U ? 0U : stats.samples[stats.stored - 1U]);
+                " p99_us=%" PRIu64 " max_us=%" PRIu64 " order=%s\n",
+                mode, metric, count, minimum, count == 0U ? 0U : total / count,
+                p50, p95, p99, maximum, ordered ? "PASS" : "FAIL");
 }
 
 struct CompletionContext final {
@@ -120,7 +124,16 @@ struct CompletionContext final {
     SemaphoreHandle_t done = nullptr;
     std::atomic<std::uint32_t> callback_count{0U};
     std::atomic<std::uint32_t> callback_failures{0U};
+    // Queue depth is one, so this is at most one.  It is incremented before
+    // submission and cleared only after task-side semaphore observation.
+    std::atomic<std::uint32_t> in_flight{0U};
+    std::atomic<bool> cleanup_failed{false};
+    std::atomic<bool> lifetime_must_be_retained{false};
 };
+
+CompletionContext s_completion_context{};
+
+constexpr std::size_t kCleanupWaitAttempts = 1U;
 
 bool ppa_done_callback(ppa_client_handle_t, ppa_event_data_t *, void *user_data)
 {
@@ -152,11 +165,11 @@ struct TileBuffers final {
 struct FrameMetrics final {
     std::uint64_t total_us = 0U;
     std::uint64_t first_ppa_latency_us = 0U;
-    std::uint64_t ppa_latency_us = 0U;
+    std::uint64_t ppa_completion_observed_us = 0U;
     std::uint64_t pie_active_us = 0U;
     std::uint64_t cache_sync_us = 0U;
     std::uint64_t ppa_wait_exposed_us = 0U;
-    std::uint64_t ppa_submit_overhead_us = 0U;
+    std::uint64_t ppa_api_call_wall_us = 0U;
     std::uint32_t produced_mask = 0U;
     std::uint32_t completed_mask = 0U;
     std::uint32_t consumed_mask = 0U;
@@ -169,11 +182,11 @@ struct FrameMetrics final {
 struct PhaseStats final {
     MetricStats total;
     MetricStats first_ppa_latency;
-    MetricStats ppa_latency;
+    MetricStats ppa_completion_observed;
     MetricStats pie_active;
     MetricStats cache_sync;
     MetricStats ppa_wait_exposed;
-    MetricStats ppa_submit_overhead;
+    MetricStats ppa_api_call_wall;
     std::uint32_t original_crc_before = 0U;
     std::uint32_t original_crc_after = 0U;
     std::uint32_t rotated_crc = 0U;
@@ -204,6 +217,20 @@ bool sync_destination(std::uint8_t *destination, std::uint64_t *elapsed_us) noex
     return result;
 }
 
+bool observe_ppa_completion(CompletionContext *context) noexcept
+{
+    if (context == nullptr) {
+        return false;
+    }
+    const std::uint32_t previous =
+        context->in_flight.fetch_sub(1U, std::memory_order_acq_rel);
+    if (previous == 0U) {
+        context->in_flight.fetch_add(1U, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
 bool wait_for_ppa(CompletionContext *context, std::uint64_t *wait_us) noexcept
 {
     if (context == nullptr || context->done == nullptr || wait_us == nullptr) {
@@ -212,26 +239,48 @@ bool wait_for_ppa(CompletionContext *context, std::uint64_t *wait_us) noexcept
     const std::uint64_t start = static_cast<std::uint64_t>(esp_timer_get_time());
     const BaseType_t result = xSemaphoreTake(context->done, kPpaWaitTicks);
     *wait_us = static_cast<std::uint64_t>(esp_timer_get_time()) - start;
-    return result == pdTRUE;
+    if (result != pdTRUE) {
+        return false;
+    }
+    return observe_ppa_completion(context);
 }
 
 bool submit_ppa(ppa_client_handle_t client, CompletionContext *context,
                 const std::uint8_t *source, std::uint8_t *tile,
                 std::size_t tile_index, ppa_trans_mode_t mode,
-                std::uint64_t *submit_overhead_us) noexcept
+                std::uint64_t *api_call_wall_us) noexcept
 {
     if (client == nullptr || context == nullptr || context->done == nullptr ||
-        tile == nullptr || submit_overhead_us == nullptr ||
+        tile == nullptr || api_call_wall_us == nullptr ||
         xSemaphoreTake(context->done, 0U) == pdTRUE) {
         return false;
     }
     const ppa_srm_oper_config_t operation = exact2x::make_tile_operation(
         source, tile, tile_index, mode, context);
+    context->in_flight.fetch_add(1U, std::memory_order_release);
     const std::uint64_t start = static_cast<std::uint64_t>(esp_timer_get_time());
     const esp_err_t result = ppa_do_scale_rotate_mirror(client, &operation);
-    *submit_overhead_us =
+    *api_call_wall_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - start;
+    if (result != ESP_OK) {
+        context->in_flight.fetch_sub(1U, std::memory_order_acq_rel);
+    }
     return result == ESP_OK;
+}
+
+bool drain_outstanding_ppa(CompletionContext *context) noexcept
+{
+    if (context == nullptr) {
+        return false;
+    }
+    for (std::size_t attempt = 0U;
+         attempt < kCleanupWaitAttempts &&
+         context->in_flight.load(std::memory_order_acquire) != 0U;
+         ++attempt) {
+        std::uint64_t wait_us = 0U;
+        (void)wait_for_ppa(context, &wait_us);
+    }
+    return context->in_flight.load(std::memory_order_acquire) == 0U;
 }
 
 bool validate_masks(const FrameMetrics &metrics) noexcept
@@ -277,11 +326,11 @@ bool run_sequential_frame(ppa_client_handle_t client,
             return false;
         }
         buffers->state[buffer_index] = BufferState::PpaInFlight;
-        std::uint64_t submit_us = 0U;
+        std::uint64_t api_call_us = 0U;
         const std::uint64_t ppa_start =
             static_cast<std::uint64_t>(esp_timer_get_time());
         if (!submit_ppa(client, context, source, buffers->tile[buffer_index],
-                        tile_index, PPA_TRANS_MODE_BLOCKING, &submit_us)) {
+                        tile_index, PPA_TRANS_MODE_BLOCKING, &api_call_us)) {
             return false;
         }
         std::uint64_t callback_wait_us = 0U;
@@ -290,12 +339,12 @@ bool run_sequential_frame(ppa_client_handle_t client,
         }
         const std::uint64_t ppa_elapsed =
             static_cast<std::uint64_t>(esp_timer_get_time()) - ppa_start;
-        metrics->ppa_latency_us += ppa_elapsed;
+        metrics->ppa_completion_observed_us += ppa_elapsed;
         if (tile_index == 0U) {
             metrics->first_ppa_latency_us = ppa_elapsed;
         }
         metrics->ppa_wait_exposed_us += callback_wait_us;
-        metrics->ppa_submit_overhead_us += submit_us;
+        metrics->ppa_api_call_wall_us += api_call_us;
         metrics->produced_mask |= 1U << tile_index;
         metrics->completed_mask |= 1U << tile_index;
         buffers->state[buffer_index] = BufferState::PpaReady;
@@ -335,14 +384,14 @@ bool run_overlap_frame(ppa_client_handle_t client,
         context->callback_count.load(std::memory_order_relaxed);
     std::uint32_t rotated_crc = 0xffffffffU;
     std::size_t current_buffer = 0U;
-    std::uint64_t submit_us = 0U;
+    std::uint64_t api_call_us = 0U;
     const std::uint64_t first_submit_start =
         static_cast<std::uint64_t>(esp_timer_get_time());
     if (!submit_ppa(client, context, source, buffers->tile[current_buffer], 0U,
-                    PPA_TRANS_MODE_NON_BLOCKING, &submit_us)) {
+                    PPA_TRANS_MODE_NON_BLOCKING, &api_call_us)) {
         return false;
     }
-    metrics->ppa_submit_overhead_us += submit_us;
+    metrics->ppa_api_call_wall_us += api_call_us;
     metrics->produced_mask |= 1U;
     buffers->state[current_buffer] = BufferState::PpaInFlight;
     std::uint64_t wait_us = 0U;
@@ -352,7 +401,7 @@ bool run_overlap_frame(ppa_client_handle_t client,
     metrics->ppa_wait_exposed_us += wait_us;
     metrics->first_ppa_latency_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - first_submit_start;
-    metrics->ppa_latency_us += metrics->first_ppa_latency_us;
+    metrics->ppa_completion_observed_us += metrics->first_ppa_latency_us;
     metrics->completed_mask |= 1U;
     buffers->state[current_buffer] = BufferState::PpaReady;
     rotated_crc = exact2x::crc32_update(
@@ -369,10 +418,10 @@ bool run_overlap_frame(ppa_client_handle_t client,
             ppa_start = static_cast<std::uint64_t>(esp_timer_get_time());
             if (!submit_ppa(client, context, source,
                             buffers->tile[next_buffer], tile_index + 1U,
-                            PPA_TRANS_MODE_NON_BLOCKING, &submit_us)) {
+                            PPA_TRANS_MODE_NON_BLOCKING, &api_call_us)) {
                 return false;
             }
-            metrics->ppa_submit_overhead_us += submit_us;
+            metrics->ppa_api_call_wall_us += api_call_us;
             metrics->produced_mask |= 1U << (tile_index + 1U);
         }
 
@@ -396,7 +445,7 @@ bool run_overlap_frame(ppa_client_handle_t client,
                 return false;
             }
             metrics->ppa_wait_exposed_us += wait_us;
-            metrics->ppa_latency_us +=
+            metrics->ppa_completion_observed_us +=
                 static_cast<std::uint64_t>(esp_timer_get_time()) - ppa_start;
             metrics->completed_mask |= 1U << (tile_index + 1U);
             buffers->state[next_buffer] = BufferState::PpaReady;
@@ -460,11 +509,11 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
     }
     stats->total.reset();
     stats->first_ppa_latency.reset();
-    stats->ppa_latency.reset();
+    stats->ppa_completion_observed.reset();
     stats->pie_active.reset();
     stats->cache_sync.reset();
     stats->ppa_wait_exposed.reset();
-    stats->ppa_submit_overhead.reset();
+    stats->ppa_api_call_wall.reset();
     stats->original_crc_before = p4_nano_display::crc32(
         source, exact2x::kOriginalSourceBytes);
     if (stats->original_crc_before != kExpectedOriginalCrc) {
@@ -497,11 +546,11 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
         if (index >= kWarmupSamples) {
             stats->total.add(metrics.total_us);
             stats->first_ppa_latency.add(metrics.first_ppa_latency_us);
-            stats->ppa_latency.add(metrics.ppa_latency_us);
+            stats->ppa_completion_observed.add(metrics.ppa_completion_observed_us);
             stats->pie_active.add(metrics.pie_active_us);
             stats->cache_sync.add(metrics.cache_sync_us);
             stats->ppa_wait_exposed.add(metrics.ppa_wait_exposed_us);
-            stats->ppa_submit_overhead.add(metrics.ppa_submit_overhead_us);
+            stats->ppa_api_call_wall.add(metrics.ppa_api_call_wall_us);
         }
         if ((index + 1U) % 64U == 0U) {
             vTaskDelay(1);
@@ -535,11 +584,12 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
         stats->destination_crc == kExpectedDestinationCrc;
     print_metric(mode, "TOTAL_FRAME_SERVICE", stats->total);
     print_metric(mode, "FIRST_PPA_LATENCY", stats->first_ppa_latency);
-    print_metric(mode, "PPA_LATENCY_AGGREGATE", stats->ppa_latency);
+    print_metric(mode, "PPA_COMPLETION_OBSERVED_LATENCY",
+                 stats->ppa_completion_observed);
     print_metric(mode, "PIE_ACTIVE", stats->pie_active);
     print_metric(mode, "CACHE_SYNC", stats->cache_sync);
     print_metric(mode, "PPA_WAIT_EXPOSED", stats->ppa_wait_exposed);
-    print_metric(mode, "PPA_SUBMIT_OVERHEAD", stats->ppa_submit_overhead);
+    print_metric(mode, "PPA_API_CALL_WALL", stats->ppa_api_call_wall);
     std::printf("P4_NANO_PPA_PIE_OVERLAP_CORRECTNESS mode=%s"
                 " original_crc_before=0x%08" PRIx32
                 " original_crc_after=0x%08" PRIx32
@@ -561,7 +611,7 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
     return stats->byte_exact;
 }
 
-std::uint64_t metric_average(MetricStats &stats)
+std::uint64_t metric_average(const MetricStats &stats)
 {
     if (stats.stored == 0U) {
         return 0U;
@@ -576,6 +626,12 @@ std::uint64_t metric_average(MetricStats &stats)
 } // namespace
 
 namespace p4_nano_ppa_pie_overlap {
+
+bool transaction_lifetime_must_be_retained() noexcept
+{
+    return s_completion_context.lifetime_must_be_retained.load(
+        std::memory_order_acquire);
+}
 
 esp_err_t run(const Input &input)
 {
@@ -672,15 +728,31 @@ esp_err_t run(const Input &input)
         return ESP_ERR_NO_MEM;
     }
 
-    CompletionContext context{};
-    context.done = xSemaphoreCreateBinaryStatic(&context.storage);
-    if (context.done == nullptr) {
+    CompletionContext *context = &s_completion_context;
+    if (context->cleanup_failed.load(std::memory_order_acquire) ||
+        context->in_flight.load(std::memory_order_acquire) != 0U) {
+        std::printf("P4_NANO_PPA_PIE_OVERLAP_CLEANUP=FAIL_IN_FLIGHT\n");
+        std::printf("P4_NANO_PPA_PIE_OVERLAP_RESULT=FAIL\n");
+        heap_caps_free(destination);
+        heap_caps_free(control_snapshot);
+        heap_caps_free(buffers.tile[0]);
+        heap_caps_free(buffers.tile[1]);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (context->done == nullptr) {
+        context->done = xSemaphoreCreateBinaryStatic(&context->storage);
+    }
+    if (context->done == nullptr) {
         heap_caps_free(destination);
         heap_caps_free(control_snapshot);
         heap_caps_free(buffers.tile[0]);
         heap_caps_free(buffers.tile[1]);
         return ESP_ERR_NO_MEM;
     }
+    (void)xSemaphoreTake(context->done, 0U);
+    context->callback_count.store(0U, std::memory_order_relaxed);
+    context->callback_failures.store(0U, std::memory_order_relaxed);
+    context->lifetime_must_be_retained.store(false, std::memory_order_release);
     const ppa_client_config_t client_config{
         .oper_type = PPA_OPERATION_SRM,
         .max_pending_trans_num = 1U,
@@ -715,14 +787,14 @@ esp_err_t run(const Input &input)
                 " destination_mode=benchmark_psram_destination\n");
     print_timer_control();
     const bool control_ok = run_phase(
-        "sequential", false, client, &context, input.original_source, &buffers,
+        "sequential", false, client, context, input.original_source, &buffers,
         destination, &s_phase_stats[0]);
     if (!control_ok) {
         result = ESP_FAIL;
     } else {
         std::memcpy(control_snapshot, destination, kDestinationBytes);
         const bool candidate_ok = run_phase(
-            "overlap", true, client, &context, input.original_source, &buffers,
+            "overlap", true, client, context, input.original_source, &buffers,
             destination, &s_phase_stats[1]);
         if (!candidate_ok || std::memcmp(control_snapshot, destination,
                                          kDestinationBytes) != 0) {
@@ -730,12 +802,19 @@ esp_err_t run(const Input &input)
         }
     }
     const std::uint32_t callback_failures =
-        context.callback_failures.load(std::memory_order_relaxed);
+        context->callback_failures.load(std::memory_order_relaxed);
     const std::uint32_t callbacks_seen =
-        context.callback_count.load(std::memory_order_relaxed);
-    if (callback_failures != 0U || xSemaphoreTake(context.done, 0U) == pdTRUE) {
+        context->callback_count.load(std::memory_order_relaxed);
+    const bool extra_completion = xSemaphoreTake(context->done, 0U) == pdTRUE;
+    if (extra_completion && !observe_ppa_completion(context)) {
         result = ESP_FAIL;
     }
+    if (callback_failures != 0U || extra_completion) {
+        result = ESP_FAIL;
+    }
+    std::printf("P4_NANO_PPA_PIE_OVERLAP_CPU_HEADROOM"
+                " wall_margin_is_not_free_cpu=1"
+                " blocking_api_wall_is_not_submit_overhead=1\n");
     if (result == ESP_OK) {
         const double sequential = static_cast<double>(metric_average(
             s_phase_stats[0].total));
@@ -786,14 +865,30 @@ esp_err_t run(const Input &input)
                 " failures=%" PRIu32 " result=%s\n",
                 callbacks_seen, callback_failures,
                 result == ESP_OK ? "PASS" : "FAIL");
-    const esp_err_t unregister_result = ppa_unregister_client(client);
-    if (unregister_result != ESP_OK) {
-        result = unregister_result;
+    // Failure policy: if task-side completion cannot be observed within the
+    // bounded recovery wait, deliberately retain the client, callback context,
+    // PPA-visible tiles, and caller-held source rather than free DMA memory.
+    const bool transactions_quiescent = drain_outstanding_ppa(context);
+    esp_err_t unregister_result = ESP_ERR_INVALID_STATE;
+    if (transactions_quiescent) {
+        unregister_result = ppa_unregister_client(client);
     }
-    heap_caps_free(destination);
-    heap_caps_free(control_snapshot);
-    heap_caps_free(buffers.tile[0]);
-    heap_caps_free(buffers.tile[1]);
+    const bool cleanup_pass = transactions_quiescent &&
+        unregister_result == ESP_OK;
+    if (!cleanup_pass) {
+        context->cleanup_failed.store(true, std::memory_order_release);
+        context->lifetime_must_be_retained.store(true, std::memory_order_release);
+        result = result == ESP_OK ? ESP_FAIL : result;
+    } else {
+        heap_caps_free(destination);
+        heap_caps_free(control_snapshot);
+        heap_caps_free(buffers.tile[0]);
+        heap_caps_free(buffers.tile[1]);
+    }
+    const char *cleanup_marker = !transactions_quiescent
+        ? "FAIL_IN_FLIGHT"
+        : unregister_result == ESP_OK ? "PASS" : "FAIL_UNREGISTER";
+    std::printf("P4_NANO_PPA_PIE_OVERLAP_CLEANUP=%s\n", cleanup_marker);
     std::printf("P4_NANO_PPA_PIE_OVERLAP_RESULT=%s\n",
                 result == ESP_OK ? "PASS" : "FAIL");
     return result;

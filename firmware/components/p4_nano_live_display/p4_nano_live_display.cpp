@@ -4035,9 +4035,13 @@ esp_err_t run_ppa_pie_overlap_benchmark_after_start(BenchmarkState *state)
     while (!state->producer_done.load(std::memory_order_acquire)) {
         vTaskDelay(kConsumerPollDelayTicks);
     }
-    if (state->isolated_source_held) {
+    const bool retain_source_lifetime =
+        p4_nano_ppa_pie_overlap::transaction_lifetime_must_be_retained();
+    if (state->isolated_source_held && !retain_source_lifetime) {
         benchmark_release(state, &state->isolated_source_token);
         state->isolated_source_held = false;
+    } else if (retain_source_lifetime) {
+        std::printf("P4_NANO_PPA_PIE_OVERLAP_SOURCE_LIFETIME=RETAINED\n");
     }
     benchmark_hold_visible(state);
     state->backlight_off_failed =
