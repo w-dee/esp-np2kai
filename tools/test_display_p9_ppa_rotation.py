@@ -99,6 +99,37 @@ def main() -> int:
     require(live_cmake, "esp_driver_ppa", "P9-only PPA dependency")
     require(main_cmake, "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE_ACTIVE", "P9 gate")
     require(main, "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE", "P9 dispatch")
+    require(main, '#include "driver/gpio.h"', "P9 GPIO enum include")
+    require(main, '#include "driver/uart.h"', "P9 public UART API include")
+    require(main_cmake,
+            "list(APPEND NP2_MAIN_PRIV_REQUIRES esp_driver_uart esp_driver_gpio)",
+            "P9 UART component dependency")
+    route_start = main.index("constexpr uart_port_t kP9ApplicationConsoleUart")
+    route_end = main.index("} // namespace", route_start)
+    route = main[route_start:route_end]
+    for fragment, name in (
+        ("UART_NUM_0", "UART0 route"),
+        ("GPIO_NUM_20", "GPIO20 route"),
+        ("UART_PIN_NO_CHANGE", "unchanged UART pins"),
+        ("return uart_set_pin", "public route call"),
+    ):
+        require(route, fragment, name)
+    if "uart_driver_install" in route or "uart_set_baudrate" in route:
+        raise AssertionError("P9 route must not install a driver or change baud")
+    if "gpio_reset_pin" in main or "GPIO_NUM_37" in route:
+        raise AssertionError("P9 route must not reconfigure GPIO37")
+    app_start = main.index('extern "C" void app_main(void)')
+    hello = main.index('ESP-NP2KAI HELLO WORLD OK', app_start)
+    app_prefix = main[app_start:hello]
+    require(app_prefix, "route_p9_application_console()", "route before HELLO")
+    require(app_prefix, "p9_uart_route_result != ESP_OK", "route failure check")
+    require(app_prefix, "return;", "route failure stops app")
+    measured_start = source.index(
+        "if (all_operations_succeeded) {\n        for (std::size_t index = 0U;")
+    measured_end = source.index("bool final_operation_succeeded", measured_start)
+    measured = source[measured_start:measured_end]
+    if "printf" in measured or "uart_set_pin" in measured:
+        raise AssertionError("P9 measured PPA loop must not log or reroute UART")
     require(build, "--ppa-rotation-benchmark", "P9 selector")
     require(build, "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE", "P9 build export")
     require(golden, '"crc32": "0x8dadbf82"', "tracked source golden")
@@ -117,7 +148,7 @@ def main() -> int:
     if retained_crc is not None and retained_crc != 0x379511D7:
         raise AssertionError(f"rotated fixture CRC mismatch: 0x{retained_crc:08x}")
 
-    print("Display Performance P9B PPA rotation-only contract passed")
+    print("Display Performance P9C-R3B UART0 GPIO20 route contract passed")
     return 0
 
 
