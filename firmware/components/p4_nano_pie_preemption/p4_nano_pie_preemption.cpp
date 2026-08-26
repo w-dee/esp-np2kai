@@ -339,6 +339,7 @@ esp_err_t run()
                 " q3=forbidden special_state=none same_core=1"
                 " high_priority_gt_low=1 stress_iterations=%zu"
                 " intentional_preemption_delay_us=%" PRIu64
+                " scheduler_health_delay_ticks=1"
                 " low_core=%" PRIu32 " low_priority=%" PRIu32 "\n",
                 kStressIterations, kIntentionalPreemptionDelayUs,
                 state.low_core.load(std::memory_order_relaxed),
@@ -460,6 +461,7 @@ esp_err_t run()
         if (!validate_output(candidate, golden, iteration, state)) {
             return fail_run(&state, source, candidate, golden, "stress_mismatch");
         }
+        vTaskDelay(1U);
     }
 
     const std::uint32_t handoffs =

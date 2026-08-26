@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host/static contract for the P10K-B1 grouped-PIE preemption harness."""
+"""Host/static contract for the P10K-B2 grouped-PIE preemption harness."""
 
 from __future__ import annotations
 
@@ -89,6 +89,11 @@ def main() -> int:
     fail_start = component.index("esp_err_t fail_run")
     fail_end = component.index("} // namespace", fail_start)
     fail_body = component[fail_start:fail_end]
+    stress_start = component.index(
+        "for (std::size_t iteration = 0U; iteration < kStressIterations;",
+        run_start)
+    stress_end = component.index("\n\n    const std::uint32_t handoffs =", stress_start)
+    stress_body = component[stress_start:stress_end]
 
     grouped_name = "exact2x_pie_tile128_grouped64_aligned"
     clobber_name = "exact2x_pie_preemption_clobber_q0_q1"
@@ -198,6 +203,27 @@ def main() -> int:
             "normal cleanup must release synchronization and report retention")
     require("timer_callback" in component and "arg = &state" in run_body,
             "timer callback must retain static harness context")
+    # Scheduler-health contract: each completed stress case blocks the low
+    # task for one tick after all correctness checks, giving the idle task a
+    # bounded opportunity to run without changing the experiment itself.
+    require(stress_body.count("vTaskDelay(1U)") == 1,
+            "stress loop must contain exactly one scheduler-health delay")
+    delay_index = stress_body.index("vTaskDelay(1U)")
+    for fragment in (
+            "state.helper_active.store(false, std::memory_order_release);",
+            "xSemaphoreTake(state.high_handled, kTaskWaitTicks)",
+            "state.timer_callback_failed.load(std::memory_order_acquire)",
+            "validate_output(candidate, golden, iteration, state)"):
+        require(stress_body.index(fragment) < delay_index,
+                "scheduler-health delay must follow stress completion checks")
+    require("scheduler_health_delay_ticks=1" in component,
+            "scheduler-health delay marker is missing")
+    require("taskYIELD(" not in component and "portYIELD(" not in component,
+            "scheduler health must use the required blocking delay")
+    for forbidden in ("esp_task_wdt_", "esp_task_wdt", "CONFIG_ESP_TASK_WDT",
+                      "TWDT", "task_wdt"):
+        require(forbidden not in component,
+                f"harness must not manipulate watchdog configuration: {forbidden}")
     # Runtime model: low app task, higher-priority same-core task, one-shot
     # timer wake, bounded waits, control-before-stress, and full memcmp.
     for fragment in (
@@ -265,7 +291,7 @@ def main() -> int:
     if args.elf is not None:
         check_elf(args.elf, grouped_name, clobber_name)
 
-    print("Display Performance P10K-B1 grouped PIE preemption host/static contract passed")
+    print("Display Performance P10K-B2 grouped PIE preemption host/static contract passed")
     print("P10K_HARDWARE_ACCESS=NOT_PERFORMED")
     print("GROUPED_PIE_PERFORMANCE=NOT_MEASURED")
     return 0
