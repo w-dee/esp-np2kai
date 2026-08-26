@@ -119,6 +119,30 @@ void print_metric(const char *mode, const char *metric, MetricStats &stats)
                 p50, p95, p99, maximum, ordered ? "PASS" : "FAIL");
 }
 
+void print_burst_metric(const char *burst, const char *metric,
+                        MetricStats &stats)
+{
+    std::sort(stats.samples.begin(), stats.samples.begin() + stats.stored);
+    const std::size_t count = stats.stored;
+    std::uint64_t total = 0U;
+    for (std::size_t index = 0U; index < count; ++index) {
+        total += stats.samples[index];
+    }
+    const std::uint64_t minimum = count == 0U ? 0U : stats.samples.front();
+    const std::uint64_t p50 = percentile_from_sorted(stats, 50U);
+    const std::uint64_t p95 = percentile_from_sorted(stats, 95U);
+    const std::uint64_t p99 = percentile_from_sorted(stats, 99U);
+    const std::uint64_t maximum = count == 0U ? 0U : stats.samples[count - 1U];
+    const bool ordered = minimum <= p50 && p50 <= p95 && p95 <= p99 &&
+        p99 <= maximum;
+    std::printf("P4_NANO_PPA_PIE_BURST_METRIC burst=%s metric=%s count=%zu"
+                " min_us=%" PRIu64 " average_us=%" PRIu64
+                " p50_us=%" PRIu64 " p95_us=%" PRIu64
+                " p99_us=%" PRIu64 " max_us=%" PRIu64 " order=%s\n",
+                burst, metric, count, minimum, count == 0U ? 0U : total / count,
+                p50, p95, p99, maximum, ordered ? "PASS" : "FAIL");
+}
+
 struct CompletionContext final {
     StaticSemaphore_t storage{};
     SemaphoreHandle_t done = nullptr;
@@ -169,6 +193,8 @@ struct FrameMetrics final {
     std::uint64_t pie_active_us = 0U;
     std::uint64_t cache_sync_us = 0U;
     std::uint64_t ppa_wait_exposed_us = 0U;
+    std::uint64_t ppa_wait_first_us = 0U;
+    std::uint64_t ppa_wait_later_aggregate_us = 0U;
     std::uint64_t ppa_api_call_wall_us = 0U;
     std::uint32_t produced_mask = 0U;
     std::uint32_t completed_mask = 0U;
@@ -196,7 +222,43 @@ struct PhaseStats final {
     bool final_validation = false;
 };
 
+struct BurstPhaseStats final {
+    MetricStats total;
+    MetricStats first_ppa_latency;
+    MetricStats ppa_completion_observed;
+    MetricStats pie_active;
+    MetricStats cache_sync;
+    MetricStats ppa_wait_exposed;
+    MetricStats ppa_api_call_wall;
+    MetricStats ppa_wait_first;
+    MetricStats ppa_wait_later_aggregate;
+    std::uint32_t original_crc_before = 0U;
+    std::uint32_t original_crc_after = 0U;
+    std::uint32_t rotated_crc = 0U;
+    std::uint32_t destination_crc = 0U;
+    std::uint32_t callbacks_seen = 0U;
+    bool source_immutable = false;
+    bool byte_exact = false;
+    bool final_validation = false;
+};
+
+struct BurstCandidate final {
+    const char *name;
+    ppa_data_burst_length_t length;
+};
+
+constexpr std::array<BurstCandidate, 3U> kBurstCandidates{{
+    {"128", PPA_DATA_BURST_LENGTH_128},
+    {"64", PPA_DATA_BURST_LENGTH_64},
+    {"32", PPA_DATA_BURST_LENGTH_32},
+}};
+static_assert(kBurstCandidates.size() == 3U);
+static_assert(kBurstCandidates[0].length == PPA_DATA_BURST_LENGTH_128);
+static_assert(kBurstCandidates[1].length == PPA_DATA_BURST_LENGTH_64);
+static_assert(kBurstCandidates[2].length == PPA_DATA_BURST_LENGTH_32);
+
 std::array<PhaseStats, 2U> s_phase_stats{};
+std::array<BurstPhaseStats, 3U> s_burst_phase_stats{};
 
 bool normalize_destination(std::uint8_t *destination) noexcept
 {
@@ -410,6 +472,7 @@ bool run_overlap_frame(ppa_client_handle_t client,
         return false;
     }
     metrics->ppa_wait_exposed_us += wait_us;
+    metrics->ppa_wait_first_us = wait_us;
     metrics->first_ppa_latency_us =
         static_cast<std::uint64_t>(esp_timer_get_time()) - first_submit_start;
     metrics->ppa_completion_observed_us += metrics->first_ppa_latency_us;
@@ -458,6 +521,7 @@ bool run_overlap_frame(ppa_client_handle_t client,
                 return false;
             }
             metrics->ppa_wait_exposed_us += wait_us;
+            metrics->ppa_wait_later_aggregate_us += wait_us;
             metrics->ppa_completion_observed_us +=
                 static_cast<std::uint64_t>(esp_timer_get_time()) - ppa_start;
             metrics->completed_mask |= 1U << (tile_index + 1U);
@@ -628,6 +692,273 @@ bool run_phase(const char *mode, bool overlap, ppa_client_handle_t client,
     std::printf("P4_NANO_PPA_PIE_OVERLAP_PHASE_RESULT mode=%s result=%s\n",
                 mode, stats->byte_exact ? "PASS" : "FAIL");
     return stats->byte_exact;
+}
+
+struct BurstAllocations final {
+    std::uint8_t *destination = nullptr;
+    std::uint8_t *control_snapshot = nullptr;
+    TileBuffers buffers{};
+};
+
+void free_burst_allocations(BurstAllocations *allocations) noexcept
+{
+    if (allocations == nullptr) {
+        return;
+    }
+    heap_caps_free(allocations->destination);
+    heap_caps_free(allocations->control_snapshot);
+    heap_caps_free(allocations->buffers.tile[0]);
+    heap_caps_free(allocations->buffers.tile[1]);
+    *allocations = {};
+}
+
+bool allocate_burst_allocations(
+    const p4_nano_ppa_pie_overlap::Input &input,
+    BurstAllocations *allocations) noexcept
+{
+    if (allocations == nullptr) {
+        return false;
+    }
+    *allocations = {};
+    allocations->destination = static_cast<std::uint8_t *>(
+        heap_caps_aligned_alloc(kRequiredAlignmentBytes, kDestinationBytes,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    allocations->control_snapshot = static_cast<std::uint8_t *>(
+        heap_caps_aligned_alloc(kRequiredAlignmentBytes, kDestinationBytes,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    allocations->buffers.tile[0] = static_cast<std::uint8_t *>(
+        heap_caps_aligned_alloc(kRequiredAlignmentBytes, kTileBytes,
+                                MALLOC_CAP_INTERNAL |
+                                MALLOC_CAP_8BIT));
+    allocations->buffers.tile[1] = static_cast<std::uint8_t *>(
+        heap_caps_aligned_alloc(kRequiredAlignmentBytes, kTileBytes,
+                                MALLOC_CAP_INTERNAL |
+                                MALLOC_CAP_8BIT));
+    const bool valid = allocations->destination != nullptr &&
+        allocations->control_snapshot != nullptr &&
+        allocations->buffers.tile[0] != nullptr &&
+        allocations->buffers.tile[1] != nullptr &&
+        esp_ptr_external_ram(allocations->destination) &&
+        esp_ptr_external_ram(allocations->control_snapshot) &&
+        esp_ptr_internal(allocations->buffers.tile[0]) &&
+        esp_ptr_internal(allocations->buffers.tile[1]) &&
+        allocations->buffers.tile[0] != allocations->buffers.tile[1] &&
+        reinterpret_cast<std::uintptr_t>(allocations->destination) % 64U == 0U &&
+        reinterpret_cast<std::uintptr_t>(allocations->control_snapshot) % 64U == 0U &&
+        reinterpret_cast<std::uintptr_t>(allocations->buffers.tile[0]) % 64U == 0U &&
+        reinterpret_cast<std::uintptr_t>(allocations->buffers.tile[1]) % 64U == 0U &&
+        !ranges_overlap(allocations->destination, kDestinationBytes,
+                        allocations->control_snapshot, kDestinationBytes) &&
+        !ranges_overlap(allocations->destination, kDestinationBytes,
+                        input.original_source, exact2x::kOriginalSourceBytes) &&
+        !ranges_overlap(allocations->destination, kDestinationBytes,
+                        input.active_framebuffer, input.active_framebuffer_bytes) &&
+        !ranges_overlap(allocations->destination, kDestinationBytes,
+                        input.presentation_slot0, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->destination, kDestinationBytes,
+                        input.presentation_slot1, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        allocations->buffers.tile[1], kTileBytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        input.original_source, exact2x::kOriginalSourceBytes) &&
+        !ranges_overlap(allocations->buffers.tile[1], kTileBytes,
+                        input.original_source, exact2x::kOriginalSourceBytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        input.active_framebuffer, input.active_framebuffer_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[1], kTileBytes,
+                        input.active_framebuffer, input.active_framebuffer_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        input.presentation_slot0, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[1], kTileBytes,
+                        input.presentation_slot0, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        input.presentation_slot1, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[1], kTileBytes,
+                        input.presentation_slot1, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->buffers.tile[0], kTileBytes,
+                        allocations->control_snapshot, kDestinationBytes) &&
+        !ranges_overlap(allocations->buffers.tile[1], kTileBytes,
+                        allocations->control_snapshot, kDestinationBytes) &&
+        !ranges_overlap(allocations->control_snapshot, kDestinationBytes,
+                        input.original_source, exact2x::kOriginalSourceBytes) &&
+        !ranges_overlap(allocations->control_snapshot, kDestinationBytes,
+                        input.active_framebuffer, input.active_framebuffer_bytes) &&
+        !ranges_overlap(allocations->control_snapshot, kDestinationBytes,
+                        input.presentation_slot0, input.presentation_slot_bytes) &&
+        !ranges_overlap(allocations->control_snapshot, kDestinationBytes,
+                        input.presentation_slot1, input.presentation_slot_bytes);
+    std::printf("P4_NANO_PPA_BURST_ALLOCATION destination=%p"
+                " control_snapshot=%p tile_a=%p tile_b=%p"
+                " destination_bytes=%zu tile_bytes=%zu alignment=64"
+                " destination_mode=benchmark_psram_destination disjoint=%s\n",
+                static_cast<void *>(allocations->destination),
+                static_cast<void *>(allocations->control_snapshot),
+                static_cast<void *>(allocations->buffers.tile[0]),
+                static_cast<void *>(allocations->buffers.tile[1]),
+                kDestinationBytes, kTileBytes, valid ? "PASS" : "FAIL");
+    if (!valid) {
+        free_burst_allocations(allocations);
+        return false;
+    }
+    return true;
+}
+
+bool run_burst_phase(const BurstCandidate &candidate,
+                     ppa_client_handle_t client, CompletionContext *context,
+                     const std::uint8_t *source, TileBuffers *buffers,
+                     std::uint8_t *destination,
+                     BurstPhaseStats *stats) noexcept
+{
+    if (candidate.name == nullptr || client == nullptr || context == nullptr ||
+        source == nullptr || buffers == nullptr || destination == nullptr ||
+        stats == nullptr) {
+        return false;
+    }
+    stats->total.reset();
+    stats->first_ppa_latency.reset();
+    stats->ppa_completion_observed.reset();
+    stats->pie_active.reset();
+    stats->cache_sync.reset();
+    stats->ppa_wait_exposed.reset();
+    stats->ppa_api_call_wall.reset();
+    stats->ppa_wait_first.reset();
+    stats->ppa_wait_later_aggregate.reset();
+    stats->original_crc_before = p4_nano_display::crc32(
+        source, exact2x::kOriginalSourceBytes);
+    if (stats->original_crc_before != kExpectedOriginalCrc) {
+        return false;
+    }
+    std::printf("P4_NANO_PPA_PIE_BURST_PHASE burst=%s\n", candidate.name);
+    std::printf("P4_NANO_PPA_PIE_BURST_MEASUREMENT_CONTRACT burst=%s"
+                " timed_rotated_crc=0 timed_output_crc=0"
+                " timed_pixel_validation=0 final_validation_crc=1"
+                " final_pixel_validation=1\n", candidate.name);
+    const std::uint32_t callback_before = context->callback_count.load(
+        std::memory_order_relaxed);
+    for (std::size_t index = 0U; index < kWarmupSamples + kMeasuredSamples;
+         ++index) {
+        if (!normalize_destination(destination)) {
+            return false;
+        }
+        FrameMetrics metrics{};
+        const std::uint64_t start =
+            static_cast<std::uint64_t>(esp_timer_get_time());
+        if (!run_overlap_frame(client, context, source, buffers, destination,
+                               nullptr, &metrics)) {
+            return false;
+        }
+        if (!sync_destination(destination, &metrics.cache_sync_us)) {
+            return false;
+        }
+        if (metrics.ppa_wait_exposed_us != metrics.ppa_wait_first_us +
+                metrics.ppa_wait_later_aggregate_us) {
+            return false;
+        }
+        metrics.total_us = static_cast<std::uint64_t>(esp_timer_get_time()) -
+            start;
+        if (index >= kWarmupSamples) {
+            stats->total.add(metrics.total_us);
+            stats->first_ppa_latency.add(metrics.first_ppa_latency_us);
+            stats->ppa_completion_observed.add(metrics.ppa_completion_observed_us);
+            stats->pie_active.add(metrics.pie_active_us);
+            stats->cache_sync.add(metrics.cache_sync_us);
+            stats->ppa_wait_exposed.add(metrics.ppa_wait_exposed_us);
+            stats->ppa_api_call_wall.add(metrics.ppa_api_call_wall_us);
+            stats->ppa_wait_first.add(metrics.ppa_wait_first_us);
+            stats->ppa_wait_later_aggregate.add(
+                metrics.ppa_wait_later_aggregate_us);
+        }
+        if ((index + 1U) % 64U == 0U) {
+            vTaskDelay(1);
+        }
+    }
+    const std::uint32_t timed_callbacks = context->callback_count.load(
+        std::memory_order_relaxed) - callback_before;
+    if (context->callback_failures.load(std::memory_order_relaxed) != 0U ||
+        timed_callbacks != (kWarmupSamples + kMeasuredSamples) * kTileCount) {
+        return false;
+    }
+    FrameMetrics final_metrics{};
+    std::uint32_t destination_crc = 0U;
+    if (!normalize_destination(destination) ||
+        !run_overlap_frame(client, context, source, buffers, destination,
+                           &final_metrics.rotated_crc, &final_metrics) ||
+        !sync_destination(destination, &final_metrics.cache_sync_us) ||
+        !validate_frame(source, destination, final_metrics, &destination_crc)) {
+        return false;
+    }
+    stats->original_crc_after = p4_nano_display::crc32(
+        source, exact2x::kOriginalSourceBytes);
+    stats->source_immutable = stats->original_crc_before == stats->original_crc_after;
+    stats->rotated_crc = final_metrics.rotated_crc;
+    stats->destination_crc = destination_crc;
+    stats->final_validation = true;
+    stats->byte_exact = stats->source_immutable &&
+        stats->rotated_crc == kExpectedRotatedCrc &&
+        stats->destination_crc == kExpectedDestinationCrc;
+    stats->callbacks_seen = context->callback_count.load(std::memory_order_relaxed) -
+        callback_before;
+    print_burst_metric(candidate.name, "TOTAL_FRAME_SERVICE", stats->total);
+    print_burst_metric(candidate.name, "FIRST_PPA_LATENCY", stats->first_ppa_latency);
+    print_burst_metric(candidate.name, "PPA_COMPLETION_OBSERVED_LATENCY",
+                       stats->ppa_completion_observed);
+    print_burst_metric(candidate.name, "PIE_ACTIVE", stats->pie_active);
+    print_burst_metric(candidate.name, "CACHE_SYNC", stats->cache_sync);
+    print_burst_metric(candidate.name, "PPA_WAIT_EXPOSED", stats->ppa_wait_exposed);
+    print_burst_metric(candidate.name, "PPA_API_CALL_WALL",
+                       stats->ppa_api_call_wall);
+    print_burst_metric(candidate.name, "PPA_WAIT_FIRST", stats->ppa_wait_first);
+    print_burst_metric(candidate.name, "PPA_WAIT_LATER_AGGREGATE",
+                       stats->ppa_wait_later_aggregate);
+    std::printf("P4_NANO_PPA_PIE_BURST_CORRECTNESS burst=%s"
+                " original_crc_before=0x%08" PRIx32
+                " original_crc_after=0x%08" PRIx32
+                " rotated_crc=0x%08" PRIx32 " output_crc=0x%08" PRIx32
+                " source_immutable=%d byte_exact=%d final_validation=%d"
+                " produced_mask=0x%02" PRIx32
+                " completed_mask=0x%02" PRIx32
+                " consumed_mask=0x%02" PRIx32
+                " written_mask=0x%02" PRIx32 " result=%s\n",
+                candidate.name, stats->original_crc_before,
+                stats->original_crc_after, stats->rotated_crc,
+                stats->destination_crc, stats->source_immutable ? 1 : 0,
+                stats->byte_exact ? 1 : 0, stats->final_validation ? 1 : 0,
+                final_metrics.produced_mask, final_metrics.completed_mask,
+                final_metrics.consumed_mask, final_metrics.written_mask,
+                stats->byte_exact ? "PASS" : "FAIL");
+    std::printf("P4_NANO_PPA_PIE_BURST_CALLBACKS burst=%s seen=%" PRIu32
+                " expected=685 failures=%" PRIu32 " result=%s\n",
+                candidate.name, stats->callbacks_seen,
+                context->callback_failures.load(std::memory_order_relaxed),
+                stats->callbacks_seen == 685U &&
+                        context->callback_failures.load(std::memory_order_relaxed) == 0U
+                    ? "PASS" : "FAIL");
+    std::printf("P4_NANO_PPA_PIE_BURST_PHASE_RESULT burst=%s result=%s\n",
+                candidate.name, stats->byte_exact ? "PASS" : "FAIL");
+    return stats->byte_exact;
+}
+
+const char *burst_pie_class(double reduction_percent) noexcept
+{
+    return reduction_percent < 1.0 ? "B0" :
+        reduction_percent < 3.0 ? "B1" :
+        reduction_percent < 7.0 ? "B2" : "B3";
+}
+
+const char *burst_p99_class(const BurstPhaseStats &stats) noexcept
+{
+    if (stats.total.stored == 0U) {
+        return "C";
+    }
+    const std::uint64_t p99 = percentile_from_sorted(stats.total, 99U);
+    return p99 <= 30000U ? "A" : p99 <= 33333U ? "B" : "C";
+}
+
+unsigned burst_p99_rank(const BurstPhaseStats &stats) noexcept
+{
+    const char *classification = burst_p99_class(stats);
+    return std::strcmp(classification, "A") == 0 ? 2U :
+        std::strcmp(classification, "B") == 0 ? 1U : 0U;
 }
 
 std::uint64_t metric_average(const MetricStats &stats)
@@ -913,6 +1244,260 @@ esp_err_t run(const Input &input)
         : unregister_result == ESP_OK ? "PASS" : "FAIL_UNREGISTER";
     std::printf("P4_NANO_PPA_PIE_OVERLAP_CLEANUP=%s\n", cleanup_marker);
     std::printf("P4_NANO_PPA_PIE_OVERLAP_RESULT=%s\n",
+                result == ESP_OK ? "PASS" : "FAIL");
+    return result;
+}
+
+esp_err_t run_burst_sweep(const Input &input)
+{
+    const bool input_valid = input.original_source != nullptr &&
+        input.original_source_bytes == exact2x::kOriginalSourceBytes &&
+        input.presentation_slot0 != nullptr && input.presentation_slot1 != nullptr &&
+        input.presentation_slot_bytes == exact2x::kOriginalSourceBytes &&
+        input.active_framebuffer != nullptr &&
+        input.active_framebuffer_bytes == kDestinationBytes &&
+        esp_ptr_external_ram(input.original_source);
+    if (!input_valid) {
+        std::printf("P4_NANO_PPA_BURST_RESULT=FAIL reason=input\n");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    BurstAllocations allocations{};
+    if (!allocate_burst_allocations(input, &allocations)) {
+        std::printf("P4_NANO_PPA_BURST_RESULT=FAIL reason=allocation\n");
+        return ESP_ERR_NO_MEM;
+    }
+    CompletionContext *context = &s_completion_context;
+    if (context->cleanup_failed.load(std::memory_order_acquire) ||
+        context->in_flight.load(std::memory_order_acquire) != 0U) {
+        std::printf("P4_NANO_PPA_BURST_CLEANUP=FAIL_IN_FLIGHT\n");
+        std::printf("P4_NANO_PPA_BURST_RESULT=FAIL\n");
+        free_burst_allocations(&allocations);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (context->done == nullptr) {
+        context->done = xSemaphoreCreateBinaryStatic(&context->storage);
+    }
+    if (context->done == nullptr) {
+        free_burst_allocations(&allocations);
+        return ESP_ERR_NO_MEM;
+    }
+
+    std::printf("P4_NANO_PPA_BURST_CONFIG display_profile=lower2"
+                " dpi_source=PLL_F240M requested_dpi_mhz=34.285713196"
+                " predicted_refresh_hz=29.426767349 lane_mbps=500"
+                " tile_width=128 tile_count=5 buffers=2 queue_depth=1"
+                " bursts=128,64,32 destination_mode=benchmark_psram_destination"
+                " ppa_operation=SRM pie=exact2x_q0_q1 scanout=active"
+                " framebuffer_count=1 dma2d=0 task_context=unchanged\n");
+    std::printf("P4_NANO_PPA_PIE_BURST_MEASUREMENT_CONTRACT"
+                " timed_rotated_crc=0 timed_output_crc=0"
+                " timed_pixel_validation=0 final_validation_crc=1"
+                " final_pixel_validation=1 expected_callbacks_per_burst=685"
+                " total_expected_callbacks=2055\n");
+    std::printf("P4_NANO_PPA_PIE_BURST_CPU_HEADROOM"
+                " wall_margin_is_not_free_cpu=1"
+                " blocking_api_wall_is_not_submit_overhead=1"
+                " semaphore_blocked_wait_may_be_used_by_runnable_task=1\n");
+    print_timer_control();
+
+    esp_err_t result = ESP_OK;
+    std::uint32_t total_callbacks = 0U;
+    for (std::size_t phase_index = 0U;
+         phase_index < kBurstCandidates.size(); ++phase_index) {
+        // Reset only after the previous client has been unregistered and all
+        // completion tokens have been consumed.
+        if (context->in_flight.load(std::memory_order_acquire) != 0U ||
+            context->cleanup_failed.load(std::memory_order_acquire) ||
+            context->lifetime_must_be_retained.load(std::memory_order_acquire) ||
+            xSemaphoreTake(context->done, 0U) == pdTRUE) {
+            result = ESP_ERR_INVALID_STATE;
+            std::printf("P4_NANO_PPA_PIE_BURST_PHASE_RESULT burst=%s result=FAIL\n",
+                        kBurstCandidates[phase_index].name);
+            break;
+        }
+        context->in_flight.store(0U, std::memory_order_release);
+        context->cleanup_failed.store(false, std::memory_order_release);
+        context->callback_count.store(0U, std::memory_order_relaxed);
+        context->callback_failures.store(0U, std::memory_order_relaxed);
+        context->lifetime_must_be_retained.store(false, std::memory_order_release);
+
+        const ppa_client_config_t client_config{
+            .oper_type = PPA_OPERATION_SRM,
+            .max_pending_trans_num = 1U,
+            .data_burst_length = kBurstCandidates[phase_index].length,
+        };
+        ppa_client_handle_t client = nullptr;
+        esp_err_t phase_result = ppa_register_client(&client_config, &client);
+        if (phase_result == ESP_OK && client != nullptr) {
+            const ppa_event_callbacks_t callbacks{.on_trans_done = ppa_done_callback};
+            phase_result = ppa_client_register_event_callbacks(client, &callbacks);
+        } else if (phase_result == ESP_OK) {
+            phase_result = ESP_FAIL;
+        }
+        if (phase_result != ESP_OK) {
+            if (client != nullptr) {
+                const esp_err_t unregister_result = ppa_unregister_client(client);
+                if (unregister_result != ESP_OK) {
+                    context->cleanup_failed.store(true, std::memory_order_release);
+                    context->lifetime_must_be_retained.store(
+                        true, std::memory_order_release);
+                    std::printf("P4_NANO_PPA_BURST_CLEANUP burst=%s"
+                                " result=FAIL_UNREGISTER quiescent=0"
+                                " unregistered=0\n",
+                                kBurstCandidates[phase_index].name);
+                }
+            }
+            std::printf("P4_NANO_PPA_PIE_BURST_PHASE_RESULT burst=%s result=FAIL\n",
+                        kBurstCandidates[phase_index].name);
+            result = phase_result;
+            break;
+        }
+
+        std::printf("P4_NANO_PPA_BURST_CLIENT burst=%s data_burst_length=%s"
+                    " max_pending_trans_num=1 lifecycle=REGISTERED\n",
+                    kBurstCandidates[phase_index].name,
+                    kBurstCandidates[phase_index].name);
+        const bool phase_ok = run_burst_phase(
+            kBurstCandidates[phase_index], client, context,
+            input.original_source, &allocations.buffers,
+            allocations.destination, &s_burst_phase_stats[phase_index]);
+        const std::uint32_t callback_failures =
+            context->callback_failures.load(std::memory_order_relaxed);
+        const bool extra_completion = xSemaphoreTake(context->done, 0U) == pdTRUE;
+        if (extra_completion) {
+            phase_result = ESP_FAIL;
+        }
+        const bool transactions_quiescent = drain_outstanding_ppa(context);
+        esp_err_t unregister_result = ESP_ERR_INVALID_STATE;
+        if (transactions_quiescent) {
+            unregister_result = ppa_unregister_client(client);
+        }
+        const bool cleanup_pass = transactions_quiescent &&
+            unregister_result == ESP_OK;
+        std::printf("P4_NANO_PPA_BURST_CLEANUP burst=%s result=%s"
+                    " quiescent=%d unregistered=%d\n",
+                    kBurstCandidates[phase_index].name,
+                    cleanup_pass ? "PASS" :
+                        (!transactions_quiescent ? "FAIL_IN_FLIGHT" :
+                         "FAIL_UNREGISTER"),
+                    transactions_quiescent ? 1 : 0,
+                    unregister_result == ESP_OK ? 1 : 0);
+        if (!cleanup_pass) {
+            context->cleanup_failed.store(true, std::memory_order_release);
+            context->lifetime_must_be_retained.store(true, std::memory_order_release);
+            result = phase_result == ESP_OK ? ESP_FAIL : phase_result;
+            break;
+        }
+        if (!phase_ok || callback_failures != 0U || extra_completion ||
+            s_burst_phase_stats[phase_index].callbacks_seen != 685U) {
+            result = phase_result == ESP_OK ? ESP_FAIL : phase_result;
+            break;
+        }
+        total_callbacks += s_burst_phase_stats[phase_index].callbacks_seen;
+        if (phase_index == 0U) {
+            std::memcpy(allocations.control_snapshot, allocations.destination,
+                        kDestinationBytes);
+        } else {
+            const bool equivalent = std::memcmp(
+                allocations.control_snapshot, allocations.destination,
+                kDestinationBytes) == 0;
+            std::printf("P4_NANO_PPA_BURST_EQUIVALENCE burst=%s reference=128"
+                        " byte_exact=%d result=%s\n",
+                        kBurstCandidates[phase_index].name, equivalent ? 1 : 0,
+                        equivalent ? "PASS" : "FAIL");
+            if (!equivalent) {
+                result = ESP_FAIL;
+                break;
+            }
+        }
+    }
+
+    if (result == ESP_OK) {
+        const BurstPhaseStats &reference = s_burst_phase_stats[0];
+        for (std::size_t index = 1U; index < kBurstCandidates.size(); ++index) {
+            const BurstPhaseStats &candidate = s_burst_phase_stats[index];
+            const double reference_total = static_cast<double>(
+                metric_average(reference.total));
+            const double candidate_total = static_cast<double>(
+                metric_average(candidate.total));
+            const double reference_pie = static_cast<double>(
+                metric_average(reference.pie_active));
+            const double candidate_pie = static_cast<double>(
+                metric_average(candidate.pie_active));
+            const double total_reduction = reference_total > 0.0
+                ? (reference_total - candidate_total) / reference_total * 100.0
+                : 0.0;
+            const double pie_reduction = reference_pie > 0.0
+                ? (reference_pie - candidate_pie) / reference_pie * 100.0
+                : 0.0;
+            std::printf("P4_NANO_PPA_BURST_COMPARISON burst=%s reference=128"
+                        " total_delta_us=%.3f total_reduction_percent=%.3f"
+                        " pie_delta_us=%.3f pie_reduction_percent=%.3f"
+                        " pie_class=%s total_p99_class=%s\n",
+                        kBurstCandidates[index].name,
+                        reference_total - candidate_total, total_reduction,
+                        reference_pie - candidate_pie, pie_reduction,
+                        burst_pie_class(pie_reduction), burst_p99_class(candidate));
+        }
+        std::size_t preferred_index = 0U;
+        double preferred_reduction = 0.0;
+        std::uint64_t preferred_wait = 0U;
+        bool preferred_found = false;
+        for (std::size_t index = 0U; index < kBurstCandidates.size(); ++index) {
+            const BurstPhaseStats &candidate = s_burst_phase_stats[index];
+            if (candidate.total.stored == 0U ||
+                std::strcmp(burst_p99_class(candidate), "C") == 0) {
+                continue;
+            }
+            const double reference_pie = static_cast<double>(
+                metric_average(reference.pie_active));
+            const double candidate_pie = static_cast<double>(
+                metric_average(candidate.pie_active));
+            const double reduction = reference_pie > 0.0
+                ? (reference_pie - candidate_pie) / reference_pie * 100.0
+                : 0.0;
+            const std::uint64_t candidate_wait = metric_average(
+                candidate.ppa_wait_exposed);
+            const double reduction_delta = reduction - preferred_reduction;
+            const bool reduction_is_better = reduction_delta > 0.001;
+            const bool reduction_is_similar = reduction_delta >= -0.001 &&
+                reduction_delta <= 0.001;
+            const bool p99_is_better = preferred_found &&
+                burst_p99_rank(candidate) >
+                    burst_p99_rank(s_burst_phase_stats[preferred_index]);
+            const bool p99_is_similar = preferred_found &&
+                burst_p99_rank(candidate) ==
+                    burst_p99_rank(s_burst_phase_stats[preferred_index]);
+            const bool wait_is_better = p99_is_similar &&
+                candidate_wait < preferred_wait;
+            if (!preferred_found || reduction_is_better ||
+                (reduction_is_similar && (p99_is_better || wait_is_better))) {
+                preferred_found = true;
+                preferred_index = index;
+                preferred_reduction = reduction;
+                preferred_wait = candidate_wait;
+            }
+        }
+        std::printf("P4_NANO_PPA_BURST_PREFERRED preferred_burst=%s"
+                    " reason=%s pie_reduction_percent=%.3f\n",
+                    preferred_found ? kBurstCandidates[preferred_index].name : "none",
+                    preferred_found ? "max_robust_pie_reduction" :
+                        "no_phase_with_p99_under_33_333ms",
+                    preferred_reduction);
+    }
+    std::printf("P4_NANO_PPA_BURST_CALLBACKS total=%" PRIu32
+                " expected=2055 failures=%" PRIu32 " result=%s\n",
+                total_callbacks,
+                context->callback_failures.load(std::memory_order_relaxed),
+                result == ESP_OK && total_callbacks == 2055U ? "PASS" : "FAIL");
+
+    if (context->lifetime_must_be_retained.load(std::memory_order_acquire)) {
+        std::printf("P4_NANO_PPA_BURST_SOURCE_LIFETIME=RETAINED\n");
+    } else {
+        free_burst_allocations(&allocations);
+    }
+    std::printf("P4_NANO_PPA_BURST_RESULT=%s\n",
                 result == ESP_OK ? "PASS" : "FAIL");
     return result;
 }

@@ -24,6 +24,11 @@ struct Input final {
 
 esp_err_t run(const Input &input);
 
+// Run the isolated same-binary overlap burst-length sweep (128, 64, 32).
+// The benchmark owns one fixed allocation set across all phases and creates
+// a fresh queue-depth-one PPA client for each burst candidate.
+esp_err_t run_burst_sweep(const Input &input);
+
 // True only when an unrecoverable PPA transaction still owns benchmark input
 // storage; the caller must retain the source lifetime in that diagnostic path.
 bool transaction_lifetime_must_be_retained() noexcept;
