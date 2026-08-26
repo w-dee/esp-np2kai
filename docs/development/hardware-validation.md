@@ -36,23 +36,54 @@ If the SoC does not respond, repeat the same failed esptool operation no more
 than three times in total. Do not change baud, wiring, erase policy, image, or
 procedure after the first failure.
 
+## Measurement epoch phases
+
+### Phase 1 — Flash / setup
+
+`idf.py flash` may reset the ESP32-P4 and immediately boot the application.
+That boot is the **SETUP / POST-FLASH BOOT**, not the canonical measurement
+epoch. It does not consume the exactly-one-canonical-reset allowance. The
+application may even complete before IDF Monitor is attached; that output is
+diagnostic setup output only and is acceptable.
+
+### Phase 2 — Monitor preparation
+
+After flashing has completed:
+
+1. Start IDF Monitor with the exact matching build directory and `--no-reset`.
+2. Wait until the monitor is connected.
+3. Press `Ctrl+T`, then `Ctrl+L`, and confirm that transcript logging is
+   enabled.
+
+No formal measurement has started yet. A post-flash boot that occurred before
+logging does not prohibit the canonical reset below.
+
+### Phase 3 — Canonical epoch
+
+After logging is confirmed enabled, press `Ctrl+T`, then `Ctrl+R` exactly once.
+This deliberate reset begins the canonical measurement epoch. The formal
+transcript is expected to cover this logged epoch, including its meaningful
+boot/application sequence, correctness/performance evidence, and terminal
+completion marker.
+
+Once this canonical epoch has begun, do not issue another reset or rerun in the
+same measurement task. If logging, capture, or results fail after the
+canonical reset, preserve the evidence and stop as `INVALID`.
+
 ## Monitor
 
 `tools/dev/p4-nano-monitor.sh` prepares the canonical monitor invocation. It
 does not automate interactive monitor menu keys, logging, reset, flashing, or
 rebuilds.
 
-1. Start monitor with the exact matching build directory and `--no-reset`.
-2. Wait until it is fully connected.
-3. Press `Ctrl+T`, then `Ctrl+L` to start transcript logging.
-4. Press `Ctrl+T`, then `Ctrl+R` exactly once for the canonical reset.
-5. Observe through the expected terminal marker, normally `Returned from app_main()`.
-6. Press `Ctrl+T`, then `Ctrl+L` to stop logging.
-7. Exit with `Ctrl+]`.
+After the canonical reset, observe through the expected terminal marker,
+normally `Returned from app_main()`. Then press `Ctrl+T`, `Ctrl+L` to stop
+logging and exit with `Ctrl+]`.
 
-For a formal measurement epoch, there is exactly one canonical reset and no
-second reset unless separately approved. Preserve one coherent HELLO/application
-epoch and its transcript identity.
+Output from a post-flash setup boot before logging may appear interactively in
+the terminal, but it is not formal transcript evidence and does not invalidate
+the future canonical epoch. The no-second-run rule applies only after the
+logged `Ctrl+T`, `Ctrl+R` reset has begun the canonical epoch.
 
 ## Transcript artifacts
 

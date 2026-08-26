@@ -10,6 +10,8 @@ usage: tools/dev/p4-nano-monitor.sh --build-dir <path>
 Starts ESP-IDF Monitor for the P4-NANO onboard CH343 at 1500000 baud.
 P4_NANO_SERIAL must name the machine-local serial device. The wrapper does not
 reset, flash, rebuild, inspect the serial device, or automate monitor keys.
+Flash-triggered boot is setup only. After monitor connects, Ctrl+T Ctrl+L
+enables logging; Ctrl+T Ctrl+R once begins the canonical epoch.
 EOF
 }
 
@@ -41,5 +43,5 @@ done
 [[ -d "${build_dir}" ]] || { printf 'ERROR: build directory does not exist: %s\n' "${build_dir}" >&2; exit 2; }
 [[ -n "${P4_NANO_SERIAL:-}" ]] || { printf 'ERROR: P4_NANO_SERIAL is required\n' >&2; exit 2; }
 
-printf 'Monitor ready: after connection use Ctrl+T Ctrl+L, then Ctrl+T Ctrl+R once.\n'
+printf 'Monitor ready: flash boot is setup only. After connection, Ctrl+T Ctrl+L enables logging; Ctrl+T Ctrl+R once begins the canonical epoch.\n'
 "${SCRIPT_DIR}/idf.sh" -B "${build_dir}" -p "${P4_NANO_SERIAL}" -b 1500000 monitor --no-reset
