@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "driver/ppa.h"
 #include "esp_err.h"
 
 namespace p4_nano_exact2x_internal_source {
@@ -35,6 +36,21 @@ struct Input final {
     const void *active_framebuffer = nullptr;
     std::size_t active_framebuffer_bytes = 0U;
 };
+
+/* Shared P10F/P10I geometry and correctness helpers.  The P10I benchmark
+ * uses the same descriptor and reference contract as the accepted P10F
+ * source benchmark. */
+ppa_srm_oper_config_t make_tile_operation(const std::uint8_t *original,
+                                          std::uint8_t *tile,
+                                          std::size_t tile_index,
+                                          ppa_trans_mode_t mode,
+                                          void *user_data) noexcept;
+
+std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t *bytes,
+                           std::size_t length) noexcept;
+
+bool expected_frame_matches(const std::uint16_t *original,
+                            const std::uint16_t *destination) noexcept;
 
 /* Runs the P10F-B same-binary PSRAM-source versus PPA/internal-source PIE
  * experiment. PPA work is deliberately excluded from the reported PIE

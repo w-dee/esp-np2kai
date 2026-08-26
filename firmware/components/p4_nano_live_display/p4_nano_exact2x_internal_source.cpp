@@ -113,8 +113,8 @@ void print_metric(const char *source, const char *metric,
                 count == 0U ? 0U : samples[count - 1U]);
 }
 
-std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t *bytes,
-                           std::size_t length) noexcept
+std::uint32_t crc32_update_impl(std::uint32_t crc, const std::uint8_t *bytes,
+                                std::size_t length) noexcept
 {
     for (std::size_t index = 0U; index < length; ++index) {
         crc ^= bytes[index];
@@ -125,8 +125,8 @@ std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t *bytes,
     return crc;
 }
 
-bool expected_frame_matches(const std::uint16_t *original,
-                            const std::uint16_t *destination) noexcept
+bool expected_frame_matches_impl(const std::uint16_t *original,
+                                  const std::uint16_t *destination) noexcept
 {
     if (original == nullptr || destination == nullptr) {
         return false;
@@ -151,9 +151,11 @@ bool expected_frame_matches(const std::uint16_t *original,
     return true;
 }
 
-ppa_srm_oper_config_t make_operation(const std::uint8_t *original,
-                                      std::uint8_t *tile,
-                                      std::size_t tile_index)
+ppa_srm_oper_config_t make_operation_impl(const std::uint8_t *original,
+                                           std::uint8_t *tile,
+                                           std::size_t tile_index,
+                                           ppa_trans_mode_t mode,
+                                           void *user_data)
 {
     const std::uint32_t source_x =
         640U - static_cast<std::uint32_t>(tile_index + 1U) * 128U;
@@ -190,8 +192,8 @@ ppa_srm_oper_config_t make_operation(const std::uint8_t *original,
         .byte_swap = false,
         .alpha_update_mode = PPA_ALPHA_NO_CHANGE,
         .alpha_fix_val = 0U,
-        .mode = PPA_TRANS_MODE_BLOCKING,
-        .user_data = nullptr,
+        .mode = mode,
+        .user_data = user_data,
     };
 }
 
@@ -200,7 +202,8 @@ bool prepare_candidate_tile(ppa_client_handle_t client,
                              std::uint8_t *tile, std::size_t tile_index)
 {
     const ppa_srm_oper_config_t operation =
-        make_operation(original, tile, tile_index);
+        make_operation_impl(original, tile, tile_index,
+                            PPA_TRANS_MODE_BLOCKING, nullptr);
     return ppa_do_scale_rotate_mirror(client, &operation) == ESP_OK;
 }
 
@@ -253,7 +256,7 @@ bool run_pie_frame(bool candidate, ppa_client_handle_t client,
         }
         *kernel_us += end - start;
         if (candidate && final_rotated_crc != nullptr) {
-            rotated_crc = crc32_update(rotated_crc, internal_tile, kTileBytes);
+            rotated_crc = crc32_update_impl(rotated_crc, internal_tile, kTileBytes);
         }
     }
     if (candidate && final_rotated_crc != nullptr) {
@@ -349,7 +352,7 @@ bool run_phase(const char *source_name, bool candidate,
     stats->byte_exact = stats->final_validation &&
         stats->rotated_crc == kExpectedRotatedCrc &&
         stats->destination_crc == kExpectedDestinationCrc &&
-        expected_frame_matches(reinterpret_cast<const std::uint16_t *>(original),
+        expected_frame_matches_impl(reinterpret_cast<const std::uint16_t *>(original),
                                 reinterpret_cast<const std::uint16_t *>(
                                     destination));
     print_metric(source_name, "KERNEL", stats->kernel, stats->stored);
@@ -398,6 +401,27 @@ void print_timer_control() noexcept
 } // namespace
 
 namespace p4_nano_exact2x_internal_source {
+
+ppa_srm_oper_config_t make_tile_operation(const std::uint8_t *original,
+                                          std::uint8_t *tile,
+                                          std::size_t tile_index,
+                                          ppa_trans_mode_t mode,
+                                          void *user_data) noexcept
+{
+    return make_operation_impl(original, tile, tile_index, mode, user_data);
+}
+
+std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t *bytes,
+                           std::size_t length) noexcept
+{
+    return crc32_update_impl(crc, bytes, length);
+}
+
+bool expected_frame_matches(const std::uint16_t *original,
+                            const std::uint16_t *destination) noexcept
+{
+    return expected_frame_matches_impl(original, destination);
+}
 
 esp_err_t run(const Input &input)
 {
