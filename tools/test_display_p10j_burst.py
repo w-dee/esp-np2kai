@@ -17,6 +17,11 @@ BUILD = ROOT / "tools/emu/build-production.sh"
 TIMING = ROOT / "firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_timing_profiles.hpp"
 
 
+def classify_p99_boundary(p99_us: int) -> str:
+    """Equivalent boundary model; the TU-local C++ helper is not host-linkable."""
+    return "A" if p99_us < 30000 else "B" if p99_us < 33333 else "C"
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -136,6 +141,15 @@ def main() -> int:
             "reduction_is_similar" in source and
             "candidate_wait < preferred_wait" in source,
             "preferred-candidate p99/wait tie-break contract missing")
+    require("p99 < 30000U ? \"A\" : p99 < 33333U ? \"B\" : \"C\"" in source,
+            "P99 classification must use strict formal boundaries")
+    boundary_cases = {
+        29999: "A", 30000: "B", 30001: "B",
+        33332: "B", 33333: "C", 33334: "C",
+    }
+    require(all(classify_p99_boundary(value) == expected
+                for value, expected in boundary_cases.items()),
+            "P99 boundary mapping regression")
 
     require("P4_NANO_PPA_PIE_OVERLAP_BENCHMARK_PROFILE=1" in live_cmake and
             "P4_NANO_PPA_PIE_BURST_BENCHMARK_PROFILE=1" in live_cmake,

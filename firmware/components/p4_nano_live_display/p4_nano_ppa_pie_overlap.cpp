@@ -951,7 +951,7 @@ const char *burst_p99_class(const BurstPhaseStats &stats) noexcept
         return "C";
     }
     const std::uint64_t p99 = percentile_from_sorted(stats.total, 99U);
-    return p99 <= 30000U ? "A" : p99 <= 33333U ? "B" : "C";
+    return p99 < 30000U ? "A" : p99 < 33333U ? "B" : "C";
 }
 
 unsigned burst_p99_rank(const BurstPhaseStats &stats) noexcept
