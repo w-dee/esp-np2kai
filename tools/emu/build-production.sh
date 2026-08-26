@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --exact2x-scaler-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -34,6 +34,8 @@ transform_isolated_psram_read_control_benchmark=0
 transform_isolated_psram_read_control_benchmark_variant=""
 ppa_rotation_benchmark=0
 ppa_rotation_benchmark_variant=""
+ppa_internal_tile_benchmark=0
+ppa_internal_tile_benchmark_variant=""
 exact2x_scaler_benchmark=0
 exact2x_scaler_benchmark_variant=""
 psram_bandwidth=0
@@ -139,6 +141,10 @@ while (($# > 0)); do
             ppa_rotation_benchmark=1
             shift
             ;;
+        --ppa-internal-tile-benchmark)
+            ppa_internal_tile_benchmark=1
+            shift
+            ;;
         --exact2x-scaler-benchmark)
             exact2x_scaler_benchmark=1
             shift
@@ -199,7 +205,7 @@ while (($# > 0)); do
 done
 
 if (( psram_bandwidth )); then
-    if (( live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )); then
+    if (( live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )); then
         printf 'ERROR: PSRAM bandwidth cannot be combined with an explicit display benchmark profile\n' >&2
         exit 2
     fi
@@ -243,7 +249,7 @@ case "${transform_opt}" in
         ;;
 esac
 
-if (( live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )) &&
+if (( live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )) &&
    [[ "${i286_inline_mem_fastpath}" != "0" ]]; then
     printf 'ERROR: --live-display-transform-isolated-benchmark requires --i286-inline-mem-fastpath 0 (all isolated transform benchmark profiles require --i286-inline-mem-fastpath 0)\n' >&2
     exit 2
@@ -264,7 +270,7 @@ if (( display_foundation )) &&
     exit 2
 fi
 
-if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + exact2x_scaler_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
+if (( display_foundation + display_transform_diagnostic + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
     printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
 fi
@@ -354,6 +360,25 @@ else
     unset P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE
     unset P4_NANO_PPA_ROTATION_BENCHMARK_BOARD
     unset P4_NANO_PPA_ROTATION_BENCHMARK_VARIANT
+fi
+if (( ppa_internal_tile_benchmark )); then
+    if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+        printf 'ERROR: --ppa-internal-tile-benchmark requires --variant p4-v1x --board p4-nano\n' >&2
+        exit 2
+    fi
+    ppa_internal_tile_benchmark_variant="${variant}"
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE=1
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_BOARD=1
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_VARIANT="${ppa_internal_tile_benchmark_variant}"
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=1
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=1
+    export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT="${ppa_internal_tile_benchmark_variant}"
+    export NP2VIDEO_BENCHMARK_PROFILE=1
+    export NP2VIDEO_GOLDEN_HEADER
+else
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_BOARD
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_VARIANT
 fi
 if (( exact2x_scaler_benchmark )); then
     if [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
@@ -491,6 +516,10 @@ if (( esp_emu_test && ppa_rotation_benchmark )); then
     printf 'ERROR: --ppa-rotation-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
 fi
+if (( esp_emu_test && ppa_internal_tile_benchmark )); then
+    printf 'ERROR: --ppa-internal-tile-benchmark cannot be combined with --esp-emu-test\n' >&2
+    exit 2
+fi
 if (( esp_emu_test && exact2x_scaler_benchmark )); then
     printf 'ERROR: --exact2x-scaler-benchmark cannot be combined with --esp-emu-test\n' >&2
     exit 2
@@ -500,6 +529,7 @@ transform_profile=0
 if (( display_transform_diagnostic || live_display || live_display_motion_validation || live_display_benchmark ||
       live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark ||
       transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark ||
+      ppa_internal_tile_benchmark ||
       exact2x_scaler_benchmark )); then
     transform_profile=1
 fi
@@ -580,7 +610,7 @@ fi
 
 readonly NP2VIDEO_GOLDEN_HEADER="${build_dir}/generated/np2video_golden.h"
 np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video/golden.json"
-if (( live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )); then
+if (( live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )); then
     np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video-live/golden.json"
 fi
 
@@ -613,10 +643,11 @@ cmake_args=(
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_PROFILE=${live_display_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_BOARD=${live_display_benchmark}"
     -D "P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT=${live_display_benchmark_variant}"
-    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=$((live_display_transform_isolated_benchmark || exact2x_scaler_benchmark))"
-    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=$((live_display_transform_isolated_benchmark || exact2x_scaler_benchmark))"
-    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant:-${exact2x_scaler_benchmark_variant}}"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=$((live_display_transform_isolated_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark))"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=$((live_display_transform_isolated_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark))"
+    -D "P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT=${live_display_transform_isolated_benchmark_variant:-${ppa_internal_tile_benchmark_variant:-${exact2x_scaler_benchmark_variant}}}"
     -D "P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE=${ppa_rotation_benchmark}"
+    -D "P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE=${ppa_internal_tile_benchmark}"
     -D "P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE=${exact2x_scaler_benchmark}"
     -D "P4_NANO_EXACT2X_SCALER_BENCHMARK_BOARD=${exact2x_scaler_benchmark}"
     -D "P4_NANO_EXACT2X_SCALER_BENCHMARK_VARIANT=${exact2x_scaler_benchmark_variant}"
@@ -641,8 +672,8 @@ cmake_args=(
     -D "P4_NANO_USB_KEYBOARD_VALIDATION_BOARD=${usb_keyboard_validation_board}"
     -D "P4_NANO_USB_KEYBOARD_VALIDATION_VARIANT=${usb_keyboard_validation_variant}"
     -D "P4_NANO_RUNTIME_EMU_BACKEND=${runtime_emu_backend}"
-    -D "NP2VIDEO_CONTINUOUS_PROFILE=$((live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark))"
-    -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark))"
+    -D "NP2VIDEO_CONTINUOUS_PROFILE=$((live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark))"
+    -D "NP2VIDEO_BENCHMARK_PROFILE=$((live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark))"
     -D "NP2_I286C_INLINE_MEM_FASTPATH=${i286_inline_mem_fastpath}"
     -D "P4_NANO_DISPLAY_TRANSFORM_OPT=${transform_opt}"
     -D "NP2VIDEO_GOLDEN_HEADER=${NP2VIDEO_GOLDEN_HEADER}"
@@ -730,11 +761,13 @@ else
     unset P4_NANO_LIVE_DISPLAY_BENCHMARK_VARIANT
     unset NP2VIDEO_BENCHMARK_PROFILE
 fi
-if (( live_display_transform_isolated_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )); then
+if (( live_display_transform_isolated_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )); then
     export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_PROFILE=1
     export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_BOARD=1
     if (( ppa_rotation_benchmark )); then
         export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT="${ppa_rotation_benchmark_variant}"
+    elif (( ppa_internal_tile_benchmark )); then
+        export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT="${ppa_internal_tile_benchmark_variant}"
     elif (( exact2x_scaler_benchmark )); then
         export P4_NANO_LIVE_DISPLAY_TRANSFORM_ISOLATED_BENCHMARK_VARIANT="${exact2x_scaler_benchmark_variant}"
     else
@@ -755,6 +788,15 @@ else
     unset P4_NANO_PPA_ROTATION_BENCHMARK_PROFILE
     unset P4_NANO_PPA_ROTATION_BENCHMARK_BOARD
     unset P4_NANO_PPA_ROTATION_BENCHMARK_VARIANT
+fi
+if (( ppa_internal_tile_benchmark )); then
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE=1
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_BOARD=1
+    export P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_VARIANT="${ppa_internal_tile_benchmark_variant}"
+else
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_PROFILE
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_BOARD
+    unset P4_NANO_PPA_INTERNAL_TILE_BENCHMARK_VARIANT
 fi
 if (( transform_isolated_compute_control_benchmark )); then
     export P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE=1
@@ -794,7 +836,7 @@ fi
 if (( needs_initial_config )); then
     initial_cmake_args=("${cmake_args[@]}")
     initial_golden_header=""
-    if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )); then
+    if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )); then
         initial_golden_header="$(mktemp "${TMPDIR:-/tmp}/np2video-golden-header.XXXXXX")"
         python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
             --descriptor "${np2video_descriptor}" \
@@ -812,7 +854,7 @@ if (( needs_initial_config )); then
             --output "${NP2VIDEO_GOLDEN_HEADER}"
     fi
 fi
-if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || exact2x_scaler_benchmark )); then
+if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark )); then
     mkdir -p -- "$(dirname -- "${NP2VIDEO_GOLDEN_HEADER}")"
     python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
         --descriptor "${np2video_descriptor}" \
@@ -842,10 +884,10 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+printf 'PRODUCTION_BUILD variant=%s board=%s i286_inline_mem_fastpath=%s transform_opt=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
     "${variant}" "${board}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
-    "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
+    "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
 printf 'PRODUCTION_ARTIFACT variant=%s board=%s bootloader=%s partition=%s app=%s map=%s\n' \
     "${variant}" "${board}" "${build_dir}/bootloader/bootloader.bin" \
