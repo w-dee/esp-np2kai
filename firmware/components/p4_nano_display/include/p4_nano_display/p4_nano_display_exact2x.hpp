@@ -24,6 +24,14 @@ inline constexpr std::size_t kExact2xDestinationStrideBytes =
     kExact2xDestinationWidth * sizeof(std::uint16_t);
 inline constexpr std::size_t kExact2xDestinationBytes =
     kExact2xDestinationStrideBytes * kExact2xDestinationHeight;
+inline constexpr std::size_t kExact2xTileSourceHeight = 128U;
+inline constexpr std::size_t kExact2xTileSourceBytes =
+    kExact2xSourceStrideBytes * kExact2xTileSourceHeight;
+inline constexpr std::size_t kExact2xTileDestinationHeight = 256U;
+inline constexpr std::size_t kExact2xTileDestinationBytes =
+    kExact2xDestinationStrideBytes * kExact2xTileDestinationHeight;
+inline constexpr std::size_t kExact2xTileCount =
+    kExact2xSourceHeight / kExact2xTileSourceHeight;
 inline constexpr std::size_t kExact2xM2CAlignmentBytes = 64U;
 inline constexpr std::size_t kExact2xRequiredAlignmentBytes = 16U;
 inline constexpr std::uint32_t kExact2xExpectedSourceCrc = 0x379511d7U;
@@ -43,6 +51,11 @@ bool exact2x_scalar(const std::uint16_t *source, std::size_t source_bytes,
  * alignment, cache, timing, and correctness checks. */
 extern "C" void exact2x_pie_aligned(const std::uint16_t *source,
                                     std::uint16_t *destination);
+
+/* Fixed-geometry P10F-B helper. The caller supplies one 400x128 rotated
+ * tile and its corresponding 800x256 destination tile. */
+extern "C" void exact2x_pie_tile128_aligned(
+    const std::uint16_t *source, std::uint16_t *destination);
 
 inline constexpr bool exact2x_pie_available() noexcept { return true; }
 

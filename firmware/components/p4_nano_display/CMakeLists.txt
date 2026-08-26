@@ -7,7 +7,9 @@ idf_component_register(
              esp_driver_i2c esp_psram heap freertos esp_timer esp_lcd_jd9365_10_1)
 
 if(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE OR
-   "$ENV{P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE}" STREQUAL "1")
+   "$ENV{P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE}" STREQUAL "1" OR
+   P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE OR
+   "$ENV{P4_NANO_EXACT2X_INTERNAL_SOURCE_BENCHMARK_PROFILE}" STREQUAL "1")
     target_sources(${COMPONENT_LIB} PRIVATE
         p4_nano_display_exact2x.cpp p4_nano_display_exact2x_pie.S)
 endif()
