@@ -32,9 +32,63 @@ build directory:
 tools/dev/idf.sh -B <build-dir> -p "$P4_NANO_SERIAL" flash
 ```
 
+The build and flash for one build directory must use the same ESP-IDF/Python
+environment. For this repository, activate it in the calling shell with
+`source tools/emu/activate-idf.sh` and do not source a different upstream
+`export.sh` before flashing an already-configured build. ESP-IDF checks the
+build's `CMakeCache.txt:PYTHON`; a mismatch aborts before esptool, so the
+correct status is **FLASH DID NOT OCCUR** unless separate evidence proves that
+esptool completed successfully.
+
 If the SoC does not respond, repeat the same failed esptool operation no more
 than three times in total. Do not change baud, wiring, erase policy, image, or
 procedure after the first failure.
+
+## Post-flash application identity
+
+Do not begin monitor logging, the canonical reset, or a formal measurement
+until the exact application image written to flash has passed an independent
+identity gate. The required sequence is:
+
+```text
+fresh build -> record host app identity -> flash exact build
+-> verify physical app region -> FLASH IMAGE IDENTITY = PASS
+-> drain setup output -> monitor --no-reset -> logging on
+-> Ctrl+T Ctrl+R once -> canonical epoch
+```
+
+Before flashing, record the exact build directory, the application path and
+flash offset from its generated `flasher_args.json`, the app byte count, and
+the host app SHA-256. Then, in the same activated environment, run:
+
+```bash
+tools/dev/p4-nano-verify-app.sh --build-dir <build-dir>
+```
+
+The helper selects only the explicit `app` metadata entry, verifies its
+generated offset and payload with esptool's `verify_flash`, and prints a
+parseable `P4_NANO_FLASH_APP_IDENTITY ... result=PASS` line. Its SHA-256 is
+the host-image identity; esptool's physical comparison is its supported MD5
+flash comparison, not a device-side SHA-256 claim. A missing, malformed, or
+ambiguous metadata entry fails closed. The helper does not build, flash,
+erase, monitor, or select another build directory. `--print-plan` is a local
+metadata-only check and never touches serial hardware.
+
+The helper uses `python -m esptool` from the currently activated IDF Python,
+at 1,500,000 baud, with the generated app offset and app file. It checks
+`IDF_PATH`, `IDF_PYTHON_ENV_PATH`, the active interpreter, esptool import, and
+the build cache's configured `PYTHON` before opening the serial port. If
+verification reports a mismatch, print `FLASH IMAGE IDENTITY = FAIL` and stop
+as a setup failure; do not enable formal logging, issue the canonical reset,
+or call the benchmark. A target-no-response transport failure permits the
+same verify operation to be retried, at most three total attempts. An actual
+flash-content mismatch is not a transport retry case.
+
+The verification command uses `--before default-reset --after hard-reset`.
+Any reset and application boot caused by verification is **SETUP /
+POST-VERIFICATION BOOT**, not the canonical measurement epoch. After a passing
+gate, attach the monitor with `--no-reset`, drain setup output to quiescence,
+enable logging, and issue the single canonical `Ctrl+T`, `Ctrl+R` reset.
 
 ## Measurement epoch phases
 

@@ -51,6 +51,21 @@ The supported project baseline is ESP-IDF v5.5.4. Activate a normal ESP-IDF
 environment before calling IDF tools. `IDF_PATH` and activation details are
 local-environment concerns and must not be hardcoded into tracked files.
 
+An ESP-IDF build directory is bound to the Python interpreter recorded in its
+`CMakeCache.txt:PYTHON`. Use the repository-supported activation in the
+calling shell:
+
+```bash
+source tools/emu/activate-idf.sh
+```
+
+Do not activate a different upstream `export.sh` environment before using
+`idf.py` with an already-configured build directory. ESP-IDF rejects that
+mismatch before the target action; in particular, a failed flash in this state
+means **FLASH DID NOT OCCUR** unless independent esptool evidence says
+otherwise. Keep build and flash in one consistent IDF/Python environment and
+use the same environment for post-flash image verification.
+
 The repository root is not an ESP-IDF project. `firmware/` is the project
 directory. Prefer the wrapper, which supplies the IDF project directory while
 preserving every argument:
@@ -68,6 +83,17 @@ For a hardware run, the flashed image, ELF selected by IDF Monitor, and stated
 build directory must come from the same fresh build. Record the build directory
 and profile in the result. Do not monitor an image using symbols from another
 build tree.
+
+After an explicit flash, run the independent application identity gate before
+starting monitor logging or the canonical reset:
+
+```bash
+tools/dev/p4-nano-verify-app.sh --build-dir <build-dir>
+```
+
+It derives the app path and offset from generated metadata and verifies only
+that app region. A passing identity gate is a setup precondition, not a
+benchmark result.
 
 ## Review gates
 
