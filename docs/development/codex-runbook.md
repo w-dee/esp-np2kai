@@ -125,11 +125,17 @@ The diagnostic-only P10G-B visual profiles are built independently with one
 of these commands:
 
 ```bash
-bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+bash tools/emu/build-production.sh \
+  --variant p4-v1x \
+  --board p4-nano \
   --display-refresh-visual baseline
-bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+bash tools/emu/build-production.sh \
+  --variant p4-v1x \
+  --board p4-nano \
   --display-refresh-visual lower1
-bash tools/emu/build-production.sh --board p4-v1x --variant p4-nano \
+bash tools/emu/build-production.sh \
+  --variant p4-v1x \
+  --board p4-nano \
   --display-refresh-visual lower2
 ```
 

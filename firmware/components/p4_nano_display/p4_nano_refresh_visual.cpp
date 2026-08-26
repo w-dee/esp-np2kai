@@ -230,7 +230,16 @@ esp_err_t run_refresh_visual()
                 pattern_crc, software_ok ? "PASS" : "FAIL");
     std::fflush(stdout);
     if (!software_ok) {
-        (void)display_session_cleanup(&resources);
+        const esp_err_t backlight_off_ret =
+            p4_nano_board::display_backlight_set(0U);
+        std::printf("P4_NANO_REFRESH_VISUAL_BACKLIGHT_OFF=%s\n",
+                    backlight_off_ret == ESP_OK ? "PASS" : "FAIL");
+        const esp_err_t cleanup_ret = display_session_cleanup(&resources);
+        std::printf("P4_NANO_REFRESH_VISUAL_CLEANUP=%s\n",
+                    cleanup_ret == ESP_OK ? "PASS" : "FAIL");
+        std::printf("P4_NANO_REFRESH_VISUAL_SOFTWARE_RESULT=FAIL\n");
+        std::printf("P4_NANO_REFRESH_VISUAL_HUMAN_VERDICT_REQUIRED=1\n");
+        std::fflush(stdout);
         return ESP_FAIL;
     }
 
@@ -241,7 +250,16 @@ esp_err_t run_refresh_visual()
                 backlight_on ? "PASS" : "FAIL");
     std::fflush(stdout);
     if (!backlight_on) {
-        (void)display_session_cleanup(&resources);
+        const esp_err_t backlight_off_ret =
+            p4_nano_board::display_backlight_set(0U);
+        std::printf("P4_NANO_REFRESH_VISUAL_BACKLIGHT_OFF=%s\n",
+                    backlight_off_ret == ESP_OK ? "PASS" : "FAIL");
+        const esp_err_t cleanup_ret = display_session_cleanup(&resources);
+        std::printf("P4_NANO_REFRESH_VISUAL_CLEANUP=%s\n",
+                    cleanup_ret == ESP_OK ? "PASS" : "FAIL");
+        std::printf("P4_NANO_REFRESH_VISUAL_SOFTWARE_RESULT=FAIL\n");
+        std::printf("P4_NANO_REFRESH_VISUAL_HUMAN_VERDICT_REQUIRED=1\n");
+        std::fflush(stdout);
         return ret;
     }
 
@@ -301,19 +319,21 @@ esp_err_t run_refresh_visual()
         "measured_minus_predicted_hz=%.9f percent_error=%.6f\n",
         static_cast<double>(config.predicted_refresh_hz), refresh_delta_hz,
         refresh_error_percent);
-    std::printf("P4_NANO_REFRESH_VISUAL_SOFTWARE_RESULT=%s\n",
-                software_ok ? "PASS" : "FAIL");
-    std::printf("P4_NANO_REFRESH_VISUAL_HUMAN_VERDICT_REQUIRED=1\n");
-    std::fflush(stdout);
 
     const esp_err_t backlight_off_ret = p4_nano_board::display_backlight_set(0U);
     std::printf("P4_NANO_REFRESH_VISUAL_BACKLIGHT_OFF=%s\n",
                 backlight_off_ret == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     const esp_err_t cleanup_ret = display_session_cleanup(&resources);
+    std::printf("P4_NANO_REFRESH_VISUAL_CLEANUP=%s\n",
+                cleanup_ret == ESP_OK ? "PASS" : "FAIL");
     if (backlight_off_ret != ESP_OK || cleanup_ret != ESP_OK) {
         software_ok = false;
     }
+    std::printf("P4_NANO_REFRESH_VISUAL_SOFTWARE_RESULT=%s\n",
+                software_ok ? "PASS" : "FAIL");
+    std::printf("P4_NANO_REFRESH_VISUAL_HUMAN_VERDICT_REQUIRED=1\n");
+    std::fflush(stdout);
     return software_ok ? ESP_OK : ESP_FAIL;
 }
 

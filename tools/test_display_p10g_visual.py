@@ -11,6 +11,7 @@ import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "tools/emu/build-production.sh"
+RUNBOOK = ROOT / "docs/development/codex-runbook.md"
 MAIN = ROOT / "firmware/main/main.cpp"
 MAIN_CMAKE = ROOT / "firmware/main/CMakeLists.txt"
 DISPLAY = ROOT / "firmware/components/p4_nano_display/p4_nano_display.cpp"
@@ -102,6 +103,7 @@ def expect_cli_failure(*args: str) -> None:
 
 def main() -> int:
     build = BUILD.read_text(encoding="utf-8")
+    runbook = RUNBOOK.read_text(encoding="utf-8")
     main = MAIN.read_text(encoding="utf-8")
     main_cmake = MAIN_CMAKE.read_text(encoding="utf-8")
     display = DISPLAY.read_text(encoding="utf-8")
@@ -125,6 +127,17 @@ def main() -> int:
             "missing main visual compile definition")
     require("p4_nano_refresh_visual.cpp" in display_cmake,
             "visual source is not isolated to the visual profile")
+    runbook_visual = runbook[runbook.index("## P10G-B lower-refresh visual profile"):]
+    runbook_visual_flat = " ".join(runbook_visual.replace("\\\n", " ").split())
+    for mode in ("baseline", "lower1", "lower2"):
+        command = ("bash tools/emu/build-production.sh "
+                   "--variant p4-v1x --board p4-nano "
+                   "--display-refresh-visual " + mode)
+        require(command in runbook_visual_flat,
+                f"runbook visual command has incorrect syntax: {mode}")
+    require("--board p4-v1x" not in runbook_visual and
+            "--variant p4-nano" not in runbook_visual,
+            "runbook contains reversed visual board/variant syntax")
 
     for fragment in (
         '"baseline", "PLL_F240M"', '80.0F', '1500.0F', '68.662455F',
@@ -193,6 +206,21 @@ def main() -> int:
             "static phase must use a blocking delay")
     require("HUMAN_VISUAL_VERDICT=PASS" not in visual,
             "firmware must not infer a human visual verdict")
+    canonical = visual[visual.index(
+        "P4_NANO_REFRESH_VISUAL_INSPECTION_END"):]
+    backlight_off_pos = canonical.rfind(
+        "P4_NANO_REFRESH_VISUAL_BACKLIGHT_OFF")
+    cleanup_pos = canonical.rfind("P4_NANO_REFRESH_VISUAL_CLEANUP")
+    software_result_pos = canonical.rfind(
+        "P4_NANO_REFRESH_VISUAL_SOFTWARE_RESULT")
+    human_required_pos = canonical.rfind(
+        "P4_NANO_REFRESH_VISUAL_HUMAN_VERDICT_REQUIRED")
+    require(0 <= backlight_off_pos < cleanup_pos < software_result_pos <
+            human_required_pos,
+            "final visual markers are not ordered after lifecycle completion")
+    require(canonical.rfind("if (backlight_off_ret != ESP_OK || cleanup_ret != ESP_OK)")
+            < software_result_pos,
+            "software result precedes incorporation of cleanup status")
     require(visual_crc() == 0x67727B8D,
             f"deterministic visual CRC changed: 0x{visual_crc():08x}")
 
