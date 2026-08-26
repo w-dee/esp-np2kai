@@ -27,7 +27,7 @@ exact2x_pie_aligned:
     esp.vst.128.ip  q1, a3, 16
     addi    a4, a4, -1
     bnez    a4, .Lexact2x_group
-    addi    a1, a3, 1600
+    mv      a1, a3
     addi    a5, a5, -1
     bnez    a5, .Lexact2x_row
     ret

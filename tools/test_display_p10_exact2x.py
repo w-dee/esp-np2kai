@@ -223,6 +223,10 @@ def main() -> int:
             "PIE helper must use distinct q0/q1 VZIP operands")
     require(not re.search(r"\\bq[2-7]\\b", pie),
             "PIE helper must use q0/q1 only")
+    require(re.search(r"(?m)^\s*mv\s+a1,\s*a3\s*$", pie),
+            "PIE row progression must use the post-inner-loop a3 pair base")
+    require(not re.search(r"(?m)^\s*addi\s+a1,\s*a3,\s*1600\s*$", pie),
+            "PIE row progression must not add an extra destination-row stride")
     require(".size exact2x_pie_aligned" in pie and "ret" in pie,
             "PIE helper must have normal function metadata and return")
     lanes = list("ABCDEFGH")
@@ -232,6 +236,33 @@ def main() -> int:
                    lanes[6], lanes[6], lanes[7], lanes[7]]
     require(zipped_low + zipped_high ==
             list("AABBCCDDEEFFGGHH"), "PIE host lane model mismatch")
+    # Model the destination row progression explicitly across the complete
+    # 640-row source.  The inner loop advances each destination pointer by
+    # one 16-byte store per VST and a3 therefore already names the next pair
+    # base at the row boundary.
+    source_rows = 640
+    destination_rows = 1280
+    destination_row_stride = 1600
+    destination_bytes = 2048000
+    row_pairs = []
+    max_written_offset = -1
+    for source_row in range(source_rows):
+        first_row = 2 * source_row
+        second_row = first_row + 1
+        require(second_row < destination_rows,
+                f"row progression exceeds destination at source row {source_row}")
+        row_pairs.append((first_row, second_row))
+        max_written_offset = max(
+            max_written_offset,
+            second_row * destination_row_stride + destination_row_stride - 1)
+    require(row_pairs[0] == (0, 1), "row 0 must write destination rows 0,1")
+    require(row_pairs[1] == (2, 3), "row 1 must write destination rows 2,3")
+    require(row_pairs[639] == (1278, 1279),
+            "row 639 must write destination rows 1278,1279")
+    require(max_written_offset == destination_bytes - 1,
+            "row model must end at the final framebuffer byte")
+    require(max_written_offset < destination_bytes,
+            "row model must stay strictly inside the framebuffer")
     route_start = main.index(
         "constexpr uart_port_t kDisplayBenchmarkApplicationConsoleUart")
     route_guard_start = main.rfind(
@@ -283,6 +314,8 @@ def main() -> int:
                 model[offset:offset + 4] = pair
     require(bytes(model) == expected, "scalar packed model mismatch")
     print("Display Performance P10D-B exact2x host contract and PIE lane model passed")
+    print(f"P10_EXACT2X_ROW_ADDRESS_MODEL max_offset={max_written_offset} "
+          f"framebuffer_bytes={destination_bytes}")
     print(f"P10_EXACT2X_SOURCE_CRC=0x{zlib.crc32(rotated) & 0xffffffff:08x}")
     print(f"P10_EXACT2X_EXPECTED_CRC=0x{expected_crc:08x}")
     return 0
