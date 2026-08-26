@@ -6,6 +6,11 @@ idf_component_register(
     REQUIRES p4_nano_board esp_lcd esp_hw_support esp_mm esp_driver_gpio
              esp_driver_i2c esp_psram heap freertos esp_timer esp_lcd_jd9365_10_1)
 
+if(P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE OR
+   "$ENV{P4_NANO_EXACT2X_SCALER_BENCHMARK_PROFILE}" STREQUAL "1")
+    target_sources(${COMPONENT_LIB} PRIVATE p4_nano_display_exact2x.cpp)
+endif()
+
 target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>"
     "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
@@ -22,7 +27,7 @@ set(P4_NANO_DISPLAY_TRANSFORM_OPT "debug" CACHE STRING
 set_property(CACHE P4_NANO_DISPLAY_TRANSFORM_OPT PROPERTY STRINGS debug o2)
 if(P4_NANO_DISPLAY_TRANSFORM_OPT STREQUAL "o2")
     set_source_files_properties(
-        p4_nano_display_transform.cpp
+        p4_nano_display_transform.cpp p4_nano_display_exact2x.cpp
         PROPERTIES COMPILE_OPTIONS "-O2")
 elseif(NOT P4_NANO_DISPLAY_TRANSFORM_OPT STREQUAL "debug")
     message(FATAL_ERROR
