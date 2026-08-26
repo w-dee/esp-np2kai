@@ -7,6 +7,12 @@ Waveshare ESP32-P4-NANO. It is intentionally separate from the production
 firmware under `firmware/` and does not use the production partition table,
 PSRAM, networking, or other board peripherals.
 
+The canonical current production/P10 hardware procedure is documented in
+[`docs/development/hardware-validation.md`](../../../../docs/development/hardware-validation.md).
+The GPIO20 external-LED, GPIO20 application-UART, and 115200-baud procedures
+retained here are independent historical diagnostics; they are not the current
+production/P10 monitor procedure.
+
 ## Diagnostic
 
 `gpio-blink/` is a minimal ESP-IDF 5.5.4 application for the measured ESP32-P4
@@ -32,7 +38,7 @@ Board:                         Waveshare ESP32-P4-NANO
 ESP32-P4 silicon revision:     v1.3
 ESP-IDF:                       v5.5.4
 Programming interface:         CH343P USB-UART
-Stable serial path:            /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61041224-if00
+Stable serial addressing:      `$P4_NANO_SERIAL` (stable by-id path)
 NOR Flash detected:            16 MiB
 PSRAM detected by factory FW:  32 MiB
 gpio-blink silicon support:    ESP32-P4 v1.x
@@ -69,7 +75,7 @@ Board:                         Waveshare ESP32-P4-NANO
 ESP32-P4 silicon revision:     v1.3
 ESP-IDF:                       v5.5.4
 Programming interface:         CH343P USB-UART
-Stable serial path:            /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B61041224-if00
+Stable serial addressing:      `$P4_NANO_SERIAL` (stable by-id path)
 NOR Flash:                     16 MiB
 PSRAM:                         33,554,432 bytes
 PSRAM mode:                    HEX
