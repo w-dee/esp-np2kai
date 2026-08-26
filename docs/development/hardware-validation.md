@@ -43,8 +43,9 @@ procedure after the first failure.
 `idf.py flash` may reset the ESP32-P4 and immediately boot the application.
 That boot is the **SETUP / POST-FLASH BOOT**, not the canonical measurement
 epoch. It does not consume the exactly-one-canonical-reset allowance. The
-application may even complete before IDF Monitor is attached; that output is
-diagnostic setup output only and is acceptable.
+application may complete before IDF Monitor is attached, may still be running
+when the monitor attaches, or may have output still arriving through the
+serial path. All of that output is diagnostic setup output only.
 
 ### Phase 2 — Monitor preparation
 
@@ -52,7 +53,14 @@ After flashing has completed:
 
 1. Start IDF Monitor with the exact matching build directory and `--no-reset`.
 2. Wait until the monitor is connected.
-3. Press `Ctrl+T`, then `Ctrl+L`, and confirm that transcript logging is
+3. Before enabling transcript logging, allow the setup application and its
+   serial output to finish and become quiescent. If the setup-side
+   `Returned from app_main()` appears, it is a setup terminal marker; continue
+   observing until no further setup output is arriving. Do not use an arbitrary
+   fixed sleep as the primary synchronization mechanism. If setup completed
+   before the monitor attached and no setup output is observable, proceed once
+   the monitor is connected.
+4. Press `Ctrl+T`, then `Ctrl+L`, and confirm that transcript logging is
    enabled.
 
 No formal measurement has started yet. A post-flash boot that occurred before
@@ -66,9 +74,30 @@ transcript is expected to cover this logged epoch, including its meaningful
 boot/application sequence, correctness/performance evidence, and terminal
 completion marker.
 
+Maintain the logical state `canonical_boot_seen = false` after issuing the
+reset. Do not accept any terminal marker as canonical until a fresh
+post-reset bootloader/boot sequence has been observed (for example, the normal
+ESP-IDF second-stage boot progression); then set `canonical_boot_seen = true`.
+Only application evidence after that fresh boot belongs to the canonical
+epoch.
+
 Once this canonical epoch has begun, do not issue another reset or rerun in the
 same measurement task. If logging, capture, or results fail after the
 canonical reset, preserve the evidence and stop as `INVALID`.
+
+### Boundary cases
+
+- **Case A — setup completed before monitor attach:** connect with `--no-reset`,
+  confirm that no setup output is observable, then enable logging and issue the
+  one canonical reset.
+- **Case B — monitor attaches during setup:** keep logging disabled and wait for
+  setup completion/quiescence; a setup-side `Returned from app_main()` is not
+  canonical.
+- **Case C — setup output leaks into a transcript prefix:** retain the
+  transcript, identify the fresh post-reset boot, and analyze only the complete
+  canonical subrange. A prefix alone is not invalidating.
+- **Case D — canonical capture fails before completion:** stop without another
+  reset or rerun and report `INVALID`.
 
 ## Monitor
 
@@ -76,20 +105,37 @@ canonical reset, preserve the evidence and stop as `INVALID`.
 does not automate interactive monitor menu keys, logging, reset, flashing, or
 rebuilds.
 
-After the canonical reset, observe through the expected terminal marker,
-normally `Returned from app_main()`. Then press `Ctrl+T`, `Ctrl+L` to stop
-logging and exit with `Ctrl+]`.
+After the canonical reset, first qualify the fresh boot sequence and then
+observe the canonical HELLO/application and benchmark evidence through the
+expected terminal marker, normally `Returned from app_main()`. A terminal
+marker is canonical only when the canonical reset was issued, a fresh boot was
+observed after that reset, and the marker occurs after that boot. Only that
+ordered terminal marker ends formal capture. Then press `Ctrl+T`, `Ctrl+L` to
+stop logging and exit with `Ctrl+]`.
 
 Output from a post-flash setup boot before logging may appear interactively in
 the terminal, but it is not formal transcript evidence and does not invalidate
-the future canonical epoch. The no-second-run rule applies only after the
-logged `Ctrl+T`, `Ctrl+R` reset has begun the canonical epoch.
+the future canonical epoch. A setup-side `Returned from app_main()` must never
+stop canonical capture. The no-second-run rule applies only after the logged
+`Ctrl+T`, `Ctrl+R` reset has begun the canonical epoch.
 
 ## Transcript artifacts
 
 IDF Monitor creates `log.*` local artifacts. They are ignored and must not be
 committed. A formal result records the transcript path, byte count, and
 SHA-256.
+
+The preferred formal transcript starts after setup output has drained and
+contains only the canonical epoch. A small pre-canonical prefix does not by
+itself invalidate a run when the fresh post-reset boot and the complete
+canonical epoch can be unambiguously identified. In that case, formal
+analysis begins at the fresh canonical boot; do not use setup-prefix timings,
+CRCs, PASS markers, VSYNC values, or terminal markers as evidence.
+
+The capture is **INVALID** if no fresh canonical boot can be identified, the
+canonical scalar/PIE evidence is incomplete, the canonical terminal marker is
+missing, setup/canonical ordering is ambiguous, or another reset occurs after
+the canonical epoch begins.
 
 ## Leading NUL preamble
 
@@ -98,14 +144,17 @@ others. Their physical cause is **NOT ESTABLISHED**. Treat them as a
 **transport preamble artifact**, not as proof of a particular UART
 initialization behavior.
 
-An otherwise coherent capture may be reported as:
+An otherwise coherent canonical subrange may be reported as:
 
 ```text
 BOOT-TO-COMPLETION CAPTURE = PASS WITH PREAMBLE ARTIFACT
 ```
 
-only when it contains one meaningful boot/application sequence, no post-HELLO
-panic or reset, expected terminal evidence, and `Returned from app_main()`.
+only when it contains one meaningful post-reset boot/application sequence, no
+post-HELLO panic or reset, expected terminal evidence, and
+`Returned from app_main()` after that boot. A setup prefix, including residual
+setup lines or a documented leading NUL transport artifact, must be excluded
+from formal analysis.
 
 ## External USB-UART and GPIO20
 
