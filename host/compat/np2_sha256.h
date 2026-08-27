@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define NP2_SHA256_DIGEST_SIZE 32U
 
 typedef struct {
@@ -18,5 +22,9 @@ void np2_sha256_update(np2_sha256_context *context,
 		const uint8_t *data, size_t length);
 void np2_sha256_final(np2_sha256_context *context,
 		uint8_t digest[NP2_SHA256_DIGEST_SIZE]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* NP2_HOST_SHA256_H */

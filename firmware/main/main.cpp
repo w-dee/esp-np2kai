@@ -8,7 +8,9 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #endif
-#if defined(P4_NANO_REFRESH_VISUAL_PROFILE) || \
+#if defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+#include "p4_nano_audio_benchmark.hpp"
+#elif defined(P4_NANO_REFRESH_VISUAL_PROFILE) || \
     defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
 #include "p4_nano_display/p4_nano_display.hpp"
 #if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
@@ -122,7 +124,8 @@ esp_err_t route_display_benchmark_application_console()
 } // namespace
 #endif
 
-#if !defined(P4_NANO_REFRESH_VISUAL_PROFILE) && \
+#if !defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_REFRESH_VISUAL_PROFILE) && \
     !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE) && \
     !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE) && \
     !defined(P4_NANO_PIE_PREEMPTION_CORRECTNESS_PROFILE) && \
@@ -193,7 +196,13 @@ extern "C" void app_main(void)
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
 
-#if defined(P4_NANO_REFRESH_VISUAL_PROFILE)
+#if defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+    const esp_err_t audio_result = p4_nano_audio_benchmark::run();
+    std::printf("P4_AUDIO_ONLY_BENCHMARK_RESULT=%s\n",
+                audio_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_REFRESH_VISUAL_PROFILE)
     const esp_err_t refresh_visual_result =
         p4_nano_display::run_refresh_visual();
     std::printf("P4_NANO_REFRESH_VISUAL_EXIT=%s\n",

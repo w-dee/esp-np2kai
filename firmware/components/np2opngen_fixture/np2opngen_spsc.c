@@ -58,3 +58,15 @@ uint32_t np2opngen_spsc_occupancy(const struct np2opngen_spsc_queue *queue)
     tail = atomic_load_explicit(&queue->tail, memory_order_acquire);
     return head - tail;
 }
+
+int np2opngen_spsc_atomic_lock_free(const struct np2opngen_spsc_queue *queue,
+                                    bool *head_lock_free,
+                                    bool *tail_lock_free)
+{
+    if (queue == 0 || head_lock_free == 0 || tail_lock_free == 0) {
+        return NP2_OPNGEN_SPSC_ARGUMENT;
+    }
+    *head_lock_free = atomic_is_lock_free(&queue->head);
+    *tail_lock_free = atomic_is_lock_free(&queue->tail);
+    return NP2_OPNGEN_SPSC_OK;
+}

@@ -2,7 +2,13 @@
 #define NP2_OPNGEN_E1B_STREAM_H
 
 #include <stdbool.h>
+#ifdef __cplusplus
+#include <atomic>
+#define NP2_OPNGEN_E1B_ATOMIC(type) std::atomic<type>
+#else
 #include <stdatomic.h>
+#define NP2_OPNGEN_E1B_ATOMIC(type) _Atomic type
+#endif
 #include <stddef.h>
 #include <stdint.h>
 
@@ -48,6 +54,38 @@ struct np2opngen_e1b_pcm_sink {
     void *context;
 };
 
+/* Optional, caller-owned observation seam for bounded benchmark
+ * instrumentation.  The worker never allocates, logs, or timestamps on
+ * behalf of an observer.  Existing callers leave this unset and retain the
+ * original behaviour.  Callback state must remain valid until worker
+ * destruction; callbacks run synchronously on the worker thread. */
+struct np2opngen_e1b_observer {
+    void (*dequeue_begin)(void *context);
+    void (*dequeue_end)(void *context, int status,
+                        const struct np2opngen_synth_event *event);
+    void (*event_begin)(void *context,
+                        const struct np2opngen_synth_event *event,
+                        bool timestamp_zero);
+    void (*event_end)(void *context,
+                      const struct np2opngen_synth_event *event,
+                      int status);
+    void (*event_apply_begin)(void *context,
+                              const struct np2opngen_synth_event *event);
+    void (*event_apply_end)(void *context,
+                            const struct np2opngen_synth_event *event,
+                            int status);
+    void (*render_begin)(void *context, uint64_t frame_offset,
+                         uint32_t frame_count);
+    void (*opngen_begin)(void *context, uint64_t frame_offset,
+                         uint32_t frame_count);
+    void (*opngen_end)(void *context, uint64_t frame_offset,
+                       uint32_t frame_count, int status);
+    void (*render_end)(void *context, uint64_t frame_offset,
+                       uint32_t frame_count, int status);
+    void *context;
+    bool boundary_limiter;
+};
+
 enum np2opngen_e1b_step {
     NP2_OPNGEN_E1B_STEP_PROGRESS = 0,
     NP2_OPNGEN_E1B_STEP_WAIT,
@@ -56,8 +94,8 @@ enum np2opngen_e1b_step {
 };
 
 struct np2opngen_e1b_control {
-    _Atomic int first_error;
-    _Atomic bool producer_done;
+    NP2_OPNGEN_E1B_ATOMIC(int) first_error;
+    NP2_OPNGEN_E1B_ATOMIC(bool) producer_done;
 };
 
 struct np2opngen_e1b_worker {
@@ -69,6 +107,7 @@ struct np2opngen_e1b_worker {
     size_t pcm_block_bytes;
     size_t pcm_bytes;
     struct np2opngen_e1b_pcm_sink sink;
+    const struct np2opngen_e1b_observer *observer;
     uint64_t end_frame;
     uint64_t expected_first_sequence;
     uint64_t expected_sequence;
@@ -94,12 +133,19 @@ void np2opngen_e1b_control_fail(struct np2opngen_e1b_control *control,
 int np2opngen_e1b_control_first_error(
     const struct np2opngen_e1b_control *control);
 
+void np2opngen_e1b_control_producer_done(
+    struct np2opngen_e1b_control *control);
+
 int np2opngen_e1b_worker_init(
     struct np2opngen_e1b_worker *worker,
     struct np2opngen_spsc_queue *queue,
     struct np2opngen_e1b_control *control,
     uint64_t end_frame, uint64_t expected_first_sequence,
     uint64_t expected_event_count);
+
+void np2opngen_e1b_worker_set_observer(
+    struct np2opngen_e1b_worker *worker,
+    const struct np2opngen_e1b_observer *observer);
 
 int np2opngen_e1b_worker_init_with_sink(
     struct np2opngen_e1b_worker *worker,
@@ -120,5 +166,7 @@ int np2opngen_e1b_worker_event_trace_finish(
 #ifdef __cplusplus
 }
 #endif
+
+#undef NP2_OPNGEN_E1B_ATOMIC
 
 #endif /* NP2_OPNGEN_E1B_STREAM_H */

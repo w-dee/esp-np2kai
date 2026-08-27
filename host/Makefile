@@ -227,6 +227,8 @@ OPNGEN_E1B_TEST_SOURCE := $(CURDIR)/tests/opngen_e1b_spsc_test.c
 OPNGEN_E1B_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_spsc_test
 OPNGEN_E1B_TSAN_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_spsc_test_tsan
 OPNGEN_E1B_FORMAL_RUNNER := $(CURDIR)/tests/run_opngen_e1b_formal.py
+OPNGEN_E1B_OBSERVER_TEST_SOURCE := $(CURDIR)/tests/opngen_e1b_observer_test.c
+OPNGEN_E1B_OBSERVER_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_observer_test
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
 OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
@@ -707,6 +709,24 @@ build-opngen-e1b:
 test-opngen-e1b: build-opngen-e1b
 	@"$(OPNGEN_E1B_TEST_OUTPUT)"
 	@printf '%s\n' 'OPNGEN E1B SPSC worker test passed.'
+
+build-opngen-e1b-observer:
+	@mkdir -p "$(dir $(OPNGEN_E1B_OBSERVER_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_FIXTURE_SOURCE)" "$(OPNGEN_S98_SOURCE)" \
+		"$(OPNGEN_SYNTHETIC_WORKLOAD_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_E1B_OBSERVER_TEST_SOURCE)" \
+		-lm -pthread -o "$(OPNGEN_E1B_OBSERVER_TEST_OUTPUT)"
+
+test-opngen-e1b-observer: build-opngen-e1b-observer
+	@cd "$(CURDIR)" && "$(OPNGEN_E1B_OBSERVER_TEST_OUTPUT)"
+	@printf '%s\n' 'OPNGEN E1B observer seam tests passed.'
 
 test-opngen-e1b-formal: build-opngen-e1b
 	@$(PYTHON) "$(OPNGEN_E1B_FORMAL_RUNNER)" \

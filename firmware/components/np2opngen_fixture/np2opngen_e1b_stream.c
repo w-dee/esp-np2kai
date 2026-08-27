@@ -38,6 +38,15 @@ int np2opngen_e1b_control_first_error(
                                       memory_order_acquire);
 }
 
+void np2opngen_e1b_control_producer_done(
+    struct np2opngen_e1b_control *control)
+{
+    if (control != 0) {
+        atomic_store_explicit(&control->producer_done, true,
+                              memory_order_release);
+    }
+}
+
 static void worker_fail(struct np2opngen_e1b_worker *worker,
                         enum np2opngen_e1b_error error, int status)
 {
@@ -120,29 +129,69 @@ int np2opngen_e1b_worker_init(
         expected_event_count, 0);
 }
 
+void np2opngen_e1b_worker_set_observer(
+    struct np2opngen_e1b_worker *worker,
+    const struct np2opngen_e1b_observer *observer)
+{
+    if (worker != 0) {
+        worker->observer = observer;
+    }
+}
+
 static int worker_render_until(struct np2opngen_e1b_worker *worker,
                                uint64_t target_frame)
 {
     while (worker->cursor < target_frame) {
         uint64_t frame_count = target_frame - worker->cursor;
+        const uint64_t frame_offset = worker->cursor;
         size_t canonical_bytes;
         struct np2opngen_pcm_stats stats;
         if (frame_count > NP2_OPNGEN_E1B_RENDER_QUANTUM) {
             frame_count = NP2_OPNGEN_E1B_RENDER_QUANTUM;
         }
+        if (worker->observer != 0 &&
+            worker->observer->boundary_limiter) {
+            const uint64_t in_quantum =
+                worker->cursor % NP2_OPNGEN_E1B_RENDER_QUANTUM;
+            const uint64_t until_boundary =
+                NP2_OPNGEN_E1B_RENDER_QUANTUM - in_quantum;
+            if (frame_count > until_boundary) {
+                frame_count = until_boundary;
+            }
+        }
         canonical_bytes = (size_t)frame_count * E1B_CHANNELS *
                           E1B_PCM_BYTES_PER_SAMPLE;
+        if (worker->observer != 0 &&
+            worker->observer->render_begin != 0) {
+            worker->observer->render_begin(worker->observer->context,
+                                            frame_offset,
+                                            (uint32_t)frame_count);
+        }
         /* OPNGEN accumulates into its destination buffer.  Clear only the
          * bounded scratch block before each render, just as E1B's former
          * calloc-backed full buffer was initially zeroed. */
         memset(worker->s32_pcm, 0,
                (size_t)NP2_OPNGEN_E1B_RENDER_QUANTUM * E1B_CHANNELS *
                    sizeof(*worker->s32_pcm));
-        opngen_getpcm(worker->opngen, worker->s32_pcm,
-                      (UINT)frame_count);
+        if (worker->observer != 0 && worker->observer->opngen_begin != 0) {
+            worker->observer->opngen_begin(worker->observer->context,
+                                           frame_offset,
+                                           (uint32_t)frame_count);
+        }
+        opngen_getpcm(worker->opngen, worker->s32_pcm, (UINT)frame_count);
+        if (worker->observer != 0 && worker->observer->opngen_end != 0) {
+            worker->observer->opngen_end(worker->observer->context,
+                                         frame_offset,
+                                         (uint32_t)frame_count, 0);
+        }
         if (np2opngen_pcm_canonicalize_s16le(
                 worker->s32_pcm, (size_t)frame_count, E1B_CHANNELS,
                 worker->canonical_pcm, worker->pcm_block_bytes, &stats) != 0) {
+            if (worker->observer != 0 && worker->observer->render_end != 0) {
+                worker->observer->render_end(worker->observer->context,
+                                             frame_offset,
+                                             (uint32_t)frame_count, -1);
+            }
             worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
                         NP2_SYNTH_EVENT_STATUS_CALLBACK);
             return -1;
@@ -150,10 +199,20 @@ static int worker_render_until(struct np2opngen_e1b_worker *worker,
         if (worker->sink.write != 0 &&
             worker->sink.write(worker->canonical_pcm, canonical_bytes,
                                worker->cursor, worker->sink.context) != 0) {
+            if (worker->observer != 0 && worker->observer->render_end != 0) {
+                worker->observer->render_end(worker->observer->context,
+                                             frame_offset,
+                                             (uint32_t)frame_count, -1);
+            }
             worker_fail(worker, NP2_OPNGEN_E1B_ERROR_OUTPUT_SINK, 0);
             return -1;
         }
         if (worker->pcm_bytes > SIZE_MAX - canonical_bytes) {
+            if (worker->observer != 0 && worker->observer->render_end != 0) {
+                worker->observer->render_end(worker->observer->context,
+                                             frame_offset,
+                                             (uint32_t)frame_count, -1);
+            }
             worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
                         NP2_SYNTH_EVENT_STATUS_OVERFLOW);
             return -1;
@@ -161,6 +220,11 @@ static int worker_render_until(struct np2opngen_e1b_worker *worker,
         worker->pcm_bytes += canonical_bytes;
         worker->cursor += frame_count;
         worker->rendered_frames += frame_count;
+        if (worker->observer != 0 && worker->observer->render_end != 0) {
+            worker->observer->render_end(worker->observer->context,
+                                         frame_offset,
+                                         (uint32_t)frame_count, 0);
+        }
     }
     return 0;
 }
@@ -168,12 +232,18 @@ static int worker_render_until(struct np2opngen_e1b_worker *worker,
 static int worker_process_event(struct np2opngen_e1b_worker *worker,
                                 const struct np2opngen_synth_event *event)
 {
-    int status;
+    int status = -1;
+    const bool timestamp_zero = event->sample_timestamp == 0U;
+
+    if (worker->observer != 0 && worker->observer->event_begin != 0) {
+        worker->observer->event_begin(worker->observer->context, event,
+                                      timestamp_zero);
+    }
 
     if (event->sample_timestamp < worker->cursor) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
                     NP2_SYNTH_EVENT_STATUS_TIMESTAMP);
-        return -1;
+        goto event_error;
     }
     status = np2opngen_synth_event_validate(
         event, 1U, worker->end_frame, worker->expected_sequence,
@@ -183,16 +253,22 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
             ++worker->sequence_errors;
         }
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT, status);
-        return -1;
+        goto event_error;
     }
     if (np2opngen_synth_event_trace_update(&worker->consumer_trace, event) !=
         NP2_SYNTH_EVENT_STATUS_OK) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
                     NP2_SYNTH_EVENT_STATUS_TYPE);
-        return -1;
+        goto event_error;
+    }
+    if (worker->observer != 0 && worker->observer->event_end != 0) {
+        worker->observer->event_end(worker->observer->context, event, 0);
     }
     if (worker_render_until(worker, event->sample_timestamp) != 0) {
         return -1;
+    }
+    if (worker->observer != 0 && worker->observer->event_apply_begin != 0) {
+        worker->observer->event_apply_begin(worker->observer->context, event);
     }
     if (event->type == NP2_SYNTH_EVENT_REGISTER_WRITE) {
         opngen_setreg(worker->opngen, event->payload.register_write.chbase,
@@ -204,7 +280,14 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
     } else {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
                     NP2_SYNTH_EVENT_STATUS_TYPE);
+        if (worker->observer != 0 && worker->observer->event_apply_end != 0) {
+            worker->observer->event_apply_end(worker->observer->context, event,
+                                              -1);
+        }
         return -1;
+    }
+    if (worker->observer != 0 && worker->observer->event_apply_end != 0) {
+        worker->observer->event_apply_end(worker->observer->context, event, 0);
     }
     worker->last_sequence = event->sequence;
     worker->has_last_sequence = true;
@@ -216,6 +299,13 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
     ++worker->expected_sequence;
     ++worker->dequeue_count;
     return 0;
+
+event_error:
+    if (worker->observer != 0 && worker->observer->event_end != 0) {
+        worker->observer->event_end(worker->observer->context, event,
+                                    status == 0 ? -1 : status);
+    }
+    return -1;
 }
 
 static int worker_drain(struct np2opngen_e1b_worker *worker)
@@ -260,7 +350,15 @@ int np2opngen_e1b_worker_step(struct np2opngen_e1b_worker *worker)
         return NP2_OPNGEN_E1B_STEP_FAILED;
     }
 
+    if (worker->observer != 0 && worker->observer->dequeue_begin != 0) {
+        worker->observer->dequeue_begin(worker->observer->context);
+    }
     status = np2opngen_spsc_dequeue(worker->queue, &event);
+    if (worker->observer != 0 && worker->observer->dequeue_end != 0) {
+        worker->observer->dequeue_end(worker->observer->context, status,
+                                      status == NP2_OPNGEN_SPSC_OK ? &event
+                                                                    : 0);
+    }
     if (status == NP2_OPNGEN_SPSC_OK) {
         return worker_process_event(worker, &event) == 0
                    ? NP2_OPNGEN_E1B_STEP_PROGRESS
@@ -283,7 +381,15 @@ int np2opngen_e1b_worker_step(struct np2opngen_e1b_worker *worker)
     }
 
     ++worker->empty_recheck_count;
+    if (worker->observer != 0 && worker->observer->dequeue_begin != 0) {
+        worker->observer->dequeue_begin(worker->observer->context);
+    }
     status = np2opngen_spsc_dequeue(worker->queue, &event);
+    if (worker->observer != 0 && worker->observer->dequeue_end != 0) {
+        worker->observer->dequeue_end(worker->observer->context, status,
+                                      status == NP2_OPNGEN_SPSC_OK ? &event
+                                                                    : 0);
+    }
     if (status == NP2_OPNGEN_SPSC_OK) {
         return worker_process_event(worker, &event) == 0
                    ? NP2_OPNGEN_E1B_STEP_PROGRESS

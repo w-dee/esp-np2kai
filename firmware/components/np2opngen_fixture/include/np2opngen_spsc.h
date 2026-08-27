@@ -1,7 +1,14 @@
 #ifndef NP2_OPNGEN_SPSC_H
 #define NP2_OPNGEN_SPSC_H
 
+#ifdef __cplusplus
+#include <atomic>
+#define NP2_OPNGEN_ATOMIC(type) std::atomic<type>
+#else
 #include <stdatomic.h>
+#define NP2_OPNGEN_ATOMIC(type) _Atomic type
+#endif
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "np2opngen_synth_event.h"
@@ -21,8 +28,8 @@ enum np2opngen_spsc_status {
 
 struct np2opngen_spsc_queue {
     struct np2opngen_synth_event slots[NP2_OPNGEN_SPSC_CAPACITY];
-    _Atomic uint32_t head;
-    _Atomic uint32_t tail;
+    NP2_OPNGEN_ATOMIC(uint32_t) head;
+    NP2_OPNGEN_ATOMIC(uint32_t) tail;
 };
 
 void np2opngen_spsc_init(struct np2opngen_spsc_queue *queue);
@@ -35,8 +42,14 @@ int np2opngen_spsc_dequeue(struct np2opngen_spsc_queue *queue,
 
 uint32_t np2opngen_spsc_occupancy(const struct np2opngen_spsc_queue *queue);
 
+int np2opngen_spsc_atomic_lock_free(const struct np2opngen_spsc_queue *queue,
+                                    bool *head_lock_free,
+                                    bool *tail_lock_free);
+
 #ifdef __cplusplus
 }
 #endif
+
+#undef NP2_OPNGEN_ATOMIC
 
 #endif /* NP2_OPNGEN_SPSC_H */
