@@ -629,7 +629,7 @@ int main(int argc, char **argv)
         }
     }
     if (fixture_dir == NULL && fixture_file == NULL) {
-        die("--fixture-dir is required");
+        die("--fixture-dir or --fixture-file is required");
     }
     if (failure_test) {
         if (fixture_dir == NULL || fixture_file != NULL) {

@@ -218,6 +218,8 @@ RETROFM_S98_FIXTURE := $(HOST_ROOT)/testdata/s98/retrofm-pocket-demo-strict.s98
 RETROFM_S98_MANIFEST := $(HOST_ROOT)/tools/emu/retrofm_pocket_fixture_provenance.json
 RETROFM_S98_RUNNER := $(HOST_ROOT)/tools/emu/run_retrofm_s98.py
 RETROFM_S98_PROVENANCE_TEST := $(HOST_ROOT)/tools/emu/test_retrofm_pocket_fixture.py
+RETROFM_S98_DESCRIPTOR := $(HOST_ROOT)/tools/emu/opngen_retrofm_s98_golden.json
+RETROFM_S98_PLAYBACK_VALIDATOR_TEST := $(HOST_ROOT)/tools/emu/test_retrofm_s98_validator.py
 OPNGEN_PCM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c
 OPNGEN_SPSC_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_spsc.c
 OPNGEN_E1B_STREAM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_e1b_stream.c
@@ -286,7 +288,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-s3-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-s3-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 .PHONY: test-p4-nano-ppa-rotation-reference
 
@@ -634,6 +636,20 @@ test-opngen-retrofm-s98: build-opngen-retrofm-s98
 		--binary "$(RETROFM_S98_TEST_OUTPUT)" \
 		--fixture "$(RETROFM_S98_FIXTURE)" \
 		--manifest "$(RETROFM_S98_MANIFEST)" --repetitions 3
+
+test-opngen-retrofm-s98-validator:
+	@$(PYTHON) "$(RETROFM_S98_PLAYBACK_VALIDATOR_TEST)"
+
+test-opngen-retrofm-s98-formal: build-opngen-retrofm-s98 test-retrofm-provenance test-opngen-retrofm-s98-validator
+	@$(PYTHON) "$(RETROFM_S98_RUNNER)" \
+		--binary "$(RETROFM_S98_TEST_OUTPUT)" \
+		--fixture "$(RETROFM_S98_FIXTURE)" \
+		--manifest "$(RETROFM_S98_MANIFEST)" --repetitions 5
+	@$(PYTHON) "$(RETROFM_S98_RUNNER)" \
+		--binary "$(RETROFM_S98_TEST_OUTPUT)" \
+		--fixture "$(RETROFM_S98_FIXTURE)" \
+		--manifest "$(RETROFM_S98_MANIFEST)" \
+		--descriptor "$(RETROFM_S98_DESCRIPTOR)" --repetitions 3
 
 test-retrofm-provenance:
 	@$(PYTHON) "$(HOST_ROOT)/tools/emu/validate_retrofm_pocket_provenance.py"

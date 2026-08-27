@@ -7,8 +7,22 @@ import argparse
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+
+EXPECTED_EVENT = {
+    "count": "1047",
+    "crc32": "3416c2b6",
+    "sha256": "898b049d1c37c8cc6503759849244048e0e7f778087e1eb5706bedf116e9dacf",
+}
+EXPECTED_PCM = {
+    "frames": "576960",
+    "bytes": "2307840",
+    "crc32": "79b0dfad",
+    "sha256": "1d4d24ad9c966dea085607afee6a9ecb049c2c476863c534dbfe0e50ace1016b",
+}
 
 
 def _fields(line: str) -> dict[str, str]:
@@ -53,7 +67,7 @@ def _check(records: dict[str, dict[str, str]], source: bytes,
         "s98_version": "3", "device_count": "1", "device_type": "2",
         "declared_clock": "4000000", "effective_clock": "3993600",
         "clock_policy": "WORKLOAD_CLOCK_MISMATCH", "raw_timer": "1/44100",
-        "effective_timer": "1/44100", "data_offset": "48",
+        "effective_timer": "1/44100", "data_offset": "48", "tag_offset": "3578",
         "loop_offset": "0", "source_writes": "1047", "ignored_writes": "0",
         "final_sync": "530082", "end_frame": "576960",
     }.items():
@@ -66,8 +80,16 @@ def _check(records: dict[str, dict[str, str]], source: bytes,
             raise ValueError("preflight/producer/consumer event identity mismatch")
     if events.get("preflight_count") != "1047" or events.get("sequence_errors") != "0":
         raise ValueError("event count or sequence error contract failed")
+    for view in ("preflight", "producer", "consumer"):
+        for suffix in ("count", "crc32", "sha256"):
+            expected = EXPECTED_EVENT[suffix]
+            if events.get(f"{view}_{suffix}") != expected:
+                raise ValueError(f"{view}_{suffix} candidate changed")
     if pcm.get("frames") != "576960" or pcm.get("bytes") != "2307840":
         raise ValueError("PCM size contract failed")
+    for key, expected in EXPECTED_PCM.items():
+        if pcm.get(key) != expected:
+            raise ValueError(f"PCM {key} candidate changed")
 
 
 def main() -> int:
@@ -75,6 +97,7 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--descriptor", type=Path)
     parser.add_argument("--repetitions", type=int, default=3)
     args = parser.parse_args()
     if args.repetitions < 3:
@@ -87,6 +110,11 @@ def main() -> int:
     if hashlib.sha256(source).hexdigest() != expected_sha or len(source) != expected_bytes:
         raise SystemExit("fixture does not match strict_derivative manifest")
     with tempfile.TemporaryDirectory(prefix="retrofm-s98-", dir=args.binary.parent) as root:
+        if args.descriptor is not None:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from validate_retrofm_s98_log import load_descriptor, validate_text
+
+            descriptor = load_descriptor(args.descriptor)
         root_path = Path(root)
         first_records: dict[str, dict[str, str]] | None = None
         first_pcm: bytes | None = None
@@ -104,6 +132,13 @@ def main() -> int:
             records = _parse(completed.stdout)
             pcm = pcm_path.read_bytes()
             _check(records, source, expected_sha, expected_bytes)
+            if args.descriptor is not None:
+                errors = validate_text(completed.stdout, descriptor)
+                if errors:
+                    raise SystemExit(
+                        f"descriptor validation failed at fresh process {iteration}: "
+                        + "; ".join(errors)
+                    )
             if first_records is None:
                 first_records = records
                 first_pcm = pcm

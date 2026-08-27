@@ -1,0 +1,45 @@
+{
+  "golden_version": 1,
+  "fixture_id": "retrofm_pocket_demo",
+  "provenance_manifest": {
+    "path": "tools/emu/retrofm_pocket_fixture_provenance.json",
+    "manifest_version": 1
+  },
+  "input": {
+    "path": "testdata/s98/retrofm-pocket-demo-strict.s98",
+    "bytes": 3753,
+    "sha256": "702d8b3003d2d81449fd1003aa2231afdacaae9d680f73fdf11d8195edb046c2"
+  },
+  "parser": {
+    "s98_version": 3,
+    "device_count": 1,
+    "device_type": 2,
+    "declared_device_clock_hz": 4000000,
+    "effective_opngen_clock_hz": 3993600,
+    "clock_policy": "WORKLOAD_CLOCK_MISMATCH",
+    "timer_numerator": 1,
+    "timer_denominator": 44100,
+    "compression": 0,
+    "data_offset": 48,
+    "tag_offset": 3578,
+    "loop_offset": 0,
+    "source_write_count": 1047,
+    "ignored_write_count": 0,
+    "final_sync_count": 530082,
+    "end_frame": 576960
+  },
+  "event": {
+    "count": 1047,
+    "crc32": "0x3416c2b6",
+    "sha256": "898b049d1c37c8cc6503759849244048e0e7f778087e1eb5706bedf116e9dacf"
+  },
+  "pcm": {
+    "sample_rate_hz": 48000,
+    "channels": 2,
+    "format": "s16le",
+    "frames": 576960,
+    "bytes": 2307840,
+    "crc32": "0x79b0dfad",
+    "sha256": "1d4d24ad9c966dea085607afee6a9ecb049c2c476863c534dbfe0e50ace1016b"
+  }
+}
