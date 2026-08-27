@@ -4,6 +4,7 @@ set(NP2_OPNGEN_HOST_COMPAT_DIR "${CMAKE_SOURCE_DIR}/../host/compat")
 idf_component_register(
     SRCS
         "np2opngen_fixture.c"
+        "np2opngen_synth_event.c"
         "np2opngen_fixture_esp.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngenc.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngeng.c"

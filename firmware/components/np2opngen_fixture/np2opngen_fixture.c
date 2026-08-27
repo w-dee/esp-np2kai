@@ -13,6 +13,7 @@
 #include <sound/opngencfg.h>
 
 #include "np2_crc32.h"
+#include "np2opngen_synth_event.h"
 #include "np2_sha256.h"
 
 #define FIXTURE_RATE_HZ 48000U
@@ -52,6 +53,98 @@ struct fixture_capture {
     uint64_t init_us;
     uint64_t render_us;
 };
+
+struct fixture_event_render_context {
+    OPNGEN state;
+    SINT32 *pcm;
+    enum fixture_partition partition;
+    np2opngen_fixture_clock_fn clock_fn;
+    void *clock_context;
+    bool measure;
+    uint64_t render_us;
+};
+
+/* The sole primary event vector.  It is intentionally hand-authored so the
+ * event protocol, rather than a procedural generator, is what is tested. */
+#define FIXTURE_EVENT_COUNT 64U
+#define FIXTURE_EVENT_REG(ts, seq, reg_, value_) \
+    { (ts), (seq), NP2_SYNTH_EVENT_REGISTER_WRITE, \
+      { .register_write = { .chbase = 0U, .reg = (reg_), \
+                            .value = (value_) } } }
+#define FIXTURE_EVENT_KEY(ts, seq, channel_, value_) \
+    { (ts), (seq), NP2_SYNTH_EVENT_KEY_EVENT, \
+      { .key_event = { (channel_), (value_), 0U } } }
+
+static const struct np2opngen_synth_event fixture_primary_events[
+    FIXTURE_EVENT_COUNT] = {
+    FIXTURE_EVENT_REG(480U, 0U, 0x30U, 0x01U),
+    FIXTURE_EVENT_REG(480U, 1U, 0x34U, 0x01U),
+    FIXTURE_EVENT_REG(480U, 2U, 0x38U, 0x02U),
+    FIXTURE_EVENT_REG(480U, 3U, 0x3cU, 0x01U),
+    FIXTURE_EVENT_REG(480U, 4U, 0x40U, 0x28U),
+    FIXTURE_EVENT_REG(480U, 5U, 0x44U, 0x30U),
+    FIXTURE_EVENT_REG(480U, 6U, 0x48U, 0x20U),
+    FIXTURE_EVENT_REG(480U, 7U, 0x4cU, 0x00U),
+    FIXTURE_EVENT_REG(480U, 8U, 0x50U, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 9U, 0x54U, 0x1aU),
+    FIXTURE_EVENT_REG(480U, 10U, 0x58U, 0x16U),
+    FIXTURE_EVENT_REG(480U, 11U, 0x5cU, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 12U, 0x60U, 0x0eU),
+    FIXTURE_EVENT_REG(480U, 13U, 0x64U, 0x0aU),
+    FIXTURE_EVENT_REG(480U, 14U, 0x68U, 0x08U),
+    FIXTURE_EVENT_REG(480U, 15U, 0x6cU, 0x10U),
+    FIXTURE_EVENT_REG(480U, 16U, 0x70U, 0x06U),
+    FIXTURE_EVENT_REG(480U, 17U, 0x74U, 0x05U),
+    FIXTURE_EVENT_REG(480U, 18U, 0x78U, 0x04U),
+    FIXTURE_EVENT_REG(480U, 19U, 0x7cU, 0x08U),
+    FIXTURE_EVENT_REG(480U, 20U, 0x80U, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 21U, 0x84U, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 22U, 0x88U, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 23U, 0x8cU, 0x1fU),
+    FIXTURE_EVENT_REG(480U, 24U, 0xb0U, 0x36U),
+    FIXTURE_EVENT_REG(480U, 25U, 0xb4U, 0xc0U),
+    FIXTURE_EVENT_REG(480U, 26U, 0xa4U, 0x22U),
+    FIXTURE_EVENT_REG(480U, 27U, 0xa0U, 0x69U),
+    FIXTURE_EVENT_KEY(480U, 28U, 0U, 0xf0U),
+    FIXTURE_EVENT_REG(5280U, 29U, 0xa4U, 0x24U),
+    FIXTURE_EVENT_REG(5280U, 30U, 0xa0U, 0x20U),
+    FIXTURE_EVENT_REG(7680U, 31U, 0x31U, 0x11U),
+    FIXTURE_EVENT_REG(7680U, 32U, 0x35U, 0x01U),
+    FIXTURE_EVENT_REG(7680U, 33U, 0x39U, 0x12U),
+    FIXTURE_EVENT_REG(7680U, 34U, 0x3dU, 0x02U),
+    FIXTURE_EVENT_REG(7680U, 35U, 0x41U, 0x38U),
+    FIXTURE_EVENT_REG(7680U, 36U, 0x45U, 0x48U),
+    FIXTURE_EVENT_REG(7680U, 37U, 0x49U, 0x20U),
+    FIXTURE_EVENT_REG(7680U, 38U, 0x4dU, 0x04U),
+    FIXTURE_EVENT_REG(7680U, 39U, 0x51U, 0x1bU),
+    FIXTURE_EVENT_REG(7680U, 40U, 0x55U, 0x17U),
+    FIXTURE_EVENT_REG(7680U, 41U, 0x59U, 0x13U),
+    FIXTURE_EVENT_REG(7680U, 42U, 0x5dU, 0x1fU),
+    FIXTURE_EVENT_REG(7680U, 43U, 0x61U, 0x0cU),
+    FIXTURE_EVENT_REG(7680U, 44U, 0x65U, 0x0aU),
+    FIXTURE_EVENT_REG(7680U, 45U, 0x69U, 0x08U),
+    FIXTURE_EVENT_REG(7680U, 46U, 0x6dU, 0x10U),
+    FIXTURE_EVENT_REG(7680U, 47U, 0x71U, 0x06U),
+    FIXTURE_EVENT_REG(7680U, 48U, 0x75U, 0x05U),
+    FIXTURE_EVENT_REG(7680U, 49U, 0x79U, 0x04U),
+    FIXTURE_EVENT_REG(7680U, 50U, 0x7dU, 0x08U),
+    FIXTURE_EVENT_REG(7680U, 51U, 0x81U, 0x1fU),
+    FIXTURE_EVENT_REG(7680U, 52U, 0x85U, 0x1fU),
+    FIXTURE_EVENT_REG(7680U, 53U, 0x89U, 0x1fU),
+    FIXTURE_EVENT_REG(7680U, 54U, 0x8dU, 0x1fU),
+    FIXTURE_EVENT_REG(7680U, 55U, 0xb1U, 0x2dU),
+    FIXTURE_EVENT_REG(7680U, 56U, 0xb5U, 0x80U),
+    FIXTURE_EVENT_REG(7680U, 57U, 0xa5U, 0x24U),
+    FIXTURE_EVENT_REG(7680U, 58U, 0xa1U, 0xd0U),
+    FIXTURE_EVENT_KEY(7680U, 59U, 1U, 0xf0U),
+    FIXTURE_EVENT_REG(12480U, 60U, 0x4cU, 0x18U),
+    FIXTURE_EVENT_REG(12480U, 61U, 0x6cU, 0x14U),
+    FIXTURE_EVENT_KEY(14880U, 62U, 0U, 0x00U),
+    FIXTURE_EVENT_KEY(19680U, 63U, 1U, 0x00U),
+};
+
+#undef FIXTURE_EVENT_REG
+#undef FIXTURE_EVENT_KEY
 
 static uint64_t fixture_now(np2opngen_fixture_clock_fn clock_fn, void *context)
 {
@@ -147,6 +240,44 @@ static int fixture_render(OPNGEN state, SINT32 *pcm, uint32_t cursor,
         remaining -= count;
     }
     return offset == cursor + frames ? 0 : -1;
+}
+
+static int fixture_event_render(void *context, uint64_t cursor,
+                                uint64_t frame_count)
+{
+    struct fixture_event_render_context *render =
+        (struct fixture_event_render_context *)context;
+    if (cursor > FIXTURE_FRAMES || frame_count > FIXTURE_FRAMES - cursor ||
+        frame_count > UINT32_MAX) {
+        return -1;
+    }
+    if (frame_count == 0U) {
+        return 0;
+    }
+    return fixture_render(render->state, render->pcm, (uint32_t)cursor,
+                          (uint32_t)frame_count, render->partition,
+                          render->clock_fn, render->clock_context,
+                          render->measure, &render->render_us);
+}
+
+static int fixture_event_apply(void *context,
+                               const struct np2opngen_synth_event *event)
+{
+    const struct fixture_event_render_context *render =
+        (const struct fixture_event_render_context *)context;
+    OPNGEN state = render->state;
+    if (event->type == NP2_SYNTH_EVENT_REGISTER_WRITE) {
+        opngen_setreg(state, event->payload.register_write.chbase,
+                      event->payload.register_write.reg,
+                      event->payload.register_write.value);
+        return 0;
+    }
+    if (event->type == NP2_SYNTH_EVENT_KEY_EVENT) {
+        opngen_keyon(state, event->payload.key_event.channel,
+                     event->payload.key_event.value);
+        return 0;
+    }
+    return -1;
 }
 
 static uint64_t fixture_isqrt(uint64_t value)
@@ -320,6 +451,122 @@ static int fixture_run_vector(enum fixture_partition partition,
     return result;
 }
 
+static int fixture_run_event_list(
+    enum fixture_partition partition,
+    const struct np2opngen_synth_event *events, size_t event_count,
+    np2opngen_fixture_clock_fn clock_fn, void *context, bool measure,
+    struct fixture_capture *capture,
+    struct np2opngen_synth_event_observer *observer)
+{
+    struct fixture_event_render_context render;
+    _OPNGEN state;
+    SINT32 *pcm;
+    uint64_t start;
+    uint64_t end;
+    int status;
+
+    memset(capture, 0, sizeof(*capture));
+    capture->pcm = (uint8_t *)calloc(FIXTURE_PCM_BYTES, 1U);
+    pcm = (SINT32 *)calloc(FIXTURE_FRAMES * FIXTURE_CHANNELS, sizeof(*pcm));
+    if (capture->pcm == 0 || pcm == 0) {
+        free(capture->pcm);
+        free(pcm);
+        capture->pcm = 0;
+        return -1;
+    }
+
+    /* Validate the complete list before touching the OPNGEN state. */
+    status = np2opngen_synth_event_validate(
+        events, event_count, FIXTURE_FRAMES, 0U, FIXTURE_FRAMES);
+    if (status != NP2_SYNTH_EVENT_STATUS_OK) {
+        free(capture->pcm);
+        free(pcm);
+        capture->pcm = 0;
+        return -1;
+    }
+
+    start = measure ? fixture_now(clock_fn, context) : 0;
+    opngen_initialize(FIXTURE_RATE_HZ);
+    end = measure ? fixture_now(clock_fn, context) : 0;
+    capture->init_us = measure && end >= start ? end - start : 0;
+    opngen_setvol(128U);
+    opngen_reset(&state);
+    opngen_setcfg(&state, 3U, (UINT32)(OPN_STEREO | 0x003U));
+    fixture_capture_tables(capture);
+
+    memset(&render, 0, sizeof(render));
+    render.state = &state;
+    render.pcm = pcm;
+    render.partition = partition;
+    render.clock_fn = clock_fn;
+    render.clock_context = context;
+    render.measure = measure;
+    status = np2opngen_synth_event_interpret(
+        events, event_count, FIXTURE_FRAMES, 0U, FIXTURE_FRAMES,
+        fixture_event_render, fixture_event_apply, &render, observer);
+    capture->render_us = render.render_us;
+    fixture_finalize_pcm(capture, pcm);
+    free(pcm);
+    return status == NP2_SYNTH_EVENT_STATUS_OK ? 0 : -1;
+}
+
+static int fixture_run_event_vector(enum fixture_partition partition,
+                                    const struct fixture_options *options,
+                                    np2opngen_fixture_clock_fn clock_fn,
+                                    void *context, bool measure,
+                                    struct fixture_capture *capture,
+                                    struct np2opngen_synth_event_observer *observer)
+{
+    struct np2opngen_synth_event events[FIXTURE_EVENT_COUNT];
+    size_t event_count = 0U;
+    if (!options->silence) {
+        event_count = options->omit_keyoff ? FIXTURE_EVENT_COUNT - 2U
+                                           : FIXTURE_EVENT_COUNT;
+        memcpy(events, fixture_primary_events,
+               event_count * sizeof(fixture_primary_events[0]));
+        if (options->frequency_mode != 0U) {
+            events[29U].payload.register_write.value = 0x25U;
+            events[30U].payload.register_write.value = 0x40U;
+        }
+    }
+    return fixture_run_event_list(partition, events, event_count, clock_fn,
+                                  context, measure, capture, observer);
+}
+
+static void fixture_free_capture(struct fixture_capture *capture);
+static bool fixture_all_zero(const struct fixture_capture *capture);
+
+static bool fixture_order_sensitive_control(void)
+{
+    struct np2opngen_synth_event first[FIXTURE_EVENT_COUNT];
+    struct np2opngen_synth_event reordered[FIXTURE_EVENT_COUNT];
+    struct fixture_capture first_capture;
+    struct fixture_capture reordered_capture;
+    struct np2opngen_synth_event_observer observer;
+    bool changed;
+
+    memcpy(first, fixture_primary_events, sizeof(first));
+    memcpy(reordered, fixture_primary_events, sizeof(reordered));
+    reordered[26U].payload = first[27U].payload;
+    reordered[27U].payload = first[26U].payload;
+    if (fixture_run_event_list(FIXTURE_NORMAL, first, FIXTURE_EVENT_COUNT,
+                               0, 0, false, &first_capture, &observer) != 0 ||
+        fixture_run_event_list(FIXTURE_NORMAL, reordered, FIXTURE_EVENT_COUNT,
+                               0, 0, false, &reordered_capture, &observer) != 0) {
+        fixture_free_capture(&first_capture);
+        fixture_free_capture(&reordered_capture);
+        return false;
+    }
+    changed = first_capture.pcm != 0 && reordered_capture.pcm != 0 &&
+              !fixture_all_zero(&first_capture) &&
+              !fixture_all_zero(&reordered_capture) &&
+              memcmp(first_capture.pcm, reordered_capture.pcm,
+                     FIXTURE_PCM_BYTES) != 0;
+    fixture_free_capture(&first_capture);
+    fixture_free_capture(&reordered_capture);
+    return changed;
+}
+
 static bool fixture_capture_equal(const struct fixture_capture *left,
                                   const struct fixture_capture *right)
 {
@@ -371,6 +618,7 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     const struct fixture_options frequency_options = {1U, false, false};
     const struct fixture_options keyoff_options = {0U, true, false};
     const struct fixture_options silence_options = {0U, false, true};
+    struct fixture_capture reference;
     struct fixture_capture normal;
     struct fixture_capture repeat;
     struct fixture_capture chunk240;
@@ -378,31 +626,40 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     struct fixture_capture silence;
     struct fixture_capture frequency;
     struct fixture_capture keyoff;
+    struct np2opngen_synth_event_observer normal_observer;
+    uint32_t event_trace_crc32 = 0U;
+    uint8_t event_trace_sha256[NP2_SHA256_DIGEST_SIZE];
+    int event_trace_status;
     int result = 0;
 
+    /* Keep this procedural vector as an independent reference implementation. */
     result |= fixture_run_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
-                                 context, true, &normal);
-    result |= fixture_run_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
-                                 context, false, &repeat);
-    result |= fixture_run_vector(FIXTURE_CHUNK240, &normal_options, clock_fn,
-                                 context, false, &chunk240);
-    result |= fixture_run_vector(FIXTURE_CHUNK1, &normal_options, clock_fn,
-                                 context, false, &chunk1);
-    result |= fixture_run_vector(FIXTURE_NORMAL, &silence_options, clock_fn,
-                                 context, false, &silence);
-    result |= fixture_run_vector(FIXTURE_NORMAL, &frequency_options, clock_fn,
-                                 context, false, &frequency);
-    result |= fixture_run_vector(FIXTURE_NORMAL, &keyoff_options, clock_fn,
-                                 context, false, &keyoff);
+                                 context, false, &reference);
+    result |= fixture_run_event_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
+                                       context, true, &normal,
+                                       &normal_observer);
+    result |= fixture_run_event_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
+                                       context, false, &repeat, 0);
+    result |= fixture_run_event_vector(FIXTURE_CHUNK240, &normal_options, clock_fn,
+                                       context, false, &chunk240, 0);
+    result |= fixture_run_event_vector(FIXTURE_CHUNK1, &normal_options, clock_fn,
+                                       context, false, &chunk1, 0);
+    result |= fixture_run_event_vector(FIXTURE_NORMAL, &silence_options, clock_fn,
+                                       context, false, &silence, 0);
+    result |= fixture_run_event_vector(FIXTURE_NORMAL, &frequency_options, clock_fn,
+                                       context, false, &frequency, 0);
+    result |= fixture_run_event_vector(FIXTURE_NORMAL, &keyoff_options, clock_fn,
+                                       context, false, &keyoff, 0);
 
-    if (normal.pcm == 0 || repeat.pcm == 0 || chunk240.pcm == 0 ||
+    if (reference.pcm == 0 || normal.pcm == 0 || repeat.pcm == 0 || chunk240.pcm == 0 ||
         chunk1.pcm == 0 || silence.pcm == 0 || frequency.pcm == 0 ||
         keyoff.pcm == 0) {
         printf("E1_OPNGEN_RESULT=FAIL reason=allocation\n");
         result = -1;
         goto cleanup;
     }
-    if (!fixture_capture_equal(&normal, &repeat)) {
+    const bool reference_match = fixture_capture_equal(&reference, &normal);
+    if (!reference_match || !fixture_capture_equal(&normal, &repeat)) {
         result = -1;
     }
     const bool partition_240_ok = fixture_capture_equal(&normal, &chunk240);
@@ -411,8 +668,18 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     const bool nontrivial_ok = normal.nonzero_s16_samples != 0U;
     const bool frequency_ok = memcmp(normal.pcm, frequency.pcm, FIXTURE_PCM_BYTES) != 0;
     const bool keyoff_ok = memcmp(normal.pcm, keyoff.pcm, FIXTURE_PCM_BYTES) != 0;
+    const bool order_sensitive_ok = fixture_order_sensitive_control();
+    event_trace_status = np2opngen_synth_event_trace(
+        fixture_primary_events, FIXTURE_EVENT_COUNT, &event_trace_crc32,
+        event_trace_sha256);
     if (!partition_240_ok || !partition_1_ok || !silence_ok || !nontrivial_ok ||
-        !frequency_ok || !keyoff_ok) {
+        !frequency_ok || !keyoff_ok || !order_sensitive_ok ||
+        normal_observer.applied_count != FIXTURE_EVENT_COUNT ||
+        !normal_observer.has_last_sequence ||
+        !normal_observer.order_valid ||
+        normal_observer.last_sequence != FIXTURE_EVENT_COUNT - 1U ||
+        normal_observer.expected_sequence != FIXTURE_EVENT_COUNT ||
+        event_trace_status != NP2_SYNTH_EVENT_STATUS_OK) {
         result = -1;
     }
 
@@ -457,9 +724,21 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
                normal.init_us, normal.render_us, us_per_frame_q16,
                realtime_factor_q16);
     }
+    printf("E1A_SYNTH_EVENT_META version=1 count=%u record_bytes=24\n",
+           FIXTURE_EVENT_COUNT);
+    printf("E1A_SYNTH_EVENT_TRACE crc32=0x%08" PRIx32 " sha256=",
+           event_trace_crc32);
+    fixture_print_sha(event_trace_sha256);
+    printf("\n");
+    printf("E1A_SYNTH_EVENT_INVARIANTS validation=PASS reference_match=%s"
+           " order_sensitive=%s\n",
+           reference_match ? "PASS" : "FAIL",
+           order_sensitive_ok ? "PASS" : "FAIL");
+    printf("E1A_SYNTH_EVENT_RESULT=PASS\n");
     printf("E1_OPNGEN_RESULT=PASS\n");
 
 cleanup:
+    fixture_free_capture(&reference);
     fixture_free_capture(&normal);
     fixture_free_capture(&repeat);
     fixture_free_capture(&chunk240);

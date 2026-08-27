@@ -38,6 +38,10 @@ def valid_log() -> str:
             ("repeat", "partition_240", "partition_1", "silence",
              "frequency_change", "keyoff", "nontrivial")),
         "E1_OPNGEN_TIMING init_us=0 render_us=0 us_per_frame_q16=0 realtime_factor_q16=0",
+        "E1A_SYNTH_EVENT_META version=1 count=64 record_bytes=24",
+        "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=" + "0" * 64,
+        "E1A_SYNTH_EVENT_INVARIANTS validation=PASS reference_match=PASS order_sensitive=PASS",
+        "E1A_SYNTH_EVENT_RESULT=PASS",
         "E1_OPNGEN_RESULT=PASS",
         ""))
 
@@ -66,6 +70,14 @@ def main() -> int:
         "altered accepted PCM CRC": replace_once(original, "crc32=0x17496602", "crc32=0x17496603"),
         "altered accepted PCM SHA": replace_once(original, "sha256=" + GOLDEN["deterministic"]["pcm"]["sha256"], "sha256=" + "0" * 64),
         "altered table CRC": replace_once(original, "sintable_crc32=0x7aba7bbd", "sintable_crc32=0x7aba7bbe"),
+        "missing E1A terminal": original.replace("E1A_SYNTH_EVENT_RESULT=PASS\n", ""),
+        "duplicate E1A terminal": original + "E1A_SYNTH_EVENT_RESULT=PASS\n",
+        "explicit E1A RESULT=FAIL": replace_once(original, "E1A_SYNTH_EVENT_RESULT=PASS", "E1A_SYNTH_EVENT_RESULT=FAIL"),
+        "missing E1A count": replace_once(original, " count=64", ""),
+        "malformed E1A CRC32": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001", "E1A_SYNTH_EVENT_TRACE crc32=0x123"),
+        "malformed E1A SHA-256": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=" + "0" * 64, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=xyz"),
+        "missing E1A invariant": replace_once(original, " order_sensitive=PASS", ""),
+        "E1A reference mismatch": replace_once(original, "reference_match=PASS", "reference_match=FAIL"),
     }
     if validate_text(cases.pop("valid"), GOLDEN):
         raise AssertionError("known-valid formal log was rejected")

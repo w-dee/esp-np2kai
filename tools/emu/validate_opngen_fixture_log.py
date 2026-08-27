@@ -17,6 +17,9 @@ PREFIXES = (
     "E1_OPNGEN_METRICS",
     "E1_OPNGEN_INVARIANTS",
     "E1_OPNGEN_TIMING",
+    "E1A_SYNTH_EVENT_META",
+    "E1A_SYNTH_EVENT_TRACE",
+    "E1A_SYNTH_EVENT_INVARIANTS",
 )
 
 
@@ -206,6 +209,45 @@ def validate_text(text: str, golden: dict[str, Any] | None = None) -> list[str]:
         for key in ("init_us", "render_us", "us_per_frame_q16", "realtime_factor_q16"):
             if key in timing:
                 decimal(timing[key], f"TIMING {key}", errors)
+
+    event_meta = fields(parsed["E1A_SYNTH_EVENT_META"])
+    if event_meta:
+        require(event_meta, ("version", "count", "record_bytes"),
+                "E1A META", errors)
+        for key in ("version", "count", "record_bytes"):
+            if key in event_meta:
+                decimal(event_meta[key], f"E1A META {key}", errors)
+        if event_meta.get("version") != "1":
+            errors.append("E1A META version is not 1")
+        if event_meta.get("count") != "64":
+            errors.append("E1A META count is not 64")
+        if event_meta.get("record_bytes") != "24":
+            errors.append("E1A META record_bytes is not 24")
+
+    event_trace = fields(parsed["E1A_SYNTH_EVENT_TRACE"])
+    if event_trace:
+        require(event_trace, ("crc32", "sha256"), "E1A TRACE", errors)
+        if "crc32" in event_trace and not re.fullmatch(
+                r"0x[0-9a-fA-F]{8}", event_trace["crc32"]):
+            errors.append("E1A TRACE crc32 is malformed")
+        if "sha256" in event_trace and not re.fullmatch(
+                r"[0-9a-fA-F]{64}", event_trace["sha256"]):
+            errors.append("E1A TRACE sha256 is malformed")
+
+    event_invariants = fields(parsed["E1A_SYNTH_EVENT_INVARIANTS"])
+    if event_invariants:
+        required = ("validation", "reference_match", "order_sensitive")
+        require(event_invariants, required, "E1A INVARIANTS", errors)
+        for key in required:
+            if event_invariants.get(key) != "PASS":
+                errors.append(f"E1A INVARIANTS {key} is not PASS")
+
+    event_results = [line for line in lines
+                     if line.startswith("E1A_SYNTH_EVENT_RESULT=")]
+    if event_results != ["E1A_SYNTH_EVENT_RESULT=PASS"]:
+        errors.append("expected exactly one terminal E1A_SYNTH_EVENT_RESULT=PASS")
+    if any("E1A_SYNTH_EVENT_RESULT=FAIL" in line for line in lines):
+        errors.append("E1A failure terminal is present")
     if golden is not None and not errors:
         fixture = golden["fixture"]
         deterministic = golden["deterministic"]
