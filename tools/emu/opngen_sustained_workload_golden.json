@@ -1,0 +1,53 @@
+{
+  "golden_version": 1,
+  "workload_version": 1,
+  "sample_rate_hz": 48000,
+  "quantum_frames": 240,
+  "warmup_frames": 48000,
+  "cases": {
+    "SYNTHETIC-LIGHT-30": {
+      "profile": "SYNTHETIC-LIGHT",
+      "duration_frames": 1440000,
+      "event_count": 2157,
+      "event_crc32": "0x60b6550c",
+      "event_sha256": "a3288f9686d8c8761719110da6d73f0b8e4ba3bc0b43f815b9f0e1dd32f143d2",
+      "pcm_frames": 1440000,
+      "pcm_bytes": 5760000,
+      "pcm_crc32": "0xb2407f33",
+      "pcm_sha256": "6c03212c3ad542adb3e29bee0f01dcad9642f56b7fb93e944a0870b233a8e29d"
+    },
+    "SYNTHETIC-HEAVY-30": {
+      "profile": "SYNTHETIC-HEAVY",
+      "duration_frames": 1440000,
+      "event_count": 7197,
+      "event_crc32": "0x1e4da55c",
+      "event_sha256": "f76486539eefd201effe3ed0519be6d5ff1828ebb92ab467e723e9843c6eb45d",
+      "pcm_frames": 1440000,
+      "pcm_bytes": 5760000,
+      "pcm_crc32": "0x0f0fabd7",
+      "pcm_sha256": "25ae315f5c3e8af0a382adddd550ee2ab4d3fd76499f489a61bd242a499a5ae5"
+    },
+    "STRESS-30": {
+      "profile": "STRESS",
+      "duration_frames": 1440000,
+      "event_count": 20607,
+      "event_crc32": "0x6052eebe",
+      "event_sha256": "4195aae960caf689365c5c44e73252f94b52ff0fe367fdbe83e35355838ec2a7",
+      "pcm_frames": 1440000,
+      "pcm_bytes": 5760000,
+      "pcm_crc32": "0xd912417d",
+      "pcm_sha256": "6836c13b31dcda92fe1d1a53032ed9d8595b01dc269987b536a58dc964f7b302"
+    },
+    "STRESS-60": {
+      "profile": "STRESS",
+      "duration_frames": 2880000,
+      "event_count": 41127,
+      "event_crc32": "0x91eac288",
+      "event_sha256": "3766b6fd4acd799b7517c903d3d138b361959163b4ad13ca9a6d12ba6833373b",
+      "pcm_frames": 2880000,
+      "pcm_bytes": 11520000,
+      "pcm_crc32": "0x39c7f2d2",
+      "pcm_sha256": "4632669886930b31312b96b2534eb7c50dba4c1455eb55f4f061ae19781bb732"
+    }
+  }
+}
