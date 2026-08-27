@@ -662,7 +662,9 @@ static bool fixture_all_zero(const struct fixture_capture *capture)
     return true;
 }
 
-int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
+int np2opngen_fixture_run_with_sink(
+    np2opngen_fixture_clock_fn clock_fn, void *context,
+    np2opngen_fixture_pcm_sink_fn pcm_sink, void *pcm_sink_context)
 {
     const struct fixture_options normal_options = {0U, false, false};
     const struct fixture_options frequency_options = {1U, false, false};
@@ -753,6 +755,14 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
         goto cleanup;
     }
 
+    if (pcm_sink != 0 &&
+        pcm_sink(normal->pcm, FIXTURE_PCM_BYTES, FIXTURE_RATE_HZ,
+                 FIXTURE_CHANNELS, 16U, pcm_sink_context) != 0) {
+        printf("E1_OPNGEN_RESULT=FAIL reason=pcm_sink\n");
+        result = -1;
+        goto cleanup;
+    }
+
     printf("E1_OPNGEN_META version=1 rate_hz=%u frames=%u channels=%u pcm_bytes=%u volume=128\n",
            FIXTURE_RATE_HZ, FIXTURE_FRAMES, FIXTURE_CHANNELS, FIXTURE_PCM_BYTES);
     printf("E1_OPNGEN_TABLE ratebit=%" PRIu32 " calc1024=%" PRId32
@@ -811,4 +821,9 @@ cleanup:
         free(captures);
     }
     return result == 0 ? 0 : -1;
+}
+
+int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
+{
+    return np2opngen_fixture_run_with_sink(clock_fn, context, 0, 0);
 }
