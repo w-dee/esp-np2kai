@@ -44,6 +44,14 @@ struct reference_capture {
     uint16_t bits_per_sample;
 };
 
+enum e1b_perturbation_mode {
+    E1B_MODE_BASIC = 0,
+    E1B_MODE_FAST_PRODUCER,
+    E1B_MODE_FAST_CONSUMER,
+    E1B_MODE_ALTERNATING,
+    E1B_MODE_WRAP_PRESSURE,
+};
+
 struct harness {
     struct np2opngen_spsc_queue queue;
     struct np2opngen_e1b_control control;
@@ -54,8 +62,11 @@ struct harness {
     uint64_t enqueue_count;
     uint64_t full_wait_count;
     uint32_t max_occupancy;
+    enum e1b_perturbation_mode mode;
     atomic_bool *producer_wait_observed;
     atomic_bool *worker_start_gate;
+    atomic_bool *producer_start_gate;
+    atomic_bool *worker_wait_observed;
 };
 
 struct worker_abort_probe {
@@ -78,6 +89,49 @@ static struct np2opngen_synth_event test_event(uint64_t sequence)
               .chbase = 0U, .reg = 0x30U, .value = (uint8_t)sequence } },
     };
     return event;
+}
+
+static const char *mode_name(enum e1b_perturbation_mode mode)
+{
+    switch (mode) {
+    case E1B_MODE_BASIC:
+        return "BASIC";
+    case E1B_MODE_FAST_PRODUCER:
+        return "FAST_PRODUCER";
+    case E1B_MODE_FAST_CONSUMER:
+        return "FAST_CONSUMER";
+    case E1B_MODE_ALTERNATING:
+        return "ALTERNATING";
+    case E1B_MODE_WRAP_PRESSURE:
+        return "WRAP_PRESSURE";
+    }
+    return "INVALID";
+}
+
+static int parse_mode(int argc, char **argv, enum e1b_perturbation_mode *mode)
+{
+    if (mode == 0) {
+        return -1;
+    }
+    *mode = E1B_MODE_BASIC;
+    if (argc == 1) {
+        return 0;
+    }
+    if (argc != 3 || strcmp(argv[1], "--mode") != 0) {
+        return -1;
+    }
+    if (strcmp(argv[2], "FAST_PRODUCER") == 0) {
+        *mode = E1B_MODE_FAST_PRODUCER;
+    } else if (strcmp(argv[2], "FAST_CONSUMER") == 0) {
+        *mode = E1B_MODE_FAST_CONSUMER;
+    } else if (strcmp(argv[2], "ALTERNATING") == 0) {
+        *mode = E1B_MODE_ALTERNATING;
+    } else if (strcmp(argv[2], "WRAP_PRESSURE") == 0) {
+        *mode = E1B_MODE_WRAP_PRESSURE;
+    } else {
+        return -1;
+    }
+    return 0;
 }
 
 static void test_spsc_queue(void)
@@ -157,6 +211,7 @@ static int capture_reference(const uint8_t *pcm, size_t pcm_bytes,
 static void *worker_thread_main(void *context)
 {
     struct harness *harness = (struct harness *)context;
+    uint64_t schedule_counter = 0U;
     int step;
     if (np2opngen_e1b_worker_init(
             &harness->worker, &harness->queue, &harness->control,
@@ -166,13 +221,29 @@ static void *worker_thread_main(void *context)
     if (harness->worker_start_gate != 0) {
         while (!atomic_load_explicit(harness->worker_start_gate,
                                      memory_order_acquire)) {
+            if (np2opngen_e1b_control_first_error(&harness->control) !=
+                NP2_OPNGEN_E1B_ERROR_NONE) {
+                return 0;
+            }
             sched_yield();
         }
     }
     do {
         step = np2opngen_e1b_worker_step(&harness->worker);
         if (step == NP2_OPNGEN_E1B_STEP_WAIT) {
+            if (harness->worker_wait_observed != 0) {
+                atomic_store_explicit(harness->worker_wait_observed, true,
+                                      memory_order_release);
+            }
             sched_yield();
+        } else {
+            ++schedule_counter;
+            if ((harness->mode == E1B_MODE_FAST_PRODUCER &&
+                 schedule_counter % 4U == 0U) ||
+                (harness->mode == E1B_MODE_ALTERNATING &&
+                 schedule_counter % 5U == 0U)) {
+                sched_yield();
+            }
         }
     } while (step != NP2_OPNGEN_E1B_STEP_COMPLETE &&
              step != NP2_OPNGEN_E1B_STEP_FAILED);
@@ -182,7 +253,19 @@ static void *worker_thread_main(void *context)
 static void *producer_thread_main(void *context)
 {
     struct harness *harness = (struct harness *)context;
+    uint64_t schedule_counter = 0U;
     size_t i;
+
+    if (harness->producer_start_gate != 0) {
+        while (!atomic_load_explicit(harness->producer_start_gate,
+                                     memory_order_acquire)) {
+            if (np2opngen_e1b_control_first_error(&harness->control) !=
+                NP2_OPNGEN_E1B_ERROR_NONE) {
+                return 0;
+            }
+            sched_yield();
+        }
+    }
     for (i = 0U; i < harness->event_count; ++i) {
         int status;
         for (;;) {
@@ -198,6 +281,13 @@ static void *producer_thread_main(void *context)
                 occupancy = np2opngen_spsc_occupancy(&harness->queue);
                 if (occupancy > harness->max_occupancy) {
                     harness->max_occupancy = occupancy;
+                }
+                ++schedule_counter;
+                if ((harness->mode == E1B_MODE_FAST_CONSUMER &&
+                     schedule_counter % 2U == 0U) ||
+                    (harness->mode == E1B_MODE_ALTERNATING &&
+                     schedule_counter % 3U == 0U)) {
+                    sched_yield();
                 }
                 break;
             }
@@ -354,7 +444,7 @@ static void print_sha256(const uint8_t digest[NP2_SHA256_DIGEST_SIZE])
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     static struct reference_capture reference;
     struct harness harness = {0};
@@ -368,6 +458,15 @@ int main(void)
     np2_sha256_context sha;
     pthread_t worker_thread;
     pthread_t producer_thread;
+    atomic_bool producer_start_gate;
+    atomic_bool worker_wait_observed;
+    atomic_bool worker_start_gate;
+    atomic_bool producer_full_wait_observed;
+    enum e1b_perturbation_mode mode;
+    uint32_t producer_head;
+    uint32_t consumer_tail;
+    size_t same_timestamp_adjacent = 0U;
+    size_t i;
     int status;
     int worker_created;
     int producer_created;
@@ -375,6 +474,15 @@ int main(void)
     bool reference_match;
     bool event_trace_match;
     bool ordering;
+    bool physical_wrap;
+    bool mode_pressure;
+
+    if (parse_mode(argc, argv, &mode) != 0) {
+        fprintf(stderr,
+                "usage: %s [--mode FAST_PRODUCER|FAST_CONSUMER|ALTERNATING|WRAP_PRESSURE]\n",
+                argv[0]);
+        return 2;
+    }
 
     test_spsc_queue();
     if (np2opngen_fixture_get_e1_events(&events, &event_count, &end_frame) !=
@@ -397,9 +505,28 @@ int main(void)
 
     test_failure_termination(events, event_count, end_frame);
 
+    for (i = 1U; i < event_count; ++i) {
+        if (events[i - 1U].sample_timestamp == events[i].sample_timestamp) {
+            ++same_timestamp_adjacent;
+        }
+    }
+
     harness.events = events;
     harness.event_count = event_count;
     harness.end_frame = end_frame;
+    harness.mode = mode;
+    atomic_init(&producer_start_gate, mode != E1B_MODE_FAST_CONSUMER);
+    atomic_init(&worker_wait_observed, false);
+    atomic_init(&worker_start_gate, mode != E1B_MODE_WRAP_PRESSURE);
+    atomic_init(&producer_full_wait_observed, false);
+    if (mode == E1B_MODE_FAST_CONSUMER) {
+        harness.producer_start_gate = &producer_start_gate;
+        harness.worker_wait_observed = &worker_wait_observed;
+    }
+    if (mode == E1B_MODE_WRAP_PRESSURE) {
+        harness.worker_start_gate = &worker_start_gate;
+        harness.producer_wait_observed = &producer_full_wait_observed;
+    }
     np2opngen_spsc_init(&harness.queue);
     np2opngen_e1b_control_init(&harness.control);
 
@@ -421,8 +548,32 @@ int main(void)
         np2opngen_e1b_worker_destroy(&harness.worker);
         return 1;
     }
+    if (mode == E1B_MODE_FAST_CONSUMER) {
+        while (!atomic_load_explicit(&worker_wait_observed,
+                                     memory_order_acquire) &&
+               np2opngen_e1b_control_first_error(&harness.control) ==
+                   NP2_OPNGEN_E1B_ERROR_NONE) {
+            sched_yield();
+        }
+        atomic_store_explicit(&producer_start_gate, true,
+                              memory_order_release);
+    }
+    if (mode == E1B_MODE_WRAP_PRESSURE) {
+        while (!atomic_load_explicit(&producer_full_wait_observed,
+                                     memory_order_acquire) &&
+               np2opngen_e1b_control_first_error(&harness.control) ==
+                   NP2_OPNGEN_E1B_ERROR_NONE) {
+            sched_yield();
+        }
+        atomic_store_explicit(&worker_start_gate, true, memory_order_release);
+    }
     (void)pthread_join(producer_thread, 0);
     (void)pthread_join(worker_thread, 0);
+
+    producer_head = atomic_load_explicit(&harness.queue.head,
+                                         memory_order_relaxed);
+    consumer_tail = atomic_load_explicit(&harness.queue.tail,
+                                         memory_order_relaxed);
 
     reference_match = harness.worker.state == NP2_OPNGEN_E1B_COMPLETE &&
                       harness.worker.canonical_pcm != 0 &&
@@ -452,15 +603,25 @@ int main(void)
                harness.worker.expected_sequence == E1B_EXPECTED_EVENT_COUNT &&
                harness.worker.rendered_frames == E1B_EXPECTED_END_FRAME &&
                first_error == NP2_OPNGEN_E1B_ERROR_NONE;
+    physical_wrap = producer_head == E1B_EXPECTED_EVENT_COUNT &&
+                    consumer_tail == E1B_EXPECTED_EVENT_COUNT &&
+                    producer_head / NP2_OPNGEN_SPSC_CAPACITY != 0U &&
+                    consumer_tail / NP2_OPNGEN_SPSC_CAPACITY != 0U;
+    mode_pressure = (mode != E1B_MODE_FAST_CONSUMER ||
+                     harness.worker.empty_wait_count != 0U) &&
+                    (mode != E1B_MODE_WRAP_PRESSURE ||
+                     harness.full_wait_count != 0U);
 
-    printf("E1B_SPSC_META version=1 capacity=%u events=%zu end_frame=%" PRIu64
+    printf("E1B_SPSC_META version=1 mode=%s capacity=%u events=%zu end_frame=%" PRIu64
            "\n",
-           NP2_OPNGEN_SPSC_CAPACITY, event_count, end_frame);
+           mode_name(mode), NP2_OPNGEN_SPSC_CAPACITY, event_count, end_frame);
     printf("E1B_SPSC_QUEUE enqueue=%" PRIu64 " dequeue=%" PRIu64
            " sequence_errors=%" PRIu64 " rendered_frames=%" PRIu64
            " max_occupancy=%u full_waits=%" PRIu64 " empty_waits=%" PRIu64
            " empty_rechecks=%" PRIu64 " final_sequence=%" PRIu64
-           " first_error=%d\n",
+           " first_error=%d head_counter=%" PRIu32 " tail_counter=%" PRIu32
+           " producer_slot_wraps=%" PRIu32 " consumer_slot_wraps=%" PRIu32
+           "\n",
            harness.enqueue_count, harness.worker.dequeue_count,
            harness.worker.sequence_errors, harness.worker.rendered_frames,
            harness.max_occupancy, harness.full_wait_count,
@@ -468,15 +629,26 @@ int main(void)
            harness.worker.empty_recheck_count,
            harness.worker.has_last_sequence ? harness.worker.last_sequence
                                              : UINT64_MAX,
-           first_error);
+           first_error, producer_head, consumer_tail,
+           producer_head / NP2_OPNGEN_SPSC_CAPACITY,
+           consumer_tail / NP2_OPNGEN_SPSC_CAPACITY);
+    printf("E1B_SPSC_EVENTS count=%zu record_bytes=24 crc32=0x%08" PRIx32
+           " sha256=",
+           event_count, event_trace_crc32);
+    print_sha256(event_trace_sha256);
+    printf(" same_timestamp_adjacent=%zu\n", same_timestamp_adjacent);
     printf("E1B_SPSC_PCM bytes=%zu crc32=0x%08" PRIx32 " sha256=",
            harness.worker.pcm_bytes, async_pcm_crc32);
     print_sha256(async_pcm_sha256);
     printf("\n");
-    printf("E1B_SPSC_INVARIANTS reference_match=%s event_trace=%s ordering=%s\n",
+    printf("E1B_SPSC_INVARIANTS reference_match=%s event_trace=%s ordering=%s"
+           " wrap=%s mode_pressure=%s\n",
            reference_match ? "PASS" : "FAIL",
-           event_trace_match ? "PASS" : "FAIL", ordering ? "PASS" : "FAIL");
-    status = reference_match && event_trace_match && ordering &&
+           event_trace_match ? "PASS" : "FAIL", ordering ? "PASS" : "FAIL",
+           physical_wrap ? "PASS" : "FAIL",
+           mode_pressure ? "PASS" : "FAIL");
+    status = reference_match && event_trace_match && ordering && physical_wrap &&
+             mode_pressure &&
              async_pcm_crc32 == UINT32_C(0x17496602) &&
              memcmp(async_pcm_sha256, E1B_PCM_SHA256,
                     NP2_SHA256_DIGEST_SIZE) == 0;
