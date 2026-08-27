@@ -726,8 +726,10 @@ if (( esp_emu_test )) && [[ "${variant}" != "p4-v3x" || "${board}" != "generic" 
     exit 2
 fi
 
-if (( audio_only_benchmark )) && [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ]]; then
-    printf 'ERROR: --audio-only-benchmark requires the generic p4-v3x emulator/P4 profile\n' >&2
+if (( audio_only_benchmark )) &&
+   ! { [[ "${variant}" == "p4-v3x" && "${board}" == "generic" ]] ||
+       [[ "${variant}" == "p4-v1x" && "${board}" == "p4-nano" ]]; }; then
+    printf 'ERROR: --audio-only-benchmark requires p4-v3x/generic or p4-v1x/p4-nano\n' >&2
     exit 2
 fi
 
