@@ -272,7 +272,7 @@ presentation contract, ESP log-validator self-test, profile-isolation check,
 and ESP presentation runtime contract. The CI configuration reuses the pinned
 ESP-IDF v5.5.4 and esp-emu v0.39.0 environment.
 
-### Step 7B.2a: P4-NANO native physical-display foundation — COMPLETE
+### Historical Step 7B.2a: P4-NANO native physical-display foundation — COMPLETE
 
 Status: **IMPLEMENTED / BUILD VALIDATED / REAL-HARDWARE UART VALIDATED /
 REAL-LCD VISUALLY VALIDATED / COMPLETE** for the bounded native diagnostic
@@ -297,7 +297,7 @@ physical flash capacity is not a Step 7B.2a failure. PSRAM initialization and
 the PSRAM memory test passed.
 
 The panel was the Waveshare 10.1-DSI-TOUCH-A with JD9365 ID `93 65 04`. The
-production scanout configuration was native 800x1280 RGB565, stride 1600
+historical diagnostic scanout configuration was native 800x1280 RGB565, stride 1600
 bytes, framebuffer size 2,048,000 bytes, exactly one DSI/DPI framebuffer, two
 MIPI-DSI lanes at 1500 Mbps/lane, and an 80 MHz DPI clock. The approximately
 68.66 Hz value is a calculated nominal refresh, not a measured refresh result.
@@ -377,7 +377,7 @@ bandwidth under live emulator load, PPA scaling/rotation, display plus SDMMC
 or audio concurrency, touch, LVGL, OSD, TAB5 physical display, ESP32-S31, and
 ESP32-S3 display backends.
 
-### Step 7B.2b: Pixel-exact landscape-to-native transform reference — COMPLETE
+### Historical Step 7B.2b: Pixel-exact landscape-to-native transform reference — COMPLETE
 
 Status: **IMPLEMENTED / HOST BYTE-EXACT VALIDATED / ESP32-P4 BUILD VALIDATED /
 REAL-HARDWARE TRANSFORM VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE**
@@ -507,7 +507,7 @@ diagnostic, and safe bounded backlight lifecycle. Step 7B.2b adds the
 pixel-exact landscape-to-native transform reference and physical orientation;
 neither step completes the live display pipeline.
 
-### Step 7B.2c: immutable presentation frame -> physical display consumer — COMPLETE
+### Historical Step 7B.2c: immutable presentation frame -> physical display consumer — COMPLETE
 
 Status: **IMPLEMENTED / END-TO-END BYTE-EXACT VALIDATED / REAL-HARDWARE LIVE
 PRESENTATION VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE** for the
@@ -660,6 +660,8 @@ framebuffer viability, long-duration stability, live-load PSRAM bandwidth,
 optimized transform path, PPA acceleration, display plus SDMMC/audio
 concurrency, touch, LVGL, OSD, TAB5, ESP32-S31, or ESP32-S3 display backends.
 
+### Historical Step 7B.2d: sustained live presentation and transform validation — COMPLETE
+
 Step 7B.2d sustained live presentation and transform validation is complete for
 the reviewed P4-NANO path. The transform TU is promoted to `-O2` by default for
 normal live, LIVE benchmark, isolated benchmark, and transform-diagnostic
@@ -729,17 +731,62 @@ optimization, display plus SDMMC/audio concurrency, arbitrary guest
 applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
 remain FUTURE / UNVALIDATED and are not blockers for this closeout.
 
+### Step 7B.2e: P10 exact2x PPA/PIE/DMA2D optimization — COMPLETE
+
+This milestone advances the P4-NANO display path beyond the historical scalar
+Step 7B.2b–d implementation while preserving those results as milestone
+evidence. The major decisions were:
+
+1. The scalar/O2 path established the correctness reference and baseline.
+2. PPA rotation was useful for the selected internal tile geometry.
+3. Direct PPA scaling was rejected because its scaler could not guarantee the
+   required exact nearest-neighbor output.
+4. Horizontal q0/q1 PIE exact x2 followed by DMA2D EVEN/ODD strided vertical
+   duplication was selected.
+
+The current qualified scanout is LOWER2: PLL_F240M / 7, approximately
+34.285713 MHz DPI, approximately 29.426767 Hz calculated refresh, H=880,
+V=1324, two 500 Mbps/lane DSI lanes, RGB565, one native 800x1280 framebuffer,
+and approximately 57.47 MiB/s scanout traffic. The refresh value is predicted,
+not a physical panel-refresh measurement.
+
+P10M-C1C formal real-hardware byte-exact DMA2D correctness is VALID/PASS. Each
+frame performs five PPA operations, ten horizontal PIE calls, and twenty DMA2D
+transactions (ten EVEN and ten ODD). Retained formal evidence records source
+CRC `0x8dadbf82` before and after, rotated CRC `0x379511d7`, destination CRC
+`0xc8a10b55`, source immutability PASS, scalar pixel mapping PASS, full
+reference `memcmp` PASS, Idle cleanup, and no retained ambiguous lifetime.
+
+P10M-D2C formal same-binary DMA2D performance is VALID and **A-PROVISIONAL**;
+DMA timer-control perturbation remained YELLOW. Retained formal real-hardware
+evidence reports CONTROL and DMA2D transform CPU-unavailability proxy averages
+of 25.041 ms and 2.690 ms, respectively (89.258% proxy reduction), DMA2D
+exact2x average 6.849 ms, total-transform-service average/p99 16.343/16.431 ms,
+blocked wait average 4.121 ms (60.169% of exact2x service), and neutral PPA
+sentinel drift 0.000%. These values are retained formal evidence but are not
+machine-readable in tracked documentation. The CPU values are proxies, not CPU
+utilization; blocked wait is a potential schedulable-opportunity upper bound,
+not free CPU time.
+
+The CONTROL and DMA2D phase PPA timings differed substantially while the
+neutral PPA sentinel remained stable. This is method-coupled system-level
+evidence, not proof that DMA2D causally made PPA faster. Broader next-level
+validation remains runtime workload coexistence, especially display plus
+sound/FM, together with tear-free scanout, refresh-boundary coherence, every
+frame physically scanned out, second native framebuffer viability, and
+long-duration stability. Portable emulator, host, and documentation work can
+continue independently.
+
 ## Remaining hardware boundary
 
-The software-only portion through Step 7B.1c and the bounded physical display
-milestones through Step 7B.2c are complete. Remaining Step 6B/6C lifecycle
-cases, sustained live display behavior, arbitrary guest software, colored live
-NP2 visual validation, performance characterization, tearing and refresh
-measurement, framebuffer reuse/synchronization, long-duration stability,
-live-load PSRAM bandwidth, PPA, display plus SDMMC/audio concurrency, touch,
-LVGL, OSD, TAB5 physical display, ESP32-S31, and ESP32-S3 display backends
-remain FUTURE / UNVALIDATED. Portable emulator, host, and documentation work
-can continue independently.
+The bounded display foundation, live integration, motion validation, and P10M
+correctness/performance milestones are complete for their stated profiles.
+Remaining work includes tear-free physical scanout, refresh-boundary
+coherence, proving every transformed frame is physically scanned out, production
+viability of a second native framebuffer, long-duration full emulator+display+
+audio stability, final audio/FM coexistence performance, arbitrary guest
+software, touch/LVGL/OSD production integration, TAB5, ESP32-S31, and ESP32-S3
+display backends. These remain FUTURE / UNVALIDATED.
 
 ## Step 8: USB HID / input — FUTURE, hardware required
 

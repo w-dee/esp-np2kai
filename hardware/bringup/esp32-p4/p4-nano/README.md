@@ -212,9 +212,11 @@ simultaneous audio with other heavy peripherals
 
 ## MIPI-DSI display output
 
-The first MIPI-DSI display output bring-up was **MEASURED ON REAL HARDWARE**.
-This is a narrowly scoped display-output result and does not imply touch or a
-complete display subsystem result.
+The initial MIPI-DSI display output bring-up was **MEASURED ON REAL HARDWARE**.
+It is historical Step 7B.2a foundation evidence, not the current LOWER2
+production/performance configuration. It remains a narrowly scoped
+display-output result and does not imply touch or a complete display subsystem
+result.
 
 ```text
 Panel:                 Waveshare 10.1-DSI-TOUCH-A
@@ -228,6 +230,14 @@ P4:                    ESP32-P4 rev v1.3
 ESP-IDF:               v5.5.4
 Physical result:       MIPI-DSI DISPLAY OUTPUT PASS
 ```
+
+The current qualified performance configuration is LOWER2: PLL_F240M / 7,
+approximately 34.285713 MHz DPI, approximately 29.426767 Hz calculated refresh,
+H total 880, V total 1324, two 500 Mbps/lane DSI lanes, RGB565, and one native
+800x1280 framebuffer. The refresh value is predicted, not a physical panel-
+refresh measurement. The P10M PPA -> horizontal PIE -> DMA2D exact2x path and
+its bounded formal evidence are documented in
+[`docs/architecture.md`](../../../../docs/architecture.md).
 
 The project-owned safe JD9365 adapter was used. The physical test displayed
 the native-size red, green, and blue patterns, color bars, checkerboard, and
@@ -263,8 +273,9 @@ concurrent display + audio
 concurrent display + wireless
 concurrent display + camera
 production framebuffer integration
-NP2 rendering
-scaling/PPA path
+tear-free scanout and refresh-boundary coherence
+long-duration display + audio/FM coexistence
+second native framebuffer production viability
 ```
 
 ## Wireless companion transport

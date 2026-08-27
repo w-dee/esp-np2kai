@@ -33,6 +33,12 @@ and the existing SD GPIO39--44 mapping remain separate board-level signals.
 | DSI PHY LDO | channel 3, 2500 mV |
 | Backlight I2C | controller 1, GPIO7 SDA / GPIO8 SCL, address `0x45`, register `0x96` |
 
+The 80 MHz DPI and 1500 Mbps/lane values above describe the original
+**HISTORICAL / INITIAL PHYSICAL DISPLAY FOUNDATION** (Step 7B.2a) diagnostic
+only. They are not the current LOWER2 production/performance configuration;
+the current P10M path and timing are documented in
+[`docs/architecture.md`](../../../../../docs/architecture.md).
+
 The `0x96` choice is specific to `10.1-DSI-TOUCH-A`. The older
 `101M-8001280-IPS-CT-K` uses `0x86`; this diagnostic must not use `0x86` for
 the A panel.
@@ -339,6 +345,5 @@ concurrent display + audio
 concurrent display + wireless
 concurrent display + camera
 production framebuffer integration
-NP2 rendering
-scaling/PPA path
+full-runtime display plus sound/FM coexistence
 ```

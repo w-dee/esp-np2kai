@@ -62,6 +62,8 @@ and completed the safe backlight lifecycle (`0x00` -> `0x40` -> OFF). Human
 inspection confirmed the native portrait pattern twice. This does not validate
 the later live emulator display pipeline.
 
+### Historical Step 7B.2b: CPU/scalar transform reference
+
 Step 7B.2b is COMPLETE for the bounded transform-reference and static physical
 diagnostic scope. Build either diagnostic candidate with:
 
@@ -86,6 +88,8 @@ physical diagnostic source CRC is `0x4291f7e5`, with transformed CRCs CW
 on the qualified ESP32-P4-NANO-KIT-D and passed human visual inspection. The
 CCW UART capture began after early boot; its terminal runtime/cleanup result
 was retained, but not a complete boot-to-cleanup transcript.
+
+### Historical Step 7B.2c: first live NP2-to-LCD integration
 
 Step 7B.2c is COMPLETE for the bounded first live NP2-to-LCD integration. Build
 it with:
@@ -120,8 +124,12 @@ immutability marker or all startup lines, although the bounded run completed
 with the immutability condition satisfied, correct CRCs/counters, PASS result,
 and cleanup. This is bounded validation evidence, not a general production
 display-pipeline claim. Sustained cadence, buffering/reuse, tearing, measured
-refresh, latency, long-duration stability, live-load PSRAM behavior, PPA, and
-display concurrency with SDMMC/audio remain future work.
+refresh, latency, and long-duration stability remain bounded-scope limitations.
+The later P10M profile supplies the qualified PPA -> horizontal PIE -> DMA2D
+exact2x path and formal correctness/performance evidence; broader display plus
+SDMMC/audio runtime coexistence remains future work.
+
+### Historical Step 7B.2d: sustained scalar/motion validation
 
 Step 7B.2d is now complete for the reviewed P4-NANO path. The physical
 automated motion profile `--live-display-motion-validation` ran on ESP32-P4
@@ -136,6 +144,16 @@ states, not interpreted as a performance or displayed-frame ratio. This proves
 software-visible motion through the synchronized native framebuffer, not
 physical scanout of every frame; refresh/tearing, DSI/GDMA temporal behavior,
 and panel timing remain future characterization.
+
+## Current qualified P10M display path
+
+The current P4-NANO performance/correctness profile uses the documented
+PPA -> horizontal PIE -> DMA2D exact2x pipeline and LOWER2 scanout. P10M-C1C
+is formal real-hardware byte-exact correctness VALID/PASS; P10M-D2C is formal
+same-binary performance VALID/A-PROVISIONAL. See
+[`docs/architecture.md`](../docs/architecture.md) and
+[`docs/bringup-plan.md`](../docs/bringup-plan.md) for the current path and
+bounded evidence.
 
 The unqualified production profiles use a conservative 115200 baud. The
 explicit `p4-nano` board overlay selects 1500000 only for the Waveshare

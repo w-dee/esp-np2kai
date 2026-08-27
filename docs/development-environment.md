@@ -189,11 +189,12 @@ the `tests/guest/np2test` build path.
 
 The validation order remains host native first, then ESP32-P4 firmware and
 integration through `esp-emu`, then real hardware. The headless framebuffer and
-portable presentation contracts are now complete in the first two layers. The
-P4-NANO SDMMC and Host-to-Device File Transfer paths already have scoped
-hardware evidence; remaining storage lifecycle/removal/durability, physical
-display, input, audio, timing, and broader performance branches remain
-hardware work. The host result is not an `esp-emu` or physical-board result.
+portable presentation contracts are complete in the first two layers. The
+P4-NANO display path also has bounded physical evidence, including formal
+P10M exact2x DMA2D correctness and performance profiles. Remaining storage
+lifecycle/removal/durability, input, timing, and broader runtime validation—
+especially display plus sound/FM coexistence—remain hardware work. The host
+result is not an `esp-emu` or physical-board result.
 
 ## Current headless video and presentation validation
 
@@ -253,10 +254,10 @@ The intended progression is:
 3. ESP32-P4 `esp-emu` firmware, FreeRTOS, RISC-V, video, and presentation
    validation (completed Step 5, Step 7A, Step 7B.1b, and Step 7B.1c
    milestones).
-4. P4-NANO board validation: UART, SDMMC, and production Host-to-Device File
-   Transfer have scoped hardware evidence at 1.5 Mbps. TAB5, physical display,
-   input/audio, removal/durability, and broader media lifecycles remain future
-   Step 6B/6C, Step 7B.2, Step 8, and Step 9 work.
+4. P4-NANO board validation: UART, SDMMC, production Host-to-Device File
+   Transfer, and bounded physical display have scoped hardware evidence. TAB5,
+   input, display+sound/FM coexistence, removal/durability, and broader media
+   lifecycles remain future Step 6B/6C, Step 7B.2, Step 8, and Step 9 work.
 
 ESP32-S31 / S31 Korvo-1 is a possible future portability target only. It is not
 part of the current bring-up sequence and is not implemented, tested, or

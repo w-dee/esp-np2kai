@@ -255,23 +255,24 @@ immutable ACQUIRED frame
         |
         v
 platform / SoC presentation consumer
-  (P4-NANO implemented in Step 7B.2c; other backends future)
+  (P4-NANO qualified through P10M; other backends future)
         |
         v
 board display policy
-  (P4-NANO CCW/JD9365 implemented in Step 7B.2c; other boards future)
+  (P4-NANO CCW/JD9365 qualified through P10M; other boards future)
         |
         v
 physical panel
-  (P4-NANO JD9365 reached in Step 7B.2c; other panels future)
+  (P4-NANO JD9365 qualified in bounded scopes; other panels future)
 ```
 
 The first four stages are implemented and verified by Ubuntu-native tests and
 ESP32-P4 / FreeRTOS / `esp-emu` probes. For the P4-NANO target, the final three
-stages are implemented and physically validated by Step 7B.2c through the
-JD9365 panel. The ESP32-P4 consumer probe remains a separate ownership and
-concurrency regression; it is not the physical display driver or panel
-validation. Other boards, display policies, and panels remain future.
+stages have bounded physical validation through Step 7B.2c and the current
+P10M correctness/performance profiles through the JD9365 panel. The ESP32-P4
+consumer probe remains a separate ownership and concurrency regression; it is
+not the physical display driver or panel validation. Other boards, display
+policies, and panels remain future.
 
 The portable publisher has exactly two caller-owned presentation slots in the
 tested contract. It uses the states `FREE`, `WRITING`, `PENDING`, and
@@ -341,13 +342,14 @@ physical display guarantee.
 
 ## Physical display boundary
 
-Guest framebuffer geometry must not depend on P4-NANO's planned 1280x800
-panel, TAB5's 1280x720 panel, PPA, MIPI-DSI, LCD driver type, or board pin
-assignments. Step 7B.2a now provides a concrete native P4-NANO scanout path
-downstream of the immutable presentation frame. It is IMPLEMENTED, BUILD
-VALIDATED, REAL-HARDWARE UART VALIDATED, and REAL-LCD VISUALLY VALIDATED for
-the bounded native diagnostic scope, but it is not a live NP2 presentation
-consumer.
+Guest framebuffer geometry remains independent of P4-NANO's panel, TAB5's
+panel, PPA, MIPI-DSI, LCD driver type, and board pin assignments. The current
+qualified P4-NANO path is downstream of the immutable presentation frame and
+uses the P10M exact2x transform pipeline described below. The earlier physical
+foundation and scalar transform remain valid historical milestones for their
+bounded scopes.
+
+### Historical Step 7B.2a physical foundation
 
 The real run used a Waveshare ESP32-P4-NANO-KIT-D with ESP32-P4 rev v1.3,
 40 MHz crystal, 32 MiB PSRAM, and a JD9365 panel reporting ID `93 65 04`.
@@ -357,7 +359,7 @@ I2C, panel power, LDO, DSI, DBI, panel, framebuffer, BLACK/cache, display-on,
 static-pattern/cache, and backlight stages without panic, watchdog, reset loop,
 DSI underrun, I2C error, or framebuffer allocation failure.
 
-The native diagnostic scanout is 800x1280 RGB565, stride 1600 bytes, one DSI/DPI
+The native diagnostic scanout was 800x1280 RGB565, stride 1600 bytes, one DSI/DPI
 framebuffer of 2,048,000 bytes, two lanes at 1500 Mbps/lane, and an 80 MHz DPI
 clock. The calculated refresh value is nominally approximately 68.66 Hz; it is
 not a measured refresh result. Runtime CRC32 `0x5383260a` matched the host
@@ -371,6 +373,8 @@ display init and 31,502,616 free / 31,457,280 largest block after the one native
 framebuffer. The reported free-heap delta was 2,049,252 bytes versus the
 2,048,000-byte payload; allocator, alignment, and driver bookkeeping must not
 be inferred as double-buffer viability.
+
+### Historical Step 7B.2b: CPU/scalar transform reference
 
 Step 7B.2b is COMPLETE for the bounded pixel-exact transform reference and
 static physical-transform validation. The project-owned C++20 implementation
@@ -444,6 +448,8 @@ framebuffer acquisition. The CCW run established the same allocation model on
 the real 32 MiB PSRAM hardware, but its early telemetry lines were not retained.
 These static measurements do not establish double-buffer viability, sustained
 bandwidth, or live-emulator performance.
+
+### Historical Step 7B.2c: first live NP2-to-LCD integration
 
 Step 7B.2c is COMPLETE for the bounded first live NP2-to-LCD integration:
 
@@ -551,6 +557,8 @@ physical RGB-order evidence using a color diagnostic through the same transform
 and display path; this is prior path evidence, not a claim that colored live NP2
 content was validated here.
 
+### Historical Step 7B.2d: sustained scalar/motion validation
+
 Step 7B.2d sustained live presentation and transform validation is complete for
 the reviewed P4-NANO path. Transform processing is `-O2` by default for
 transform-using profiles, while explicit `--transform-opt debug` preserves the
@@ -599,6 +607,89 @@ applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
 remain FUTURE / UNVALIDATED. The policy remains **AUTOMATED PROBE FIRST**;
 camera automation is unimplemented and unnecessary for this PASS, with human
 visual confirmation retained as fallback-only.
+
+### Current P10M exact2x path
+
+The current P4-NANO transform path is:
+
+```text
+NP2 mutable 640x400 RGB565LE framebuffer
+    -> synchronous scrnmng publication
+    -> two-slot presentation publisher
+    -> immutable ACQUIRED presentation frame
+    -> P4-NANO display consumer
+    -> PPA CCW90 rotation (400x128 internal tile)
+    -> q0/q1 horizontal-only PIE exact x2 (800x64 internal staging)
+    -> DMA2D EVEN/ODD strided vertical duplication
+    -> one native 800x1280 RGB565 DSI framebuffer
+    -> JD9365 LCD
+```
+
+The semantic mapping is exact nearest-neighbor 2x to logical 1280x800, followed
+by COUNTERCLOCKWISE rotation to native 800x1280. There is no interpolation or
+1280x800 intermediate framebuffer. The native policy is `num_fbs=1`; there is
+no second native framebuffer.
+
+The current performance-qualified scanout is LOWER2: PLL_F240M / 7,
+approximately 34.285713 MHz DPI, approximately 29.426767 Hz calculated
+refresh, H total 880, V total 1324, two DSI lanes at 500 Mbps/lane, RGB565,
+and one native framebuffer. Approximate scanout traffic is 57.47 MiB/s. The
+refresh value is calculated/predicted, not a physical panel-refresh
+measurement. The profile source is
+[`p4_nano_display_timing_profiles.hpp`](../firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_timing_profiles.hpp).
+
+P10M-C1C is **FORMAL REAL-HARDWARE BYTE-EXACT DMA2D CORRECTNESS = VALID / PASS**.
+Each frame performs five PPA operations, ten horizontal PIE calls, and twenty
+DMA2D transactions (ten EVEN and ten ODD). Retained formal evidence records
+source CRC `0x8dadbf82` before and after, rotated CRC `0x379511d7`, and
+destination CRC `0xc8a10b55`, with source immutability, scalar pixel mapping,
+full reference `memcmp`, Idle cleanup, and no retained ambiguous lifetime.
+
+P10M-D2C is **FORMAL SAME-BINARY DMA2D PERFORMANCE = VALID**, classified
+**A-PROVISIONAL** because DMA timer-control perturbation remained YELLOW. The
+retained formal real-hardware evidence reports:
+
+| Metric | Result |
+|---|---:|
+| CONTROL transform CPU-unavailability proxy average | 25.041 ms |
+| DMA2D transform CPU-unavailability proxy average | 2.690 ms |
+| Proxy reduction | 89.258% |
+| DMA2D exact2x average | 6.849 ms |
+| DMA2D total-transform-service average / p99 | 16.343 / 16.431 ms |
+| DMA2D blocked wait average | 4.121 ms |
+| Blocked wait / exact2x service | 60.169% |
+| Neutral PPA sentinel drift | 0.000% |
+
+These exact values are supported by retained formal evidence but are not
+machine-readable in tracked documentation. The CPU values are transform
+CPU-unavailability proxies, not CPU utilization. Blocked wait is a potential
+schedulable-opportunity upper bound, not free CPU time. CONTROL and DMA2D phase
+PPA timings differed substantially while the neutral PPA sentinel remained
+stable; this is method-coupled system-level evidence, not proof that DMA2D
+causally made PPA faster.
+
+The accepted path uses the ESP-IDF v5.5.4 private DMA2D API only through the
+project-owned adapter. It shares the DMA2D pool with PPA but runs sequentially
+as PPA -> PIE -> DMA. The formal path has no descriptor chaining and no
+overlap; `dma2d_force_end()` is intentionally not used. If timeout, setup, or
+start failure leaves callback/DMA ownership ambiguous, callback-reachable
+resources are retained until one-shot shutdown rather than torn down
+unsafely. Post-DMA destination synchronization uses
+`ESP_CACHE_MSYNC_FLAG_DIR_M2C`; `DIR_M2C | UNALIGNED` is
+rejected by the pinned IDF v5.5.4 and must not be prescribed.
+
+The retained Step 7B.2a 80 MHz DPI, 1500 Mbps/lane, and nominal ~68.66 Hz
+values are historical initial-foundation diagnostics, not the current LOWER2
+configuration. Step 7B.2b remains the CPU/scalar correctness reference, 7B.2c
+the first bounded one-frame live integration, and 7B.2d the sustained scalar
+and motion validation milestone.
+
+P10M does not establish tear-free physical scanout, refresh-boundary coherence,
+that every transformed frame was physically scanned out, production viability
+of a second native framebuffer, long-duration full emulator+display+audio
+stability, final audio/FM coexistence performance, arbitrary guest-application
+compatibility, TAB5/S31/S3 display qualification, or production touch/LVGL/OSD
+integration. These remain FUTURE / UNVALIDATED.
 
 ## Audio boundary
 

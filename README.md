@@ -106,116 +106,49 @@ generation lifetime. Step 7B.1c wires those checks into continuous CI. These
 are current Ubuntu x86_64 and ESP32-P4 RISC-V / `esp-emu` results only; the
 slot size and memory telemetry are test evidence, not universal constants.
 
-## Current hardware boundary
+## Current P4-NANO display status
 
-The software-only headless video and presentation work through Step 7B.1c is
-complete. The Step 7B.2a production path was run on the Waveshare
-ESP32-P4-NANO-KIT-D with ESP32-P4 rev v1.3, 32 MiB PSRAM, and the JD9365
-10.1-inch panel. Its native 800x1280 RGB565 scanout, one-framebuffer policy,
-safe initialization, deterministic pattern, UART stages, and bounded
-backlight lifecycle all passed; human inspection separately confirmed the
-physical LCD output. This is scoped Step 7B.2a evidence, not blanket physical
-display completion.
-
-Step 7B.2b is COMPLETE for its bounded pixel-exact reference and static
-physical-transform validation scope. The project-owned C++20 transform consumes
-an immutable 640x400 RGB565 frame, applies exact nearest-neighbor 2x to a
-logical 1280x800 landscape, and writes directly to one native 800x1280 RGB565
-destination. It has no intermediate framebuffer, filtering, color conversion,
-PPA, DMA2D, or per-frame allocation. Both quarter-turn mappings remain in the
-API; the P4-NANO board policy is COUNTERCLOCKWISE, selected by human inspection
-as the natural upright orientation. Host validation freezes reference CRCs
-`0xdb938d53` (CW) and `0x164584cf` (CCW), while the separate physical diagnostic
-source is `0x4291f7e5`, with transformed CRCs `0x37fd7262` (CW) and
-`0xd98ce5d4` (CCW). Both candidates built and ran on the qualified P4-NANO;
-both were visually inspected successfully. The CCW capture began after early
-boot, so only its terminal runtime/cleanup result was retained.
-
-Step 7B.2c is COMPLETE for its bounded first live integration:
-**IMPLEMENTED / END-TO-END BYTE-EXACT VALIDATED / REAL-HARDWARE LIVE
-PRESENTATION VALIDATED / REAL-LCD VISUALLY VALIDATED / COMPLETE**. The existing
-Step 7A `np2video_runner` rendered the `NP2 VIDEO FIXTURE 7A.3A` text scene
-(source CRC `0x0a280896`) through the real NP2/scrnmng path. The resulting
-pipeline is:
+The portable Step 7B presentation boundary is COMPLETE, and the bounded
+P4-NANO/JD9365 display path is physically validated. The current qualified
+P10M transform path is:
 
 ```text
-mutable NP2 framebuffer
- -> synchronous scrnmng publication hook
- -> two-slot presentation publisher
- -> immutable acquired 640x400 RGB565 frame
- -> P4-NANO live consumer
- -> exact 2x + canonical CCW transform
- -> one native 800x1280 RGB565 framebuffer
- -> physical JD9365 LCD
+640x400 mutable RGB565LE guest framebuffer
+ -> synchronous scrnmng publication
+ -> two-slot immutable presentation publisher
+ -> PPA CCW90 rotation (400x128 internal tile)
+ -> q0/q1 horizontal-only PIE exact x2 (800x64 staging)
+ -> DMA2D EVEN/ODD strided vertical duplication
+ -> one native 800x1280 RGB565 DSI framebuffer
+ -> JD9365 LCD
 ```
 
-The two PSRAM presentation slots are 512,000 bytes each (1,024,000 bytes
-total), external and disjoint from both the mutable guest framebuffer and the
-native framebuffer. The final source CRC matched `0x0a280896`; the host-derived
-and real native framebuffer CRC both matched `0xe623a22a`. The bounded hardware
-counters were submitted/acquired/transformed/released `1/1/1/1`, with
-coalesced/dropped `0/0`. The consumer held the acquired token through source
-validation and transformation, and the runtime completed with
-`P4_NANO_LIVE_RESULT=PASS` and cleanup/backlight OFF.
+The semantic mapping is exact nearest-neighbor 2x to logical 1280x800, then
+COUNTERCLOCKWISE rotation to the native 800x1280 surface. There is no
+interpolation and `num_fbs=1` remains the policy.
 
-The operator observed the actual NP2 text scene on the physical LCD for
-approximately 30 seconds and reported `HUMAN_VISUAL_RESULT=PASS`: natural
-upright landscape content, expected full mapping, and no gross clipping,
-mirroring, reversal, or static corruption. Because this selected fixture is
-essentially monochrome, Step 7B.2c does not independently re-demonstrate live
-NP2 color ordering; the same color-capable transform/display path has separate
-Step 7B.2b physical RGB-order evidence. The saved UART transcript began late,
-so its early immutability marker and startup lines are not retained; this is an
-evidence-capture limitation, not a runtime failure.
+The current LOWER2 scanout uses PLL_F240M / 7, approximately 34.285713 MHz DPI,
+approximately 29.426767 Hz calculated refresh, H=880/V=1324, two 500 Mbps/lane
+DSI lanes, RGB565, and approximately 57.47 MiB/s scanout traffic. The refresh
+value is predicted, not a physical panel-refresh measurement.
 
-Step 7B.2d sustained live presentation and transform validation is complete for
-the reviewed P4-NANO path. The transform translation unit is now `-O2` by
-default for transform-using P4-NANO profiles (normal live display, live
-benchmark, isolated benchmark, and the transform diagnostic); explicit
-`--transform-opt debug` retains the validated `-Og` reference escape hatch.
-The physical evidence measured approximately 39.3% isolated and 49.9% LIVE
-transform improvement (`-Og`/`-O2`: approximately 107.7/65.4 ms isolated and
-186.3/93.4 ms LIVE), with producer-associated shared execution/memory
-contention falling from approximately 78.6 ms to 28.0 ms. Correctness,
-scheduler/TWDT safety, and host CRC regressions passed; the LIVE benchmark app
-grew by approximately 16 bytes. These results describe transform processing
-capacity, not guest FPS, displayed FPS, or a measured raw-PSRAM-bandwidth gain.
+P10M-C1C formal real-hardware byte-exact DMA2D correctness is VALID/PASS.
+P10M-D2C formal same-binary DMA2D performance is VALID and classified
+A-PROVISIONAL because DMA timer-control perturbation remained YELLOW. The
+headline result is approximately 89% reduction in the transform
+CPU-unavailability proxy and approximately 16.4 ms p99 total transform
+service; these are transform-capacity measurements, not guest or displayed
+FPS. Detailed evidence and scope are in
+[`docs/architecture.md`](docs/architecture.md) and
+[`docs/bringup-plan.md`](docs/bringup-plan.md).
 
-The dedicated `--live-display-motion-validation` profile is now physically
-validated on the ESP32-P4 v1.3 P4-NANO using fixture
-`np2video-7b2d-live-vram` (SHA256
-`81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604`) with
-the production-default `-O2`, CCW 2x transform. It emitted
-`MOTION_VALIDATION_RESULT=PASS`: 60 acquisitions yielded 16 clean and 16
-distinct bar positions, with 16/16 native mapping passes, 0 native failures,
-0 dropped frames, and `Returned from app_main()`. The independent coordinate
-checks were `guest_x_start = guest_bar_pos * 8`,
-`native_y_min = 1152 - 16 * guest_bar_pos`, and
-`native_y_max = 1279 - 16 * guest_bar_pos`.
-
-The 44 non-clean/transitional acquisitions were expected consequences of
-sequential guest graphics-plane updates and asynchronous presentation; only
-clean frames were accepted as motion evidence, and this ratio is not a
-performance or displayed-frame metric. The validator intentionally accepts
-the detected uniform nonzero RGB565 color rather than one fixed palette value;
-multiple colors were observed. This proves spatial/structural motion and
-same-frame native mapping, not final palette or RGB-order correctness.
-
-This closes Step 7B.2d for the reviewed P4-NANO path. The PASS proves
-software-visible motion through the guest framebuffer, immutable presentation
-lease, transform, cache synchronization, and native framebuffer. It does not
-prove that every native frame was scanned out by DSI/GDMA, tear-free behavior,
-refresh-boundary coherence, panel refresh rate, or physical display of every
-sample. There is currently no independent reproducible evidence that the
-panel is frozen, so a scanout-debug milestone is not opened solely because an
-earlier human observation missed the animation. Long-duration stability,
-tear-free/refresh characterization, a second native framebuffer, PPA,
-additional transform structural optimization, display concurrency with
-SDMMC/audio, arbitrary guest applications, TAB5, ESP32-S31, ESP32-S3,
-touch/LVGL/OSD, and physical-media durability remain FUTURE / UNVALIDATED.
-The project policy remains **AUTOMATED PROBE FIRST**; camera automation is
-unimplemented and unnecessary for this PASS, while human visual confirmation
-is fallback-only.
+Current evidence does not prove tear-free scanout, refresh-boundary coherence,
+that every transformed frame was physically scanned out, production viability
+of a second native framebuffer, long-duration full-runtime display+audio
+stability, final FM/audio coexistence performance, arbitrary guest-application
+compatibility, TAB5/S31/S3 display qualification, or production touch/LVGL/OSD
+integration. Historical Step 7B.2a-d diagnostic, scalar, first-live, and motion
+results remain recorded in the detailed bring-up documentation.
 
 Production firmware now has explicit `p4-v1x` and `p4-v3x` build variants.
 Use `tools/emu/build-production.sh --variant p4-v3x` for the existing

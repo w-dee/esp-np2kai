@@ -187,7 +187,7 @@ analysis begins at the fresh canonical boot; do not use setup-prefix timings,
 CRCs, PASS markers, VSYNC values, or terminal markers as evidence.
 
 The capture is **INVALID** if no fresh canonical boot can be identified, the
-canonical scalar/PIE evidence is incomplete, the canonical terminal marker is
+expected profile-specific correctness/performance evidence is incomplete, the
 missing, setup/canonical ordering is ambiguous, or another reset occurs after
 the canonical epoch begins.
 
