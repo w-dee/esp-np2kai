@@ -205,6 +205,9 @@ OPNGEN_S98_TEST_SOURCE := $(CURDIR)/tests/opngen_s98_test.c
 OPNGEN_S98_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_s98_test
 OPNGEN_S98_FIXTURE_GENERATOR := $(CURDIR)/tests/generate_opngen_s98_fixtures.py
 OPNGEN_S98_FIXTURE_DIR := $(BUILD_DIR)/tests/opngen_s98_fixtures
+OPNGEN_S98_S3_TEST_SOURCE := $(CURDIR)/tests/opngen_s98_s3_test.c
+OPNGEN_S98_S3_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_s98_s3_test
+OPNGEN_S98_S3_RUNNER := $(CURDIR)/tests/run_opngen_s98_s3.py
 OPNGEN_PCM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c
 OPNGEN_SPSC_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_spsc.c
 OPNGEN_E1B_STREAM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_e1b_stream.c
@@ -273,7 +276,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 .PHONY: test-p4-nano-ppa-rotation-reference
 
@@ -602,6 +605,25 @@ test-opngen-s98:
 		"$(OPNGEN_S98_TEST_SOURCE)" -o "$(OPNGEN_S98_TEST_OUTPUT)"
 	@"$(OPNGEN_S98_TEST_OUTPUT)" --fixture-dir "$(OPNGEN_S98_FIXTURE_DIR)"
 	@printf '%s\n' 'OPNGEN S98 parser validation passed.'
+
+test-opngen-s98-s3:
+	@mkdir -p "$(dir $(OPNGEN_S98_S3_TEST_OUTPUT))" "$(OPNGEN_S98_FIXTURE_DIR)"
+	@$(PYTHON) "$(OPNGEN_S98_FIXTURE_GENERATOR)" \
+		--output-dir "$(OPNGEN_S98_FIXTURE_DIR)"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_S98_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_S98_S3_TEST_SOURCE)" \
+		-lm -pthread -o "$(OPNGEN_S98_S3_TEST_OUTPUT)"
+	@$(PYTHON) "$(OPNGEN_S98_S3_RUNNER)" \
+		--binary "$(OPNGEN_S98_S3_TEST_OUTPUT)" \
+		--fixture-dir "$(OPNGEN_S98_FIXTURE_DIR)"
+	@printf '%s\n' 'OPNGEN S98 S3 worker integration and repeatability passed.'
 
 build-opngen-e1b:
 	@mkdir -p "$(dir $(OPNGEN_E1B_TEST_OUTPUT))"
