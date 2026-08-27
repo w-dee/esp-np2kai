@@ -32,3 +32,17 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wall
     -Wextra
     -Werror=implicit-function-declaration)
+
+# The fixture is shared infrastructure in normal builds.  Only the explicit
+# audio-only benchmark profile opts the complete measured synthesis pipeline
+# into the matching profile optimization.
+if(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+    if(NOT P4_NANO_AUDIO_OPT STREQUAL "debug" AND
+       NOT P4_NANO_AUDIO_OPT STREQUAL "o2")
+        message(FATAL_ERROR
+            "P4_NANO_AUDIO_OPT must be debug or o2, got: ${P4_NANO_AUDIO_OPT}")
+    endif()
+    if(P4_NANO_AUDIO_OPT STREQUAL "o2")
+        target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+    endif()
+endif()

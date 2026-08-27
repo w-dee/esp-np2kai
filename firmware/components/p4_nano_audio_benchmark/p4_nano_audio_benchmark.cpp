@@ -38,6 +38,8 @@ constexpr int kWorkerCore = 0;
 constexpr UBaseType_t kProducerPriority = tskIDLE_PRIORITY + 3;
 constexpr UBaseType_t kWorkerPriority = tskIDLE_PRIORITY + 4;
 constexpr size_t kMaxQuanta = 12000U;
+constexpr uint32_t kHousekeepingQuantumInterval = 64U;
+constexpr uint32_t kHousekeepingDelayTicks = 1U;
 
 struct Expected {
     uint64_t events;
@@ -99,6 +101,8 @@ struct RunContext {
     SemaphoreHandle_t done = nullptr;
     TaskHandle_t worker_task = nullptr;
     TaskHandle_t producer_task = nullptr;
+    std::atomic<bool> producer_waiting{false};
+    uint64_t completed_quanta = 0U;
     struct np2opngen_synth_event_trace_state producer_trace{};
     bool producer_trace_valid = false;
     uint64_t producer_count = 0U;
@@ -284,6 +288,14 @@ static void observer_render_end(void *opaque, uint64_t offset, uint32_t,
     if (status != 0) ctx->failed = true;
 }
 
+static void observer_quantum_complete(void *opaque, uint64_t, uint32_t)
+{
+    auto *ctx = static_cast<RunContext *>(opaque);
+    ++ctx->completed_quanta;
+    if (ctx->completed_quanta % kHousekeepingQuantumInterval == 0U)
+        vTaskDelay(kHousekeepingDelayTicks);
+}
+
 static int sink_write(const uint8_t *pcm, size_t bytes, uint64_t offset,
                       void *opaque)
 {
@@ -323,7 +335,17 @@ static bool enqueue_event(RunContext *ctx,
             producer_fail(ctx, NP2_OPNGEN_E1B_ERROR_QUEUE);
             return false;
         }
-        taskYIELD();
+        /* Publish the wait state before rechecking occupancy.  If the worker
+         * dequeues in either race window, its counting notification remains
+         * pending and ulTaskNotifyTake cannot miss the queue-space transition. */
+        ctx->producer_waiting.store(true, std::memory_order_release);
+        if (np2opngen_spsc_occupancy(&ctx->queue) <
+            NP2_OPNGEN_SPSC_CAPACITY) {
+            ctx->producer_waiting.store(false, std::memory_order_release);
+            continue;
+        }
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ctx->producer_waiting.store(false, std::memory_order_release);
         if (np2opngen_e1b_control_first_error(&ctx->control) !=
             NP2_OPNGEN_E1B_ERROR_NONE) return false;
     }
@@ -377,12 +399,21 @@ static void worker_task(void *opaque)
     auto *ctx = static_cast<RunContext *>(opaque);
     for (;;) {
         const int step = np2opngen_e1b_worker_step(&ctx->worker);
+        if (step == NP2_OPNGEN_E1B_STEP_PROGRESS &&
+            ctx->producer_task != nullptr &&
+            ctx->producer_waiting.load(std::memory_order_acquire)) {
+            xTaskNotifyGive(ctx->producer_task);
+        }
         if (step == NP2_OPNGEN_E1B_STEP_WAIT) {
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
         if (step == NP2_OPNGEN_E1B_STEP_COMPLETE ||
             step == NP2_OPNGEN_E1B_STEP_FAILED) break;
+    }
+    if (ctx->producer_task != nullptr &&
+        ctx->producer_waiting.load(std::memory_order_acquire)) {
+        xTaskNotifyGive(ctx->producer_task);
     }
     if (ctx->done != nullptr) xSemaphoreGive(ctx->done);
     vTaskDelete(nullptr);
@@ -652,7 +683,7 @@ static bool run_once(const Workload *workload, bool correctness)
         observer_dequeue_begin, observer_dequeue_end, observer_event_begin,
         observer_event_end, observer_apply_begin, observer_apply_end,
         observer_render_begin, observer_opngen_begin, observer_opngen_end,
-        observer_render_end, &ctx, true};
+        observer_render_end, observer_quantum_complete, &ctx, true};
     np2opngen_e1b_worker_set_observer(&ctx.worker, &ctx.observer);
     ctx.done = xSemaphoreCreateBinary();
     if (ctx.done == nullptr ||
@@ -706,7 +737,9 @@ esp_err_t run()
     const uint32_t cpu_frequency_hz =
         static_cast<uint32_t>(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ) * 1000000U;
     std::printf("P4_AUDIO_META environment=%s chip_target=esp32p4 chip_revision=%d idf=%s"
-                " cpu_frequency_hz=%u optimization=release-equivalent pm_enabled=0"
+                " cpu_frequency_hz=%u global_optimization=debug audio_optimization=%s"
+                " capacity_housekeeping=enabled housekeeping_quantum_interval=%u"
+                " housekeeping_delay_ticks=%u producer_full_wait=notification pm_enabled=0"
                 " freertos_tick_hz=%d psram_enabled=%s psram_speed_mhz=%d\n",
 #if defined(P4_AUDIO_EMU_TEST)
                 "ESP_EMU",
@@ -715,6 +748,13 @@ esp_err_t run()
 #endif
                 chip.revision, esp_get_idf_version(),
                 static_cast<unsigned>(cpu_frequency_hz),
+                #if defined(P4_NANO_AUDIO_OPT_O2)
+                "o2",
+                #else
+                "debug",
+                #endif
+                static_cast<unsigned>(kHousekeepingQuantumInterval),
+                static_cast<unsigned>(kHousekeepingDelayTicks),
                 configTICK_RATE_HZ,
 #if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
                 "yes",

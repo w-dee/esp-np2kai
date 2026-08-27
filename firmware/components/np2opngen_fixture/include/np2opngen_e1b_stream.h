@@ -82,6 +82,11 @@ struct np2opngen_e1b_observer {
                        uint32_t frame_count, int status);
     void (*render_end)(void *context, uint64_t frame_offset,
                        uint32_t frame_count, int status);
+    /* Called after a successful logical render boundary.  This callback is
+     * outside the measured render interval and is intended for bounded,
+     * benchmark-local scheduler housekeeping. */
+    void (*quantum_complete)(void *context, uint64_t frame_offset,
+                             uint32_t frame_count);
     void *context;
     bool boundary_limiter;
 };

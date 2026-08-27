@@ -56,6 +56,16 @@ def main() -> int:
         in source,
         "audio benchmark rejection must describe the qualified routes",
     )
+    require(
+        "--audio-opt debug|o2" in source and
+        'audio_opt=o2' in source and
+        'audio_opt=debug' in source,
+        "audio optimization CLI/default policy is missing",
+    )
+    require(
+        "--audio-opt o2 requires --audio-only-benchmark" in source,
+        "audio O2 must remain profile-scoped",
+    )
 
     audio_guard = re.search(
         r"if \(\( audio_only_benchmark \)\).*?\nfi\n",
@@ -96,10 +106,15 @@ def main() -> int:
         "--audio-only-benchmark", "--esp-emu-test",
         expected_fragment="requires the generic p4-v3x emulator build",
     )
+    run_rejected(
+        "--variant", "p4-v1x", "--board", "p4-nano",
+        "--audio-opt", "o2",
+        expected_fragment="--audio-opt o2 requires --audio-only-benchmark",
+    )
 
     print("P4_AUDIO_PROFILE_ROUTING=PASS")
     print("accepted=p4-v3x/generic,p4-v1x/p4-nano")
-    print("rejected=p4-v1x/generic,p4-v3x/p4-nano,p4-v1x/p4-nano+esp-emu")
+    print("rejected=p4-v1x/generic,p4-v3x/p4-nano,p4-v1x/p4-nano+esp-emu,o2-without-audio")
     return 0
 
 

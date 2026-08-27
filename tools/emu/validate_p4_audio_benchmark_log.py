@@ -16,7 +16,13 @@ EXPECTED_CPU_FREQUENCY_HZ = {
 
 META_PATTERN = re.compile(
     r"^P4_AUDIO_META environment=(?P<environment>ESP_EMU|REAL_P4) "
-    r"[^\n]*? cpu_frequency_hz=(?P<cpu_frequency_hz>[0-9]+)(?: |$)",
+    r"[^\n]*? cpu_frequency_hz=(?P<cpu_frequency_hz>[0-9]+) "
+    r"global_optimization=(?P<global_optimization>debug) "
+    r"audio_optimization=(?P<audio_optimization>debug|o2) "
+    r"capacity_housekeeping=enabled "
+    r"housekeeping_quantum_interval=(?P<housekeeping_quantum_interval>[0-9]+) "
+    r"housekeeping_delay_ticks=(?P<housekeeping_delay_ticks>[0-9]+) "
+    r"producer_full_wait=notification",
     re.MULTILINE,
 )
 
@@ -35,6 +41,15 @@ def validate_configuration(text: str) -> str | None:
         return (
             f"environment={environment} cpu_frequency_hz={cpu_frequency_hz}"
             f" expected={expected}"
+        )
+    if match.group("housekeeping_quantum_interval") != "64" or \
+       match.group("housekeeping_delay_ticks") != "1":
+        return (
+            "housekeeping_quantum_interval=" +
+            match.group("housekeeping_quantum_interval") +
+            " housekeeping_delay_ticks=" +
+            match.group("housekeeping_delay_ticks") +
+            " expected=64,1"
         )
     return None
 

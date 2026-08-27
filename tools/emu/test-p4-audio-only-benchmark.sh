@@ -20,6 +20,7 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 source "${SCRIPT_DIR}/activate-idf.sh"
 bash "${SCRIPT_DIR}/build-production.sh" \
     --variant p4-v3x --board generic --audio-only-benchmark \
+    --audio-opt o2 \
     --esp-emu-test --build-dir "${BUILD_DIR}"
 python3 "${IDF_PATH}/components/esptool_py/esptool/esptool.py" \
     --chip esp32p4 merge_bin --output "${MERGED_IMAGE}" --format raw \

@@ -225,6 +225,13 @@ static int worker_render_until(struct np2opngen_e1b_worker *worker,
                                          frame_offset,
                                          (uint32_t)frame_count, 0);
         }
+        if (worker->cursor % NP2_OPNGEN_E1B_RENDER_QUANTUM == 0U &&
+            worker->observer != 0 &&
+            worker->observer->quantum_complete != 0) {
+            worker->observer->quantum_complete(worker->observer->context,
+                                               frame_offset,
+                                               (uint32_t)frame_count);
+        }
     }
     return 0;
 }

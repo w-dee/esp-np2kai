@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-only-benchmark | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-only-benchmark | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -15,6 +15,7 @@ board="generic"
 build_dir=""
 i286_inline_mem_fastpath=0
 transform_opt=""
+audio_opt=""
 display_foundation=0
 display_foundation_variant=""
 refresh_visual_profile=""
@@ -118,6 +119,15 @@ while (($# > 0)); do
             ;;
         --transform-opt=*)
             transform_opt="${1#*=}"
+            shift
+            ;;
+        --audio-opt)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            audio_opt="$2"
+            shift 2
+            ;;
+        --audio-opt=*)
+            audio_opt="${1#*=}"
             shift
             ;;
         --esp-emu-test)
@@ -316,6 +326,15 @@ case "${transform_opt}" in
         ;;
     *)
         printf 'ERROR: --transform-opt requires exactly debug or o2\n' >&2
+        exit 2
+        ;;
+esac
+
+case "${audio_opt}" in
+    ""|debug|o2)
+        ;;
+    *)
+        printf 'ERROR: --audio-opt requires exactly debug or o2\n' >&2
         exit 2
         ;;
 esac
@@ -733,6 +752,18 @@ if (( audio_only_benchmark )) &&
     exit 2
 fi
 
+if [[ -z "${audio_opt}" ]]; then
+    if (( audio_only_benchmark )); then
+        audio_opt=o2
+    else
+        audio_opt=debug
+    fi
+fi
+if [[ "${audio_opt}" == "o2" ]] && (( ! audio_only_benchmark )); then
+    printf 'ERROR: --audio-opt o2 requires --audio-only-benchmark\n' >&2
+    exit 2
+fi
+
 if (( esp_emu_test && live_display )); then
     printf 'ERROR: --live-display cannot be combined with --esp-emu-test\n' >&2
     exit 2
@@ -919,6 +950,7 @@ cmake_args=(
     -D "P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_VARIANT=${display_transform_diagnostic_variant}"
     -D "P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_ROTATION=${display_transform_diagnostic_rotation}"
     -D "P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE=${audio_only_benchmark}"
+    -D "P4_NANO_AUDIO_OPT=${audio_opt}"
     -D "P4_NANO_LIVE_DISPLAY_PROFILE=${live_display}"
     -D "P4_NANO_LIVE_DISPLAY_BOARD=${live_display}"
     -D "P4_NANO_LIVE_DISPLAY_VARIANT=${live_display_variant}"
@@ -1256,8 +1288,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s audio_only_benchmark=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${audio_only_benchmark}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s audio_only_benchmark=%s audio_opt=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${audio_only_benchmark}" "${audio_opt}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
     "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${exact2x_grouped_store_benchmark}" "${ppa_pie_overlap_benchmark}" "${ppa_pie_burst_benchmark}" "${pie_preemption_correctness}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
