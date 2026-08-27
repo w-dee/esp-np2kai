@@ -372,7 +372,7 @@ static int fixture_run_vector(enum fixture_partition partition,
                               np2opngen_fixture_clock_fn clock_fn, void *context,
                               bool measure, struct fixture_capture *capture)
 {
-    _OPNGEN state;
+    OPNGEN state;
     SINT32 *pcm;
     uint32_t cursor = 0;
     uint64_t start;
@@ -382,9 +382,11 @@ static int fixture_run_vector(enum fixture_partition partition,
     memset(capture, 0, sizeof(*capture));
     capture->pcm = (uint8_t *)calloc(FIXTURE_PCM_BYTES, 1U);
     pcm = (SINT32 *)calloc(FIXTURE_FRAMES * FIXTURE_CHANNELS, sizeof(*pcm));
-    if (capture->pcm == 0 || pcm == 0) {
+    state = (OPNGEN)calloc(1U, sizeof(*state));
+    if (capture->pcm == 0 || pcm == 0 || state == 0) {
         free(capture->pcm);
         free(pcm);
+        free(state);
         capture->pcm = 0;
         return -1;
     }
@@ -394,52 +396,52 @@ static int fixture_run_vector(enum fixture_partition partition,
     end = measure ? fixture_now(clock_fn, context) : 0;
     capture->init_us = measure && end >= start ? end - start : 0;
     opngen_setvol(128U);
-    opngen_reset(&state);
-    opngen_setcfg(&state, 3U, (UINT32)(OPN_STEREO | 0x003U));
+    opngen_reset(state);
+    opngen_setcfg(state, 3U, (UINT32)(OPN_STEREO | 0x003U));
     fixture_capture_tables(capture);
 
     if (options->silence) {
-        result = fixture_render(&state, pcm, 0, 480U, partition, clock_fn,
+        result = fixture_render(state, pcm, 0, 480U, partition, clock_fn,
                                 context, false, &capture->render_us);
     } else {
-        result = fixture_render(&state, pcm, cursor, 480U, partition, clock_fn,
+        result = fixture_render(state, pcm, cursor, 480U, partition, clock_fn,
                                 context, measure, &capture->render_us);
         cursor += 480U;
-        fixture_program_channel0(&state);
-        opngen_keyon(&state, 0U, 0xf0U);
-        result |= fixture_render(&state, pcm, cursor, 4800U, partition, clock_fn,
+        fixture_program_channel0(state);
+        opngen_keyon(state, 0U, 0xf0U);
+        result |= fixture_render(state, pcm, cursor, 4800U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 4800U;
         if (options->frequency_mode == 0U) {
-            opngen_setreg(&state, 0, 0xa4, 0x24);
-            opngen_setreg(&state, 0, 0xa0, 0x20);
+            opngen_setreg(state, 0, 0xa4, 0x24);
+            opngen_setreg(state, 0, 0xa0, 0x20);
         } else {
-            opngen_setreg(&state, 0, 0xa4, 0x25);
-            opngen_setreg(&state, 0, 0xa0, 0x40);
+            opngen_setreg(state, 0, 0xa4, 0x25);
+            opngen_setreg(state, 0, 0xa0, 0x40);
         }
-        result |= fixture_render(&state, pcm, cursor, 2400U, partition, clock_fn,
+        result |= fixture_render(state, pcm, cursor, 2400U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 2400U;
-        fixture_program_channel1(&state);
-        opngen_keyon(&state, 1U, 0xf0U);
-        result |= fixture_render(&state, pcm, cursor, 4800U, partition, clock_fn,
+        fixture_program_channel1(state);
+        opngen_keyon(state, 1U, 0xf0U);
+        result |= fixture_render(state, pcm, cursor, 4800U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 4800U;
-        opngen_setreg(&state, 0, 0x4c, 0x18);
-        opngen_setreg(&state, 0, 0x6c, 0x14);
-        result |= fixture_render(&state, pcm, cursor, 2400U, partition, clock_fn,
+        opngen_setreg(state, 0, 0x4c, 0x18);
+        opngen_setreg(state, 0, 0x6c, 0x14);
+        result |= fixture_render(state, pcm, cursor, 2400U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 2400U;
         if (!options->omit_keyoff) {
-            opngen_keyon(&state, 0U, 0x00U);
+            opngen_keyon(state, 0U, 0x00U);
         }
-        result |= fixture_render(&state, pcm, cursor, 4800U, partition, clock_fn,
+        result |= fixture_render(state, pcm, cursor, 4800U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 4800U;
         if (!options->omit_keyoff) {
-            opngen_keyon(&state, 1U, 0x00U);
+            opngen_keyon(state, 1U, 0x00U);
         }
-        result |= fixture_render(&state, pcm, cursor, 9120U, partition, clock_fn,
+        result |= fixture_render(state, pcm, cursor, 9120U, partition, clock_fn,
                                  context, measure, &capture->render_us);
         cursor += 9120U;
         if (cursor != FIXTURE_FRAMES) {
@@ -449,6 +451,7 @@ static int fixture_run_vector(enum fixture_partition partition,
 
     fixture_finalize_pcm(capture, pcm);
     free(pcm);
+    free(state);
     return result;
 }
 
@@ -460,7 +463,7 @@ static int fixture_run_event_list(
     struct np2opngen_synth_event_observer *observer)
 {
     struct fixture_event_render_context render;
-    _OPNGEN state;
+    OPNGEN state;
     SINT32 *pcm;
     uint64_t start;
     uint64_t end;
@@ -486,17 +489,25 @@ static int fixture_run_event_list(
         return -1;
     }
 
+    state = (OPNGEN)calloc(1U, sizeof(*state));
+    if (state == 0) {
+        free(capture->pcm);
+        free(pcm);
+        capture->pcm = 0;
+        return -1;
+    }
+
     start = measure ? fixture_now(clock_fn, context) : 0;
     opngen_initialize(FIXTURE_RATE_HZ);
     end = measure ? fixture_now(clock_fn, context) : 0;
     capture->init_us = measure && end >= start ? end - start : 0;
     opngen_setvol(128U);
-    opngen_reset(&state);
-    opngen_setcfg(&state, 3U, (UINT32)(OPN_STEREO | 0x003U));
+    opngen_reset(state);
+    opngen_setcfg(state, 3U, (UINT32)(OPN_STEREO | 0x003U));
     fixture_capture_tables(capture);
 
     memset(&render, 0, sizeof(render));
-    render.state = &state;
+    render.state = state;
     render.pcm = pcm;
     render.partition = partition;
     render.clock_fn = clock_fn;
@@ -508,6 +519,7 @@ static int fixture_run_event_list(
     capture->render_us = render.render_us;
     fixture_finalize_pcm(capture, pcm);
     free(pcm);
+    free(state);
     return status == NP2_SYNTH_EVENT_STATUS_OK ? 0 : -1;
 }
 
