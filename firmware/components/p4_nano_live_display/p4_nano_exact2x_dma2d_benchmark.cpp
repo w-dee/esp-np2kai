@@ -53,6 +53,9 @@ constexpr std::size_t kWarmups = exact2x::kWarmupSamples;
 constexpr std::size_t kSamples = exact2x::kMeasuredSamples;
 constexpr std::uint32_t kCpuMHz = 360U;
 constexpr TickType_t kHealthDelay = 1U;
+constexpr std::size_t kSentinelTimerReadsPerSample = kTileCount * 2U;
+constexpr std::size_t kSentinelStorageBytes =
+    2U * kSamples * sizeof(std::uint64_t);
 
 static_assert(kTileCount == 5U);
 static_assert(kTileBytes == kStagingBytes);
@@ -105,6 +108,9 @@ struct TimerControlStats final {
 ControlStats s_control_stats{};
 DmaStats s_dma_stats{};
 TimerControlStats s_timer_control_stats{};
+MetricStats s_pre_control_ppa_stats{};
+MetricStats s_pre_dma_ppa_stats{};
+static_assert(kSentinelStorageBytes == 2048U);
 
 struct FrameMetrics final {
     std::uint64_t ppa_us = 0U;
@@ -440,6 +446,60 @@ ppa_client_handle_t create_ppa_client() noexcept
     return ppa_register_client(&config, &client) == ESP_OK ? client : nullptr;
 }
 
+bool run_neutral_ppa_sample(ppa_client_handle_t client,
+                            const std::uint8_t *original,
+                            std::uint8_t *tile,
+                            std::uint64_t *elapsed_us) noexcept
+{
+    if (elapsed_us == nullptr) {
+        return false;
+    }
+    std::uint64_t total_us = 0U;
+    for (std::size_t tile_index = 0U; tile_index < kTileCount; ++tile_index) {
+        const std::uint64_t ppa_start = esp_timer_get_time();
+        const bool prepared = prepare_tile(client, original, tile, tile_index);
+        const std::uint64_t ppa_end = esp_timer_get_time();
+        if (!prepared || ppa_end < ppa_start) {
+            return false;
+        }
+        total_us += ppa_end - ppa_start;
+    }
+    *elapsed_us = total_us;
+    return true;
+}
+
+bool run_neutral_ppa_sentinel(const std::uint8_t *original,
+                              std::uint8_t *tile,
+                              MetricStats *stats) noexcept
+{
+    if (original == nullptr || tile == nullptr || stats == nullptr) {
+        return false;
+    }
+    stats->reset();
+    ppa_client_handle_t client = create_ppa_client();
+    bool ok = client != nullptr;
+    if (ok) {
+        for (std::size_t index = 0U; index < kWarmups + kSamples; ++index) {
+            std::uint64_t elapsed_us = 0U;
+            if (!run_neutral_ppa_sample(client, original, tile, &elapsed_us)) {
+                ok = false;
+                break;
+            }
+            if (index >= kWarmups && !stats->add(elapsed_us)) {
+                ok = false;
+                break;
+            }
+            if ((index + 1U) % 64U == 0U) {
+                vTaskDelay(kHealthDelay);
+            }
+        }
+    }
+    if (client != nullptr && ppa_unregister_client(client) != ESP_OK) {
+        ok = false;
+    }
+    return ok && stats->stored == kSamples;
+}
+
 } // namespace
 
 namespace p4_nano_exact2x_dma2d_benchmark {
@@ -461,6 +521,11 @@ esp_err_t run(const Input &input)
                 "ppa_operations=5 horizontal_operations=10 dma_transactions=20 "
                 "overlap=0 descriptor_chain=0\n",
                 static_cast<unsigned int>(kCpuMHz));
+    std::printf("P4_NANO_EXACT2X_DMA2D_PPA_SENTINEL_CONFIG "
+                "warmups=8 measured=128 ppa_operations=5 pie=0 dma=0 "
+                "destination_psram_write=0 burst=128 blocking=1 "
+                "sentinel_timer_reads=%zu storage_bytes=%zu\n",
+                kSentinelTimerReadsPerSample, kSentinelStorageBytes);
     auto *tile = static_cast<std::uint8_t *>(heap_caps_aligned_alloc(
         kRequiredAlignment, kTileBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA |
         MALLOC_CAP_8BIT));
@@ -495,6 +560,14 @@ esp_err_t run(const Input &input)
         crc32(input.original_source, exact2x::kOriginalSourceBytes);
     reset(&s_control_stats); reset(&s_dma_stats);
     bool ok = normalize_destination(destination);
+    if (ok) {
+        ok = run_neutral_ppa_sentinel(input.original_source, tile,
+                                      &s_pre_control_ppa_stats);
+        if (ok) {
+            print_metric("PRE_CONTROL", "PPA_NEUTRAL_WALL",
+                         &s_pre_control_ppa_stats, false);
+        }
+    }
     ppa_client_handle_t control_client = create_ppa_client();
     if (control_client == nullptr) { ok = false; }
     if (ok) {
@@ -518,6 +591,15 @@ esp_err_t run(const Input &input)
         ok = esp_cache_msync(control_snapshot, kDestinationBytes,
                              ESP_CACHE_MSYNC_FLAG_DIR_C2M |
                                  ESP_CACHE_MSYNC_FLAG_UNALIGNED) == ESP_OK;
+    }
+
+    if (ok) {
+        ok = run_neutral_ppa_sentinel(input.original_source, tile,
+                                      &s_pre_dma_ppa_stats);
+        if (ok) {
+            print_metric("PRE_DMA2D", "PPA_NEUTRAL_WALL",
+                         &s_pre_dma_ppa_stats, false);
+        }
     }
 
     dma2d::Adapter *adapter = nullptr;

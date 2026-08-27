@@ -3574,6 +3574,16 @@ esp_err_t run_exact2x_dma2d_benchmark_after_start(BenchmarkState *state)
         result = p4_nano_exact2x_dma2d_benchmark::run(input);
         failed = result != ESP_OK;
     }
+    /* Capture the pause contract while the producer is still paused.  The
+     * producer clears producer_pause_acknowledged immediately after taking
+     * the resume semaphore, so evaluating this after producer_done would
+     * deterministically reject a successful resume. */
+    state->isolated_cooperate_calls_at_end =
+        state->producer_cooperate_calls.load(std::memory_order_acquire);
+    const bool pause_stable_pre_resume = state->isolated_pause_acknowledged &&
+        state->isolated_pause_cooperate_calls ==
+            state->isolated_cooperate_calls_at_end &&
+        state->producer_pause_acknowledged.load(std::memory_order_acquire);
     state->stop_requested.store(true, std::memory_order_release);
     state->producer_pause_requested.store(false, std::memory_order_release);
     if (state->isolated_pause_requested && state->isolated_pause_resume != nullptr) {
@@ -3583,9 +3593,7 @@ esp_err_t run_exact2x_dma2d_benchmark_after_start(BenchmarkState *state)
     while (!state->producer_done.load(std::memory_order_acquire)) {
         vTaskDelay(kConsumerPollDelayTicks);
     }
-    const bool pause_stable = state->isolated_pause_acknowledged &&
-        state->isolated_pause_cooperate_calls ==
-            state->producer_cooperate_calls.load(std::memory_order_acquire) &&
+    const bool producer_pause_acknowledged_after_resume =
         state->producer_pause_acknowledged.load(std::memory_order_acquire);
     if (state->isolated_source_held) {
         benchmark_release(state, &state->isolated_source_token);
@@ -3594,16 +3602,48 @@ esp_err_t run_exact2x_dma2d_benchmark_after_start(BenchmarkState *state)
     benchmark_hold_visible(state);
     state->backlight_off_failed = p4_nano_board::display_backlight_set(0U) != ESP_OK;
     const bool vsync_valid = benchmark_vsync_valid(state->display);
-    failed = failed || state->publish_failed.load(std::memory_order_acquire) ||
-        !pause_stable || !state->isolated_resumed || state->backlight_off_failed ||
-        state->releases != state->acquisitions ||
-        state->producer_result.status != ESP_OK || !vsync_valid;
+    const bool publish_failed = state->publish_failed.load(
+        std::memory_order_acquire);
+    const bool leases_balanced = state->releases == state->acquisitions;
+    const bool producer_result_ok = state->producer_result.status == ESP_OK;
+    const bool scheduling_contract =
+        state->producer_core.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerCore &&
+        state->producer_priority.load(std::memory_order_relaxed) ==
+            kBenchmarkProducerPriority && xPortGetCoreID() == 0 &&
+        static_cast<std::uint32_t>(uxTaskPriorityGet(nullptr)) == 1U;
+    const bool backlight_off_ok = !state->backlight_off_failed;
+    failed = failed || publish_failed || !pause_stable_pre_resume ||
+        !state->isolated_resumed || producer_pause_acknowledged_after_resume ||
+        !backlight_off_ok || !leases_balanced || !producer_result_ok ||
+        !scheduling_contract || !vsync_valid;
     std::printf("P4_NANO_EXACT2X_DMA2D_BENCHMARK_VSYNC_VALID=%s\n",
                 vsync_valid ? "PASS" : "FAIL");
-    const esp_err_t cleanup_result = p4_nano_display::display_session_cleanup(&state->display);
+    const esp_err_t cleanup_result =
+        p4_nano_display::display_session_cleanup(&state->display);
+    const bool display_cleanup_ok = cleanup_result == ESP_OK;
+    const bool lifecycle_ok = !failed && display_cleanup_ok;
+    std::printf("P4_NANO_EXACT2X_DMA2D_BENCHMARK_LIFECYCLE "
+                "body_result=%s publish_failed=%d "
+                "pause_stable_pre_resume=%d resumed=%d "
+                "pause_ack_after_resume=%d backlight_off_ok=%d "
+                "leases_balanced=%d producer_result=%s "
+                "scheduling_contract=%s vsync_valid=%s "
+                "display_cleanup=%s result=%s\n",
+                result == ESP_OK ? "PASS" : "FAIL", publish_failed ? 1 : 0,
+                pause_stable_pre_resume ? 1 : 0,
+                state->isolated_resumed ? 1 : 0,
+                producer_pause_acknowledged_after_resume ? 1 : 0,
+                backlight_off_ok ? 1 : 0, leases_balanced ? 1 : 0,
+                producer_result_ok ? "PASS" : "FAIL",
+                scheduling_contract ? "PASS" : "FAIL",
+                vsync_valid ? "PASS" : "FAIL",
+                display_cleanup_ok ? "PASS" : "FAIL",
+                lifecycle_ok ? "PASS" : "FAIL");
     heap_caps_free(state->slots[0].ptr);
     heap_caps_free(state->slots[1].ptr);
-    return cleanup_result != ESP_OK ? cleanup_result : (failed ? ESP_FAIL : ESP_OK);
+    return display_cleanup_ok && lifecycle_ok ? ESP_OK :
+        (display_cleanup_ok ? ESP_FAIL : cleanup_result);
 }
 #endif
 #if defined(P4_NANO_EXACT2X_DMA2D_CORRECTNESS_PROFILE)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host/static contract for P10M-D1 same-binary DMA2D instrumentation."""
+"""Host/static contract for P10M-D2B DMA2D validity controls."""
 
 from pathlib import Path
 
@@ -65,8 +65,76 @@ def main() -> None:
     require("timing == nullptr" in ADAPTER and
             "P10M-C1C DATA/LIFECYCLE CONTRACT CHANGED = NO" not in ADAPTER,
             "no-timing path changed")
-    print("Display Performance P10M-D1 DMA2D benchmark host/static contract passed")
-    print("P10M_D1_HARDWARE_ACCESS=NOT_PERFORMED")
+
+    wrapper_start = LIVE.index(
+        "esp_err_t run_exact2x_dma2d_benchmark_after_start")
+    wrapper_end = LIVE.index("#endif", wrapper_start)
+    wrapper = LIVE[wrapper_start:wrapper_end]
+    pause_index = wrapper.index("pause_stable_pre_resume")
+    clear_index = wrapper.index(
+        "state->producer_pause_requested.store(false")
+    resume_index = wrapper.index("xSemaphoreGive(state->isolated_pause_resume)")
+    require(pause_index < clear_index < resume_index,
+            "pause stability must be captured before producer resume")
+    for marker in ("producer_pause_acknowledged_after_resume",
+                   "pause_ack_after_resume", "P4_NANO_EXACT2X_DMA2D_BENCHMARK_LIFECYCLE",
+                   "body_result=%s", "publish_failed=%d",
+                   "pause_stable_pre_resume=%d", "resumed=%d",
+                   "backlight_off_ok=%d", "leases_balanced=%d",
+                   "producer_result=%s", "scheduling_contract=%s",
+                   "vsync_valid=%s", "display_cleanup=%s", "result=%s"):
+        require(marker in wrapper, f"lifecycle marker field missing: {marker}")
+    for marker in ("kBenchmarkProducerCore", "kBenchmarkProducerPriority",
+                   "xPortGetCoreID() == 0",
+                   "uxTaskPriorityGet(nullptr)) == 1U"):
+        require(marker in wrapper, f"runtime scheduling contract missing: {marker}")
+    require("const bool display_cleanup_ok = cleanup_result == ESP_OK" in wrapper and
+            "return display_cleanup_ok && lifecycle_ok" in wrapper,
+            "cleanup result is not part of final lifecycle result")
+
+    run_start = BENCH.index("esp_err_t run(const Input &input)")
+    run_body = BENCH[run_start:]
+    require("P4_NANO_EXACT2X_DMA2D_PPA_SENTINEL_CONFIG" in run_body,
+            "neutral PPA sentinel config marker missing")
+    for marker in ("warmups=8 measured=128", "ppa_operations=5", "pie=0",
+                   "dma=0", "destination_psram_write=0", "burst=128",
+                   "blocking=1", "sentinel_timer_reads=", "storage_bytes=%zu"):
+        require(marker in run_body, f"sentinel config field missing: {marker}")
+    require("MetricStats s_pre_control_ppa_stats" in BENCH and
+            "MetricStats s_pre_dma_ppa_stats" in BENCH and
+            "kSentinelStorageBytes == 2048U" in BENCH,
+            "sentinel static storage missing")
+    sentinel_start = BENCH.index("bool run_neutral_ppa_sample")
+    sentinel_end = BENCH.index("} // namespace", sentinel_start)
+    sentinel = BENCH[sentinel_start:sentinel_end]
+    require("prepare_tile" in sentinel and
+            "PPA_TRANS_MODE_BLOCKING" in BENCH,
+            "sentinel does not use the blocking PPA helper")
+    for forbidden in ("exact2x_pie_", "copy_strided", "esp_cache_msync",
+                      "destination_writeback", "crc32", "memcmp"):
+        require(forbidden not in sentinel,
+                f"sentinel is not neutral; found {forbidden}")
+    require("run_neutral_ppa_sentinel" in sentinel and
+            "ppa_unregister_client(client)" in sentinel and
+            "(index + 1U) % 64U == 0U" in sentinel,
+            "sentinel lifecycle/health cadence missing")
+    require(run_body.count("run_neutral_ppa_sentinel(input.original_source, tile") == 2,
+            "sentinels must use the same held source and internal tile")
+    pre_control = run_body.index("&s_pre_control_ppa_stats")
+    control_client = run_body.index("ppa_client_handle_t control_client")
+    pre_dma = run_body.index("&s_pre_dma_ppa_stats")
+    dma_adapter = run_body.index("dma2d::Adapter *adapter")
+    require(pre_control < control_client < pre_dma < dma_adapter,
+            "sentinel phase sequence is not PRE_CONTROL -> CONTROL -> PRE_DMA2D -> DMA2D")
+    require('print_metric("PRE_CONTROL", "PPA_NEUTRAL_WALL"' in run_body and
+            'print_metric("PRE_DMA2D", "PPA_NEUTRAL_WALL"' in run_body,
+            "sentinel metric output missing")
+    require("PPA_COMMON_WALL" in BENCH and "PPA_DRIFT" not in BENCH,
+            "old phase-PPA validity gate remains in firmware")
+    require("timer_reads_control=24 timer_reads_dma=112 cycle_reads_dma=80" in BENCH,
+            "formal timer/cycle accounting changed")
+    print("Display Performance P10M-D2B DMA2D validity-control host/static contract passed")
+    print("P10M_D2B_HARDWARE_ACCESS=NOT_PERFORMED")
 
 
 if __name__ == "__main__":
