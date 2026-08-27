@@ -14,6 +14,18 @@ namespace p4_nano_dma2d_copy {
 
 struct Adapter;
 
+/* Optional benchmark-only observation result.  It intentionally exposes no
+ * private ESP-IDF DMA2D type.  Callback values cover project callback bodies
+ * only, not private-driver ISR work. */
+struct CopyTiming final {
+    std::uint64_t total_wall_us = 0U;
+    std::uint64_t blocked_wait_us = 0U;
+    std::uint64_t on_job_cycles_during_wait = 0U;
+    std::uint64_t on_job_cycles_outside_wait = 0U;
+    std::uint64_t eof_cycles_during_wait = 0U;
+    std::uint64_t eof_cycles_outside_wait = 0U;
+};
+
 inline constexpr std::size_t kChunkRows = 64U;
 inline constexpr std::size_t kSourceWidthPixels = 800U;
 inline constexpr std::size_t kDestinationVirtualWidthPixels = 1600U;
@@ -32,7 +44,8 @@ esp_err_t create(Adapter **ret_adapter) noexcept;
  * dst_x_pixels must be kEvenXOffsetPixels or kOddXOffsetPixels. */
 esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
                        std::uint8_t *destination,
-                       std::size_t dst_x_pixels) noexcept;
+                       std::size_t dst_x_pixels,
+                       CopyTiming *timing = nullptr) noexcept;
 
 /* Releases the adapter only after the last transfer is quiescent. */
 esp_err_t destroy(Adapter *adapter) noexcept;

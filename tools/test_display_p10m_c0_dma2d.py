@@ -161,8 +161,7 @@ def main() -> int:
     require("if (observed == State::RetainedAmbiguous)" in adapter and
             "if (!activate_from_queue(adapter))" in adapter,
             "terminal RetainedAmbiguous transition guard missing")
-    timeout_start = adapter.index(
-        "if (xSemaphoreTake(adapter->complete, kCompletionTimeout)")
+    timeout_start = adapter.index("if (wait_result != pdTRUE)")
     timeout_end = adapter.index("if (adapter->state.load", timeout_start)
     timeout_path = adapter[timeout_start:timeout_end]
     require("terminalize_ambiguous(adapter)" in timeout_path and

@@ -14,9 +14,11 @@
 
 #include "esp_attr.h"
 #include "esp_cache.h"
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_memory_utils.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "hal/dma2d_types.h"
@@ -67,6 +69,12 @@ struct Adapter final {
     dma2d_trans_config_t transaction_config{};
     std::atomic<State> state{State::Idle};
     std::atomic<std::uint32_t> completion_status{ESP_OK};
+    std::atomic<bool> timing_active{false};
+    std::atomic<bool> wait_active{false};
+    std::atomic<std::uint32_t> on_job_wait_cycles{0U};
+    std::atomic<std::uint32_t> on_job_outside_cycles{0U};
+    std::atomic<std::uint32_t> eof_wait_cycles{0U};
+    std::atomic<std::uint32_t> eof_outside_cycles{0U};
 };
 
 namespace {
@@ -75,8 +83,81 @@ constexpr std::size_t kDescriptorAlignment = 64U;
 constexpr std::size_t kDescriptorStorageBytes = 64U;
 constexpr TickType_t kCompletionTimeout = pdMS_TO_TICKS(5000U);
 static_assert(kCompletionTimeout > 0);
+static_assert(std::atomic<bool>::is_always_lock_free);
 
 static_assert(sizeof(Adapter) > 0U);
+
+enum class CallbackKind : std::uint8_t {
+    OnJobPicked,
+    Eof,
+};
+
+struct CallbackTimingStart final {
+    std::uint32_t cycles = 0U;
+    bool enabled = false;
+    bool during_wait = false;
+};
+
+CallbackTimingStart IRAM_ATTR callback_timing_start(Adapter *adapter) noexcept
+{
+    if (adapter == nullptr ||
+        !adapter->timing_active.load(std::memory_order_relaxed)) {
+        return {};
+    }
+    return CallbackTimingStart{
+        .cycles = esp_cpu_get_cycle_count(),
+        .enabled = true,
+        .during_wait = adapter->wait_active.load(std::memory_order_relaxed),
+    };
+}
+
+void IRAM_ATTR callback_timing_finish(Adapter *adapter, CallbackKind kind,
+                                      CallbackTimingStart start) noexcept
+{
+    if (adapter == nullptr || !start.enabled) {
+        return;
+    }
+    const std::uint32_t elapsed = esp_cpu_get_cycle_count() - start.cycles;
+    std::atomic<std::uint32_t> *target = nullptr;
+    if (kind == CallbackKind::OnJobPicked) {
+        target = start.during_wait ? &adapter->on_job_wait_cycles :
+                                    &adapter->on_job_outside_cycles;
+    } else {
+        target = start.during_wait ? &adapter->eof_wait_cycles :
+                                    &adapter->eof_outside_cycles;
+    }
+    target->fetch_add(elapsed, std::memory_order_relaxed);
+}
+
+void reset_timing(Adapter *adapter) noexcept
+{
+    adapter->wait_active.store(false, std::memory_order_relaxed);
+    adapter->on_job_wait_cycles.store(0U, std::memory_order_relaxed);
+    adapter->on_job_outside_cycles.store(0U, std::memory_order_relaxed);
+    adapter->eof_wait_cycles.store(0U, std::memory_order_relaxed);
+    adapter->eof_outside_cycles.store(0U, std::memory_order_relaxed);
+}
+
+void copy_timing(Adapter *adapter, CopyTiming *timing,
+                 std::uint64_t total_wall_us,
+                 std::uint64_t blocked_wait_us) noexcept
+{
+    if (timing == nullptr) {
+        return;
+    }
+    *timing = CopyTiming{
+        .total_wall_us = total_wall_us,
+        .blocked_wait_us = blocked_wait_us,
+        .on_job_cycles_during_wait = adapter->on_job_wait_cycles.load(
+            std::memory_order_relaxed),
+        .on_job_cycles_outside_wait = adapter->on_job_outside_cycles.load(
+            std::memory_order_relaxed),
+        .eof_cycles_during_wait = adapter->eof_wait_cycles.load(
+            std::memory_order_relaxed),
+        .eof_cycles_outside_wait = adapter->eof_outside_cycles.load(
+            std::memory_order_relaxed),
+    };
+}
 
 bool terminalize_ambiguous(Adapter *adapter) noexcept
 {
@@ -144,12 +225,16 @@ bool IRAM_ATTR dma2d_complete_callback(dma2d_channel_handle_t,
                                        dma2d_event_data_t *,
                                        void *user_data)
 {
+    const CallbackTimingStart timing = callback_timing_start(
+        static_cast<Adapter *>(user_data));
     auto *adapter = static_cast<Adapter *>(user_data);
     if (adapter == nullptr || adapter->complete == nullptr) {
         return false;
     }
     (void)complete_from_active(adapter);
-    return signal_completion(adapter, ESP_OK);
+    const bool result = signal_completion(adapter, ESP_OK);
+    callback_timing_finish(adapter, CallbackKind::Eof, timing);
+    return result;
 }
 
 bool IRAM_ATTR dma2d_job_picked_callback(
@@ -158,20 +243,27 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     void *user_data)
 {
     auto *adapter = static_cast<Adapter *>(user_data);
+    const CallbackTimingStart timing = callback_timing_start(adapter);
     if (adapter == nullptr || channels == nullptr || channel_count != 2U) {
         if (adapter != nullptr) {
             (void)terminalize_ambiguous(adapter);
-            return signal_completion(adapter, ESP_ERR_INVALID_ARG);
+            const bool result = signal_completion(adapter, ESP_ERR_INVALID_ARG);
+            callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
+            return result;
         }
         return false;
     }
     if (!activate_from_queue(adapter)) {
         const State state = adapter->state.load(std::memory_order_acquire);
         if (state == State::RetainedAmbiguous) {
-            return signal_completion(adapter, ESP_ERR_TIMEOUT);
+            const bool result = signal_completion(adapter, ESP_ERR_TIMEOUT);
+            callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
+            return result;
         }
         (void)terminalize_ambiguous(adapter);
-        return signal_completion(adapter, ESP_ERR_INVALID_STATE);
+        const bool result = signal_completion(adapter, ESP_ERR_INVALID_STATE);
+        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
+        return result;
     }
     dma2d_channel_handle_t tx = nullptr;
     dma2d_channel_handle_t rx = nullptr;
@@ -184,7 +276,9 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     }
     if (tx == nullptr || rx == nullptr) {
         (void)terminalize_ambiguous(adapter);
-        return signal_completion(adapter, ESP_ERR_INVALID_ARG);
+        const bool result = signal_completion(adapter, ESP_ERR_INVALID_ARG);
+        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
+        return result;
     }
 
     const dma2d_trigger_t tx_trigger{
@@ -223,8 +317,11 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     }
     if (result != ESP_OK) {
         (void)terminalize_ambiguous(adapter);
-        return signal_completion(adapter, result);
+        const bool callback_result = signal_completion(adapter, result);
+        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
+        return callback_result;
     }
+    callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
     return false;
 }
 
@@ -322,8 +419,10 @@ esp_err_t create(Adapter **ret_adapter) noexcept
 
 esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
                        std::uint8_t *destination,
-                       std::size_t dst_x_pixels) noexcept
+                       std::size_t dst_x_pixels, CopyTiming *timing) noexcept
 {
+    const std::uint64_t total_start = timing == nullptr ? 0U :
+        static_cast<std::uint64_t>(esp_timer_get_time());
     if (adapter == nullptr || source == nullptr || destination == nullptr ||
         (dst_x_pixels != kEvenXOffsetPixels &&
          dst_x_pixels != kOddXOffsetPixels) ||
@@ -333,6 +432,10 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
         return ESP_ERR_INVALID_ARG;
     }
     while (xSemaphoreTake(adapter->complete, 0U) == pdTRUE) {
+    }
+    if (timing != nullptr) {
+        reset_timing(adapter);
+        adapter->timing_active.store(true, std::memory_order_release);
     }
     initialize_descriptor(adapter->tx_descriptor,
                           const_cast<std::uint8_t *>(source),
@@ -353,6 +456,7 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
         esp_cache_msync(adapter->rx_descriptor, kDescriptorStorageBytes,
                         ESP_CACHE_MSYNC_FLAG_DIR_C2M |
                             ESP_CACHE_MSYNC_FLAG_INVALIDATE) != ESP_OK) {
+        adapter->timing_active.store(false, std::memory_order_release);
         return ESP_FAIL;
     }
     adapter->completion_status.store(ESP_OK, std::memory_order_release);
@@ -361,19 +465,34 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
         adapter->pool, &adapter->transaction_config, adapter->transaction);
     if (enqueue_result != ESP_OK) {
         adapter->state.store(State::Idle, std::memory_order_release);
+        adapter->timing_active.store(false, std::memory_order_release);
         return enqueue_result;
     }
-    if (xSemaphoreTake(adapter->complete, kCompletionTimeout) != pdTRUE) {
+    if (timing != nullptr) {
+        adapter->wait_active.store(true, std::memory_order_release);
+    }
+    const std::uint64_t wait_start = timing == nullptr ? 0U :
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    const BaseType_t wait_result = xSemaphoreTake(adapter->complete,
+                                                  kCompletionTimeout);
+    if (timing != nullptr) {
+        adapter->wait_active.store(false, std::memory_order_release);
+    }
+    const std::uint64_t wait_end = timing == nullptr ? 0U :
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    if (wait_result != pdTRUE) {
         /* The pinned v5.5.4 cancellation path has no transaction identity
          * and races the DMA2D ISR.  Leave every callback-reachable object
          * retained instead. */
         (void)terminalize_ambiguous(adapter);
+        adapter->timing_active.store(false, std::memory_order_release);
         return ESP_ERR_TIMEOUT;
     }
     if (adapter->state.load(std::memory_order_acquire) != State::Completed) {
         /* A setup failure wakes the task without ever granting ownership of
          * the buffers back to the caller. */
         (void)terminalize_ambiguous(adapter);
+        adapter->timing_active.store(false, std::memory_order_release);
         return static_cast<esp_err_t>(adapter->completion_status.load(
             std::memory_order_acquire));
     }
@@ -381,18 +500,28 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C) != ESP_OK ||
         adapter->rx_descriptor->err_eof != 0U) {
         adapter->state.store(State::Failed, std::memory_order_release);
+        adapter->timing_active.store(false, std::memory_order_release);
         return ESP_FAIL;
     }
     if (esp_cache_msync(destination, kDestinationSpanBytes,
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C) != ESP_OK) {
         adapter->state.store(State::Failed, std::memory_order_release);
+        adapter->timing_active.store(false, std::memory_order_release);
         return ESP_FAIL;
     }
     const auto status = static_cast<esp_err_t>(
         adapter->completion_status.load(std::memory_order_acquire));
     if (status != ESP_OK || !return_to_idle(adapter)) {
         (void)terminalize_ambiguous(adapter);
+        adapter->timing_active.store(false, std::memory_order_release);
         return status == ESP_OK ? ESP_FAIL : status;
+    }
+    const std::uint64_t total_end = timing == nullptr ? 0U :
+        static_cast<std::uint64_t>(esp_timer_get_time());
+    if (timing != nullptr) {
+        copy_timing(adapter, timing, total_end - total_start,
+                    wait_end - wait_start);
+        adapter->timing_active.store(false, std::memory_order_release);
     }
     return status;
 }
