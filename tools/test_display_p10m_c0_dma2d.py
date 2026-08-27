@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import re
 import shutil
@@ -22,6 +23,8 @@ ASM = ROOT / "firmware/components/p4_nano_display/p4_nano_display_exact2x_pie.S"
 MAIN = ROOT / "firmware/main/main.cpp"
 MAIN_CMAKE = ROOT / "firmware/main/CMakeLists.txt"
 BUILD = ROOT / "tools/emu/build-production.sh"
+LIVE_GOLDEN = ROOT / "tests/guest/np2video-live/golden.json"
+TEXT_GOLDEN = ROOT / "tests/guest/np2video/golden.json"
 
 
 def require(condition: bool, message: str) -> None:
@@ -58,6 +61,34 @@ def main() -> int:
     integration = (adapter + adapter_header + proto + proto_header + live +
                    live_cmake + display_cmake + main_cpp + main_cmake + build)
 
+    descriptor_start = build.index("np2video_descriptor=")
+    descriptor_end = build.index("\nfi", descriptor_start)
+    descriptor_selector = build[descriptor_start:descriptor_end]
+    require("exact2x_dma2d_correctness" in descriptor_selector and
+            "tests/guest/np2video-live/golden.json" in descriptor_selector,
+            "C1 selector must choose the live NP2VIDEO descriptor")
+    header_selector_starts = [match.start() for match in re.finditer(
+        r"if \(\( live_display \|\|", build[descriptor_end:])]
+    require(len(header_selector_starts) >= 2,
+            "C1 must retain initial and persistent live-header selectors")
+    for relative_start in header_selector_starts:
+        header_selector_start = descriptor_end + relative_start
+        header_selector_end = build.index("\nfi", header_selector_start)
+        header_selector = build[header_selector_start:header_selector_end]
+        require("exact2x_dma2d_correctness" in header_selector,
+                "C1 live-header selector omitted from one generation path")
+    live_golden = json.loads(LIVE_GOLDEN.read_text(encoding="utf-8"))
+    text_golden = json.loads(TEXT_GOLDEN.read_text(encoding="utf-8"))
+    require(live_golden.get("schema_version") == 1 and
+            live_golden.get("fixture_id") == "np2video-7b2d-live-vram" and
+            live_golden.get("scene_id") == 2 and
+            live_golden.get("fixture_sha256") ==
+                "81975ad74c7b1769a5aa63977ee9c18b020d6381e858522cb4cb7c7861f85604" and
+            live_golden.get("image_size") == 1261568,
+            "live fixture metadata changed")
+    require(live_golden != text_golden,
+            "fixture selector regression must distinguish live and text metadata")
+
     for fragment in (
         "--exact2x-dma2d-correctness",
         "P4_NANO_EXACT2X_DMA2D_CORRECTNESS_PROFILE",
@@ -91,6 +122,23 @@ def main() -> int:
         require(fragment in adapter, f"adapter contract missing: {fragment}")
     require("dma2d_force_end" not in adapter,
             "v5.5.4 force_end must be disabled in the private adapter")
+    destination_calls = [match.start() for match in re.finditer(
+        r"esp_cache_msync\(destination", adapter)]
+    require(len(destination_calls) == 2,
+            "adapter must retain exactly one pre-DMA and one post-DMA destination sync")
+    pre_destination_sync = adapter[destination_calls[0]:destination_calls[1]]
+    post_destination_sync = adapter[destination_calls[1]:]
+    post_destination_sync = post_destination_sync[:post_destination_sync.index(") != ESP_OK")]
+    require("ESP_CACHE_MSYNC_FLAG_DIR_C2M" in pre_destination_sync and
+            "ESP_CACHE_MSYNC_FLAG_INVALIDATE" in pre_destination_sync and
+            "ESP_CACHE_MSYNC_FLAG_UNALIGNED" in pre_destination_sync,
+            "pre-DMA destination cache policy changed")
+    require("ESP_CACHE_MSYNC_FLAG_DIR_M2C" in post_destination_sync and
+            "ESP_CACHE_MSYNC_FLAG_UNALIGNED" not in post_destination_sync and
+            "kDestinationSpanBytes" in post_destination_sync,
+            "post-DMA destination M2C must be aligned and retain its span")
+    require("esp_cache_msync(adapter->rx_descriptor, kDescriptorStorageBytes,\n                        ESP_CACHE_MSYNC_FLAG_DIR_M2C)" in adapter,
+            "descriptor M2C validation sync missing")
     require(adapter.count("dma2d_enqueue(") == 1,
             "one private adapter transaction must be enqueued per pass")
     require(adapter.count("dma2d_start(") == 2,

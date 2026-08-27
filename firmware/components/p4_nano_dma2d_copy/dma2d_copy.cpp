@@ -384,8 +384,7 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
         return ESP_FAIL;
     }
     if (esp_cache_msync(destination, kDestinationSpanBytes,
-                        ESP_CACHE_MSYNC_FLAG_DIR_M2C |
-                            ESP_CACHE_MSYNC_FLAG_UNALIGNED) != ESP_OK) {
+                        ESP_CACHE_MSYNC_FLAG_DIR_M2C) != ESP_OK) {
         adapter->state.store(State::Failed, std::memory_order_release);
         return ESP_FAIL;
     }

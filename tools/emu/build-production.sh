@@ -840,7 +840,7 @@ fi
 
 readonly NP2VIDEO_GOLDEN_HEADER="${build_dir}/generated/np2video_golden.h"
 np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video/golden.json"
-if (( live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark || exact2x_internal_source_benchmark || exact2x_grouped_store_benchmark || ppa_pie_overlap_benchmark || ppa_pie_burst_benchmark )); then
+if (( live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark || exact2x_internal_source_benchmark || exact2x_grouped_store_benchmark || exact2x_dma2d_correctness || ppa_pie_overlap_benchmark || ppa_pie_burst_benchmark )); then
     np2video_descriptor="${REPOSITORY_ROOT}/tests/guest/np2video-live/golden.json"
 fi
 
@@ -1173,7 +1173,7 @@ if (( needs_initial_config )); then
             --output "${NP2VIDEO_GOLDEN_HEADER}"
     fi
 fi
-if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark || exact2x_internal_source_benchmark || exact2x_grouped_store_benchmark || ppa_pie_overlap_benchmark || ppa_pie_burst_benchmark )); then
+if (( live_display || live_display_motion_validation || live_display_benchmark || live_display_transform_isolated_benchmark || transform_isolated_compute_control_benchmark || transform_isolated_psram_read_control_benchmark || ppa_rotation_benchmark || ppa_internal_tile_benchmark || exact2x_scaler_benchmark || exact2x_internal_source_benchmark || exact2x_grouped_store_benchmark || exact2x_dma2d_correctness || ppa_pie_overlap_benchmark || ppa_pie_burst_benchmark )); then
     mkdir -p -- "$(dirname -- "${NP2VIDEO_GOLDEN_HEADER}")"
     python3 "${REPOSITORY_ROOT}/tools/guest/generate_np2video_golden_header.py" \
         --descriptor "${np2video_descriptor}" \
