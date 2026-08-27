@@ -81,11 +81,16 @@ def main() -> int:
         "SOC_DMA2D_TRIG_PERIPH_M2M_TX",
         "SOC_DMA2D_TRIG_PERIPH_M2M_RX",
         "dma2d_acquire_pool", "dma2d_release_pool", "dma2d_enqueue",
-        "dma2d_force_end", "dma2d_set_desc_addr", "dma2d_start",
+        "dma2d_set_desc_addr", "dma2d_start",
         "xSemaphoreGiveFromISR", "xSemaphoreTake",
-        "state.store(State::RetainedAmbiguous",
+        "State::RetainedAmbiguous",
+        "static_assert(std::atomic<State>::is_always_lock_free)",
+        "terminalize_ambiguous", "activate_from_queue",
+        "complete_from_active", "return_to_idle", "signal_completion",
     ):
         require(fragment in adapter, f"adapter contract missing: {fragment}")
+    require("dma2d_force_end" not in adapter,
+            "v5.5.4 force_end must be disabled in the private adapter")
     require(adapter.count("dma2d_enqueue(") == 1,
             "one private adapter transaction must be enqueued per pass")
     require(adapter.count("dma2d_start(") == 2,
@@ -103,6 +108,27 @@ def main() -> int:
             "kDescriptorStorageBytes = 64U" in adapter and
             "sizeof(dma2d_descriptor_t) == 24U" in adapter,
             "descriptor retained-storage contract missing")
+    require("if (state != State::Idle && state != State::Failed)" in adapter,
+            "quiescent descriptor/cache failures must remain cleanable")
+    require("if (observed == State::RetainedAmbiguous)" in adapter and
+            "if (!activate_from_queue(adapter))" in adapter,
+            "terminal RetainedAmbiguous transition guard missing")
+    timeout_start = adapter.index(
+        "if (xSemaphoreTake(adapter->complete, kCompletionTimeout)")
+    timeout_end = adapter.index("if (adapter->state.load", timeout_start)
+    timeout_path = adapter[timeout_start:timeout_end]
+    require("terminalize_ambiguous(adapter)" in timeout_path and
+            "ESP_ERR_TIMEOUT" in timeout_path and
+            "dma2d_force_end" not in timeout_path,
+            "timeout must retain the ambiguous adapter without cancellation")
+    setup_failure = adapter.index(
+        "if (result != ESP_OK)",
+        adapter.index("dma2d_job_picked_callback"))
+    setup_failure_end = adapter.index("return false;", setup_failure)
+    setup_path = adapter[setup_failure:setup_failure_end]
+    require("terminalize_ambiguous(adapter)" in setup_path and
+            "signal_completion(adapter, result)" in setup_path,
+            "job-pick setup/start failure must retain and wake the task")
 
     # The private header must stay quarantined in the adapter component.
     private_users = []
@@ -128,6 +154,12 @@ def main() -> int:
         'print_memory_preflight("before_alloc")',
         'print_memory_preflight("after_alloc")',
         "P4_NANO_EXACT2X_DMA2D_CLEANUP result=RETAINED",
+        "run_pipeline", "pipeline_failure", "FailureStage::DmaEven",
+        "FailureStage::DmaOdd", "reason=retained_reentry",
+        "dma_timeout_retained", "dma_setup_failure_retained",
+        "reason=ambiguous_dma_ownership", "reason=input",
+        "reason=allocation", "reason=ppa_register", "reason=cleanup_retained",
+        "result=PASS state=Idle", "retain_resources",
     ):
         require(fragment in proto, f"prototype correctness contract missing: {fragment}")
     require("PPA_TRANS_MODE_NON_BLOCKING" not in proto,
@@ -142,6 +174,52 @@ def main() -> int:
             "even DMA pass must precede odd DMA pass")
     require("lifetime_must_be_retained() noexcept" in proto_header,
             "ambiguous cleanup lifetime result is not exposed")
+    require("if (s_retained_resources.adapter != nullptr)" in proto,
+            "retained resource set must never be overwritten")
+
+    pipeline_start = proto.index("PipelineResult run_pipeline(")
+    pipeline_end = proto.index("\n}\n\nconst char *failure_stage_name", pipeline_start)
+    pipeline_body = proto[pipeline_start:pipeline_end]
+    require("return pipeline_failure(FailureStage::Ppa" in pipeline_body and
+            "return pipeline_failure(FailureStage::Horizontal" in pipeline_body,
+            "PPA/horizontal failures must return from the whole pipeline")
+    require(re.search(
+        r"const esp_err_t even_result = dma2d::copy_strided\(.*?\);\s*"
+        r"if \(even_result != ESP_OK\) \{\s*"
+        r"return pipeline_failure\(FailureStage::DmaEven",
+        pipeline_body, re.S),
+            "EVEN DMA failure must return before any later pipeline work")
+    require(re.search(
+        r"const esp_err_t odd_result = dma2d::copy_strided\(.*?\);\s*"
+        r"if \(odd_result != ESP_OK\) \{\s*"
+        r"return pipeline_failure\(FailureStage::DmaOdd",
+        pipeline_body, re.S),
+            "ODD DMA failure must return before any later pipeline work")
+    require("break;" not in pipeline_body,
+            "fail-stop pipeline must not rely on an inner-loop break")
+    require(pipeline_body.count("prepare_tile(") == 1 and
+            pipeline_body.count("exact2x_pie_horizontal64_aligned(") == 1 and
+            pipeline_body.count("dma2d::copy_strided(") == 2,
+            "normal pipeline operation structure changed")
+    source_gate = proto.index("PipelineResult pipeline = source_crc_before ==")
+    require(proto.index("const std::uint32_t source_crc_before") < source_gate and
+            "pipeline_failure(FailureStage::Input" in proto[source_gate:source_gate + 320],
+            "source prerequisite failure must stop before PPA/PIE/DMA work")
+    reentry_guard = proto.index("if (lifetime_must_be_retained())")
+    first_alloc = proto.index("heap_caps_aligned_alloc")
+    require(reentry_guard < first_alloc,
+            "retained-resource re-entry guard must precede allocation")
+    retain_guard = proto.index("if (retain) {")
+    destination_sync = proto.index("esp_cache_msync(destination", retain_guard)
+    destination_memcmp = proto.index("std::memcmp(destination, reference", destination_sync)
+    retain_return = proto.index("return ESP_FAIL;", retain_guard)
+    retain_block = proto[retain_guard:retain_return]
+    require(retain_guard < destination_sync < destination_memcmp and
+            "retain_resources(adapter, tile, staging, destination)" in retain_block and
+            "esp_cache_msync" not in retain_block and
+            "std::memcmp" not in retain_block and
+            "heap_caps_free" not in retain_block,
+            "ambiguous ownership must bypass destination validation and free")
 
     helper_start = assembly.index("exact2x_pie_horizontal64_aligned:")
     helper_end = assembly.index(".size exact2x_pie_horizontal64_aligned", helper_start)

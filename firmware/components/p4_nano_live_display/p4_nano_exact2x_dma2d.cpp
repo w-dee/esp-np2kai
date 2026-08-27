@@ -60,6 +60,9 @@ void retain_resources(dma2d::Adapter *adapter, std::uint8_t *tile,
                       std::uint8_t *staging,
                       std::uint8_t *destination) noexcept
 {
+    if (s_retained_resources.adapter != nullptr) {
+        return;
+    }
     s_retained_resources = RetainedResources{
         .adapter = adapter,
         .tile = tile,
@@ -147,6 +150,137 @@ bool prepare_tile(ppa_client_handle_t client, const std::uint8_t *original,
     return ppa_do_scale_rotate_mirror(client, &operation) == ESP_OK;
 }
 
+enum class FailureStage : std::uint8_t {
+    None,
+    Input,
+    Ppa,
+    Horizontal,
+    DmaEven,
+    DmaOdd,
+};
+
+struct PipelineResult final {
+    bool success = false;
+    FailureStage failure_stage = FailureStage::None;
+    std::size_t tile_index = 0U;
+    std::size_t chunk_index = 0U;
+    esp_err_t status = ESP_OK;
+    std::uint32_t rotated_crc = 0xffffffffU;
+};
+
+PipelineResult pipeline_failure(FailureStage stage, std::size_t tile_index,
+                                std::size_t chunk_index,
+                                esp_err_t status) noexcept
+{
+    return PipelineResult{
+        .success = false,
+        .failure_stage = stage,
+        .tile_index = tile_index,
+        .chunk_index = chunk_index,
+        .status = status,
+        .rotated_crc = 0xffffffffU,
+    };
+}
+
+PipelineResult run_pipeline(ppa_client_handle_t client,
+                            const std::uint8_t *original,
+                            std::uint8_t *tile, std::uint8_t *staging,
+                            std::uint8_t *destination,
+                            dma2d::Adapter *adapter) noexcept
+{
+    PipelineResult result{};
+    for (std::size_t tile_index = 0U; tile_index < kTileCount; ++tile_index) {
+        if (!prepare_tile(client, original, tile, tile_index)) {
+            return pipeline_failure(FailureStage::Ppa, tile_index, 0U,
+                                    ESP_FAIL);
+        }
+        result.rotated_crc = exact2x::crc32_update(
+            result.rotated_crc, tile, kTileBytes);
+        for (std::size_t chunk = 0U; chunk < 2U; ++chunk) {
+            const auto *chunk_source = tile + chunk * kChunkBytes;
+            if ((reinterpret_cast<std::uintptr_t>(chunk_source) & 0xFU) != 0U) {
+                return pipeline_failure(FailureStage::Horizontal, tile_index,
+                                        chunk, ESP_ERR_INVALID_ARG);
+            }
+            p4_nano_display::exact2x_pie_horizontal64_aligned(
+                reinterpret_cast<const std::uint16_t *>(chunk_source),
+                reinterpret_cast<std::uint16_t *>(staging));
+            if (!horizontal_matches(chunk_source, staging)) {
+                return pipeline_failure(FailureStage::Horizontal, tile_index,
+                                        chunk, ESP_FAIL);
+            }
+            auto *chunk_destination = destination +
+                tile_index * kTileDestinationBytes +
+                chunk * kChunkDestinationDelta;
+            const esp_err_t even_result = dma2d::copy_strided(
+                adapter, staging, chunk_destination,
+                dma2d::kEvenXOffsetPixels);
+            if (even_result != ESP_OK) {
+                return pipeline_failure(FailureStage::DmaEven, tile_index,
+                                        chunk, even_result);
+            }
+            const esp_err_t odd_result = dma2d::copy_strided(
+                adapter, staging, chunk_destination,
+                dma2d::kOddXOffsetPixels);
+            if (odd_result != ESP_OK) {
+                return pipeline_failure(FailureStage::DmaOdd, tile_index,
+                                        chunk, odd_result);
+            }
+        }
+    }
+    result.success = true;
+    return result;
+}
+
+const char *failure_stage_name(FailureStage stage) noexcept
+{
+    switch (stage) {
+    case FailureStage::Input:
+        return "input";
+    case FailureStage::Ppa:
+        return "ppa";
+    case FailureStage::Horizontal:
+        return "horizontal";
+    case FailureStage::DmaEven:
+        return "dma_even";
+    case FailureStage::DmaOdd:
+        return "dma_odd";
+    case FailureStage::None:
+    default:
+        return "none";
+    }
+}
+
+const char *failure_parity_name(FailureStage stage) noexcept
+{
+    return stage == FailureStage::DmaOdd ? "odd" :
+           stage == FailureStage::DmaEven ? "even" : "none";
+}
+
+const char *failure_reason(const PipelineResult &result,
+                           bool retained) noexcept
+{
+    if (retained && (result.failure_stage == FailureStage::DmaEven ||
+                     result.failure_stage == FailureStage::DmaOdd)) {
+        return result.status == ESP_ERR_TIMEOUT ?
+            "dma_timeout_retained" : "dma_setup_failure_retained";
+    }
+    return result.failure_stage == FailureStage::DmaEven ||
+           result.failure_stage == FailureStage::DmaOdd ?
+        "dma_failure_clean" : failure_stage_name(result.failure_stage);
+}
+
+void print_pipeline_failure(const PipelineResult &result,
+                            bool retained) noexcept
+{
+    std::printf("P4_NANO_EXACT2X_DMA2D_FAILURE stage=%s tile_index=%zu "
+                "chunk_index=%zu parity=%s status=%d reason=%s retained=%d\n",
+                failure_stage_name(result.failure_stage), result.tile_index,
+                result.chunk_index, failure_parity_name(result.failure_stage),
+                static_cast<int>(result.status),
+                failure_reason(result, retained), retained ? 1 : 0);
+}
+
 } // namespace
 
 namespace p4_nano_exact2x_dma2d {
@@ -158,6 +292,15 @@ bool lifetime_must_be_retained() noexcept
 
 esp_err_t run(const Input &input)
 {
+    if (lifetime_must_be_retained()) {
+        std::printf("P4_NANO_EXACT2X_DMA2D_FAILURE stage=reentry "
+                    "tile_index=0 chunk_index=0 parity=none status=%d "
+                    "reason=retained_reentry retained=1\n",
+                    static_cast<int>(ESP_ERR_INVALID_STATE));
+        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL "
+                    "reason=retained_reentry\n");
+        return ESP_ERR_INVALID_STATE;
+    }
     const bool input_valid = input.original_source != nullptr &&
         input.original_source_bytes == kSourceBytes &&
         esp_ptr_external_ram(input.original_source) &&
@@ -241,11 +384,20 @@ esp_err_t run(const Input &input)
     ppa_client_handle_t client = nullptr;
     result = ppa_register_client(&client_config, &client);
     if (result != ESP_OK || client == nullptr) {
-        (void)dma2d::destroy(adapter);
-        heap_caps_free(tile);
-        heap_caps_free(staging);
-        heap_caps_free(destination);
-        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL reason=ppa_register\n");
+        const esp_err_t destroy_result = dma2d::destroy(adapter);
+        if (destroy_result != ESP_OK) {
+            (void)retain_resources(adapter, tile, staging, destination);
+            std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=RETAINED "
+                        "state=ReleaseFailed\n");
+        } else {
+            heap_caps_free(tile);
+            heap_caps_free(staging);
+            heap_caps_free(destination);
+            std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=PASS "
+                        "state=Idle\n");
+        }
+        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL "
+                    "reason=ppa_register\n");
         return result == ESP_OK ? ESP_FAIL : result;
     }
     std::printf("P4_NANO_EXACT2X_DMA2D_PPA status=START rotation=CCW90 "
@@ -257,52 +409,56 @@ esp_err_t run(const Input &input)
 
     const std::uint32_t source_crc_before =
         crc32(input.original_source, kSourceBytes);
-    bool ppa_ok = source_crc_before == kExpectedSourceCrc;
-    bool horizontal_ok = true;
-    bool dma_ok = true;
-    std::uint32_t rotated_crc = 0xffffffffU;
-    for (std::size_t tile_index = 0U;
-         ppa_ok && tile_index < kTileCount; ++tile_index) {
-        if (!prepare_tile(client, input.original_source, tile, tile_index)) {
-            ppa_ok = false;
-            break;
-        }
-        rotated_crc = exact2x::crc32_update(rotated_crc, tile, kTileBytes);
-        for (std::size_t chunk = 0U; chunk < 2U; ++chunk) {
-            const auto *chunk_source = tile + chunk * kChunkBytes;
-            horizontal_ok = horizontal_ok &&
-                ((reinterpret_cast<std::uintptr_t>(chunk_source) & 0xFU) == 0U);
-            p4_nano_display::exact2x_pie_horizontal64_aligned(
-                reinterpret_cast<const std::uint16_t *>(chunk_source),
-                reinterpret_cast<std::uint16_t *>(staging));
-            horizontal_ok = horizontal_ok &&
-                horizontal_matches(chunk_source, staging);
-            auto *chunk_destination = destination +
-                tile_index * kTileDestinationBytes +
-                chunk * kChunkDestinationDelta;
-            if (horizontal_ok &&
-                dma2d::copy_strided(adapter, staging, chunk_destination,
-                                    dma2d::kEvenXOffsetPixels) != ESP_OK) {
-                dma_ok = false;
-                break;
-            }
-            if (horizontal_ok &&
-                dma2d::copy_strided(adapter, staging, chunk_destination,
-                                    dma2d::kOddXOffsetPixels) != ESP_OK) {
-                dma_ok = false;
-                break;
-            }
-        }
-    }
-    rotated_crc ^= 0xffffffffU;
+    PipelineResult pipeline = source_crc_before == kExpectedSourceCrc ?
+        run_pipeline(client, input.original_source, tile, staging, destination,
+                     adapter) :
+        pipeline_failure(FailureStage::Input, 0U, 0U, ESP_ERR_INVALID_CRC);
+    const std::uint32_t rotated_crc =
+        pipeline.rotated_crc ^ 0xffffffffU;
     const esp_err_t unregister_result = ppa_unregister_client(client);
+    const bool retain = dma2d::lifetime_must_be_retained(adapter);
+    if (!pipeline.success) {
+        print_pipeline_failure(pipeline, retain);
+    }
     std::printf("P4_NANO_EXACT2X_DMA2D_PPA result=%s rotated_crc=0x%08" PRIx32
                 " expected=0x%08" PRIx32 "\n",
-                ppa_ok ? "PASS" : "FAIL", rotated_crc, kExpectedRotatedCrc);
+                pipeline.success ? "PASS" : "FAIL", rotated_crc,
+                kExpectedRotatedCrc);
     std::printf("P4_NANO_EXACT2X_DMA2D_HORIZONTAL result=%s\n",
-                horizontal_ok ? "PASS" : "FAIL");
+                pipeline.success ? "PASS" : "FAIL");
     std::printf("P4_NANO_EXACT2X_DMA2D_DMA result=%s\n",
-                dma_ok ? "PASS" : "FAIL");
+                pipeline.success ? "PASS" : "FAIL");
+
+    if (retain) {
+        std::printf("P4_NANO_EXACT2X_DMA2D_CORRECTNESS_SKIPPED "
+                    "reason=ambiguous_dma_ownership\n");
+        (void)retain_resources(adapter, tile, staging, destination);
+        std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=RETAINED "
+                    "state=RetainedAmbiguous\n");
+        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL "
+                    "reason=ambiguous_dma_ownership\n");
+        return ESP_FAIL;
+    }
+
+    if (!pipeline.success || unregister_result != ESP_OK) {
+        std::printf("P4_NANO_EXACT2X_DMA2D_CORRECTNESS_SKIPPED "
+                    "reason=pipeline_abort\n");
+        const esp_err_t destroy_result = dma2d::destroy(adapter);
+        if (destroy_result != ESP_OK) {
+            (void)retain_resources(adapter, tile, staging, destination);
+            std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=RETAINED "
+                        "state=ReleaseFailed\n");
+        } else {
+            heap_caps_free(tile);
+            heap_caps_free(staging);
+            heap_caps_free(destination);
+            std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=PASS "
+                        "state=Idle\n");
+        }
+        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL "
+                    "reason=pipeline_abort\n");
+        return ESP_FAIL;
+    }
 
     bool destination_sync_ok =
         esp_cache_msync(destination, kDestinationBytes,
@@ -325,8 +481,8 @@ esp_err_t run(const Input &input)
             reinterpret_cast<const std::uint16_t *>(destination));
     const bool reference_memcmp_ok = reference_ok && destination_sync_ok &&
         std::memcmp(destination, reference, kDestinationBytes) == 0;
-    const bool correctness_ok = ppa_ok && horizontal_ok && dma_ok &&
-        unregister_result == ESP_OK && source_crc_after == source_crc_before &&
+    const bool correctness_ok = pipeline.success &&
+        source_crc_after == source_crc_before &&
         source_crc_before == kExpectedSourceCrc &&
         rotated_crc == kExpectedRotatedCrc &&
         destination_crc == kExpectedDestinationCrc && pixel_mapping_ok &&
@@ -342,26 +498,22 @@ esp_err_t run(const Input &input)
                 destination_crc == kExpectedDestinationCrc ? "PASS" : "FAIL");
     heap_caps_free(reference);
 
-    const bool retain = dma2d::lifetime_must_be_retained(adapter);
-    esp_err_t destroy_result = retain ? ESP_ERR_INVALID_STATE
-                                      : dma2d::destroy(adapter);
-    if (retain || destroy_result != ESP_OK) {
-        retain_resources(adapter, tile, staging, destination);
+    const esp_err_t destroy_result = dma2d::destroy(adapter);
+    if (destroy_result != ESP_OK) {
+        (void)retain_resources(adapter, tile, staging, destination);
         std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=RETAINED "
-                    "state=%s\n",
-                    retain ? "RetainedAmbiguous" : "ReleaseFailed");
-    } else {
-        std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=%s state=Idle\n",
-                    destroy_result == ESP_OK ? "PASS" : "FAIL");
-        heap_caps_free(tile);
-        heap_caps_free(staging);
-        heap_caps_free(destination);
+                    "state=ReleaseFailed\n");
+        std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=FAIL "
+                    "reason=cleanup_retained\n");
+        return ESP_FAIL;
     }
-    const bool result_ok = correctness_ok && destroy_result == ESP_OK &&
-                           !lifetime_must_be_retained();
+    heap_caps_free(tile);
+    heap_caps_free(staging);
+    heap_caps_free(destination);
+    std::printf("P4_NANO_EXACT2X_DMA2D_CLEANUP result=PASS state=Idle\n");
     std::printf("P4_NANO_EXACT2X_DMA2D_RESULT=%s\n",
-                result_ok ? "PASS" : "FAIL");
-    return result_ok ? ESP_OK : ESP_FAIL;
+                correctness_ok ? "PASS" : "FAIL");
+    return correctness_ok ? ESP_OK : ESP_FAIL;
 }
 
 } // namespace p4_nano_exact2x_dma2d

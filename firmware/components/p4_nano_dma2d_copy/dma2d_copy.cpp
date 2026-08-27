@@ -42,7 +42,6 @@
 
 static_assert(sizeof(dma2d_descriptor_t) == 24U);
 static_assert(alignof(dma2d_descriptor_t) >= 8U);
-static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 
 namespace p4_nano_dma2d_copy {
 
@@ -54,6 +53,9 @@ enum class State : std::uint8_t {
     Failed,
     RetainedAmbiguous,
 };
+
+static_assert(std::atomic<State>::is_always_lock_free);
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
 
 struct Adapter final {
     dma2d_pool_handle_t pool = nullptr;
@@ -76,6 +78,45 @@ static_assert(kCompletionTimeout > 0);
 
 static_assert(sizeof(Adapter) > 0U);
 
+bool terminalize_ambiguous(Adapter *adapter) noexcept
+{
+    State observed = adapter->state.load(std::memory_order_acquire);
+    for (;;) {
+        if (observed == State::RetainedAmbiguous) {
+            return false;
+        }
+        if (adapter->state.compare_exchange_weak(
+                observed, State::RetainedAmbiguous,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
+bool activate_from_queue(Adapter *adapter) noexcept
+{
+    State expected = State::Queued;
+    return adapter->state.compare_exchange_strong(
+        expected, State::Active, std::memory_order_acq_rel,
+        std::memory_order_acquire);
+}
+
+bool complete_from_active(Adapter *adapter) noexcept
+{
+    State expected = State::Active;
+    return adapter->state.compare_exchange_strong(
+        expected, State::Completed, std::memory_order_acq_rel,
+        std::memory_order_acquire);
+}
+
+bool return_to_idle(Adapter *adapter) noexcept
+{
+    State expected = State::Completed;
+    return adapter->state.compare_exchange_strong(
+        expected, State::Idle, std::memory_order_acq_rel,
+        std::memory_order_acquire);
+}
+
 void IRAM_ATTR signal_from_isr(
     Adapter *adapter, esp_err_t status,
     BaseType_t *higher_priority_task_woken) noexcept
@@ -86,6 +127,19 @@ void IRAM_ATTR signal_from_isr(
                                 higher_priority_task_woken);
 }
 
+bool IRAM_ATTR signal_completion(Adapter *adapter, esp_err_t status) noexcept
+{
+    if (portCHECK_IF_IN_ISR() != pdFALSE) {
+        BaseType_t higher_priority_task_woken = pdFALSE;
+        signal_from_isr(adapter, status, &higher_priority_task_woken);
+        return higher_priority_task_woken == pdTRUE;
+    }
+    adapter->completion_status.store(static_cast<std::uint32_t>(status),
+                                     std::memory_order_release);
+    (void)xSemaphoreGive(adapter->complete);
+    return false;
+}
+
 bool IRAM_ATTR dma2d_complete_callback(dma2d_channel_handle_t,
                                        dma2d_event_data_t *,
                                        void *user_data)
@@ -94,9 +148,8 @@ bool IRAM_ATTR dma2d_complete_callback(dma2d_channel_handle_t,
     if (adapter == nullptr || adapter->complete == nullptr) {
         return false;
     }
-    BaseType_t higher_priority_task_woken = pdFALSE;
-    signal_from_isr(adapter, ESP_OK, &higher_priority_task_woken);
-    return higher_priority_task_woken == pdTRUE;
+    (void)complete_from_active(adapter);
+    return signal_completion(adapter, ESP_OK);
 }
 
 bool IRAM_ATTR dma2d_job_picked_callback(
@@ -106,7 +159,19 @@ bool IRAM_ATTR dma2d_job_picked_callback(
 {
     auto *adapter = static_cast<Adapter *>(user_data);
     if (adapter == nullptr || channels == nullptr || channel_count != 2U) {
+        if (adapter != nullptr) {
+            (void)terminalize_ambiguous(adapter);
+            return signal_completion(adapter, ESP_ERR_INVALID_ARG);
+        }
         return false;
+    }
+    if (!activate_from_queue(adapter)) {
+        const State state = adapter->state.load(std::memory_order_acquire);
+        if (state == State::RetainedAmbiguous) {
+            return signal_completion(adapter, ESP_ERR_TIMEOUT);
+        }
+        (void)terminalize_ambiguous(adapter);
+        return signal_completion(adapter, ESP_ERR_INVALID_STATE);
     }
     dma2d_channel_handle_t tx = nullptr;
     dma2d_channel_handle_t rx = nullptr;
@@ -118,7 +183,8 @@ bool IRAM_ATTR dma2d_job_picked_callback(
         }
     }
     if (tx == nullptr || rx == nullptr) {
-        return false;
+        (void)terminalize_ambiguous(adapter);
+        return signal_completion(adapter, ESP_ERR_INVALID_ARG);
     }
 
     const dma2d_trigger_t tx_trigger{
@@ -150,20 +216,14 @@ bool IRAM_ATTR dma2d_job_picked_callback(
             rx, reinterpret_cast<intptr_t>(adapter->rx_descriptor));
     }
     if (result == ESP_OK) {
-        adapter->state.store(State::Active, std::memory_order_release);
         result = dma2d_start(tx);
     }
     if (result == ESP_OK) {
         result = dma2d_start(rx);
     }
     if (result != ESP_OK) {
-        adapter->state.store(State::Failed, std::memory_order_release);
-        bool need_yield = false;
-        (void)dma2d_force_end(adapter->transaction, &need_yield);
-        BaseType_t higher_priority_task_woken =
-            need_yield ? pdTRUE : pdFALSE;
-        signal_from_isr(adapter, result, &higher_priority_task_woken);
-        return higher_priority_task_woken == pdTRUE;
+        (void)terminalize_ambiguous(adapter);
+        return signal_completion(adapter, result);
     }
     return false;
 }
@@ -304,28 +364,18 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
         return enqueue_result;
     }
     if (xSemaphoreTake(adapter->complete, kCompletionTimeout) != pdTRUE) {
-        const State timeout_state =
-            adapter->state.load(std::memory_order_acquire);
-        if (timeout_state == State::Active) {
-            bool need_yield = false;
-            const esp_err_t force_result =
-                dma2d_force_end(adapter->transaction, &need_yield);
-            if (force_result == ESP_OK) {
-                adapter->state.store(State::Failed,
-                                     std::memory_order_release);
-            } else {
-                adapter->state.store(State::RetainedAmbiguous,
-                                     std::memory_order_release);
-            }
-        } else {
-            /* A queued transaction has no valid channel pointer yet.  Keep
-             * the placeholder and callback context until the pool proves
-             * that it was dequeued and quiesced; never force_end a stale
-             * channel pointer from an earlier pass. */
-            adapter->state.store(State::RetainedAmbiguous,
-                                 std::memory_order_release);
-        }
+        /* The pinned v5.5.4 cancellation path has no transaction identity
+         * and races the DMA2D ISR.  Leave every callback-reachable object
+         * retained instead. */
+        (void)terminalize_ambiguous(adapter);
         return ESP_ERR_TIMEOUT;
+    }
+    if (adapter->state.load(std::memory_order_acquire) != State::Completed) {
+        /* A setup failure wakes the task without ever granting ownership of
+         * the buffers back to the caller. */
+        (void)terminalize_ambiguous(adapter);
+        return static_cast<esp_err_t>(adapter->completion_status.load(
+            std::memory_order_acquire));
     }
     if (esp_cache_msync(adapter->rx_descriptor, kDescriptorStorageBytes,
                         ESP_CACHE_MSYNC_FLAG_DIR_M2C) != ESP_OK ||
@@ -341,8 +391,10 @@ esp_err_t copy_strided(Adapter *adapter, const std::uint8_t *source,
     }
     const auto status = static_cast<esp_err_t>(
         adapter->completion_status.load(std::memory_order_acquire));
-    adapter->state.store(status == ESP_OK ? State::Idle : State::Failed,
-                         std::memory_order_release);
+    if (status != ESP_OK || !return_to_idle(adapter)) {
+        (void)terminalize_ambiguous(adapter);
+        return status == ESP_OK ? ESP_FAIL : status;
+    }
     return status;
 }
 
@@ -351,7 +403,8 @@ esp_err_t destroy(Adapter *adapter) noexcept
     if (adapter == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (adapter->state.load(std::memory_order_acquire) != State::Idle) {
+    const State state = adapter->state.load(std::memory_order_acquire);
+    if (state != State::Idle && state != State::Failed) {
         return ESP_ERR_INVALID_STATE;
     }
     const esp_err_t result = dma2d_release_pool(adapter->pool);
