@@ -46,15 +46,16 @@ static void worker_fail(struct np2opngen_e1b_worker *worker,
     worker->state = NP2_OPNGEN_E1B_FAILED;
 }
 
-int np2opngen_e1b_worker_init(
+int np2opngen_e1b_worker_init_with_sink(
     struct np2opngen_e1b_worker *worker,
     struct np2opngen_spsc_queue *queue,
     struct np2opngen_e1b_control *control,
     uint64_t end_frame, uint64_t expected_first_sequence,
-    uint64_t expected_event_count)
+    uint64_t expected_event_count,
+    const struct np2opngen_e1b_pcm_sink *sink)
 {
-    size_t sample_count;
-    size_t pcm_bytes;
+    size_t block_samples;
+    size_t block_bytes;
 
     if (worker == 0 || queue == 0 || control == 0 || end_frame == 0U ||
         end_frame > UINT32_MAX || expected_event_count > UINT64_MAX -
@@ -74,25 +75,29 @@ int np2opngen_e1b_worker_init(
     worker->expected_event_count = expected_event_count;
     worker->state = NP2_OPNGEN_E1B_INIT;
 
-    if (end_frame > SIZE_MAX / E1B_CHANNELS) {
+    if (NP2_OPNGEN_E1B_RENDER_QUANTUM > SIZE_MAX / E1B_CHANNELS) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_ALLOCATION, 0);
         return -1;
     }
-    sample_count = (size_t)end_frame * E1B_CHANNELS;
-    if (sample_count > SIZE_MAX / E1B_PCM_BYTES_PER_SAMPLE) {
+    block_samples = (size_t)NP2_OPNGEN_E1B_RENDER_QUANTUM * E1B_CHANNELS;
+    if (block_samples > SIZE_MAX / E1B_PCM_BYTES_PER_SAMPLE) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_ALLOCATION, 0);
         return -1;
     }
-    pcm_bytes = sample_count * E1B_PCM_BYTES_PER_SAMPLE;
-    worker->pcm_bytes = pcm_bytes;
-    worker->s32_pcm = (SINT32 *)calloc(sample_count, sizeof(*worker->s32_pcm));
-    worker->canonical_pcm = (uint8_t *)calloc(pcm_bytes, 1U);
+    block_bytes = block_samples * E1B_PCM_BYTES_PER_SAMPLE;
+    worker->pcm_block_bytes = block_bytes;
+    worker->s32_pcm = (SINT32 *)calloc(block_samples, sizeof(*worker->s32_pcm));
+    worker->canonical_pcm = (uint8_t *)calloc(block_bytes, 1U);
     worker->opngen = (OPNGEN)calloc(1U, sizeof(*worker->opngen));
     if (worker->s32_pcm == 0 || worker->canonical_pcm == 0 ||
         worker->opngen == 0) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_ALLOCATION, 0);
         return -1;
     }
+    if (sink != 0) {
+        worker->sink = *sink;
+    }
+    np2opngen_synth_event_trace_init(&worker->consumer_trace);
 
     /* This is the only OPNGEN owner in the asynchronous path. */
     opngen_initialize(E1B_RATE_HZ);
@@ -103,11 +108,67 @@ int np2opngen_e1b_worker_init(
     return 0;
 }
 
+int np2opngen_e1b_worker_init(
+    struct np2opngen_e1b_worker *worker,
+    struct np2opngen_spsc_queue *queue,
+    struct np2opngen_e1b_control *control,
+    uint64_t end_frame, uint64_t expected_first_sequence,
+    uint64_t expected_event_count)
+{
+    return np2opngen_e1b_worker_init_with_sink(
+        worker, queue, control, end_frame, expected_first_sequence,
+        expected_event_count, 0);
+}
+
+static int worker_render_until(struct np2opngen_e1b_worker *worker,
+                               uint64_t target_frame)
+{
+    while (worker->cursor < target_frame) {
+        uint64_t frame_count = target_frame - worker->cursor;
+        size_t canonical_bytes;
+        struct np2opngen_pcm_stats stats;
+        if (frame_count > NP2_OPNGEN_E1B_RENDER_QUANTUM) {
+            frame_count = NP2_OPNGEN_E1B_RENDER_QUANTUM;
+        }
+        canonical_bytes = (size_t)frame_count * E1B_CHANNELS *
+                          E1B_PCM_BYTES_PER_SAMPLE;
+        /* OPNGEN accumulates into its destination buffer.  Clear only the
+         * bounded scratch block before each render, just as E1B's former
+         * calloc-backed full buffer was initially zeroed. */
+        memset(worker->s32_pcm, 0,
+               (size_t)NP2_OPNGEN_E1B_RENDER_QUANTUM * E1B_CHANNELS *
+                   sizeof(*worker->s32_pcm));
+        opngen_getpcm(worker->opngen, worker->s32_pcm,
+                      (UINT)frame_count);
+        if (np2opngen_pcm_canonicalize_s16le(
+                worker->s32_pcm, (size_t)frame_count, E1B_CHANNELS,
+                worker->canonical_pcm, worker->pcm_block_bytes, &stats) != 0) {
+            worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
+                        NP2_SYNTH_EVENT_STATUS_CALLBACK);
+            return -1;
+        }
+        if (worker->sink.write != 0 &&
+            worker->sink.write(worker->canonical_pcm, canonical_bytes,
+                               worker->cursor, worker->sink.context) != 0) {
+            worker_fail(worker, NP2_OPNGEN_E1B_ERROR_OUTPUT_SINK, 0);
+            return -1;
+        }
+        if (worker->pcm_bytes > SIZE_MAX - canonical_bytes) {
+            worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
+                        NP2_SYNTH_EVENT_STATUS_OVERFLOW);
+            return -1;
+        }
+        worker->pcm_bytes += canonical_bytes;
+        worker->cursor += frame_count;
+        worker->rendered_frames += frame_count;
+    }
+    return 0;
+}
+
 static int worker_process_event(struct np2opngen_e1b_worker *worker,
                                 const struct np2opngen_synth_event *event)
 {
     int status;
-    uint64_t frame_count;
 
     if (event->sample_timestamp < worker->cursor) {
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
@@ -124,17 +185,15 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
         worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT, status);
         return -1;
     }
-    frame_count = event->sample_timestamp - worker->cursor;
-    if (frame_count > UINT32_MAX) {
-        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_RENDER,
-                    NP2_SYNTH_EVENT_STATUS_OVERFLOW);
+    if (np2opngen_synth_event_trace_update(&worker->consumer_trace, event) !=
+        NP2_SYNTH_EVENT_STATUS_OK) {
+        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
+                    NP2_SYNTH_EVENT_STATUS_TYPE);
         return -1;
     }
-    /* Call the renderer even for zero frames so same-timestamp events remain
-     * individually ordered and never get coalesced. */
-    opngen_getpcm(worker->opngen,
-                  worker->s32_pcm + (size_t)worker->cursor * E1B_CHANNELS,
-                  (UINT)frame_count);
+    if (worker_render_until(worker, event->sample_timestamp) != 0) {
+        return -1;
+    }
     if (event->type == NP2_SYNTH_EVENT_REGISTER_WRITE) {
         opngen_setreg(worker->opngen, event->payload.register_write.chbase,
                       event->payload.register_write.reg,
@@ -147,12 +206,10 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
                     NP2_SYNTH_EVENT_STATUS_TYPE);
         return -1;
     }
-    worker->cursor = event->sample_timestamp;
-    worker->rendered_frames += frame_count;
     worker->last_sequence = event->sequence;
     worker->has_last_sequence = true;
     if (worker->expected_sequence == UINT64_MAX) {
-        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_EVENT,
+        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_RENDER,
                     NP2_SYNTH_EVENT_STATUS_OVERFLOW);
         return -1;
     }
@@ -163,8 +220,6 @@ static int worker_process_event(struct np2opngen_e1b_worker *worker,
 
 static int worker_drain(struct np2opngen_e1b_worker *worker)
 {
-    struct np2opngen_pcm_stats stats;
-    uint64_t tail_frames;
     if (worker->expected_sequence != worker->expected_first_sequence +
                                          worker->expected_event_count ||
         worker->cursor > worker->end_frame) {
@@ -173,22 +228,12 @@ static int worker_drain(struct np2opngen_e1b_worker *worker)
         return -1;
     }
     worker->state = NP2_OPNGEN_E1B_DRAIN;
-    tail_frames = worker->end_frame - worker->cursor;
-    if (tail_frames > UINT32_MAX) {
-        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_RENDER,
-                    NP2_SYNTH_EVENT_STATUS_OVERFLOW);
-        return -1;
-    }
-    opngen_getpcm(worker->opngen,
-                  worker->s32_pcm + (size_t)worker->cursor * E1B_CHANNELS,
-                  (UINT)tail_frames);
-    worker->rendered_frames += tail_frames;
-    if (worker->rendered_frames != worker->end_frame ||
-        np2opngen_pcm_canonicalize_s16le(
-            worker->s32_pcm, (size_t)worker->end_frame, E1B_CHANNELS,
-            worker->canonical_pcm, worker->pcm_bytes, &stats) != 0) {
-        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
-                    NP2_SYNTH_EVENT_STATUS_CALLBACK);
+    if (worker_render_until(worker, worker->end_frame) != 0 ||
+        worker->rendered_frames != worker->end_frame) {
+        if (worker->state != NP2_OPNGEN_E1B_FAILED) {
+            worker_fail(worker, NP2_OPNGEN_E1B_ERROR_INVARIANT,
+                        NP2_SYNTH_EVENT_STATUS_CALLBACK);
+        }
         return -1;
     }
     worker->state = NP2_OPNGEN_E1B_COMPLETE;
@@ -263,4 +308,14 @@ void np2opngen_e1b_worker_destroy(struct np2opngen_e1b_worker *worker)
     worker->canonical_pcm = 0;
     worker->s32_pcm = 0;
     worker->opngen = 0;
+}
+
+int np2opngen_e1b_worker_event_trace_finish(
+    struct np2opngen_e1b_worker *worker, uint64_t *count, uint32_t *crc32,
+    uint8_t digest[32])
+{
+    return worker == 0
+               ? NP2_SYNTH_EVENT_STATUS_ARGUMENT
+               : np2opngen_synth_event_trace_finish(
+                     &worker->consumer_trace, count, crc32, digest);
 }

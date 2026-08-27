@@ -44,6 +44,11 @@ struct reference_capture {
     uint16_t bits_per_sample;
 };
 
+struct full_pcm_capture {
+    uint8_t pcm[E1B_EXPECTED_PCM_BYTES];
+    size_t pcm_bytes;
+};
+
 enum e1b_perturbation_mode {
     E1B_MODE_BASIC = 0,
     E1B_MODE_FAST_PRODUCER,
@@ -63,6 +68,7 @@ struct harness {
     uint64_t full_wait_count;
     uint32_t max_occupancy;
     enum e1b_perturbation_mode mode;
+    const struct np2opngen_e1b_pcm_sink *sink;
     atomic_bool *producer_wait_observed;
     atomic_bool *worker_start_gate;
     atomic_bool *producer_start_gate;
@@ -208,14 +214,33 @@ static int capture_reference(const uint8_t *pcm, size_t pcm_bytes,
     return 0;
 }
 
+static int capture_e1b_block(const uint8_t *pcm, size_t pcm_bytes,
+                             uint64_t frame_offset, void *context)
+{
+    struct full_pcm_capture *capture = (struct full_pcm_capture *)context;
+    size_t expected_offset;
+    if (capture == 0 || pcm == 0 || pcm_bytes > sizeof(capture->pcm) ||
+        capture->pcm_bytes > sizeof(capture->pcm) - pcm_bytes ||
+        frame_offset > SIZE_MAX / 4U) {
+        return -1;
+    }
+    expected_offset = (size_t)frame_offset * 4U;
+    if (expected_offset != capture->pcm_bytes) {
+        return -1;
+    }
+    memcpy(capture->pcm + capture->pcm_bytes, pcm, pcm_bytes);
+    capture->pcm_bytes += pcm_bytes;
+    return 0;
+}
+
 static void *worker_thread_main(void *context)
 {
     struct harness *harness = (struct harness *)context;
     uint64_t schedule_counter = 0U;
     int step;
-    if (np2opngen_e1b_worker_init(
+    if (np2opngen_e1b_worker_init_with_sink(
             &harness->worker, &harness->queue, &harness->control,
-            harness->end_frame, 0U, harness->event_count) != 0) {
+            harness->end_frame, 0U, harness->event_count, harness->sink) != 0) {
         return 0;
     }
     if (harness->worker_start_gate != 0) {
@@ -447,6 +472,10 @@ static void print_sha256(const uint8_t digest[NP2_SHA256_DIGEST_SIZE])
 int main(int argc, char **argv)
 {
     static struct reference_capture reference;
+    static struct full_pcm_capture async_capture;
+    const struct np2opngen_e1b_pcm_sink async_sink = {
+        capture_e1b_block, &async_capture
+    };
     struct harness harness = {0};
     const struct np2opngen_synth_event *events = 0;
     size_t event_count = 0U;
@@ -514,6 +543,7 @@ int main(int argc, char **argv)
     harness.events = events;
     harness.event_count = event_count;
     harness.end_frame = end_frame;
+    harness.sink = &async_sink;
     harness.mode = mode;
     atomic_init(&producer_start_gate, mode != E1B_MODE_FAST_CONSUMER);
     atomic_init(&worker_wait_observed, false);
@@ -576,16 +606,16 @@ int main(int argc, char **argv)
                                          memory_order_relaxed);
 
     reference_match = harness.worker.state == NP2_OPNGEN_E1B_COMPLETE &&
-                      harness.worker.canonical_pcm != 0 &&
-                      harness.worker.pcm_bytes == reference.pcm_bytes &&
-                      memcmp(harness.worker.canonical_pcm, reference.pcm,
+                      async_capture.pcm_bytes == reference.pcm_bytes &&
+                      memcmp(async_capture.pcm, reference.pcm,
                              reference.pcm_bytes) == 0;
-    if (harness.worker.canonical_pcm != 0 && harness.worker.pcm_bytes != 0U) {
+    if (harness.worker.state == NP2_OPNGEN_E1B_COMPLETE &&
+        async_capture.pcm_bytes != 0U) {
         async_pcm_crc32 = np2_crc32_iso_hdlc(
-            harness.worker.canonical_pcm, harness.worker.pcm_bytes);
+            async_capture.pcm, async_capture.pcm_bytes);
         np2_sha256_init(&sha);
-        np2_sha256_update(&sha, harness.worker.canonical_pcm,
-                          harness.worker.pcm_bytes);
+        np2_sha256_update(&sha, async_capture.pcm,
+                          async_capture.pcm_bytes);
         np2_sha256_final(&sha, async_pcm_sha256);
     } else {
         async_pcm_crc32 = 0U;
@@ -638,7 +668,7 @@ int main(int argc, char **argv)
     print_sha256(event_trace_sha256);
     printf(" same_timestamp_adjacent=%zu\n", same_timestamp_adjacent);
     printf("E1B_SPSC_PCM bytes=%zu crc32=0x%08" PRIx32 " sha256=",
-           harness.worker.pcm_bytes, async_pcm_crc32);
+           async_capture.pcm_bytes, async_pcm_crc32);
     print_sha256(async_pcm_sha256);
     printf("\n");
     printf("E1B_SPSC_INVARIANTS reference_match=%s event_trace=%s ordering=%s"

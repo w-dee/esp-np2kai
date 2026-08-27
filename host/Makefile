@@ -207,6 +207,10 @@ OPNGEN_E1B_TEST_SOURCE := $(CURDIR)/tests/opngen_e1b_spsc_test.c
 OPNGEN_E1B_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_spsc_test
 OPNGEN_E1B_TSAN_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_spsc_test_tsan
 OPNGEN_E1B_FORMAL_RUNNER := $(CURDIR)/tests/run_opngen_e1b_formal.py
+OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
+OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
+OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
+OPNGEN_E1C_RUNNER := $(CURDIR)/tests/run_opngen_e1c.py
 HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
 HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
 HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
@@ -260,7 +264,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 .PHONY: test-p4-nano-ppa-rotation-reference
 
@@ -617,6 +621,22 @@ test-opngen-e1b-tsan: build-opngen-e1b-tsan
 	@$(PYTHON) "$(OPNGEN_E1B_FORMAL_RUNNER)" \
 		--binary "$(OPNGEN_E1B_TSAN_TEST_OUTPUT)" --repetitions 1 --timeout-seconds 10 \
 		--tsan-status
+
+build-opngen-e1c:
+	@mkdir -p "$(dir $(OPNGEN_E1C_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_FIXTURE_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(OPNGEN_SYNTHETIC_WORKLOAD_SOURCE)" \
+		"$(VENDOR_SRC)/sound/opngenc.c" "$(VENDOR_SRC)/sound/opngeng.c" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2_SHA256_SOURCE)" \
+		"$(OPNGEN_E1C_TEST_SOURCE)" -lm -pthread -o "$(OPNGEN_E1C_TEST_OUTPUT)"
+
+test-opngen-e1c: build-opngen-e1c
+	@$(PYTHON) "$(OPNGEN_E1C_RUNNER)" --binary "$(OPNGEN_E1C_TEST_OUTPUT)"
 
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"

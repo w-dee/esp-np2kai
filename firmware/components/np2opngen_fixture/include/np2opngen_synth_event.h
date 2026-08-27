@@ -5,6 +5,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "np2_crc32.h"
+#include "np2_sha256.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -62,6 +65,14 @@ struct np2opngen_synth_event_observer {
     bool order_valid;
 };
 
+/* Incremental state for the canonical 24-byte event serialization.  The
+ * native 32-byte struct is never hashed. */
+struct np2opngen_synth_event_trace_state {
+    uint64_t count;
+    uint32_t running_crc32;
+    np2_sha256_context sha256;
+};
+
 typedef int (*np2opngen_synth_event_render_fn)(void *context,
                                                 uint64_t cursor,
                                                 uint64_t frame_count);
@@ -82,6 +93,17 @@ int np2opngen_synth_event_interpret(
 
 int np2opngen_synth_event_trace(
     const struct np2opngen_synth_event *events, size_t count,
+    uint32_t *crc32, uint8_t digest[32]);
+
+void np2opngen_synth_event_trace_init(
+    struct np2opngen_synth_event_trace_state *state);
+
+int np2opngen_synth_event_trace_update(
+    struct np2opngen_synth_event_trace_state *state,
+    const struct np2opngen_synth_event *event);
+
+int np2opngen_synth_event_trace_finish(
+    struct np2opngen_synth_event_trace_state *state, uint64_t *count,
     uint32_t *crc32, uint8_t digest[32]);
 
 const char *np2opngen_synth_event_status_name(int status);
