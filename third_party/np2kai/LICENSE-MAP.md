@@ -280,6 +280,9 @@ not an independent license classification or legal opinion.
 | src/sound/fmboard.h | sound/fmboard.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/opna.h | sound/opna.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/opngen.h | sound/opngen.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/sound/opngenc.c | sound/opngenc.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/sound/opngeng.c | sound/opngeng.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/sound/opngencfg.h | sound/opngencfg.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/opl3.h | sound/opl3.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/oplgen.h | sound/oplgen.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/sound/opntimer.h | sound/opntimer.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |

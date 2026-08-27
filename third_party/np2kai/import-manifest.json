@@ -3900,7 +3900,49 @@
       "upstream_path": "sound/opngen.h",
       "destination_path": "src/sound/opngen.h",
       "role": "header",
-      "build_group": "deferred-not-built",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opngenc.c",
+      "destination_path": "src/sound/opngenc.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opngeng.c",
+      "destination_path": "src/sound/opngeng.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/opngencfg.h",
+      "destination_path": "src/sound/opngencfg.h",
+      "role": "header",
+      "build_group": "opngen-fixture",
       "license_evidence": {
         "upstream_mapping": "np2-default",
         "documents": [
@@ -4026,7 +4068,7 @@
       "upstream_path": "sound/sound.h",
       "destination_path": "src/sound/sound.h",
       "role": "header",
-      "build_group": "deferred-not-built",
+      "build_group": "opngen-fixture",
       "license_evidence": {
         "upstream_mapping": "np2-default",
         "documents": [

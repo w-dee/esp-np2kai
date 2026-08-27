@@ -190,6 +190,9 @@ NP2VIDEO_MOTION_ORACLE_HEADER_DIR := $(CURDIR)/compat
 NP2VIDEO_MOTION_ORACLE_TEST_SOURCE := $(CURDIR)/tests/np2video_motion_oracle_test.c
 NP2VIDEO_MOTION_ORACLE_TEST_OUTPUT := $(BUILD_DIR)/tests/np2video_motion_oracle_test
 NP2_CRC32_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_crc32_test
+OPNGEN_FIXTURE_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_fixture.c
+OPNGEN_FIXTURE_MAIN_SOURCE := $(CURDIR)/tests/opngen_fixture_main.c
+OPNGEN_FIXTURE_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_fixture
 HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
 HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
 HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
@@ -243,7 +246,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-ppa-rotation-reference test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-ppa-rotation-reference test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -529,6 +532,19 @@ test-crc32:
 		"$(NP2_CRC32_TEST_SOURCE)" -o "$(NP2_CRC32_TEST_OUTPUT)"
 	@"$(NP2_CRC32_TEST_OUTPUT)"
 	@printf '%s\n' 'Portable CRC-32/ISO-HDLC utility test passed.'
+
+test-opngen-fixture:
+	@mkdir -p "$(dir $(OPNGEN_FIXTURE_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
+		"$(OPNGEN_FIXTURE_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_FIXTURE_MAIN_SOURCE)" \
+		-lm -o "$(OPNGEN_FIXTURE_TEST_OUTPUT)"
+	@"$(OPNGEN_FIXTURE_TEST_OUTPUT)"
+	@printf '%s\n' 'OPNGEN fixture native smoke completed (NON-GOLDEN output).'
 
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"

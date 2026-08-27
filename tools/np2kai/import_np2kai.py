@@ -21,7 +21,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 ALLOWED_ROLES = {"source", "header", "include-fragment", "resource-source", "license"}
-ALLOWED_GROUPS = {"i286", "shared-core", "deferred-not-built"}
+ALLOWED_GROUPS = {"i286", "shared-core", "deferred-not-built", "opngen-fixture"}
 ALLOWED_MAPPING = {
     "np2-default",
     "component-specific",

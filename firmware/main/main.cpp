@@ -40,7 +40,9 @@
     defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include "p4_nano_pc98_runtime/p4_nano_pc98_runtime.hpp"
 #else
-#if defined(NP2_PRESENTATION_PROFILE)
+#if defined(NP2_OPNGEN_FIXTURE_PROFILE)
+#include "np2opngen_fixture_esp.h"
+#elif defined(NP2_PRESENTATION_PROFILE)
 #include "np2presentation_probe.h"
 #elif defined(NP2_VIDEO_PROFILE)
 #include "np2video_runner/np2video_runner.h"
@@ -54,10 +56,10 @@
 #endif
 #include "np2test_runner/np2test_runner.h"
 #endif
-#if !defined(NP2_PRESENTATION_PROFILE)
+#if !defined(NP2_PRESENTATION_PROFILE) && !defined(NP2_OPNGEN_FIXTURE_PROFILE)
 #include "uart_control_transport/uart_control_transport.h"
 #endif
-#if !defined(NP2_PRESENTATION_PROFILE)
+#if !defined(NP2_PRESENTATION_PROFILE) && !defined(NP2_OPNGEN_FIXTURE_PROFILE)
 #if !defined(NP2_VIDEO_PROFILE)
 #if defined(UART_FATFS_PROFILE) && defined(UART_SDMMC_PROFILE)
 #error "UART_FATFS_PROFILE and UART_SDMMC_PROFILE are mutually exclusive"
@@ -139,20 +141,21 @@ esp_err_t route_display_benchmark_application_console()
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_COMPUTE_CONTROL_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_LIVE_DISPLAY_TRANSFORM_PSRAM_READ_CONTROL_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_PSRAM_BANDWIDTH_BENCHMARK_PROFILE) && \
+    !defined(NP2_OPNGEN_FIXTURE_PROFILE) && \
     !defined(P4_NANO_REAL_RUNTIME_PROFILE) && \
     !defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) && \
     !defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) && \
     !defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 namespace {
 
-#if !defined(NP2_PRESENTATION_PROFILE)
+#if !defined(NP2_PRESENTATION_PROFILE) && !defined(NP2_OPNGEN_FIXTURE_PROFILE)
 bool write_np2_runner_output(void *, const char *data, std::size_t length)
 {
     return uart_control_transport_write(data, length);
 }
 #endif
 
-#if !defined(NP2_PRESENTATION_PROFILE) && \
+#if !defined(NP2_PRESENTATION_PROFILE) && !defined(NP2_OPNGEN_FIXTURE_PROFILE) && \
     (defined(UART_FATFS_PROFILE) || defined(NP2_VFS_FIXTURE_PROFILE))
 storage_fatfs::MountProvider s_fatfs_provider;
 storage_fatfs::StorageFatfs s_fatfs_storage(s_fatfs_provider);
@@ -267,6 +270,11 @@ extern "C" void app_main(void)
         p4_nano_pc98_runtime::run_keyboard_validation();
     std::printf("P4_NANO_KEYBOARD_VALIDATION_EXIT=%s\n",
                 keyboard_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(NP2_OPNGEN_FIXTURE_PROFILE)
+    const esp_err_t opngen_result = np2opngen_fixture_run_esp();
+    (void)opngen_result;
     std::fflush(stdout);
     return;
 #elif defined(NP2_PRESENTATION_PROFILE)
