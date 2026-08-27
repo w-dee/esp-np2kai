@@ -200,6 +200,11 @@ OPNGEN_SYNTH_EVENT_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/
 OPNGEN_SYNTH_EVENT_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2opngen_fixture/include
 OPNGEN_SYNTH_EVENT_TEST_SOURCE := $(CURDIR)/tests/opngen_synth_event_test.c
 OPNGEN_SYNTH_EVENT_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_synth_event_test
+OPNGEN_S98_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_s98.c
+OPNGEN_S98_TEST_SOURCE := $(CURDIR)/tests/opngen_s98_test.c
+OPNGEN_S98_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_s98_test
+OPNGEN_S98_FIXTURE_GENERATOR := $(CURDIR)/tests/generate_opngen_s98_fixtures.py
+OPNGEN_S98_FIXTURE_DIR := $(BUILD_DIR)/tests/opngen_s98_fixtures
 OPNGEN_PCM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c
 OPNGEN_SPSC_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_spsc.c
 OPNGEN_E1B_STREAM_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_e1b_stream.c
@@ -585,6 +590,18 @@ test-opngen-synth-event:
 		-o "$(OPNGEN_SYNTH_EVENT_TEST_OUTPUT)"
 	@"$(OPNGEN_SYNTH_EVENT_TEST_OUTPUT)"
 	@printf '%s\n' 'OPNGEN synth-event validation/interpreter tests passed.'
+
+test-opngen-s98:
+	@mkdir -p "$(dir $(OPNGEN_S98_TEST_OUTPUT))" "$(OPNGEN_S98_FIXTURE_DIR)"
+	@$(PYTHON) "$(OPNGEN_S98_FIXTURE_GENERATOR)" \
+		--output-dir "$(OPNGEN_S98_FIXTURE_DIR)"
+	@$(CC) -std=c11 -Wall -Wextra -Werror \
+		-I"$(CURDIR)/compat" -I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_S98_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2_SHA256_SOURCE)" \
+		"$(OPNGEN_S98_TEST_SOURCE)" -o "$(OPNGEN_S98_TEST_OUTPUT)"
+	@"$(OPNGEN_S98_TEST_OUTPUT)" --fixture-dir "$(OPNGEN_S98_FIXTURE_DIR)"
+	@printf '%s\n' 'OPNGEN S98 parser validation passed.'
 
 build-opngen-e1b:
 	@mkdir -p "$(dir $(OPNGEN_E1B_TEST_OUTPUT))"

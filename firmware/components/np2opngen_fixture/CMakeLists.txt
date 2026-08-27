@@ -9,6 +9,7 @@ idf_component_register(
         "np2opngen_spsc.c"
         "np2opngen_e1b_stream.c"
         "np2opngen_synthetic_workload.c"
+        "np2opngen_s98.c"
         "np2opngen_fixture_esp.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngenc.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngeng.c"
