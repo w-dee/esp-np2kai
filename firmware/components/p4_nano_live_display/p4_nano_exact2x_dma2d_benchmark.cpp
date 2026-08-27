@@ -564,7 +564,7 @@ esp_err_t run(const Input &input)
         print_metric("DMA2D", "DMA_COPY_TOTAL_WALL", &s_dma_stats.copy_total_wall, false);
         print_metric("DMA2D", "DMA_BLOCKED_WAIT", &s_dma_stats.blocked_wait, true);
         print_metric("DMA2D", "DMA_NONBLOCKED_TASK_WALL", &s_dma_stats.nonblocked_task_wall, false);
-        print_metric("DMA2D", "PROJECT_CALLBACK_CPU_DURING_WAIT", &s_dma_stats.callback_during_wait, false);
+        print_metric("DMA2D", "PROJECT_CALLBACK_PRE_SIGNAL_CPU_DURING_WAIT", &s_dma_stats.callback_during_wait, false);
         print_metric("DMA2D", "CPU_UNAVAILABLE_LOWER_BOUND_PROXY", &s_dma_stats.cpu_lower_bound, true);
         print_metric("DMA2D", "EXACT2X_SERVICE", &s_dma_stats.exact2x_service, true);
         print_metric("DMA2D", "TOTAL_TRANSFORM_SERVICE", &s_dma_stats.total_transform_service, true);
@@ -573,8 +573,9 @@ esp_err_t run(const Input &input)
     }
     std::printf("P4_NANO_EXACT2X_DMA2D_BENCHMARK_ACCOUNTING "
                 "control_cpu=pie_full_plus_destination_c2m "
-                "dma_cpu=pie_horizontal_plus_nonblocked_plus_callback_during_wait "
+                "dma_cpu=pie_horizontal_plus_nonblocked_plus_callback_pre_signal_during_wait "
                 "private_driver_isr_cpu_outside_project_callbacks=UNMEASURED "
+                "semaphore_give_wakeup_cpu=UNMEASURED_NOT_INCLUDED "
                 "dma_blocked_wait=potential_schedulable_opportunity_upper_bound "
                 "timer_reads_control=24 timer_reads_dma=112 cycle_reads_dma=80\n");
     std::printf("P4_NANO_EXACT2X_DMA2D_BENCHMARK_DIRECT_EQUIVALENCE "

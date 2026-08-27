@@ -37,7 +37,7 @@ def main() -> None:
     require("on_job_cycles_during_wait" in ADAPTER and
             "on_job_cycles_outside_wait" in ADAPTER and
             "eof_cycles_during_wait" in ADAPTER, "callback split missing")
-    require("PROJECT_CALLBACK_CPU_DURING_WAIT" in BENCH and
+    require("PROJECT_CALLBACK_PRE_SIGNAL_CPU_DURING_WAIT" in BENCH and
             "PRIVATE DRIVER ISR CPU" not in BENCH and
             "private_driver_isr_cpu_outside_project_callbacks=UNMEASURED" in BENCH,
             "private ISR caveat missing")
@@ -49,6 +49,22 @@ def main() -> None:
     require("ControlStats s_control_stats" in BENCH and "DmaStats s_dma_stats" in BENCH,
             "static sample storage missing")
     require("dma2d_force_end" not in ADAPTER, "forbidden DMA force-end found")
+    require("publish_completion_status(adapter, status)" in ADAPTER and
+            "callback_timing_finish(adapter, kind, timing)" in ADAPTER and
+            "return give_completion(adapter)" in ADAPTER,
+            "commit-before-wake helper missing")
+    timed_helper = ADAPTER[ADAPTER.index("signal_timed_completion("):]
+    require(timed_helper.index("publish_completion_status(adapter, status);") <
+            timed_helper.index("callback_timing_finish(adapter, kind, timing);") <
+            timed_helper.index("return give_completion(adapter);"),
+            "timed signaling helper ordering missing")
+    require("return signal_timed_completion(adapter, ESP_OK, CallbackKind::Eof, timing)"
+            in ADAPTER, "EOF timed signaling path missing")
+    require("semaphore_give_wakeup_cpu=UNMEASURED_NOT_INCLUDED" in BENCH,
+            "semaphore-give exclusion missing")
+    require("timing == nullptr" in ADAPTER and
+            "P10M-C1C DATA/LIFECYCLE CONTRACT CHANGED = NO" not in ADAPTER,
+            "no-timing path changed")
     print("Display Performance P10M-D1 DMA2D benchmark host/static contract passed")
     print("P10M_D1_HARDWARE_ACCESS=NOT_PERFORMED")
 

@@ -16,7 +16,9 @@ struct Adapter;
 
 /* Optional benchmark-only observation result.  It intentionally exposes no
  * private ESP-IDF DMA2D type.  Callback values cover project callback bodies
- * only, not private-driver ISR work. */
+ * only, not private-driver ISR work.  Timing is finalized before the
+ * completion semaphore is given; semaphore-give/wakeup cost itself is not
+ * included. */
 struct CopyTiming final {
     std::uint64_t total_wall_us = 0U;
     std::uint64_t blocked_wait_us = 0U;

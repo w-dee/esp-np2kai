@@ -126,7 +126,9 @@ void IRAM_ATTR callback_timing_finish(Adapter *adapter, CallbackKind kind,
         target = start.during_wait ? &adapter->eof_wait_cycles :
                                     &adapter->eof_outside_cycles;
     }
-    target->fetch_add(elapsed, std::memory_order_relaxed);
+    /* Release-publish the callback result before the completion semaphore is
+     * given.  The waiting task acquires these counters after taking it. */
+    target->fetch_add(elapsed, std::memory_order_release);
 }
 
 void reset_timing(Adapter *adapter) noexcept
@@ -149,13 +151,13 @@ void copy_timing(Adapter *adapter, CopyTiming *timing,
         .total_wall_us = total_wall_us,
         .blocked_wait_us = blocked_wait_us,
         .on_job_cycles_during_wait = adapter->on_job_wait_cycles.load(
-            std::memory_order_relaxed),
+        std::memory_order_acquire),
         .on_job_cycles_outside_wait = adapter->on_job_outside_cycles.load(
-            std::memory_order_relaxed),
+        std::memory_order_acquire),
         .eof_cycles_during_wait = adapter->eof_wait_cycles.load(
-            std::memory_order_relaxed),
+        std::memory_order_acquire),
         .eof_cycles_outside_wait = adapter->eof_outside_cycles.load(
-            std::memory_order_relaxed),
+        std::memory_order_acquire),
     };
 }
 
@@ -198,27 +200,32 @@ bool return_to_idle(Adapter *adapter) noexcept
         std::memory_order_acquire);
 }
 
-void IRAM_ATTR signal_from_isr(
-    Adapter *adapter, esp_err_t status,
-    BaseType_t *higher_priority_task_woken) noexcept
+void IRAM_ATTR publish_completion_status(Adapter *adapter,
+                                         esp_err_t status) noexcept
 {
     adapter->completion_status.store(static_cast<std::uint32_t>(status),
                                      std::memory_order_release);
-    (void)xSemaphoreGiveFromISR(adapter->complete,
-                                higher_priority_task_woken);
 }
 
-bool IRAM_ATTR signal_completion(Adapter *adapter, esp_err_t status) noexcept
+bool IRAM_ATTR give_completion(Adapter *adapter) noexcept
 {
     if (portCHECK_IF_IN_ISR() != pdFALSE) {
         BaseType_t higher_priority_task_woken = pdFALSE;
-        signal_from_isr(adapter, status, &higher_priority_task_woken);
+        (void)xSemaphoreGiveFromISR(adapter->complete,
+                                    &higher_priority_task_woken);
         return higher_priority_task_woken == pdTRUE;
     }
-    adapter->completion_status.store(static_cast<std::uint32_t>(status),
-                                     std::memory_order_release);
     (void)xSemaphoreGive(adapter->complete);
     return false;
+}
+
+bool IRAM_ATTR signal_timed_completion(
+    Adapter *adapter, esp_err_t status, CallbackKind kind,
+    CallbackTimingStart timing) noexcept
+{
+    publish_completion_status(adapter, status);
+    callback_timing_finish(adapter, kind, timing);
+    return give_completion(adapter);
 }
 
 bool IRAM_ATTR dma2d_complete_callback(dma2d_channel_handle_t,
@@ -232,9 +239,7 @@ bool IRAM_ATTR dma2d_complete_callback(dma2d_channel_handle_t,
         return false;
     }
     (void)complete_from_active(adapter);
-    const bool result = signal_completion(adapter, ESP_OK);
-    callback_timing_finish(adapter, CallbackKind::Eof, timing);
-    return result;
+    return signal_timed_completion(adapter, ESP_OK, CallbackKind::Eof, timing);
 }
 
 bool IRAM_ATTR dma2d_job_picked_callback(
@@ -247,23 +252,20 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     if (adapter == nullptr || channels == nullptr || channel_count != 2U) {
         if (adapter != nullptr) {
             (void)terminalize_ambiguous(adapter);
-            const bool result = signal_completion(adapter, ESP_ERR_INVALID_ARG);
-            callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
-            return result;
+            return signal_timed_completion(adapter, ESP_ERR_INVALID_ARG,
+                                           CallbackKind::OnJobPicked, timing);
         }
         return false;
     }
     if (!activate_from_queue(adapter)) {
         const State state = adapter->state.load(std::memory_order_acquire);
         if (state == State::RetainedAmbiguous) {
-            const bool result = signal_completion(adapter, ESP_ERR_TIMEOUT);
-            callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
-            return result;
+            return signal_timed_completion(adapter, ESP_ERR_TIMEOUT,
+                                           CallbackKind::OnJobPicked, timing);
         }
         (void)terminalize_ambiguous(adapter);
-        const bool result = signal_completion(adapter, ESP_ERR_INVALID_STATE);
-        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
-        return result;
+        return signal_timed_completion(adapter, ESP_ERR_INVALID_STATE,
+                                       CallbackKind::OnJobPicked, timing);
     }
     dma2d_channel_handle_t tx = nullptr;
     dma2d_channel_handle_t rx = nullptr;
@@ -276,9 +278,8 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     }
     if (tx == nullptr || rx == nullptr) {
         (void)terminalize_ambiguous(adapter);
-        const bool result = signal_completion(adapter, ESP_ERR_INVALID_ARG);
-        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
-        return result;
+        return signal_timed_completion(adapter, ESP_ERR_INVALID_ARG,
+                                       CallbackKind::OnJobPicked, timing);
     }
 
     const dma2d_trigger_t tx_trigger{
@@ -317,9 +318,8 @@ bool IRAM_ATTR dma2d_job_picked_callback(
     }
     if (result != ESP_OK) {
         (void)terminalize_ambiguous(adapter);
-        const bool callback_result = signal_completion(adapter, result);
-        callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
-        return callback_result;
+        return signal_timed_completion(adapter, result,
+                                       CallbackKind::OnJobPicked, timing);
     }
     callback_timing_finish(adapter, CallbackKind::OnJobPicked, timing);
     return false;

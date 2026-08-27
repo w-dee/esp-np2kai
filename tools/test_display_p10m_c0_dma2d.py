@@ -117,7 +117,7 @@ def main() -> int:
         "State::RetainedAmbiguous",
         "static_assert(std::atomic<State>::is_always_lock_free)",
         "terminalize_ambiguous", "activate_from_queue",
-        "complete_from_active", "return_to_idle", "signal_completion",
+        "complete_from_active", "return_to_idle", "signal_timed_completion",
     ):
         require(fragment in adapter, f"adapter contract missing: {fragment}")
     require("dma2d_force_end" not in adapter,
@@ -174,7 +174,8 @@ def main() -> int:
     setup_failure_end = adapter.index("return false;", setup_failure)
     setup_path = adapter[setup_failure:setup_failure_end]
     require("terminalize_ambiguous(adapter)" in setup_path and
-            "signal_completion(adapter, result)" in setup_path,
+            ("signal_completion(adapter, result)" in setup_path or
+             "signal_timed_completion(adapter, result" in setup_path),
             "job-pick setup/start failure must retain and wake the task")
 
     # The private header must stay quarantined in the adapter component.
