@@ -703,15 +703,18 @@ esp_err_t run()
     std::printf("\n");
     esp_chip_info_t chip{};
     esp_chip_info(&chip);
+    const uint32_t cpu_frequency_hz =
+        static_cast<uint32_t>(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ) * 1000000U;
     std::printf("P4_AUDIO_META environment=%s chip_target=esp32p4 chip_revision=%d idf=%s"
-                " cpu_frequency_hz=%d optimization=release-equivalent pm_enabled=0"
+                " cpu_frequency_hz=%u optimization=release-equivalent pm_enabled=0"
                 " freertos_tick_hz=%d psram_enabled=%s psram_speed_mhz=%d\n",
 #if defined(P4_AUDIO_EMU_TEST)
                 "ESP_EMU",
 #else
                 "REAL_P4",
 #endif
-                chip.revision, esp_get_idf_version(), CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+                chip.revision, esp_get_idf_version(),
+                static_cast<unsigned>(cpu_frequency_hz),
                 configTICK_RATE_HZ,
 #if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
                 "yes",
