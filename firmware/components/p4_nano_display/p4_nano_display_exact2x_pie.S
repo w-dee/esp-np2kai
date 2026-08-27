@@ -59,6 +59,26 @@ exact2x_pie_tile128_aligned:
     .size exact2x_pie_tile128_aligned, .-exact2x_pie_tile128_aligned
 
     .align  4
+    .global exact2x_pie_horizontal64_aligned
+    .type   exact2x_pie_horizontal64_aligned, @function
+exact2x_pie_horizontal64_aligned:
+    li      a5, 64
+.Lexact2x_horizontal64_row:
+    li      a4, 50
+.Lexact2x_horizontal64_group:
+    esp.vld.128.ip  q0, a0, 16
+    esp.orq         q1, q0, q0
+    esp.vzip.16     q0, q1
+    esp.vst.128.ip  q0, a1, 16
+    esp.vst.128.ip  q1, a1, 16
+    addi    a4, a4, -1
+    bnez    a4, .Lexact2x_horizontal64_group
+    addi    a5, a5, -1
+    bnez    a5, .Lexact2x_horizontal64_row
+    ret
+    .size exact2x_pie_horizontal64_aligned, .-exact2x_pie_horizontal64_aligned
+
+    .align  4
     .global exact2x_pie_tile128_grouped64_aligned
     .type   exact2x_pie_tile128_grouped64_aligned, @function
 exact2x_pie_tile128_grouped64_aligned:

@@ -57,6 +57,10 @@ extern "C" void exact2x_pie_aligned(const std::uint16_t *source,
 extern "C" void exact2x_pie_tile128_aligned(
     const std::uint16_t *source, std::uint16_t *destination);
 
+/* P10M-C0 fixed-geometry horizontal-only helper. */
+extern "C" void exact2x_pie_horizontal64_aligned(
+    const std::uint16_t *source, std::uint16_t *destination);
+
 /* Dedicated P10K-B0 fixed-geometry T128 correctness candidate.  Its caller
  * owns pointer, cache, and correctness handling; this benchmark/test fixture
  * currently requires 64-byte-aligned buffers while the generic 16-byte
