@@ -1,0 +1,82 @@
+{
+  "manifest_version": 1,
+  "upstream": {
+    "repository": "https://github.com/Keitark/RetroFM-Pocket",
+    "commit": "1a6f7e9ac0d8bd7ad0a52219a0700f981be9aebb",
+    "generator_path": "scripts/generate_retrofm_demo.py",
+    "generator_bytes": 5219,
+    "generator_sha256": "d54a2f38cfadfe19154a2289696f4b7646854b18a968bdb0a02e47034b5d0981",
+    "license": "MIT",
+    "provenance": "deterministic original rights-cleared FM demo; generated VGM contains no third-party music data"
+  },
+  "source_vgm": {
+    "path": "testdata/vgm/retrofm-pocket-demo.vgm",
+    "bytes": 4194,
+    "sha256": "b71eb66b4b54771e92b23b2e300889c163dfbbc815a8e946af04e4ea10617142",
+    "license": "CC0-1.0",
+    "declared_ym2203_clock_hz": 4000000,
+    "total_samples": 530082,
+    "version": 337,
+    "data_offset": 256,
+    "loop_offset": 0,
+    "gd3_offset": 3794
+  },
+  "converter": {
+    "repository": "https://github.com/autch/vgm2s98",
+    "commit": "5a1204c245789971a2bc32501ab96b7a48bf5e87",
+    "script_path": "vgm2s98.py",
+    "script_bytes": 16379,
+    "script_sha256": "e457fe9dd436cb7ff2da5a817fc6eef1ddf6991c9a66c7969a429b2e3ed3e11f",
+    "command": "python3 <fixed-vgm2s98>/vgm2s98.py retrofm-pocket-demo.vgm retrofm-pocket-demo.s98 --sync 1/44100",
+    "license_status": "NOT VENDORABLE / NO SOURCE COPYING"
+  },
+  "raw_derived_s98": {
+    "bytes": 3762,
+    "sha256": "87de61e3d155d8ef9b44e78fae2d59204785ab4885539e38462d82fde7666a28",
+    "timer_numerator": 1,
+    "timer_denominator": 44100,
+    "compression": 0,
+    "device_count": 1,
+    "device_type": 2,
+    "declared_device_clock_hz": 4000000,
+    "pan": 0,
+    "reserved": 0,
+    "data_offset": 48,
+    "tag_offset": 3587,
+    "loop_offset": 0,
+    "write_count": 1050,
+    "final_sync": 530082
+  },
+  "curation": {
+    "tool_path": "tools/emu/curate_retrofm_s98.py",
+    "input_sha256": "87de61e3d155d8ef9b44e78fae2d59204785ab4885539e38462d82fde7666a28",
+    "removed_write_count": 3,
+    "removed_writes": [
+      {"write_index": 0, "sync": 0, "register": 34, "value": 0, "occurrence_count": 1},
+      {"write_index": 1, "sync": 0, "register": 39, "value": 0, "occurrence_count": 1},
+      {"write_index": 2, "sync": 0, "register": 7, "value": 63, "occurrence_count": 1}
+    ],
+    "preservation": "all other writes, register values, order, waits, cumulative timing, FD, and tag bytes are preserved"
+  },
+  "strict_derivative": {
+    "path": "testdata/s98/retrofm-pocket-demo-strict.s98",
+    "bytes": 3753,
+    "sha256": "702d8b3003d2d81449fd1003aa2231afdacaae9d680f73fdf11d8195edb046c2",
+    "s98_version": 3,
+    "timer_numerator": 1,
+    "timer_denominator": 44100,
+    "compression": 0,
+    "device_count": 1,
+    "device_type": 2,
+    "declared_device_clock_hz": 4000000,
+    "effective_opngen_clock_hz": 3993600,
+    "clock_policy": "WORKLOAD_CLOCK_MISMATCH",
+    "data_offset": 48,
+    "tag_offset": 3578,
+    "loop_offset": 0,
+    "write_count": 1047,
+    "ignored_write_count": 0,
+    "final_sync": 530082,
+    "end_frame": 576960
+  }
+}

@@ -351,6 +351,7 @@ static int run_success(const char *fixture_name, const uint8_t *source,
     uint32_t pcm_crc32;
     uint64_t same_timestamp_pairs = 0U;
     const struct fixture_expectation *expectation = NULL;
+    int is_retrofm = strcmp(fixture_name, "retrofm_pocket_demo") == 0;
     size_t i;
     int status;
 
@@ -361,16 +362,28 @@ static int run_success(const char *fixture_name, const uint8_t *source,
         }
     }
     bytes_sha256(source, source_size, original_source_sha256);
-    if (expectation == NULL ||
+    if ((!is_retrofm && expectation == NULL) ||
         preflight(source, source_size, &pass1, &preflight_identity,
                   &same_timestamp_pairs) != 0) {
         return -1;
     }
-    if (preflight_identity.count != expectation->event_count ||
-        preflight_identity.crc32 != expectation->event_crc32 ||
-        pass1.metadata.end_frame != expectation->end_frame ||
-        (strcmp(fixture_name, "fm_same_timestamp_burst") == 0 &&
-         same_timestamp_pairs != 5U)) {
+    if (is_retrofm) {
+        if (source_size != 3753U || preflight_identity.count != 1047U ||
+            pass1.metadata.declared_device_clock_hz != 4000000U ||
+            pass1.metadata.effective_opngen_clock_hz != 3993600U ||
+            pass1.metadata.clock_policy !=
+                NP2_OPNGEN_S98_CLOCK_WORKLOAD_CLOCK_MISMATCH ||
+            pass1.metadata.source_write_count != 1047U ||
+            pass1.metadata.ignored_write_count != 0U ||
+            pass1.metadata.final_sync_count != 530082U ||
+            pass1.metadata.end_frame != 576960U) {
+            return -1;
+        }
+    } else if (preflight_identity.count != expectation->event_count ||
+               preflight_identity.crc32 != expectation->event_crc32 ||
+               pass1.metadata.end_frame != expectation->end_frame ||
+               (strcmp(fixture_name, "fm_same_timestamp_burst") == 0 &&
+                same_timestamp_pairs != 5U)) {
         return -1;
     }
     memcpy(source_sha256, original_source_sha256, sizeof(source_sha256));
@@ -591,6 +604,7 @@ int main(int argc, char **argv)
 {
     const char *fixture_dir = NULL;
     const char *fixture_name = NULL;
+    const char *fixture_file = NULL;
     const char *pcm_path = NULL;
     int failure_test = 0;
     uint8_t *source = NULL;
@@ -604,24 +618,37 @@ int main(int argc, char **argv)
             fixture_dir = argv[++i];
         } else if (strcmp(argv[i], "--fixture") == 0 && i + 1 < argc) {
             fixture_name = argv[++i];
+        } else if (strcmp(argv[i], "--fixture-file") == 0 && i + 1 < argc) {
+            fixture_file = argv[++i];
         } else if (strcmp(argv[i], "--pcm-out") == 0 && i + 1 < argc) {
             pcm_path = argv[++i];
         } else if (strcmp(argv[i], "--failure-test") == 0) {
             failure_test = 1;
         } else {
-            die("usage: --fixture-dir DIR --fixture NAME [--pcm-out PATH] or --failure-test");
+            die("usage: --fixture-dir DIR --fixture NAME [--pcm-out PATH] or --fixture-file PATH [--pcm-out PATH]");
         }
     }
-    if (fixture_dir == NULL) {
+    if (fixture_dir == NULL && fixture_file == NULL) {
         die("--fixture-dir is required");
     }
     if (failure_test) {
+        if (fixture_dir == NULL || fixture_file != NULL) {
+            die("--failure-test requires --fixture-dir");
+        }
         return run_failure_test(fixture_dir) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
     }
-    if (fixture_name == NULL ||
-        snprintf(path, sizeof(path), "%s/%s.s98", fixture_dir, fixture_name) >=
-            (int)sizeof(path) || read_file(path, &source, &source_size) != 0) {
-        die("unable to read fixture");
+    if (fixture_file != NULL) {
+        fixture_name = "retrofm_pocket_demo";
+        if (read_file(fixture_file, &source, &source_size) != 0) {
+            die("unable to read fixture file");
+        }
+    } else {
+        if (fixture_name == NULL ||
+            snprintf(path, sizeof(path), "%s/%s.s98", fixture_dir,
+                     fixture_name) >= (int)sizeof(path) ||
+            read_file(path, &source, &source_size) != 0) {
+            die("unable to read fixture");
+        }
     }
     result = run_success(fixture_name, source, source_size, pcm_path);
     free(source);
