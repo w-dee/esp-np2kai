@@ -193,6 +193,9 @@ NP2_CRC32_TEST_OUTPUT := $(BUILD_DIR)/tests/np2_crc32_test
 OPNGEN_FIXTURE_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_fixture.c
 OPNGEN_FIXTURE_MAIN_SOURCE := $(CURDIR)/tests/opngen_fixture_main.c
 OPNGEN_FIXTURE_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_fixture
+OPNGEN_FIXTURE_LOG_OUTPUT := $(BUILD_DIR)/tests/opngen_fixture.log
+OPNGEN_FIXTURE_VALIDATOR := $(HOST_ROOT)/tools/emu/validate_opngen_fixture_log.py
+OPNGEN_FIXTURE_GOLDEN := $(HOST_ROOT)/tools/emu/opngen_fixture_golden.json
 HEADLESS_COMMNG_SOURCE := $(CURDIR)/backend/headless/commng.c
 HEADLESS_COMMNG_TEST_SOURCE := $(CURDIR)/tests/headless_commng_test.c
 HEADLESS_COMMNG_TEST_OUTPUT := $(BUILD_DIR)/tests/headless_commng_test
@@ -543,8 +546,12 @@ test-opngen-fixture:
 		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
 		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_FIXTURE_MAIN_SOURCE)" \
 		-lm -o "$(OPNGEN_FIXTURE_TEST_OUTPUT)"
-	@"$(OPNGEN_FIXTURE_TEST_OUTPUT)"
-	@printf '%s\n' 'OPNGEN fixture native smoke completed (NON-GOLDEN output).'
+	@"$(OPNGEN_FIXTURE_TEST_OUTPUT)" > "$(OPNGEN_FIXTURE_LOG_OUTPUT)"
+	@cat "$(OPNGEN_FIXTURE_LOG_OUTPUT)"
+	@$(PYTHON) "$(OPNGEN_FIXTURE_VALIDATOR)" \
+		--log "$(OPNGEN_FIXTURE_LOG_OUTPUT)" \
+		--golden "$(OPNGEN_FIXTURE_GOLDEN)"
+	@printf '%s\n' 'OPNGEN fixture native run and golden validation completed.'
 
 test-result-v1-parser:
 	@mkdir -p "$(dir $(RESULT_V1_PARSER_TEST_OUTPUT))"

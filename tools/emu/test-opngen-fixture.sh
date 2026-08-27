@@ -14,6 +14,7 @@ readonly BUILD_DIR="${RUN_ROOT}/build"
 readonly SDKCONFIG_PATH="${BUILD_DIR}/sdkconfig"
 readonly MERGED_IMAGE="${RUN_ROOT}/np2opngen-merged.bin"
 readonly EMULATOR_LOG="${RUN_ROOT}/esp-emu-opngen.log"
+readonly GOLDEN="${REPOSITORY_ROOT}/tools/emu/opngen_fixture_golden.json"
 readonly ESP_EMU="${ESP_EMU:-${HOME}/.local/bin/esp-emu}"
 
 fail() {
@@ -78,6 +79,7 @@ emulator_status="${PIPESTATUS[0]}"
 set -e
 (( emulator_status == 0 )) || fail "esp-emu returned status ${emulator_status}; output: ${EMULATOR_LOG}"
 python3 "${REPOSITORY_ROOT}/tools/emu/validate_opngen_fixture_log.py" \
-    --log "${EMULATOR_LOG}" || fail "OPNGEN fixture log validation failed"
+    --log "${EMULATOR_LOG}" --golden "${GOLDEN}" || \
+    fail "OPNGEN fixture log validation failed"
 printf 'E1_OPNGEN_HARNESS=PASS\n'
 printf 'E1_OPNGEN_RUN_ROOT=%s\n' "${RUN_ROOT}"

@@ -1,0 +1,54 @@
+{
+  "golden_version": 1,
+  "fixture": {
+    "version": 1,
+    "rate_hz": 48000,
+    "frames": 28800,
+    "channels": 2,
+    "pcm_bytes": 115200,
+    "volume": 128,
+    "vector_revision": "e1-opngen-direct-v1",
+    "canonical_pcm_format": "s16le-interleaved-stereo"
+  },
+  "provenance": {
+    "np2kai_upstream_commit": "e2dc9046aa5c786fcfbfb87e883457e421026e31",
+    "vendor_sha256": {
+      "opngenc.c": "d00e425a9dfe0c3c4d10c1c76f4c46d0d9c7849bca86bd47a0c35b9fc65ae2fb",
+      "opngeng.c": "3df2187193c295965101c9591a303d2efbcbab36d529ecc8d42755285f7e2710",
+      "opngencfg.h": "13cf07e37f80012cca09ddf8e9c424ff010c96a5aa0ad1a7e3ede68656da1ca3"
+    }
+  },
+  "deterministic": {
+    "table": {
+      "ratebit": 0,
+      "calc1024": 886,
+      "fmvol": 160,
+      "sintable_crc32": "0x7aba7bbd",
+      "envtable_crc32": "0xf0ef1f7c",
+      "envcurve_crc32": "0xda785b66"
+    },
+    "pcm": {
+      "crc_algorithm": "crc32_iso_hdlc",
+      "crc32": "0x17496602",
+      "sha256": "a19c7d651f9d3bf0aa6d493eb80d66f0543464f8c937796047fbc962f550a2e9",
+      "s32_abs_peak": 23996,
+      "nonzero_s16_samples": 33934,
+      "clip_samples": 0
+    },
+    "metrics": {
+      "l_sumsq": 1326814059868,
+      "r_sumsq": 818520381691,
+      "l_rms_q16": 444824520,
+      "r_rms_q16": 349380318
+    },
+    "invariants": {
+      "repeat": "PASS",
+      "partition_240": "PASS",
+      "partition_1": "PASS",
+      "silence": "PASS",
+      "frequency_change": "PASS",
+      "keyoff": "PASS",
+      "nontrivial": "PASS"
+    }
+  }
+}
