@@ -94,6 +94,8 @@ struct Allocations final {
     TileBuffers tiles{};
 };
 
+std::array<PhaseStats, 2U> s_phase_stats{};
+
 bool ranges_overlap(const void *first, std::size_t first_size,
                     const void *second, std::size_t second_size) noexcept
 {
@@ -530,8 +532,10 @@ esp_err_t run(const Input &input)
         std::printf("P4_NANO_EXACT2X_GROUPED_RESULT=FAIL reason=ppa_register\n");
         return register_result == ESP_OK ? ESP_FAIL : register_result;
     }
-    PhaseStats current{};
-    PhaseStats grouped{};
+    PhaseStats &current = s_phase_stats[0];
+    PhaseStats &grouped = s_phase_stats[1];
+    reset_stats(&current);
+    reset_stats(&grouped);
     const bool current_ok = run_phase(
         "current", false, client, input.original_source, &allocations.tiles,
         allocations.destination, &current);

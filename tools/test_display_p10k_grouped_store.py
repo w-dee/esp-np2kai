@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -83,6 +84,28 @@ def main() -> int:
         require(fragment in source, f"D0 contract missing: {fragment}")
     require(source.count("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT") == 2,
             "D0 must allocate exactly two internal tile buffers")
+    retained = "std::array<PhaseStats, 2U> s_phase_stats{};"
+    require(retained in source and
+            source.index(retained) < source.index(
+                "namespace p4_nano_exact2x_grouped_store"),
+            "D1B must retain exactly two benchmark-private PhaseStats slots")
+    require(not re.search(r"\bPhaseStats\s+(?:current|grouped)\s*\{\}", source),
+            "PhaseStats current/grouped must not be automatic objects")
+    run_start = source.index("esp_err_t run(const Input &input)")
+    run_end = source.index("} // namespace p4_nano_exact2x_grouped_store", run_start)
+    run_body = source[run_start:run_end]
+    require("PhaseStats &current = s_phase_stats[0];" in run_body and
+            "PhaseStats &grouped = s_phase_stats[1];" in run_body,
+            "current/grouped references must map to separate retained slots")
+    require(run_body.count("s_phase_stats[") == 2,
+            "D1B must retain exactly two PhaseStats slots")
+    require("reset_stats(&current);" in run_body and
+            "reset_stats(&grouped);" in run_body,
+            "both retained PhaseStats slots must be explicitly reset")
+    allocate_start = source.index("bool allocate(")
+    allocate_end = source.index("const char *kernel_class", allocate_start)
+    require("PhaseStats" not in source[allocate_start:allocate_end],
+            "PhaseStats must not use heap allocation")
     require(source.count("exact2x_pie_tile128_aligned") >= 1 and
             source.count("exact2x_pie_tile128_grouped64_aligned") >= 1,
             "both current and grouped helpers must be reachable")
@@ -171,6 +194,22 @@ def main() -> int:
         for symbol in ("exact2x_pie_tile128_aligned",
                        "exact2x_pie_tile128_grouped64_aligned"):
             require(symbol in symbols, f"D0 ELF is missing {symbol}")
+        disassembly = subprocess.run([objdump, "-d", "-C", str(args.elf)],
+                                     check=True, capture_output=True,
+                                     text=True).stdout
+        lines = disassembly.splitlines()
+        run_symbol = "<p4_nano_exact2x_grouped_store::run("
+        try:
+            run_index = next(index for index, line in enumerate(lines)
+                             if run_symbol in line and line.rstrip().endswith(">:"))
+        except StopIteration as exc:
+            raise AssertionError("D1B ELF is missing grouped-store run symbol") from exc
+        prologue = lines[run_index + 1:run_index + 36]
+        frame_size = sum(int(match) for line in prologue
+                         for match in re.findall(r"addi\s+sp,sp,-(\d+)", line))
+        require(frame_size <= 1024,
+                f"D1B run static frame exceeds 1024 bytes: {frame_size}")
+        print(f"P10K_D1B_RUN_STATIC_FRAME_BYTES={frame_size}")
 
     print("Display Performance P10K-D0 grouped-store host/static contract passed")
     print("P10K_D0_HARDWARE_ACCESS=NOT_PERFORMED")
