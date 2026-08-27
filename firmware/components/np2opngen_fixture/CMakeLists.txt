@@ -5,6 +5,9 @@ idf_component_register(
     SRCS
         "np2opngen_fixture.c"
         "np2opngen_synth_event.c"
+        "np2opngen_pcm_canonical.c"
+        "np2opngen_spsc.c"
+        "np2opngen_e1b_stream.c"
         "np2opngen_fixture_esp.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngenc.c"
         "${NP2_OPNGEN_VENDOR_DIR}/sound/opngeng.c"

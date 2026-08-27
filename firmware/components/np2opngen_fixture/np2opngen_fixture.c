@@ -13,6 +13,7 @@
 #include <sound/opngencfg.h>
 
 #include "np2_crc32.h"
+#include "np2opngen_pcm_canonical.h"
 #include "np2opngen_synth_event.h"
 #include "np2_sha256.h"
 
@@ -300,65 +301,30 @@ static uint64_t fixture_isqrt(uint64_t value)
     return result;
 }
 
-static uint16_t fixture_canonical_s16(SINT32 value, bool *clipped)
-{
-    if (value > 32767) {
-        *clipped = true;
-        return UINT16_C(32767);
-    }
-    if (value < -32768) {
-        *clipped = true;
-        return UINT16_C(0x8000);
-    }
-    *clipped = false;
-    return (uint16_t)(int16_t)value;
-}
-
 static void fixture_finalize_pcm(struct fixture_capture *capture,
                                  const SINT32 *pcm)
 {
     np2_sha256_context sha;
-    uint32_t crc = np2_crc32_iso_hdlc_init();
-    uint64_t frame;
-    np2_sha256_init(&sha);
-    for (frame = 0; frame < FIXTURE_FRAMES; ++frame) {
-        unsigned channel;
-        for (channel = 0; channel < FIXTURE_CHANNELS; ++channel) {
-            const SINT32 value = pcm[frame * FIXTURE_CHANNELS + channel];
-            const int64_t widened = (int64_t)value;
-            const uint64_t magnitude = widened < 0 ? (uint64_t)(-widened)
-                                                   : (uint64_t)widened;
-            bool clipped;
-            const int16_t sample = (int16_t)fixture_canonical_s16(value, &clipped);
-            const uint16_t encoded = (uint16_t)sample;
-            uint8_t bytes[2] = {
-                (uint8_t)(encoded & 0xffU),
-                (uint8_t)((encoded >> 8) & 0xffU),
-            };
-            const size_t byte_offset =
-                (frame * FIXTURE_CHANNELS + channel) * 2U;
-            if (magnitude > capture->s32_abs_peak) {
-                capture->s32_abs_peak = magnitude;
-            }
-            if (clipped) {
-                ++capture->clip_samples;
-            }
-            if (sample != 0) {
-                ++capture->nonzero_s16_samples;
-            }
-            if (channel == 0U) {
-                capture->l_sumsq += (uint64_t)((int64_t)sample * sample);
-            } else {
-                capture->r_sumsq += (uint64_t)((int64_t)sample * sample);
-            }
-            capture->pcm[byte_offset] = bytes[0];
-            capture->pcm[byte_offset + 1U] = bytes[1];
-            crc = np2_crc32_iso_hdlc_update(crc, bytes, sizeof(bytes));
-            np2_sha256_update(&sha, bytes, sizeof(bytes));
-        }
+    struct np2opngen_pcm_stats stats;
+
+    if (np2opngen_pcm_canonicalize_s16le(
+            pcm, FIXTURE_FRAMES, FIXTURE_CHANNELS, capture->pcm,
+            FIXTURE_PCM_BYTES, &stats) != 0) {
+        memset(capture->pcm, 0, FIXTURE_PCM_BYTES);
+        memset(&stats, 0, sizeof(stats));
     }
-    capture->pcm_crc32 = np2_crc32_iso_hdlc_finish(crc);
+
+    capture->pcm_crc32 = np2_crc32_iso_hdlc_finish(
+        np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(), capture->pcm,
+                                  FIXTURE_PCM_BYTES));
+    np2_sha256_init(&sha);
+    np2_sha256_update(&sha, capture->pcm, FIXTURE_PCM_BYTES);
     np2_sha256_final(&sha, capture->sha256);
+    capture->s32_abs_peak = stats.s32_abs_peak;
+    capture->nonzero_s16_samples = stats.nonzero_s16_samples;
+    capture->clip_samples = stats.clip_samples;
+    capture->l_sumsq = stats.l_sumsq;
+    capture->r_sumsq = stats.r_sumsq;
     capture->l_rms_q16 = fixture_isqrt((capture->l_sumsq / FIXTURE_FRAMES << 32) +
                                        ((capture->l_sumsq % FIXTURE_FRAMES << 32) /
                                         FIXTURE_FRAMES));
@@ -826,4 +792,17 @@ cleanup:
 int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
 {
     return np2opngen_fixture_run_with_sink(clock_fn, context, 0, 0);
+}
+
+int np2opngen_fixture_get_e1_events(
+    const struct np2opngen_synth_event **events, size_t *count,
+    uint64_t *end_frame)
+{
+    if (events == 0 || count == 0 || end_frame == 0) {
+        return -1;
+    }
+    *events = fixture_primary_events;
+    *count = FIXTURE_EVENT_COUNT;
+    *end_frame = FIXTURE_FRAMES;
+    return 0;
 }

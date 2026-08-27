@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "np2opngen_synth_event.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,6 +26,11 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context);
 int np2opngen_fixture_run_with_sink(
     np2opngen_fixture_clock_fn clock_fn, void *clock_context,
     np2opngen_fixture_pcm_sink_fn pcm_sink, void *pcm_sink_context);
+
+/* Return the immutable E1 event vector used by the reference fixture. */
+int np2opngen_fixture_get_e1_events(
+    const struct np2opngen_synth_event **events, size_t *count,
+    uint64_t *end_frame);
 
 #ifdef __cplusplus
 }
