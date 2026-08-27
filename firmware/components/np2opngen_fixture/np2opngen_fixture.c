@@ -20,6 +20,7 @@
 #define FIXTURE_FRAMES 28800U
 #define FIXTURE_CHANNELS 2U
 #define FIXTURE_PCM_BYTES (FIXTURE_FRAMES * FIXTURE_CHANNELS * 2U)
+#define FIXTURE_CAPTURE_COUNT 8U
 
 enum fixture_partition {
     FIXTURE_NORMAL,
@@ -517,42 +518,79 @@ static int fixture_run_event_vector(enum fixture_partition partition,
                                     struct fixture_capture *capture,
                                     struct np2opngen_synth_event_observer *observer)
 {
-    struct np2opngen_synth_event events[FIXTURE_EVENT_COUNT];
+    const struct np2opngen_synth_event *events = fixture_primary_events;
+    struct np2opngen_synth_event *mutable_events = 0;
     size_t event_count = 0U;
-    if (!options->silence) {
-        event_count = options->omit_keyoff ? FIXTURE_EVENT_COUNT - 2U
-                                           : FIXTURE_EVENT_COUNT;
-        memcpy(events, fixture_primary_events,
-               event_count * sizeof(fixture_primary_events[0]));
-        if (options->frequency_mode != 0U) {
-            events[29U].payload.register_write.value = 0x25U;
-            events[30U].payload.register_write.value = 0x40U;
-        }
+    int status;
+
+    memset(capture, 0, sizeof(*capture));
+    if (options->silence) {
+        return fixture_run_event_list(partition, 0, 0U, clock_fn, context,
+                                      measure, capture, observer);
     }
-    return fixture_run_event_list(partition, events, event_count, clock_fn,
-                                  context, measure, capture, observer);
+
+    event_count = options->omit_keyoff ? FIXTURE_EVENT_COUNT - 2U
+                                       : FIXTURE_EVENT_COUNT;
+    if (options->frequency_mode != 0U) {
+        mutable_events = (struct np2opngen_synth_event *)calloc(
+            FIXTURE_EVENT_COUNT, sizeof(*mutable_events));
+        if (mutable_events == 0) {
+            return -1;
+        }
+        memcpy(mutable_events, fixture_primary_events,
+               FIXTURE_EVENT_COUNT * sizeof(*mutable_events));
+        mutable_events[29U].payload.register_write.value = 0x25U;
+        mutable_events[30U].payload.register_write.value = 0x40U;
+        events = mutable_events;
+    }
+
+    status = fixture_run_event_list(partition, events, event_count, clock_fn,
+                                    context, measure, capture, observer);
+    free(mutable_events);
+    return status;
 }
 
 static void fixture_free_capture(struct fixture_capture *capture);
 static bool fixture_all_zero(const struct fixture_capture *capture);
 
+static int fixture_run_order_control(bool reverse,
+                                     struct fixture_capture *capture,
+                                     struct np2opngen_synth_event_observer *observer)
+{
+    enum { FIXTURE_ORDER_SETUP_COUNT = 26U, FIXTURE_ORDER_EVENT_COUNT = 29U };
+    struct np2opngen_synth_event *events =
+        (struct np2opngen_synth_event *)calloc(FIXTURE_ORDER_EVENT_COUNT,
+                                                sizeof(*events));
+    int status;
+
+    memset(capture, 0, sizeof(*capture));
+    if (events == 0) {
+        return -1;
+    }
+    memcpy(events, fixture_primary_events,
+           FIXTURE_ORDER_SETUP_COUNT * sizeof(*events));
+    events[26U] = fixture_primary_events[reverse ? 27U : 26U];
+    events[26U].sequence = 26U;
+    events[27U] = fixture_primary_events[reverse ? 26U : 27U];
+    events[27U].sequence = 27U;
+    events[28U] = fixture_primary_events[28U];
+    events[28U].sequence = 28U;
+    status = fixture_run_event_list(FIXTURE_NORMAL, events,
+                                    FIXTURE_ORDER_EVENT_COUNT, 0, 0, false,
+                                    capture, observer);
+    free(events);
+    return status;
+}
+
 static bool fixture_order_sensitive_control(void)
 {
-    struct np2opngen_synth_event first[FIXTURE_EVENT_COUNT];
-    struct np2opngen_synth_event reordered[FIXTURE_EVENT_COUNT];
-    struct fixture_capture first_capture;
-    struct fixture_capture reordered_capture;
+    struct fixture_capture first_capture = {0};
+    struct fixture_capture reordered_capture = {0};
     struct np2opngen_synth_event_observer observer;
     bool changed;
 
-    memcpy(first, fixture_primary_events, sizeof(first));
-    memcpy(reordered, fixture_primary_events, sizeof(reordered));
-    reordered[26U].payload = first[27U].payload;
-    reordered[27U].payload = first[26U].payload;
-    if (fixture_run_event_list(FIXTURE_NORMAL, first, FIXTURE_EVENT_COUNT,
-                               0, 0, false, &first_capture, &observer) != 0 ||
-        fixture_run_event_list(FIXTURE_NORMAL, reordered, FIXTURE_EVENT_COUNT,
-                               0, 0, false, &reordered_capture, &observer) != 0) {
+    if (fixture_run_order_control(false, &first_capture, &observer) != 0 ||
+        fixture_run_order_control(true, &reordered_capture, &observer) != 0) {
         fixture_free_capture(&first_capture);
         fixture_free_capture(&reordered_capture);
         return false;
@@ -618,56 +656,71 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     const struct fixture_options frequency_options = {1U, false, false};
     const struct fixture_options keyoff_options = {0U, true, false};
     const struct fixture_options silence_options = {0U, false, true};
-    struct fixture_capture reference;
-    struct fixture_capture normal;
-    struct fixture_capture repeat;
-    struct fixture_capture chunk240;
-    struct fixture_capture chunk1;
-    struct fixture_capture silence;
-    struct fixture_capture frequency;
-    struct fixture_capture keyoff;
+    struct fixture_capture *captures = (struct fixture_capture *)calloc(
+        FIXTURE_CAPTURE_COUNT, sizeof(*captures));
+    struct fixture_capture *reference;
+    struct fixture_capture *normal;
+    struct fixture_capture *repeat;
+    struct fixture_capture *chunk240;
+    struct fixture_capture *chunk1;
+    struct fixture_capture *silence;
+    struct fixture_capture *frequency;
+    struct fixture_capture *keyoff;
     struct np2opngen_synth_event_observer normal_observer;
     uint32_t event_trace_crc32 = 0U;
     uint8_t event_trace_sha256[NP2_SHA256_DIGEST_SIZE];
     int event_trace_status;
     int result = 0;
 
+    if (captures == 0) {
+        printf("E1_OPNGEN_RESULT=FAIL reason=allocation\n");
+        return -1;
+    }
+    reference = &captures[0];
+    normal = &captures[1];
+    repeat = &captures[2];
+    chunk240 = &captures[3];
+    chunk1 = &captures[4];
+    silence = &captures[5];
+    frequency = &captures[6];
+    keyoff = &captures[7];
+
     /* Keep this procedural vector as an independent reference implementation. */
     result |= fixture_run_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
-                                 context, false, &reference);
+                                 context, false, reference);
     result |= fixture_run_event_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
-                                       context, true, &normal,
+                                       context, true, normal,
                                        &normal_observer);
     result |= fixture_run_event_vector(FIXTURE_NORMAL, &normal_options, clock_fn,
-                                       context, false, &repeat, 0);
+                                       context, false, repeat, 0);
     result |= fixture_run_event_vector(FIXTURE_CHUNK240, &normal_options, clock_fn,
-                                       context, false, &chunk240, 0);
+                                       context, false, chunk240, 0);
     result |= fixture_run_event_vector(FIXTURE_CHUNK1, &normal_options, clock_fn,
-                                       context, false, &chunk1, 0);
+                                       context, false, chunk1, 0);
     result |= fixture_run_event_vector(FIXTURE_NORMAL, &silence_options, clock_fn,
-                                       context, false, &silence, 0);
+                                       context, false, silence, 0);
     result |= fixture_run_event_vector(FIXTURE_NORMAL, &frequency_options, clock_fn,
-                                       context, false, &frequency, 0);
+                                       context, false, frequency, 0);
     result |= fixture_run_event_vector(FIXTURE_NORMAL, &keyoff_options, clock_fn,
-                                       context, false, &keyoff, 0);
+                                       context, false, keyoff, 0);
 
-    if (reference.pcm == 0 || normal.pcm == 0 || repeat.pcm == 0 || chunk240.pcm == 0 ||
-        chunk1.pcm == 0 || silence.pcm == 0 || frequency.pcm == 0 ||
-        keyoff.pcm == 0) {
+    if (reference->pcm == 0 || normal->pcm == 0 || repeat->pcm == 0 ||
+        chunk240->pcm == 0 || chunk1->pcm == 0 || silence->pcm == 0 ||
+        frequency->pcm == 0 || keyoff->pcm == 0) {
         printf("E1_OPNGEN_RESULT=FAIL reason=allocation\n");
         result = -1;
         goto cleanup;
     }
-    const bool reference_match = fixture_capture_equal(&reference, &normal);
-    if (!reference_match || !fixture_capture_equal(&normal, &repeat)) {
+    const bool reference_match = fixture_capture_equal(reference, normal);
+    if (!reference_match || !fixture_capture_equal(normal, repeat)) {
         result = -1;
     }
-    const bool partition_240_ok = fixture_capture_equal(&normal, &chunk240);
-    const bool partition_1_ok = fixture_capture_equal(&normal, &chunk1);
-    const bool silence_ok = fixture_all_zero(&silence);
-    const bool nontrivial_ok = normal.nonzero_s16_samples != 0U;
-    const bool frequency_ok = memcmp(normal.pcm, frequency.pcm, FIXTURE_PCM_BYTES) != 0;
-    const bool keyoff_ok = memcmp(normal.pcm, keyoff.pcm, FIXTURE_PCM_BYTES) != 0;
+    const bool partition_240_ok = fixture_capture_equal(normal, chunk240);
+    const bool partition_1_ok = fixture_capture_equal(normal, chunk1);
+    const bool silence_ok = fixture_all_zero(silence);
+    const bool nontrivial_ok = normal->nonzero_s16_samples != 0U;
+    const bool frequency_ok = memcmp(normal->pcm, frequency->pcm, FIXTURE_PCM_BYTES) != 0;
+    const bool keyoff_ok = memcmp(normal->pcm, keyoff->pcm, FIXTURE_PCM_BYTES) != 0;
     const bool order_sensitive_ok = fixture_order_sensitive_control();
     event_trace_status = np2opngen_synth_event_trace(
         fixture_primary_events, FIXTURE_EVENT_COUNT, &event_trace_crc32,
@@ -693,17 +746,17 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     printf("E1_OPNGEN_TABLE ratebit=%" PRIu32 " calc1024=%" PRId32
            " fmvol=%" PRId32 " sintable_crc32=0x%08" PRIx32
            " envtable_crc32=0x%08" PRIx32 " envcurve_crc32=0x%08" PRIx32 "\n",
-           normal.ratebit, normal.calc1024, normal.fmvol,
-           normal.sintable_crc32, normal.envtable_crc32, normal.envcurve_crc32);
+           normal->ratebit, normal->calc1024, normal->fmvol,
+           normal->sintable_crc32, normal->envtable_crc32, normal->envcurve_crc32);
     printf("E1_OPNGEN_PCM crc_algorithm=crc32_iso_hdlc crc32=0x%08" PRIx32
-           " sha256=", normal.pcm_crc32);
-    fixture_print_sha(normal.sha256);
+           " sha256=", normal->pcm_crc32);
+    fixture_print_sha(normal->sha256);
     printf(" s32_abs_peak=%" PRIu64 " nonzero_s16_samples=%" PRIu64
            " clip_samples=%" PRIu64 "\n",
-           normal.s32_abs_peak, normal.nonzero_s16_samples, normal.clip_samples);
+           normal->s32_abs_peak, normal->nonzero_s16_samples, normal->clip_samples);
     printf("E1_OPNGEN_METRICS l_sumsq=%" PRIu64 " r_sumsq=%" PRIu64
            " l_rms_q16=%" PRIu64 " r_rms_q16=%" PRIu64 "\n",
-           normal.l_sumsq, normal.r_sumsq, normal.l_rms_q16, normal.r_rms_q16);
+           normal->l_sumsq, normal->r_sumsq, normal->l_rms_q16, normal->r_rms_q16);
     printf("E1_OPNGEN_INVARIANTS repeat=PASS partition_240=%s partition_1=%s"
            " silence=%s frequency_change=%s keyoff=%s nontrivial=%s\n",
            partition_240_ok ? "PASS" : "FAIL", partition_1_ok ? "PASS" : "FAIL",
@@ -712,16 +765,16 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     {
         const uint64_t logical_us = UINT64_C(600000);
         const uint64_t us_per_frame_q16 =
-            normal.render_us == 0U ? 0U
-                                   : (normal.render_us * UINT64_C(65536)) /
+            normal->render_us == 0U ? 0U
+                                   : (normal->render_us * UINT64_C(65536)) /
                                          FIXTURE_FRAMES;
         const uint64_t realtime_factor_q16 =
-            normal.render_us == 0U
+            normal->render_us == 0U
                 ? 0U
-                : (logical_us * UINT64_C(65536)) / normal.render_us;
+                : (logical_us * UINT64_C(65536)) / normal->render_us;
         printf("E1_OPNGEN_TIMING init_us=%" PRIu64 " render_us=%" PRIu64
                " us_per_frame_q16=%" PRIu64 " realtime_factor_q16=%" PRIu64 "\n",
-               normal.init_us, normal.render_us, us_per_frame_q16,
+               normal->init_us, normal->render_us, us_per_frame_q16,
                realtime_factor_q16);
     }
     printf("E1A_SYNTH_EVENT_META version=1 count=%u record_bytes=24\n",
@@ -738,13 +791,12 @@ int np2opngen_fixture_run(np2opngen_fixture_clock_fn clock_fn, void *context)
     printf("E1_OPNGEN_RESULT=PASS\n");
 
 cleanup:
-    fixture_free_capture(&reference);
-    fixture_free_capture(&normal);
-    fixture_free_capture(&repeat);
-    fixture_free_capture(&chunk240);
-    fixture_free_capture(&chunk1);
-    fixture_free_capture(&silence);
-    fixture_free_capture(&frequency);
-    fixture_free_capture(&keyoff);
+    if (captures != 0) {
+        size_t i;
+        for (i = 0U; i < FIXTURE_CAPTURE_COUNT; ++i) {
+            fixture_free_capture(&captures[i]);
+        }
+        free(captures);
+    }
     return result == 0 ? 0 : -1;
 }
