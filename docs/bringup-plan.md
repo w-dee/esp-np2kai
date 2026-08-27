@@ -725,17 +725,21 @@ This closes Step 7B.2d for the reviewed P4-NANO path. Its evidence set covers
 sustained LIVE presentation, scheduler/profiler characterization, optional
 I286 inline-memory fastpath A/B, transform producer-contention A-B-A, isolated
 and LIVE transform `-Og`/`-O2` A-B-A, production `-O2` promotion, and automated
-physical moving-bar validation. Long-duration stability, tear-free/refresh
+physical moving-bar validation. At the close of Step 7B.2d, long-duration stability, tear-free/refresh
 characterization, second native framebuffer, PPA, further transform structural
 optimization, display plus SDMMC/audio concurrency, arbitrary guest
 applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
-remain FUTURE / UNVALIDATED and are not blockers for this closeout.
+remained FUTURE / UNVALIDATED and were not blockers for that closeout.
 
 ### Step 7B.2e: P10 exact2x PPA/PIE/DMA2D optimization — COMPLETE
 
 This milestone advances the P4-NANO display path beyond the historical scalar
 Step 7B.2b–d implementation while preserving those results as milestone
 evidence. The major decisions were:
+
+P10M is complete as a correctness/performance candidate qualification;
+integration into the normal `--live-display` production transform and broader
+runtime coexistence remains a later implementation/validation step.
 
 1. The scalar/O2 path established the correctness reference and baseline.
 2. PPA rotation was useful for the selected internal tile geometry.

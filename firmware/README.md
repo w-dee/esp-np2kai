@@ -145,12 +145,13 @@ software-visible motion through the synchronized native framebuffer, not
 physical scanout of every frame; refresh/tearing, DSI/GDMA temporal behavior,
 and panel timing remain future characterization.
 
-## Current qualified P10M display path
+## Current qualified P10M candidate path
 
-The current P4-NANO performance/correctness profile uses the documented
+The qualified P10M correctness/performance profile uses the documented
 PPA -> horizontal PIE -> DMA2D exact2x pipeline and LOWER2 scanout. P10M-C1C
 is formal real-hardware byte-exact correctness VALID/PASS; P10M-D2C is formal
-same-binary performance VALID/A-PROVISIONAL. See
+same-binary performance VALID/A-PROVISIONAL. This path has not yet replaced
+the normal `--live-display` transform. See
 [`docs/architecture.md`](../docs/architecture.md) and
 [`docs/bringup-plan.md`](../docs/bringup-plan.md) for the current path and
 bounded evidence.

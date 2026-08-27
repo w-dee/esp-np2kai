@@ -188,7 +188,8 @@ CRCs, PASS markers, VSYNC values, or terminal markers as evidence.
 
 The capture is **INVALID** if no fresh canonical boot can be identified, the
 expected profile-specific correctness/performance evidence is incomplete, the
-missing, setup/canonical ordering is ambiguous, or another reset occurs after
+canonical terminal marker is missing, setup/canonical ordering is ambiguous, or
+another reset occurs after
 the canonical epoch begins.
 
 ## Leading NUL preamble

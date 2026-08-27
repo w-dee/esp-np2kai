@@ -46,9 +46,9 @@ the A panel.
 The physical backlight and display-side I2C are not accessed while the
 hardware-test gate is disabled. The managed component source retains its
 constructor-side behavior, but the compiled project-owned adapter is used by
-the future physical path and does not execute that block. The gate remains OFF
-until the FPC, separate panel power, bracket, and safe backlight sequence have
-been reviewed together.
+the project-owned physical path and does not execute that block. The gate
+remains OFF until the FPC, separate panel power, bracket, and safe backlight
+sequence have been reviewed together.
 
 GPIO7/GPIO8 are the same physical I2C bus used by the independent ES8311 audio
 diagnostic. The audio diagnostic used controller 0, while the Waveshare display

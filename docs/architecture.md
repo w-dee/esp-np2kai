@@ -600,17 +600,17 @@ framebuffer. It does not prove that every native frame was physically scanned
 out, tear-free behavior, refresh-boundary coherence, panel refresh rate, or
 DSI/GDMA temporal behavior. There is no independent reproducible evidence that
 the panel is frozen, so an earlier missed human observation does not open a
-scanout-debug milestone. Long-duration stability, refresh/tearing
+scanout-debug milestone. At the close of Step 7B.2d, long-duration stability,
 characterization, second native framebuffer, PPA, further transform structural
 optimization, display plus SDMMC/audio concurrency, arbitrary guest
 applications, touch, LVGL, OSD, TAB5, ESP32-S31, and ESP32-S3 display backends
-remain FUTURE / UNVALIDATED. The policy remains **AUTOMATED PROBE FIRST**;
+remained FUTURE / UNVALIDATED. The policy remains **AUTOMATED PROBE FIRST**;
 camera automation is unimplemented and unnecessary for this PASS, with human
 visual confirmation retained as fallback-only.
 
 ### Current P10M exact2x path
 
-The current P4-NANO transform path is:
+The currently qualified P10M exact2x candidate path is:
 
 ```text
 NP2 mutable 640x400 RGB565LE framebuffer
@@ -630,12 +630,13 @@ by COUNTERCLOCKWISE rotation to native 800x1280. There is no interpolation or
 1280x800 intermediate framebuffer. The native policy is `num_fbs=1`; there is
 no second native framebuffer.
 
-The current performance-qualified scanout is LOWER2: PLL_F240M / 7,
+The current P10M performance-qualified scanout is LOWER2: PLL_F240M / 7,
 approximately 34.285713 MHz DPI, approximately 29.426767 Hz calculated
 refresh, H total 880, V total 1324, two DSI lanes at 500 Mbps/lane, RGB565,
 and one native framebuffer. Approximate scanout traffic is 57.47 MiB/s. The
 refresh value is calculated/predicted, not a physical panel-refresh
-measurement. The profile source is
+measurement. This path is not yet the normal `--live-display` production
+transform; that profile remains separately selected. The profile source is
 [`p4_nano_display_timing_profiles.hpp`](../firmware/components/p4_nano_display/include/p4_nano_display/p4_nano_display_timing_profiles.hpp).
 
 P10M-C1C is **FORMAL REAL-HARDWARE BYTE-EXACT DMA2D CORRECTNESS = VALID / PASS**.

@@ -132,13 +132,17 @@ approximately 29.426767 Hz calculated refresh, H=880/V=1324, two 500 Mbps/lane
 DSI lanes, RGB565, and approximately 57.47 MiB/s scanout traffic. The refresh
 value is predicted, not a physical panel-refresh measurement.
 
-P10M-C1C formal real-hardware byte-exact DMA2D correctness is VALID/PASS.
+The currently qualified P10M candidate/performance path is the dedicated
+correctness/performance profile. P10M-C1C formal real-hardware byte-exact DMA2D
+correctness is VALID/PASS.
 P10M-D2C formal same-binary DMA2D performance is VALID and classified
 A-PROVISIONAL because DMA timer-control perturbation remained YELLOW. The
 headline result is approximately 89% reduction in the transform
 CPU-unavailability proxy and approximately 16.4 ms p99 total transform
 service; these are transform-capacity measurements, not guest or displayed
-FPS. Detailed evidence and scope are in
+FPS. The P10M DMA2D path is formally qualified in its dedicated
+correctness/performance profiles but has not yet replaced the normal
+`--live-display` transform path. Detailed evidence and scope are in
 [`docs/architecture.md`](docs/architecture.md) and
 [`docs/bringup-plan.md`](docs/bringup-plan.md).
 

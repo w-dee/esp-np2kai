@@ -260,8 +260,8 @@ touch coordinate mapping
 touch reset/interrupt behavior
 LVGL
 UI framework
-1280x800 logical landscape rendering
-runtime rotation
+standalone/general 1280x800 framebuffer or display mode
+runtime-selectable rotation (only the P10M CCW policy is qualified)
 RGB888
 measured refresh rate
 long-duration DSI stability
@@ -276,6 +276,7 @@ production framebuffer integration
 tear-free scanout and refresh-boundary coherence
 long-duration display + audio/FM coexistence
 second native framebuffer production viability
+P10M DMA2D path integrated into the normal --live-display production profile
 ```
 
 ## Wireless companion transport
