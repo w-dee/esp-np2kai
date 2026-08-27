@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from validate_opngen_fixture_log import load_golden, validate_text
+from validate_opngen_fixture_log import (load_event_golden, load_golden,
+                                          validate_text)
 
 
 GOLDEN = load_golden(Path(__file__).with_name("opngen_fixture_golden.json"))
+EVENT_GOLDEN = load_event_golden(Path(__file__).with_name(
+    "opngen_synth_event_golden.json"))
 
 
 def valid_log() -> str:
@@ -18,6 +21,7 @@ def valid_log() -> str:
     pcm = deterministic["pcm"]
     metrics = deterministic["metrics"]
     invariants = deterministic["invariants"]
+    event_trace = EVENT_GOLDEN["event_trace"]
     return "\n".join((
         "E1_OPNGEN_META " + " ".join(
             f"{key}={fixture[key]}" for key in
@@ -38,8 +42,11 @@ def valid_log() -> str:
             ("repeat", "partition_240", "partition_1", "silence",
              "frequency_change", "keyoff", "nontrivial")),
         "E1_OPNGEN_TIMING init_us=0 render_us=0 us_per_frame_q16=0 realtime_factor_q16=0",
-        "E1A_SYNTH_EVENT_META version=1 count=64 record_bytes=24",
-        "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=" + "0" * 64,
+        "E1A_SYNTH_EVENT_META " + " ".join(
+            f"{key}={event_trace[key]}" for key in
+            ("version", "count", "record_bytes")),
+        "E1A_SYNTH_EVENT_TRACE " + " ".join(
+            f"{key}={event_trace[key]}" for key in ("crc32", "sha256")),
         "E1A_SYNTH_EVENT_INVARIANTS validation=PASS reference_match=PASS order_sensitive=PASS",
         "E1A_SYNTH_EVENT_RESULT=PASS",
         "E1_OPNGEN_RESULT=PASS",
@@ -74,10 +81,15 @@ def main() -> int:
         "duplicate E1A terminal": original + "E1A_SYNTH_EVENT_RESULT=PASS\n",
         "explicit E1A RESULT=FAIL": replace_once(original, "E1A_SYNTH_EVENT_RESULT=PASS", "E1A_SYNTH_EVENT_RESULT=FAIL"),
         "missing E1A count": replace_once(original, " count=64", ""),
-        "malformed E1A CRC32": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001", "E1A_SYNTH_EVENT_TRACE crc32=0x123"),
-        "malformed E1A SHA-256": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=" + "0" * 64, "E1A_SYNTH_EVENT_TRACE crc32=0x00000001 sha256=xyz"),
+        "wrong E1A event count": replace_once(original, " count=64", " count=65"),
+        "wrong E1A record size": replace_once(original, "record_bytes=24", "record_bytes=25"),
+        "malformed E1A CRC32": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x807a514e", "E1A_SYNTH_EVENT_TRACE crc32=0x123"),
+        "malformed E1A SHA-256": replace_once(original, "sha256=" + EVENT_GOLDEN["event_trace"]["sha256"], "sha256=xyz"),
+        "altered accepted E1A CRC": replace_once(original, "E1A_SYNTH_EVENT_TRACE crc32=0x807a514e", "E1A_SYNTH_EVENT_TRACE crc32=0x807a514f"),
+        "altered accepted E1A SHA": replace_once(original, "sha256=" + EVENT_GOLDEN["event_trace"]["sha256"], "sha256=" + "0" * 64),
         "missing E1A invariant": replace_once(original, " order_sensitive=PASS", ""),
         "E1A reference mismatch": replace_once(original, "reference_match=PASS", "reference_match=FAIL"),
+        "E1A order mismatch": replace_once(original, "order_sensitive=PASS", "order_sensitive=FAIL"),
     }
     if validate_text(cases.pop("valid"), GOLDEN):
         raise AssertionError("known-valid formal log was rejected")

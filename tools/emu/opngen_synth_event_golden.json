@@ -1,0 +1,10 @@
+{
+  "golden_version": 1,
+  "event_trace": {
+    "version": 1,
+    "count": 64,
+    "record_bytes": 24,
+    "crc32": "0x807a514e",
+    "sha256": "f22cb06362889470385de729b807da50dcc68d09c37739242e3c33589e272af5"
+  }
+}

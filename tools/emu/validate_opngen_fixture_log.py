@@ -21,6 +21,7 @@ PREFIXES = (
     "E1A_SYNTH_EVENT_TRACE",
     "E1A_SYNTH_EVENT_INVARIANTS",
 )
+EVENT_GOLDEN_PATH = Path(__file__).with_name("opngen_synth_event_golden.json")
 
 
 def one(lines: list[str], prefix: str, errors: list[str]) -> str:
@@ -134,6 +135,25 @@ def load_golden(path: Path) -> dict[str, Any]:
     return document
 
 
+def load_event_golden(path: Path) -> dict[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("golden_version") != 1:
+        raise ValueError("E1A golden_version must be 1")
+    event_trace = document.get("event_trace")
+    if not isinstance(event_trace, dict):
+        raise ValueError("E1A event_trace descriptor is missing")
+    for key in ("version", "count", "record_bytes"):
+        if not _is_int(event_trace.get(key)):
+            raise ValueError(f"E1A event_trace {key} must be an integer")
+    if not isinstance(event_trace.get("crc32"), str) or not re.fullmatch(
+            r"0x[0-9a-f]{8}", event_trace["crc32"]):
+        raise ValueError("E1A event_trace crc32 is malformed")
+    if not isinstance(event_trace.get("sha256"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", event_trace["sha256"]):
+        raise ValueError("E1A event_trace sha256 is malformed")
+    return document
+
+
 def _compare_expected(values: dict[str, str], expected: dict[str, Any],
                       label: str, errors: list[str]) -> None:
     for key, value in expected.items():
@@ -142,7 +162,8 @@ def _compare_expected(values: dict[str, str], expected: dict[str, Any],
             errors.append(f"{label} {key}={values.get(key)!r}, expected {expected_value!r}")
 
 
-def validate_text(text: str, golden: dict[str, Any] | None = None) -> list[str]:
+def validate_text(text: str, golden: dict[str, Any] | None = None,
+                  event_golden: dict[str, Any] | None = None) -> list[str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     errors: list[str] = []
     parsed = {prefix: one(lines, prefix, errors) for prefix in PREFIXES}
@@ -264,6 +285,17 @@ def validate_text(text: str, golden: dict[str, Any] | None = None) -> list[str]:
         _compare_expected(metrics, deterministic["metrics"], "GOLDEN METRICS", errors)
         _compare_expected(invariants, deterministic["invariants"],
                           "GOLDEN INVARIANTS", errors)
+        if event_golden is None:
+            event_golden = load_event_golden(EVENT_GOLDEN_PATH)
+        expected_event = event_golden["event_trace"]
+        _compare_expected(event_meta, {
+            key: expected_event[key] for key in ("version", "count", "record_bytes")
+        },
+                          "E1A GOLDEN META", errors)
+        _compare_expected(event_trace, {
+            key: expected_event[key] for key in ("crc32", "sha256")
+        },
+                          "E1A GOLDEN TRACE", errors)
     return errors
 
 
@@ -274,8 +306,10 @@ def main() -> int:
     args = parser.parse_args()
     try:
         golden = load_golden(args.golden)
+        event_golden = load_event_golden(EVENT_GOLDEN_PATH)
         errors = validate_text(
-            args.log.read_text(encoding="utf-8", errors="replace"), golden)
+            args.log.read_text(encoding="utf-8", errors="replace"),
+            golden, event_golden)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         errors = [f"golden: {error}"]
     if errors:
