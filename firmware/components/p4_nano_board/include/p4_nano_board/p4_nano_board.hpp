@@ -14,7 +14,7 @@ inline constexpr std::uint8_t kPanelControlRegister = 0x95;
 inline constexpr std::uint8_t kBacklightRegister = 0x96;
 inline constexpr std::uint8_t kBacklightOff = 0x00;
 inline constexpr std::uint8_t kBacklightConservative = 0x40;
-inline constexpr int kPaControlGpioNumber = 51;
+inline constexpr int kPaControlGpioNumber = 53;
 
 /*
  * A lease owns one device handle only.  The board service retains the shared
@@ -51,7 +51,7 @@ esp_err_t display_control_safe_off();
 esp_err_t display_control_deinit();
 bool display_control_is_initialized();
 
-/* Board-owned PA control.  GPIO51 LOW is the safe amplifier-disabled state. */
+/* Board-owned PA control.  GPIO53 LOW is the safe amplifier-disabled state. */
 esp_err_t pa_service_init();
 esp_err_t pa_service_enable();
 esp_err_t pa_service_disable();

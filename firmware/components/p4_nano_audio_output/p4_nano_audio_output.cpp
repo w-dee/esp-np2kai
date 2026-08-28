@@ -35,6 +35,8 @@ constexpr std::uint32_t kMclkHz = kSampleRateHz * kMclkMultiple;
 constexpr std::uint32_t kBclkHz = kSampleRateHz * 16U * 2U;
 constexpr std::uint32_t kWriteTimeoutMs = 1000U;
 constexpr TickType_t kClockSettleTicks = pdMS_TO_TICKS(2);
+constexpr TickType_t kPaSettleTicks = pdMS_TO_TICKS(150);
+constexpr std::uint8_t kDacVolumeValue = 0xa0U;
 
 constexpr std::uint8_t kRegReset = 0x00U;
 constexpr std::uint8_t kRegClock1 = 0x01U;
@@ -182,7 +184,7 @@ esp_err_t codec_configure(const p4_nano_board::I2cDeviceLease &lease)
         ret = codec_write(lease, reg, setting);
         if (ret != ESP_OK) return ret;
     }
-    ret = codec_write(lease, kRegDacVolume, 0x80U);
+    ret = codec_write(lease, kRegDacVolume, kDacVolumeValue);
     if (ret != ESP_OK) return ret;
     return codec_mute(lease, true);
 }
@@ -190,16 +192,34 @@ esp_err_t codec_configure(const p4_nano_board::I2cDeviceLease &lease)
 bool codec_readback_ok(const p4_nano_board::I2cDeviceLease &lease)
 {
     struct Expect { std::uint8_t reg; std::uint8_t value; std::uint8_t mask; };
-    constexpr std::array<Expect, 8> expected = {{
+    constexpr std::array<Expect, 9> expected = {{
         {kRegClock1, 0x3fU, 0xffU}, {kRegClock3, 0x10U, 0xffU},
         {kRegClock4, 0x10U, 0xffU}, {kRegSdpIn, kS16Resolution, 0x1cU},
         {kRegSdpOut, kS16Resolution, 0x1cU}, {kRegDacMute, kMuteMask, kMuteMask},
         {kRegSystem12, 0x00U, 0x03U}, {kRegClock6, 0x03U, 0x1fU},
+        {kRegDacVolume, kDacVolumeValue, 0xffU},
     }};
     for (const auto item : expected) {
-        std::uint8_t value = 0;
-        if (codec_read(lease, item.reg, &value) != ESP_OK ||
-            (value & item.mask) != (item.value & item.mask)) {
+        std::uint8_t value = 0xffU;
+        const esp_err_t read_result = codec_read(lease, item.reg, &value);
+        const bool item_ok = read_result == ESP_OK &&
+                             (value & item.mask) == (item.value & item.mask);
+        if (item.reg == kRegDacVolume) {
+            std::printf(
+                "P4_AUDIO_CODEC_VOLUME_READBACK register=0x32 expected=0x%02x actual=0x%02x result=%s\n",
+                kDacVolumeValue, value,
+                item_ok ? "ESP_OK" : "ESP_FAIL");
+        }
+        if (item.reg == kRegDacMute) {
+            const std::uint8_t actual_mute_bits =
+                read_result == ESP_OK ? static_cast<std::uint8_t>(value & kMuteMask)
+                                      : 0xffU;
+            std::printf(
+                "P4_AUDIO_CODEC_STARTUP_MUTED_READBACK expected_mute_bits=0x%02x actual_mute_bits=0x%02x result=%s\n",
+                kMuteMask, actual_mute_bits,
+                item_ok ? "ESP_OK" : "ESP_FAIL");
+        }
+        if (!item_ok) {
             return false;
         }
     }
@@ -261,7 +281,8 @@ esp_err_t run()
     bool write_active = false;
     esp_err_t result = p4_nano_board::pa_service_init();
     if (result == ESP_OK) pa_ready = true;
-    std::printf("P4_AUDIO_PA transition=LOW result=%s\n", esp_err_to_name(result));
+    std::printf("P4_AUDIO_PA transition=LOW gpio=%d active_level=HIGH safe_level=LOW result=%s\n",
+                p4_nano_board::kPaControlGpioNumber, esp_err_to_name(result));
     if (result == ESP_OK) {
         result = p4_nano_board::shared_i2c_acquire_device(
             kCodecAddress, &codec_lease);
@@ -276,8 +297,8 @@ esp_err_t run()
     }
     if (result == ESP_OK) {
         result = codec_configure(codec_lease);
-        std::printf("P4_AUDIO_CODEC_INIT result=%s muted_start=1\n",
-                    esp_err_to_name(result));
+        std::printf("P4_AUDIO_CODEC_INIT result=%s muted_start=1 dac_volume_register=0x32 dac_volume_value=0x%02x\n",
+                    esp_err_to_name(result), kDacVolumeValue);
     }
     if (result == ESP_OK) {
         const bool readback_ok = codec_readback_ok(codec_lease);
@@ -331,13 +352,29 @@ esp_err_t run()
     if (result == ESP_OK) {
         vTaskDelay(kClockSettleTicks);
         result = p4_nano_board::pa_service_enable();
-        std::printf("P4_AUDIO_PA transition=HIGH result=%s\n",
-                    esp_err_to_name(result));
+        std::printf("P4_AUDIO_PA transition=HIGH gpio=%d active_level=HIGH safe_level=LOW result=%s\n",
+                    p4_nano_board::kPaControlGpioNumber, esp_err_to_name(result));
+    }
+    if (result == ESP_OK) {
+        vTaskDelay(kPaSettleTicks);
+        std::printf("P4_AUDIO_PA_SETTLE gpio=%d duration_ms=150 result=ESP_OK\n",
+                    p4_nano_board::kPaControlGpioNumber);
     }
     if (result == ESP_OK) {
         result = codec_mute(codec_lease, false);
         std::printf("P4_AUDIO_CODEC_MUTE state=unmuted result=%s\n",
                     esp_err_to_name(result));
+    }
+    if (result == ESP_OK) {
+        std::uint8_t value = 0xffU;
+        const esp_err_t read_result = codec_read(codec_lease, kRegDacMute, &value);
+        const std::uint8_t mute_bits = read_result == ESP_OK
+            ? static_cast<std::uint8_t>(value & kMuteMask) : 0xffU;
+        const bool readback_ok = read_result == ESP_OK && mute_bits == 0U;
+        std::printf(
+            "P4_AUDIO_CODEC_UNMUTE_READBACK expected_mute_bits=0x00 actual_mute_bits=0x%02x result=%s\n",
+            mute_bits, readback_ok ? "ESP_OK" : "ESP_FAIL");
+        if (!readback_ok) result = ESP_FAIL;
     }
 
     static WriteMetrics metrics{};
@@ -394,8 +431,8 @@ esp_err_t run()
     if (pa_ready) {
         const esp_err_t pa_ret = p4_nano_board::pa_service_disable();
         record_cleanup(pa_ret);
-        std::printf("P4_AUDIO_PA transition=LOW result=%s\n",
-                    esp_err_to_name(pa_ret));
+        std::printf("P4_AUDIO_PA transition=LOW gpio=%d active_level=HIGH safe_level=LOW result=%s\n",
+                    p4_nano_board::kPaControlGpioNumber, esp_err_to_name(pa_ret));
     }
     if (codec_lease.is_active()) {
         const esp_err_t mute_ret = codec_mute(codec_lease, true);

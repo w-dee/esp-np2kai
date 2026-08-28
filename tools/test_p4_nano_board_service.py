@@ -19,7 +19,11 @@ assert CPP.count("i2c_master_bus_add_device(") == 1
 assert CPP.count("i2c_del_master_bus(") == 1
 assert CPP.count("i2c_master_bus_rm_device(") == 1
 assert "GPIO_NUM_7" in CPP and "GPIO_NUM_8" in CPP
-assert "kPaControlGpioNumber = 51" in HEADER
+assert "kPaControlGpioNumber = 53" in HEADER
+assert "kPaControlGpioNumber = 51" not in HEADER
+pa_service = CPP[CPP.index("esp_err_t pa_service_init()"):]
+assert "GPIO_NUM_51" not in pa_service
+assert "kPaControlGpioNumber" in pa_service
 assert all(word not in CPP.lower() for word in ("i2s", "es8311", "mclk", "bclk", "lrck"))
 assert all(word not in CMAKE.lower() for word in ("i2s", "es8311", "audio"))
 assert "esp_driver_gpio" in CMAKE and "esp_driver_i2c" in CMAKE
@@ -34,4 +38,5 @@ for symbol in (
 ):
     assert symbol in HEADER
 
+print("P4_NANO_PA_GPIO_CONTRACT_TEST=PASS")
 print("P4_NANO_BOARD_STATIC_CONTRACT=PASS")

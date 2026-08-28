@@ -229,6 +229,7 @@ int main()
 
     test_failure_paths();
     test_pa_service();
+    std::printf("P4_NANO_PA_GPIO_CONTRACT_TEST=PASS\n");
     std::printf("P4_NANO_PA_SERVICE_TEST=PASS\n");
     return 0;
 }
