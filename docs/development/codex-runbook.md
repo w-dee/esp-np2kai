@@ -27,6 +27,57 @@ tools/dev/preflight.sh --build-dir <build-dir>
 Run the repository privacy lint before a commit. A pre-commit hook is a
 backstop, not a replacement for reviewing the changed paths.
 
+## Machine-verifiable hash and digest comparison
+
+Acceptance-critical hashes, digests, checksums, and long hexadecimal
+identities must never be compared by visual inspection, manual character
+counting, or an LLM deciding that displayed values look equal. Equality must
+be produced by a deterministic local program or tool.
+
+Prefer comparing original machine-produced values without retyping them. For
+artifact identity, recompute from the artifact where possible (for example,
+`sha256sum file`) and compare files or recorded values with `cmp`, shell
+equality, Python, or another deterministic local program. For values extracted
+from text, validate the expected length and hexadecimal syntax before
+comparing; a SHA-256 digest is 64 hexadecimal characters (32 bytes).
+
+For example, this dependency-free pattern validates and compares two supplied
+hexadecimal values while reporting a useful mismatch index:
+
+```python
+actual_hex = input("actual: ").strip()
+expected_hex = input("expected: ").strip()
+
+try:
+    actual = bytes.fromhex(actual_hex)
+    expected = bytes.fromhex(expected_hex)
+except ValueError:
+    print("DIGEST_COMPARE=FAIL invalid_hex")
+else:
+    if len(actual) != len(expected):
+        print(f"DIGEST_COMPARE=FAIL length {len(actual)} != {len(expected)}")
+    elif actual == expected:
+        print("DIGEST_COMPARE=PASS")
+    else:
+        first = next(i for i, (a, b) in enumerate(zip(actual, expected)) if a != b)
+        print(f"DIGEST_COMPARE=FAIL first_byte={first}")
+```
+
+When useful, report lengths, the first differing character or byte index, and
+the differing values mechanically. If a report includes both source strings
+and a PASS/FAIL result, only the mechanically generated result is authoritative;
+the model may explain or summarize it but must not replace the comparison.
+
+This procedure applies especially to candidate freezing, exact-flash
+provenance, physical app verification, golden identity checks, benchmark event
+and PCM hashes, and captured-log digest comparisons. CRC32 and other short
+values also require mechanical comparison when they participate in a formal
+acceptance or regression gate; casual prose discussion of a number does not.
+
+Artifact integrity (recomputing a digest from bytes) and comparison of already
+emitted digest values are distinct operations, and both are mechanical
+evidence.
+
 ## Sandbox and elevation
 
 Read-only Git commands normally need no special handling. Commands that write

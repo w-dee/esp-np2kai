@@ -7,6 +7,19 @@
   `docs/development/hardware-validation.md`.
 - Read the hardware-validation runbook before physical P4-NANO work.
 
+## Machine-verifiable identity evidence
+
+- Never determine equality of acceptance-critical hashes, digests, checksums,
+  or long hexadecimal identities by visual inspection, manual character
+  comparison, or LLM comparison.
+- When equality matters, use a program or tool to compare the values. This
+  applies to SHA-256 and other SHA-family digests, CRC values used as formal
+  gates, firmware/image and build-provenance hashes, benchmark goldens, and
+  log-emitted digests.
+- The model may interpret mechanically produced results, but it must not be
+  the authority deciding digest equality. Formal PASS/FAIL claims that depend
+  on equality must come from a mechanical comparison result.
+
 ## Privacy
 
 - Never place developer-specific absolute home paths in tracked files.
