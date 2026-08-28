@@ -148,6 +148,23 @@ def _settings(metadata: dict[str, Any]) -> tuple[str, ...]:
             _fail(f"write_flash_args[{index}] is invalid")
         args.append(value)
 
+    allowed = {"--flash_mode", "--flash_size", "--flash_freq"}
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        option = args[index]
+        if option not in allowed:
+            _fail(f"write_flash_args contains an unsupported token: {option!r}")
+        if option in values:
+            _fail(f"write_flash_args contains a duplicate option: {option}")
+        if index + 1 >= len(args) or args[index + 1].startswith("--"):
+            _fail(f"write_flash_args option has no single value: {option}")
+        values[option] = args[index + 1]
+        index += 2
+    if set(values) != allowed:
+        missing = ", ".join(sorted(allowed - set(values)))
+        _fail(f"write_flash_args is missing required option(s): {missing}")
+
     settings = metadata.get("flash_settings")
     if not isinstance(settings, dict):
         _fail("flash_settings is missing or not an object")
@@ -156,10 +173,7 @@ def _settings(metadata: dict[str, Any]) -> tuple[str, ...]:
         if not isinstance(value, str) or not value or any(ord(char) < 0x20 for char in value):
             _fail(f"flash_settings.{key} is missing or invalid")
         option = f"--{key}"
-        matches = [index for index, arg in enumerate(args) if arg == option]
-        if len(matches) != 1 or matches[0] + 1 >= len(args):
-            _fail(f"write_flash_args does not contain exactly one {option}")
-        if args[matches[0] + 1] != value:
+        if values[option] != value:
             _fail(f"write_flash_args {option} disagrees with flash_settings")
     return tuple(args)
 
@@ -256,6 +270,8 @@ def parse_flash_plan(
     for name, value in (("chip", chip), ("before", before), ("after", after)):
         if not isinstance(value, str) or not value or any(char in value for char in "\x00\t\r\n"):
             _fail(f"extra_esptool_args.{name} is missing or invalid")
+    if chip != "esp32p4":
+        _fail(f"extra_esptool_args.chip is {chip!r}, expected 'esp32p4'")
 
     write_flash_args = _settings(metadata)
     cache = _cache_values(build_dir)

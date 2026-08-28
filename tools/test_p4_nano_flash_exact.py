@@ -89,6 +89,39 @@ class FlashHelperContractTests(unittest.TestCase):
         self.assertIn("P4_NANO_FLASH_EXACT_APP offset=0x10000", result.stdout)
         self.assertIn("audio_only=1 audio_opt=o2", result.stdout)
 
+    def assert_plan_rejected(self) -> None:
+        self.write_metadata()
+        with self.assertRaises(MetadataError):
+            parse_flash_plan(self.build)
+
+    def test_rejects_chip_mismatch(self) -> None:
+        self.metadata["extra_esptool_args"]["chip"] = "esp32s3"
+        self.assert_plan_rejected()
+
+    def test_rejects_chip_case_mismatch(self) -> None:
+        self.metadata["extra_esptool_args"]["chip"] = "ESP32P4"
+        self.assert_plan_rejected()
+
+    def test_rejects_force_write_argument(self) -> None:
+        self.metadata["write_flash_args"].append("--force")
+        self.assert_plan_rejected()
+
+    def test_rejects_encrypt_write_argument(self) -> None:
+        self.metadata["write_flash_args"].append("--encrypt")
+        self.assert_plan_rejected()
+
+    def test_rejects_unknown_write_argument(self) -> None:
+        self.metadata["write_flash_args"].append("--made-up-option")
+        self.assert_plan_rejected()
+
+    def test_rejects_stray_write_positional(self) -> None:
+        self.metadata["write_flash_args"].append("stray")
+        self.assert_plan_rejected()
+
+    def test_rejects_duplicate_permitted_write_argument(self) -> None:
+        self.metadata["write_flash_args"][2:2] = ["--flash_size", "4MB"]
+        self.assert_plan_rejected()
+
     def test_verify_app_uses_shared_parser(self) -> None:
         result = self.run_helper("--print-plan", helper=VERIFY)
         self.assertEqual(result.returncode, 0, result.stderr)
