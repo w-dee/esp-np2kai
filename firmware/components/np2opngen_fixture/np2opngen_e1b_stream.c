@@ -333,6 +333,11 @@ static int worker_drain(struct np2opngen_e1b_worker *worker)
         }
         return -1;
     }
+    if (worker->sink.finish != 0 &&
+        worker->sink.finish(worker->end_frame, worker->sink.context) != 0) {
+        worker_fail(worker, NP2_OPNGEN_E1B_ERROR_OUTPUT_SINK, 0);
+        return -1;
+    }
     worker->state = NP2_OPNGEN_E1B_COMPLETE;
     return 0;
 }

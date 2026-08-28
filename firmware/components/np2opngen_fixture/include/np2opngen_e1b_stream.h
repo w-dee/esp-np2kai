@@ -49,9 +49,13 @@ typedef int (*np2opngen_e1b_pcm_sink_fn)(
     const uint8_t *canonical_pcm, size_t pcm_bytes, uint64_t frame_offset,
     void *context);
 
+typedef int (*np2opngen_e1b_pcm_sink_finish_fn)(uint64_t final_frame,
+                                                void *context);
+
 struct np2opngen_e1b_pcm_sink {
     np2opngen_e1b_pcm_sink_fn write;
     void *context;
+    np2opngen_e1b_pcm_sink_finish_fn finish;
 };
 
 /* Optional, caller-owned observation seam for bounded benchmark

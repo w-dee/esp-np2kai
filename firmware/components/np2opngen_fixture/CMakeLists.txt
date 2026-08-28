@@ -6,6 +6,7 @@ idf_component_register(
         "np2opngen_fixture.c"
         "np2opngen_synth_event.c"
         "np2opngen_pcm_canonical.c"
+        "np2opngen_pcm_ring.c"
         "np2opngen_spsc.c"
         "np2opngen_e1b_stream.c"
         "np2opngen_synthetic_workload.c"

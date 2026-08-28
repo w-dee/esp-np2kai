@@ -229,6 +229,12 @@ OPNGEN_E1B_TSAN_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_spsc_test_tsan
 OPNGEN_E1B_FORMAL_RUNNER := $(CURDIR)/tests/run_opngen_e1b_formal.py
 OPNGEN_E1B_OBSERVER_TEST_SOURCE := $(CURDIR)/tests/opngen_e1b_observer_test.c
 OPNGEN_E1B_OBSERVER_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1b_observer_test
+OPNGEN_PCM_RING_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_pcm_ring.c
+OPNGEN_PCM_RING_TEST_SOURCE := $(CURDIR)/tests/opngen_pcm_ring_test.c
+OPNGEN_PCM_RING_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test
+OPNGEN_PCM_RING_ASAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_asan
+OPNGEN_PCM_RING_UBSAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_ubsan
+OPNGEN_PCM_RING_TSAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_tsan
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
 OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
@@ -293,6 +299,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 .PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-s3-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 .PHONY: test-p4-nano-ppa-rotation-reference
+.PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"
@@ -727,6 +734,73 @@ build-opngen-e1b-observer:
 test-opngen-e1b-observer: build-opngen-e1b-observer
 	@cd "$(CURDIR)" && "$(OPNGEN_E1B_OBSERVER_TEST_OUTPUT)"
 	@printf '%s\n' 'OPNGEN E1B observer seam tests passed.'
+
+build-opngen-pcm-ring:
+	@mkdir -p "$(dir $(OPNGEN_PCM_RING_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread \
+		-I"$(CURDIR)/compat" -I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_PCM_RING_TEST_SOURCE)" \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" -lm \
+		-o "$(OPNGEN_PCM_RING_TEST_OUTPUT)"
+
+test-opngen-pcm-ring: build-opngen-pcm-ring
+	@"$(OPNGEN_PCM_RING_TEST_OUTPUT)"
+
+build-opngen-pcm-ring-asan:
+	@mkdir -p "$(dir $(OPNGEN_PCM_RING_ASAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-I"$(CURDIR)/compat" -I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_PCM_RING_TEST_SOURCE)" \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" -lm \
+		-fsanitize=address,undefined -o "$(OPNGEN_PCM_RING_ASAN_OUTPUT)"
+
+test-opngen-pcm-ring-asan: build-opngen-pcm-ring-asan
+	@"$(OPNGEN_PCM_RING_ASAN_OUTPUT)"
+
+build-opngen-pcm-ring-ubsan:
+	@mkdir -p "$(dir $(OPNGEN_PCM_RING_UBSAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread -O1 -g \
+		-fsanitize=undefined -fno-omit-frame-pointer \
+		-I"$(CURDIR)/compat" -I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_PCM_RING_TEST_SOURCE)" \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" -lm \
+		-fsanitize=undefined -o "$(OPNGEN_PCM_RING_UBSAN_OUTPUT)"
+
+test-opngen-pcm-ring-ubsan: build-opngen-pcm-ring-ubsan
+	@"$(OPNGEN_PCM_RING_UBSAN_OUTPUT)"
+
+build-opngen-pcm-ring-tsan:
+	@mkdir -p "$(dir $(OPNGEN_PCM_RING_TSAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread -O1 -g \
+		-fsanitize=thread -fno-omit-frame-pointer \
+		-I"$(CURDIR)/compat" -I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(OPNGEN_SYNTH_EVENT_SOURCE)" \
+		"$(OPNGEN_PCM_SOURCE)" "$(OPNGEN_SPSC_SOURCE)" \
+		"$(OPNGEN_E1B_STREAM_SOURCE)" "$(VENDOR_SRC)/sound/opngenc.c" \
+		"$(VENDOR_SRC)/sound/opngeng.c" "$(NP2_CRC32_SOURCE)" \
+		"$(NP2_SHA256_SOURCE)" "$(OPNGEN_PCM_RING_TEST_SOURCE)" \
+		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
+		-I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" -lm \
+		-fsanitize=thread -o "$(OPNGEN_PCM_RING_TSAN_OUTPUT)"
+
+test-opngen-pcm-ring-tsan: build-opngen-pcm-ring-tsan
+	@"$(OPNGEN_PCM_RING_TSAN_OUTPUT)"
 
 test-opngen-e1b-formal: build-opngen-e1b
 	@$(PYTHON) "$(OPNGEN_E1B_FORMAL_RUNNER)" \
