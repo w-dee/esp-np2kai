@@ -44,6 +44,30 @@ If the SoC does not respond, repeat the same failed esptool operation no more
 than three times in total. Do not change baud, wiring, erase policy, image, or
 procedure after the first failure.
 
+## Frozen reviewed image: exact-byte flash
+
+For a formal reviewed benchmark image, freeze one clean build directory and
+use the generated `flasher_args.json` as the only flash-layout authority:
+
+```bash
+tools/dev/p4-nano-flash-exact.sh --build-dir <build-dir> --print-plan
+tools/dev/p4-nano-flash-exact.sh --build-dir <build-dir>
+```
+
+The helper validates the P4-NANO markers/cache, records every generated payload
+size and SHA-256 immediately before writing, and rechecks them afterward. It
+calls `python -m esptool write_flash` directly; it does not invoke the build
+system, erase all flash, use `--force`, consume a merged image, or perform
+physical verification. `--print-plan` is metadata-only and never opens serial.
+
+`idf.py flash` remains useful for ordinary development, but its Ninja target
+may reconfigure or rebuild a directory and is therefore not the preferred path
+after a reviewed image has been frozen for exact-byte validation. The app
+payload path/offset/size/SHA-256 is the primary physical identity gate.
+Bootloader, partition-table, ELF, and map hashes are provenance for that same
+build; an independent rebuild need not reproduce them. A merged image is
+provenance-only and is not part of the canonical exact-image gate.
+
 ## Post-flash application identity
 
 Do not begin monitor logging, the canonical reset, or a formal measurement
@@ -51,7 +75,8 @@ until the exact application image written to flash has passed an independent
 identity gate. The required sequence is:
 
 ```text
-fresh build -> record host app identity -> flash exact build
+fresh build -> record host app identity -> flash exact build with
+`p4-nano-flash-exact.sh`
 -> verify physical app region -> FLASH IMAGE IDENTITY = PASS
 -> drain setup output -> monitor --no-reset -> logging on
 -> Ctrl+T Ctrl+R once -> canonical epoch
