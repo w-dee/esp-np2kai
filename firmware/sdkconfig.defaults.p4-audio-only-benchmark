@@ -1,0 +1,2 @@
+# The standalone audio benchmark runs substantial coordination code on main.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

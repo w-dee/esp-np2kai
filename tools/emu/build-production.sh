@@ -867,6 +867,9 @@ defaults="${FIRMWARE_DIR}/sdkconfig.defaults;${FIRMWARE_DIR}/sdkconfig.defaults.
 if [[ "${board}" == "p4-nano" ]]; then
     defaults+=";${FIRMWARE_DIR}/sdkconfig.defaults.p4-nano"
 fi
+if (( audio_only_benchmark )); then
+    defaults+=";${FIRMWARE_DIR}/sdkconfig.defaults.p4-audio-only-benchmark"
+fi
 readonly DEFAULTS="${defaults}"
 readonly VARIANT_MARKER="${build_dir}/.p4-production-variant"
 readonly BOARD_MARKER="${build_dir}/.p4-production-board"

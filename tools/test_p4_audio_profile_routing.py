@@ -10,6 +10,7 @@ import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUILD = ROOT / "tools/emu/build-production.sh"
+AUDIO_SDKCONFIG_OVERLAY = ROOT / "firmware/sdkconfig.defaults.p4-audio-only-benchmark"
 
 
 def require(condition: bool, message: str) -> None:
@@ -40,6 +41,19 @@ def run_rejected(*arguments: str, expected_fragment: str) -> None:
 
 def main() -> int:
     source = BUILD.read_text(encoding="utf-8")
+    require(
+        AUDIO_SDKCONFIG_OVERLAY.is_file(),
+        "audio benchmark sdkconfig overlay is missing",
+    )
+    overlay = AUDIO_SDKCONFIG_OVERLAY.read_text(encoding="utf-8")
+    assignments = [
+        line for line in overlay.splitlines()
+        if line and not line.startswith("#")
+    ]
+    require(
+        assignments == ["CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144"],
+        "audio benchmark sdkconfig overlay must contain only the 6144-byte assignment",
+    )
 
     require(
         "[[ \"${variant}\" == \"p4-v3x\" && \"${board}\" == \"generic\" ]]"
@@ -65,6 +79,29 @@ def main() -> int:
     require(
         "--audio-opt o2 requires --audio-only-benchmark" in source,
         "audio O2 must remain profile-scoped",
+    )
+
+    overlay_route = (
+        'if (( audio_only_benchmark )); then\n'
+        '    defaults+=";${FIRMWARE_DIR}/sdkconfig.defaults.p4-audio-only-benchmark"\n'
+        'fi\n'
+    )
+    require(
+        overlay_route in source,
+        "audio benchmark sdkconfig overlay route is missing",
+    )
+    overlay_index = source.index(overlay_route)
+    require(
+        overlay_index > source.index('defaults="${FIRMWARE_DIR}/sdkconfig.defaults;'),
+        "audio overlay must follow common and variant defaults",
+    )
+    require(
+        overlay_index > source.index('defaults+=";${FIRMWARE_DIR}/sdkconfig.defaults.p4-nano"'),
+        "audio overlay must follow the p4-nano board defaults",
+    )
+    require(
+        'if (( audio_only_benchmark )); then' in overlay_route,
+        "audio overlay must be conditional on the audio-only profile",
     )
 
     audio_guard = re.search(
