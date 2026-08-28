@@ -87,10 +87,28 @@ struct Timing {
     const char *arrays_placement = "unallocated";
 };
 
+enum class FailureStage : uint32_t {
+    None = 0U,
+    Preflight,
+    TimingAlloc,
+    AtomicGate,
+    WorkerInit,
+    DoneCreate,
+    WorkerCreate,
+    ProducerCreate,
+    DoneTimeout,
+    ProducerFail,
+    WorkerFailed,
+    ObserverInvariant,
+    FinishIdentity,
+    PrintTiming,
+};
+
 struct RunContext {
     const Workload *workload = nullptr;
     bool correctness = false;
-    bool failed = false;
+    std::atomic<bool> failed{false};
+    std::atomic<FailureStage> failure_stage{FailureStage::None};
     bool atomic_lock_free = false;
     struct np2opngen_spsc_queue queue{};
     struct np2opngen_e1b_control control{};
@@ -109,6 +127,36 @@ struct RunContext {
     uint32_t producer_crc = 0U;
     uint8_t producer_sha[NP2_SHA256_DIGEST_SIZE]{};
 };
+
+static void record_failure(RunContext *ctx, FailureStage stage)
+{
+    FailureStage expected = FailureStage::None;
+    (void)ctx->failure_stage.compare_exchange_strong(
+        expected, stage, std::memory_order_acq_rel,
+        std::memory_order_acquire);
+    ctx->failed.store(true, std::memory_order_release);
+}
+
+static const char *failure_stage_name(FailureStage stage)
+{
+    switch (stage) {
+    case FailureStage::Preflight: return "preflight";
+    case FailureStage::TimingAlloc: return "timing_alloc";
+    case FailureStage::AtomicGate: return "atomic_gate";
+    case FailureStage::WorkerInit: return "worker_init";
+    case FailureStage::DoneCreate: return "done_create";
+    case FailureStage::WorkerCreate: return "worker_create";
+    case FailureStage::ProducerCreate: return "producer_create";
+    case FailureStage::DoneTimeout: return "done_timeout";
+    case FailureStage::ProducerFail: return "producer_fail";
+    case FailureStage::WorkerFailed: return "worker_failed";
+    case FailureStage::ObserverInvariant: return "observer_invariant";
+    case FailureStage::FinishIdentity: return "finish_identity";
+    case FailureStage::PrintTiming: return "print_timing";
+    case FailureStage::None: break;
+    }
+    return "none";
+}
 
 static const uint8_t kRetroEventSha[] = {
     0x89,0x8b,0x04,0x9d,0x1c,0x37,0xc8,0xcc,0x65,0x03,0x75,0x98,0x49,0x24,0x40,0x48,
@@ -256,9 +304,10 @@ static void observer_render_begin(void *opaque, uint64_t offset,
     if (ctx->timing.render_quantum < ctx->timing.quanta) {
         ctx->timing.seen[ctx->timing.render_quantum] = 1U;
         if (count == 0U || count > kQuantum ||
-            offset % kQuantum + count > kQuantum) ctx->failed = true;
+            offset % kQuantum + count > kQuantum)
+            record_failure(ctx, FailureStage::ObserverInvariant);
     } else {
-        ctx->failed = true;
+        record_failure(ctx, FailureStage::ObserverInvariant);
     }
 }
 
@@ -285,7 +334,7 @@ static void observer_render_end(void *opaque, uint64_t offset, uint32_t,
     if (q < ctx->timing.quanta)
         add_us(&ctx->timing.full[q],
                elapsed_us(ctx->timing.render_start, esp_timer_get_time()));
-    if (status != 0) ctx->failed = true;
+    if (status != 0) record_failure(ctx, FailureStage::ObserverInvariant);
 }
 
 static void observer_quantum_complete(void *opaque, uint64_t, uint32_t)
@@ -311,7 +360,7 @@ static int sink_write(const uint8_t *pcm, size_t bytes, uint64_t offset,
 
 static void producer_fail(RunContext *ctx, enum np2opngen_e1b_error error)
 {
-    ctx->failed = true;
+    record_failure(ctx, FailureStage::ProducerFail);
     np2opngen_e1b_control_fail(&ctx->control, error);
 }
 
@@ -408,6 +457,8 @@ static void worker_task(void *opaque)
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
         }
+        if (step == NP2_OPNGEN_E1B_STEP_FAILED)
+            record_failure(ctx, FailureStage::WorkerFailed);
         if (step == NP2_OPNGEN_E1B_STEP_COMPLETE ||
             step == NP2_OPNGEN_E1B_STEP_FAILED) break;
     }
@@ -425,6 +476,60 @@ static bool digest_equal(const uint8_t *a, const uint8_t *b)
 }
 
 static void print_hex(const uint8_t *digest);
+
+static void print_failure_record(const RunContext *ctx,
+                                 bool worker_done_observed,
+                                 bool done_timeout)
+{
+    const bool producer_done = std::atomic_load_explicit(
+        &ctx->control.producer_done, std::memory_order_acquire);
+    const bool producer_waiting =
+        ctx->producer_waiting.load(std::memory_order_acquire);
+    const bool quiescent = worker_done_observed && producer_done;
+    const FailureStage stage =
+        ctx->failure_stage.load(std::memory_order_acquire);
+    const int control_error = np2opngen_e1b_control_first_error(&ctx->control);
+
+    std::printf("P4_AUDIO_FAILURE workload=%s stage=%s snapshot=%s"
+                " done_timeout=%u control_error=%d producer_done=%u"
+                " producer_waiting=%u",
+                ctx->workload->name, failure_stage_name(stage),
+                quiescent ? "QUIESCENT" : "UNQUIESCED",
+                done_timeout ? 1U : 0U, control_error,
+                producer_done ? 1U : 0U, producer_waiting ? 1U : 0U);
+    if (quiescent) {
+        std::printf(" worker_state=%d worker_failure_status=%d"
+                    " producer_trace_valid=%u producer_count=%" PRIu64
+                    " worker_dequeue_count=%" PRIu64
+                    " expected_sequence=%" PRIu64
+                    " last_sequence_valid=%u last_sequence=%" PRIu64
+                    " sequence_errors=%" PRIu64 " queue_occupancy=%" PRIu32
+                    " cursor=%" PRIu64 " rendered_frames=%" PRIu64
+                    " sink_frames=%" PRIu64 " sink_bytes=%" PRIu64
+                    " pcm_crc32=0x%08" PRIx32
+                    " completed_quanta=%" PRIu64,
+                    static_cast<int>(ctx->worker.state),
+                    ctx->worker.failure_status,
+                    ctx->producer_trace_valid ? 1U : 0U,
+                    ctx->producer_count, ctx->worker.dequeue_count,
+                    ctx->worker.expected_sequence,
+                    ctx->worker.has_last_sequence ? 1U : 0U,
+                    ctx->worker.last_sequence, ctx->worker.sequence_errors,
+                    np2opngen_spsc_occupancy(&ctx->queue), ctx->worker.cursor,
+                    ctx->worker.rendered_frames, ctx->sink.frames,
+                    ctx->sink.bytes, np2_crc32_iso_hdlc_finish(ctx->sink.crc),
+                    ctx->completed_quanta);
+    } else {
+        std::printf(" worker_state=na worker_failure_status=na"
+                    " producer_trace_valid=na producer_count=na"
+                    " worker_dequeue_count=na expected_sequence=na"
+                    " last_sequence_valid=na last_sequence=na"
+                    " sequence_errors=na queue_occupancy=na cursor=na"
+                    " rendered_frames=na sink_frames=na sink_bytes=na"
+                    " pcm_crc32=na completed_quanta=na");
+    }
+    std::printf("\n");
+}
 
 static bool finish_identity(RunContext *ctx)
 {
@@ -525,6 +630,7 @@ static bool print_timing(RunContext *ctx)
     uint32_t consecutive = 0U;
     uint32_t max_full = 0U;
     uint32_t max_pure = 0U;
+    bool timing_valid = true;
     for (size_t i = 0; i < ctx->timing.quanta; ++i) {
         total += ctx->timing.full[i];
         opngen_total += ctx->timing.pure[i];
@@ -536,8 +642,8 @@ static bool print_timing(RunContext *ctx)
         }
         else consecutive = 0U;
         max_consecutive = std::max(max_consecutive, consecutive);
-        if (ctx->timing.pure[i] > ctx->timing.full[i]) ctx->failed = true;
-        if (ctx->timing.seen[i] == 0U) ctx->failed = true;
+        if (ctx->timing.pure[i] > ctx->timing.full[i]) timing_valid = false;
+        if (ctx->timing.seen[i] == 0U) timing_valid = false;
     }
     const uint64_t logical_us = ctx->workload->expected.end_frame * 1000000ULL / kRate;
     const uint64_t active_ppm = logical_us == 0U ? 0U : total * 1000000ULL / logical_us;
@@ -564,7 +670,7 @@ static bool print_timing(RunContext *ctx)
                 total, logical_us, active_ppm, opngen_ppm);
     heap_caps_free(full);
     heap_caps_free(pure);
-    return !ctx->failed;
+    return timing_valid;
 }
 
 static bool preflight_workload(const Workload *workload)
@@ -623,7 +729,13 @@ static bool run_once(const Workload *workload, bool correctness)
     RunContext ctx{};
     ctx.workload = workload;
     ctx.correctness = correctness;
+    bool worker_done_observed = false;
+    bool done_timeout = false;
+    bool failed = false;
+    np2opngen_e1b_control_init(&ctx.control);
     if (!preflight_workload(workload)) {
+        record_failure(&ctx, FailureStage::Preflight);
+        print_failure_record(&ctx, worker_done_observed, done_timeout);
         std::printf("P4_AUDIO_RESULT workload=%s identity=FAIL characterization=INVALID performance_valid=NO\n",
                     workload->name);
         return false;
@@ -637,8 +749,10 @@ static bool run_once(const Workload *workload, bool correctness)
         alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint8_t)));
     if (ctx.timing.full == nullptr || ctx.timing.pure == nullptr ||
         ctx.timing.seen == nullptr) {
+        record_failure(&ctx, FailureStage::TimingAlloc);
         std::printf("P4_AUDIO_META workload=%s arrays_placement=allocation_failed\n",
                     workload->name);
+        print_failure_record(&ctx, worker_done_observed, done_timeout);
         if (ctx.timing.full) heap_caps_free(ctx.timing.full);
         if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);
         if (ctx.timing.seen) heap_caps_free(ctx.timing.seen);
@@ -654,7 +768,6 @@ static bool run_once(const Workload *workload, bool correctness)
                 ctx.timing.quanta * (sizeof(uint32_t) * 2U + sizeof(uint8_t)),
                 ctx.timing.arrays_placement);
     np2opngen_spsc_init(&ctx.queue);
-    np2opngen_e1b_control_init(&ctx.control);
     bool head_lock_free = false;
     bool tail_lock_free = false;
     (void)np2opngen_spsc_atomic_lock_free(&ctx.queue, &head_lock_free,
@@ -665,7 +778,7 @@ static bool run_once(const Workload *workload, bool correctness)
                 sizeof(ctx.queue.head), sizeof(ctx.queue.tail),
                 head_lock_free ? "PASS" : "FAIL", tail_lock_free ? "PASS" : "FAIL");
     if (!ctx.atomic_lock_free) {
-        ctx.failed = true;
+        record_failure(&ctx, FailureStage::AtomicGate);
         goto cleanup;
     }
     np2_sha256_init(&ctx.sink.sha);
@@ -675,7 +788,7 @@ static bool run_once(const Workload *workload, bool correctness)
         if (np2opngen_e1b_worker_init_with_sink(
                 &ctx.worker, &ctx.queue, &ctx.control, workload->expected.end_frame,
                 0U, workload->expected.events, &sink) != 0) {
-            ctx.failed = true;
+            record_failure(&ctx, FailureStage::WorkerInit);
             goto cleanup;
         }
     }
@@ -686,19 +799,36 @@ static bool run_once(const Workload *workload, bool correctness)
         observer_render_end, observer_quantum_complete, &ctx, true};
     np2opngen_e1b_worker_set_observer(&ctx.worker, &ctx.observer);
     ctx.done = xSemaphoreCreateBinary();
-    if (ctx.done == nullptr ||
-        xTaskCreatePinnedToCore(worker_task, "p4_audio_worker", 8192, &ctx,
-                                kWorkerPriority, &ctx.worker_task, kWorkerCore) != pdPASS ||
-        xTaskCreatePinnedToCore(producer_task, "p4_audio_producer", 8192, &ctx,
-                                kProducerPriority, &ctx.producer_task, kProducerCore) != pdPASS) {
-        ctx.failed = true;
+    if (ctx.done == nullptr) {
+        record_failure(&ctx, FailureStage::DoneCreate);
         goto cleanup;
     }
-    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) != pdTRUE) ctx.failed = true;
-    if (!ctx.failed && !finish_identity(&ctx)) ctx.failed = true;
-    if (!ctx.failed && !correctness && !print_timing(&ctx)) ctx.failed = true;
+    if (xTaskCreatePinnedToCore(worker_task, "p4_audio_worker", 8192, &ctx,
+                                kWorkerPriority, &ctx.worker_task, kWorkerCore) != pdPASS) {
+        record_failure(&ctx, FailureStage::WorkerCreate);
+        goto cleanup;
+    }
+    if (xTaskCreatePinnedToCore(producer_task, "p4_audio_producer", 8192, &ctx,
+                                kProducerPriority, &ctx.producer_task, kProducerCore) != pdPASS) {
+        record_failure(&ctx, FailureStage::ProducerCreate);
+        goto cleanup;
+    }
+    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) != pdTRUE) {
+        done_timeout = true;
+        record_failure(&ctx, FailureStage::DoneTimeout);
+    } else {
+        worker_done_observed = true;
+    }
+    if (!ctx.failed.load(std::memory_order_acquire) &&
+        !finish_identity(&ctx))
+        record_failure(&ctx, FailureStage::FinishIdentity);
+    if (!ctx.failed.load(std::memory_order_acquire) && !correctness &&
+        !print_timing(&ctx))
+        record_failure(&ctx, FailureStage::PrintTiming);
 
 cleanup:
+    failed = ctx.failed.load(std::memory_order_acquire);
+    if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout);
     if (ctx.worker.s32_pcm != nullptr || ctx.worker.canonical_pcm != nullptr ||
         ctx.worker.opngen != nullptr) np2opngen_e1b_worker_destroy(&ctx.worker);
     if (ctx.done != nullptr) vSemaphoreDelete(ctx.done);
@@ -706,10 +836,10 @@ cleanup:
     if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);
     if (ctx.timing.seen) heap_caps_free(ctx.timing.seen);
     std::printf("P4_AUDIO_RESULT workload=%s identity=%s characterization=%s performance_valid=%s\n",
-                workload->name, ctx.failed ? "FAIL" : "PASS",
-                ctx.failed ? "INVALID" : "COMPLETE",
-                (!ctx.failed && !correctness) ? "YES" : "NO");
-    return !ctx.failed;
+                workload->name, failed ? "FAIL" : "PASS",
+                failed ? "INVALID" : "COMPLETE",
+                (!failed && !correctness) ? "YES" : "NO");
+    return !failed;
 }
 
 } // namespace

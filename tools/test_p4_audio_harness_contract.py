@@ -22,6 +22,44 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> int:
+    require("std::atomic<bool> failed" in BENCHMARK,
+            "failure flag must be atomic")
+    require("std::atomic<FailureStage> failure_stage" in BENCHMARK,
+            "failure stage must be atomic")
+    for stage in (
+            "Preflight", "TimingAlloc", "AtomicGate", "WorkerInit",
+            "DoneCreate", "WorkerCreate", "ProducerCreate", "DoneTimeout",
+            "ProducerFail", "WorkerFailed", "ObserverInvariant",
+            "FinishIdentity", "PrintTiming"):
+        require(f"FailureStage::{stage}" in BENCHMARK,
+                f"failure stage {stage} is missing")
+    require(BENCHMARK.count("P4_AUDIO_FAILURE") == 1,
+            "failure output must have one structured prefix")
+    diagnostic = re.search(
+        r"static void print_failure_record\(.*?\n\}", BENCHMARK, re.DOTALL)
+    require(diagnostic is not None, "failure diagnostic helper is missing")
+    diagnostic_body = diagnostic.group(0)
+    require("np2opngen_synth_event_trace_finish" not in diagnostic_body and
+            "np2_sha256_final" not in diagnostic_body,
+            "failure diagnostic must not finalize trace or SHA state")
+    require("if (failed) print_failure_record" in BENCHMARK,
+            "successful runs must not print failure diagnostics")
+    require("const bool quiescent = worker_done_observed && producer_done" in
+            diagnostic_body,
+            "quiescent snapshot must require both completion edges")
+    require("atomic_load_explicit(\n        &ctx->control.producer_done, std::memory_order_acquire)" in
+            diagnostic_body,
+            "producer completion must be acquire-observed")
+    quiescent = re.search(
+        r"if \(quiescent\) \{(?P<safe>.*?)\n    \} else \{(?P<unsafe>.*?)\n    \}",
+        diagnostic_body, re.DOTALL)
+    require(quiescent is not None, "quiescent diagnostic split is missing")
+    require("ctx->worker" in quiescent.group("safe"),
+            "quiescent diagnostic must expose worker state")
+    require("ctx->worker" not in quiescent.group("unsafe") and
+            "ctx->sink" not in quiescent.group("unsafe") and
+            "ctx->timing" not in quiescent.group("unsafe"),
+            "unquiesced diagnostic must not inspect mutable runtime state")
     require("taskYIELD" not in BENCHMARK,
             "queue-full producer path must not yield-spin")
     require("producer_waiting.store(true, std::memory_order_release)" in BENCHMARK,
