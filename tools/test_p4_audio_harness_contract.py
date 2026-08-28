@@ -52,6 +52,18 @@ def main() -> int:
     require("producer_wait_start" not in BENCHMARK and
             "vTaskDelay(1)" not in BENCHMARK,
             "producer completion polling must be removed")
+    callback = re.search(r"static void pacing_timer_callback\(.*?\n\}", BENCHMARK, re.DOTALL)
+    require(callback is not None, "pacing timer callback is missing")
+    callback_body = callback.group(0)
+    for forbidden in ("printf", "heap_caps_", "memcpy", "np2_crc", "np2_sha",
+                      "xSemaphoreTake", "vTaskDelay", "taskYIELD",
+                      "np2opngen_pcm_ring_try_peek", "np2opngen_pcm_ring_consume"):
+        require(forbidden not in callback_body,
+                f"timer callback must not contain {forbidden}")
+    require("pacing_callback_sequence.store" in callback_body and
+            "xTaskNotifyGive" in callback_body,
+            "timer callback must publish sequence then notify consumer")
+    print("P4_AUDIO_TIMER_CALLBACK_AUDIT=PASS")
     print("TASK_HANDLE_MUTATION_AUDIT=PASS")
     require("std::atomic<bool> failed" in BENCHMARK,
             "failure flag must be atomic")

@@ -3,6 +3,9 @@
 #ifndef P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE
 #define P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE 0
 #endif
+#ifndef P4_NANO_AUDIO_TIMER_FAULT_CASE
+#define P4_NANO_AUDIO_TIMER_FAULT_CASE 0
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -79,6 +82,9 @@ struct Sink {
     uint64_t full_wait_count = 0U;
     uint64_t full_wait_total_us = 0U;
     uint32_t full_wait_max_us = 0U;
+    uint64_t finish_full_wait_count = 0U;
+    uint64_t finish_full_wait_total_us = 0U;
+    uint32_t finish_full_wait_max_us = 0U;
 };
 
 struct Consumer {
@@ -96,12 +102,24 @@ struct Consumer {
     uint64_t occupancy_min = UINT64_MAX;
     uint64_t occupancy_max = 0U;
     uint64_t occupancy_hist[NP2_OPNGEN_PCM_RING_CAPACITY + 1U]{};
+    uint64_t processed_ticks = 0U;
+    uint64_t notification_wakes = 0U;
+    uint64_t backlog_events = 0U;
+    uint64_t backlog_ticks = 0U;
+    uint64_t missed_ticks = 0U;
+    uint64_t underrun_count = 0U;
+    uint64_t first_underrun_tick = UINT64_MAX;
 };
 
 struct Timing {
     uint32_t *full = nullptr;
     uint32_t *pure = nullptr;
     uint8_t *seen = nullptr;
+    uint32_t *pcm_full_wait = nullptr;
+    uint32_t *compute = nullptr;
+    uint32_t *callback_lateness = nullptr;
+    uint32_t *wake_lateness = nullptr;
+    uint32_t *consumer_service = nullptr;
     size_t quanta = 0U;
     int64_t dequeue_start = 0;
     uint32_t pending_dequeue_us = 0U;
@@ -140,6 +158,13 @@ enum class FailureStage : uint32_t {
     PrefillTimeout,
     ConsumerTimeout,
     ConsumerFailed,
+    TimerCreate,
+    TimerStart,
+    TimerFence,
+    PacingBacklog,
+    PacingUnderrun,
+    PacingCompletion,
+    PacingTimingInvariant,
 };
 
 struct RunContext {
@@ -175,6 +200,18 @@ struct RunContext {
     std::atomic<bool> consumer_done_flag{false};
     std::atomic<bool> prefill_signalled{false};
     std::atomic<bool> producer_quiescent{false};
+    esp_timer_handle_t pacing_timer = nullptr;
+    esp_timer_handle_t fence_timer = nullptr;
+    SemaphoreHandle_t timer_fence = nullptr;
+    std::atomic<bool> timer_closing{false};
+    std::atomic<bool> timer_quiescent{false};
+    std::atomic<uint32_t> pacing_callback_sequence{0U};
+    std::atomic<uint32_t> pacing_callback_rel_us{0U};
+    bool timer_started = false;
+    bool timer_was_started = false;
+    int64_t pacing_t0_us = 0;
+    uint32_t expected_ticks = 0U;
+    uint64_t wait_quantum = UINT64_MAX;
     uint32_t prefill_actual = 0U;
     uint64_t completed_quanta = 0U;
     struct np2opngen_synth_event_trace_state producer_trace{};
@@ -227,6 +264,13 @@ static const char *failure_stage_name(FailureStage stage)
     case FailureStage::PrefillTimeout: return "prefill_timeout";
     case FailureStage::ConsumerTimeout: return "consumer_timeout";
     case FailureStage::ConsumerFailed: return "consumer_failed";
+    case FailureStage::TimerCreate: return "timer_create";
+    case FailureStage::TimerStart: return "timer_start";
+    case FailureStage::TimerFence: return "timer_fence";
+    case FailureStage::PacingBacklog: return "pacing_backlog";
+    case FailureStage::PacingUnderrun: return "pacing_underrun";
+    case FailureStage::PacingCompletion: return "pacing_completion";
+    case FailureStage::PacingTimingInvariant: return "pacing_timing_invariant";
     case FailureStage::None: break;
     }
     return "none";
@@ -419,6 +463,66 @@ static void observer_quantum_complete(void *opaque, uint64_t, uint32_t)
         vTaskDelay(kHousekeepingDelayTicks);
 }
 
+static void pacing_timer_callback(void *opaque)
+{
+    auto *ctx = static_cast<RunContext *>(opaque);
+    if (ctx == nullptr || ctx->timer_closing.load(std::memory_order_acquire)) return;
+    const uint32_t current = ctx->pacing_callback_sequence.load(std::memory_order_relaxed);
+    if (current >= ctx->expected_ticks) return;
+    const uint32_t next = current + 1U;
+    const int64_t now = esp_timer_get_time();
+    const int64_t relative = now - ctx->pacing_t0_us;
+    ctx->pacing_callback_rel_us.store(relative <= 0 ? 0U :
+                                      relative > UINT32_MAX ? UINT32_MAX :
+                                      static_cast<uint32_t>(relative),
+                                      std::memory_order_relaxed);
+    ctx->pacing_callback_sequence.store(next, std::memory_order_release);
+    const TaskHandle_t consumer = ctx->consumer_task;
+    if (consumer != nullptr) xTaskNotifyGive(consumer);
+}
+
+static void pacing_fence_callback(void *opaque)
+{
+    auto *ctx = static_cast<RunContext *>(opaque);
+#if P4_NANO_AUDIO_TIMER_FAULT_CASE == 3
+    (void)ctx;
+    return;
+#else
+    if (ctx != nullptr && ctx->timer_fence != nullptr)
+        xSemaphoreGive(ctx->timer_fence);
+#endif
+}
+
+static bool stop_and_fence_timer(RunContext *ctx, TickType_t timeout)
+{
+    ctx->timer_closing.store(true, std::memory_order_release);
+    if (ctx->timer_started) {
+        (void)esp_timer_stop(ctx->pacing_timer);
+        ctx->timer_started = false;
+    }
+    /* A timer that was never armed cannot have a queued pacing callback, so
+       no dispatch-domain fence is required for this teardown path. */
+    if (!ctx->timer_was_started) {
+        ctx->timer_quiescent.store(true, std::memory_order_release);
+        return true;
+    }
+    if (ctx->pacing_timer == nullptr || ctx->fence_timer == nullptr ||
+        ctx->timer_fence == nullptr) {
+        ctx->timer_quiescent.store(true, std::memory_order_release);
+        return true;
+    }
+    if (esp_timer_start_once(ctx->fence_timer, 0U) != ESP_OK) {
+        record_failure(ctx, FailureStage::TimerFence);
+        return false;
+    }
+    if (xSemaphoreTake(ctx->timer_fence, timeout) != pdTRUE) {
+        record_failure(ctx, FailureStage::TimerFence);
+        return false;
+    }
+    ctx->timer_quiescent.store(true, std::memory_order_release);
+    return true;
+}
+
 static void signal_prefill(RunContext *ctx)
 {
     const uint32_t occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
@@ -427,10 +531,9 @@ static void signal_prefill(RunContext *ctx)
         !ctx->prefill_signalled.exchange(true, std::memory_order_acq_rel)) {
         if (ctx->prefill_ready != nullptr) xSemaphoreGive(ctx->prefill_ready);
     }
-    if (ctx->consumer_task != nullptr) xTaskNotifyGive(ctx->consumer_task);
 }
 
-static bool wait_pcm_space(RunContext *ctx)
+static bool wait_pcm_space(RunContext *ctx, bool finish_wait)
 {
     for (;;) {
         if (ctx->failed.load(std::memory_order_acquire)) return false;
@@ -440,6 +543,10 @@ static bool wait_pcm_space(RunContext *ctx)
             ctx->pcm_waiting.store(false, std::memory_order_release);
             return true;
         }
+        if (xSemaphoreTake(ctx->pcm_space, 0) == pdTRUE) {
+            ctx->pcm_waiting.store(false, std::memory_order_release);
+            continue;
+        }
         const int64_t start = esp_timer_get_time();
         if (xSemaphoreTake(ctx->pcm_space, portMAX_DELAY) != pdTRUE) {
             ctx->pcm_waiting.store(false, std::memory_order_release);
@@ -447,12 +554,22 @@ static bool wait_pcm_space(RunContext *ctx)
         }
         const uint32_t elapsed = elapsed_us(start, esp_timer_get_time());
         if (elapsed != 0U) {
-            ++ctx->sink.full_wait_count;
-            if (ctx->sink.full_wait_total_us > UINT64_MAX - elapsed)
-                ctx->sink.full_wait_total_us = UINT64_MAX;
-            else
-                ctx->sink.full_wait_total_us += elapsed;
-            ctx->sink.full_wait_max_us = std::max(ctx->sink.full_wait_max_us, elapsed);
+            if (finish_wait) {
+                ++ctx->sink.finish_full_wait_count;
+                ctx->sink.finish_full_wait_total_us =
+                    ctx->sink.finish_full_wait_total_us > UINT64_MAX - elapsed ?
+                    UINT64_MAX : ctx->sink.finish_full_wait_total_us + elapsed;
+                ctx->sink.finish_full_wait_max_us =
+                    std::max(ctx->sink.finish_full_wait_max_us, elapsed);
+            } else {
+                ++ctx->sink.full_wait_count;
+                ctx->sink.full_wait_total_us =
+                    ctx->sink.full_wait_total_us > UINT64_MAX - elapsed ?
+                    UINT64_MAX : ctx->sink.full_wait_total_us + elapsed;
+                ctx->sink.full_wait_max_us = std::max(ctx->sink.full_wait_max_us, elapsed);
+                if (ctx->wait_quantum < ctx->timing.quanta)
+                    add_us(&ctx->timing.pcm_full_wait[ctx->wait_quantum], elapsed);
+            }
         }
         ctx->pcm_waiting.store(false, std::memory_order_release);
         return !ctx->failed.load(std::memory_order_acquire);
@@ -485,7 +602,8 @@ static int sink_write(const uint8_t *pcm, size_t bytes, uint64_t offset,
         signal_prefill(sink->owner);
         if (status == NP2_OPNGEN_PCM_RING_OK) continue;
         if (status == NP2_OPNGEN_PCM_RING_FULL) {
-            if (!wait_pcm_space(sink->owner)) return -1;
+            sink->owner->wait_quantum = offset / kQuantum;
+            if (!wait_pcm_space(sink->owner, false)) return -1;
             continue;
         }
         return -1;
@@ -499,11 +617,12 @@ static int sink_finish(uint64_t final_frame, void *opaque)
     if (sink == nullptr || sink->owner == nullptr || sink->ring == nullptr ||
         final_frame != sink->frames)
         return -1;
+    sink->owner->wait_quantum = UINT64_MAX;
     for (;;) {
         const int status = np2opngen_pcm_ring_finish(sink->ring, final_frame);
         if (status == NP2_OPNGEN_PCM_RING_OK) break;
         if (status != NP2_OPNGEN_PCM_RING_FULL ||
-            !wait_pcm_space(sink->owner))
+            !wait_pcm_space(sink->owner, true))
             return -1;
     }
     sink->owner->pcm_producer_done.store(true, std::memory_order_release);
@@ -520,9 +639,31 @@ static void pcm_consumer_task(void *opaque)
         xSemaphoreTake(lifecycle_start, portMAX_DELAY) == pdTRUE;
     const bool started = lifecycle_started &&
         xSemaphoreTake(ctx->consumer_start, portMAX_DELAY) == pdTRUE;
+    uint32_t last_sequence = 0U;
     if (started && !ctx->failed.load(std::memory_order_acquire)) {
       for (;;) {
+        const uint32_t notify_count = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ++ctx->consumer.notification_wakes;
+        const uint32_t current_sequence =
+            ctx->pacing_callback_sequence.load(std::memory_order_acquire);
+        const uint32_t delta = current_sequence - last_sequence;
+        (void)notify_count;
+        if (delta == 0U) {
+            if (ctx->failed.load(std::memory_order_acquire)) break;
+            if (ctx->pcm_producer_done.load(std::memory_order_acquire) &&
+                ctx->consumer.processed_ticks >= ctx->expected_ticks) break;
+            continue;
+        }
+        if (delta > 1U) {
+            ++ctx->consumer.backlog_events;
+            ctx->consumer.backlog_ticks += delta - 1U;
+            ctx->consumer.missed_ticks += delta - 1U;
+            record_failure(ctx, FailureStage::PacingBacklog);
+            break;
+        }
+        last_sequence = current_sequence;
         if (ctx->failed.load(std::memory_order_acquire)) break;
+        const int64_t tick_start = esp_timer_get_time();
         const uint32_t occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
         if (occupancy <= NP2_OPNGEN_PCM_RING_CAPACITY) {
             ++ctx->consumer.occupancy_hist[occupancy];
@@ -538,11 +679,11 @@ static void pcm_consumer_task(void *opaque)
         const struct np2opngen_pcm_ring_slot *slot = nullptr;
         const int status = np2opngen_pcm_ring_try_peek(ctx->pcm_ring, &slot);
         if (status == NP2_OPNGEN_PCM_RING_EMPTY) {
-            if (ctx->pcm_producer_done.load(std::memory_order_acquire) &&
-                np2opngen_pcm_ring_occupancy(ctx->pcm_ring) == 0U)
-                break;
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
-            continue;
+            ++ctx->consumer.underrun_count;
+            if (ctx->consumer.first_underrun_tick == UINT64_MAX)
+                ctx->consumer.first_underrun_tick = ctx->consumer.processed_ticks + 1U;
+            record_failure(ctx, FailureStage::PacingUnderrun);
+            break;
         }
         if (status != NP2_OPNGEN_PCM_RING_OK || slot == nullptr ||
             slot->sequence != ctx->consumer.expected_sequence ||
@@ -576,6 +717,25 @@ static void pcm_consumer_task(void *opaque)
             break;
         }
         xSemaphoreGive(ctx->pcm_space);
+        ++ctx->consumer.processed_ticks;
+        if (ctx->timing.quanta > 0U && ctx->consumer.processed_ticks <= ctx->timing.quanta) {
+            const size_t q = static_cast<size_t>(ctx->consumer.processed_ticks - 1U);
+            const int64_t now = esp_timer_get_time();
+            const uint32_t callback_rel = ctx->pacing_callback_rel_us.load(std::memory_order_relaxed);
+            const uint32_t deadline_rel = static_cast<uint32_t>(ctx->consumer.processed_ticks * 5000U);
+            ctx->timing.callback_lateness[q] = callback_rel > deadline_rel ? callback_rel - deadline_rel : 0U;
+            const uint32_t wake_rel = elapsed_us(ctx->pacing_t0_us, tick_start);
+            ctx->timing.wake_lateness[q] = wake_rel > deadline_rel ? wake_rel - deadline_rel : 0U;
+            ctx->timing.consumer_service[q] = elapsed_us(tick_start, now);
+        }
+        if (ctx->consumer.processed_ticks == ctx->expected_ticks) {
+            if (ctx->consumer.frames != ctx->workload->expected.end_frame ||
+                !ctx->pcm_producer_done.load(std::memory_order_acquire) ||
+                np2opngen_pcm_ring_occupancy(ctx->pcm_ring) != 0U) {
+                record_failure(ctx, FailureStage::PacingCompletion);
+            }
+            break;
+        }
       }
     }
     const SemaphoreHandle_t terminal = ctx->consumer_done;
@@ -907,7 +1067,10 @@ static bool finish_identity(RunContext *ctx)
         ctx->consumer_done_flag.load(std::memory_order_acquire) &&
         np2opngen_pcm_ring_occupancy(ctx->pcm_ring) == 0U &&
         ctx->consumer.expected_offset == ctx->workload->expected.end_frame &&
-        producer_loop_valid;
+        producer_loop_valid &&
+        ctx->pacing_callback_sequence.load(std::memory_order_acquire) == ctx->expected_ticks &&
+        ctx->consumer.processed_ticks == ctx->expected_ticks &&
+        ctx->consumer.backlog_events == 0U && ctx->consumer.underrun_count == 0U;
 
     const char *first_failure = "none";
     if (!worker_trace_finish_ok) first_failure = "worker_trace_finish";
@@ -999,12 +1162,18 @@ static bool finish_identity(RunContext *ctx)
         ? 0U : ctx->consumer.occupancy_min;
     const uint32_t final_occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
     std::printf("P4_AUDIO_PCM_RING workload=%s capacity=%u prefill_target=%u"
-                " prefill_actual=%u occupancy_min=%" PRIu64
-                " occupancy_max=%" PRIu64 " final_occupancy=%u\n",
+                " prefill_actual=%u pre_dequeue_occupancy_min=%" PRIu64
+                " pre_dequeue_occupancy_max=%" PRIu64 " final_occupancy=%u"
+                " pre_dequeue_occupancy_hist=",
                 ctx->workload->name, static_cast<unsigned>(NP2_OPNGEN_PCM_RING_CAPACITY),
                 static_cast<unsigned>(kPcmRingPrefillTarget),
                 static_cast<unsigned>(ctx->prefill_actual), occupancy_min,
                 ctx->consumer.occupancy_max, static_cast<unsigned>(final_occupancy));
+    for (size_t i = 0; i <= NP2_OPNGEN_PCM_RING_CAPACITY; ++i) {
+        if (i != 0U) std::printf(",");
+        std::printf("%" PRIu64, ctx->consumer.occupancy_hist[i]);
+    }
+    std::printf("\n");
     std::printf("P4_AUDIO_PCM_IDENTITY workload=%s generated_frames=%" PRIu64
                 " generated_bytes=%" PRIu64 " generated_crc32=0x%08" PRIx32
                 " generated_sha256=", ctx->workload->name, ctx->sink.frames,
@@ -1022,11 +1191,15 @@ static bool finish_identity(RunContext *ctx)
                 (generated_drained_crc_match && generated_drained_sha_match &&
                  generated_frames_match == drained_frames_match &&
                  generated_bytes_match == drained_bytes_match) ? "PASS" : "FAIL");
-    std::printf("P4_AUDIO_PCM_BACKPRESSURE workload=%s full_wait_count=%" PRIu64
-                " full_wait_total_us=%" PRIu64 " full_wait_max_us=%u"
+    std::printf("P4_AUDIO_PCM_BACKPRESSURE workload=%s write_full_wait_count=%" PRIu64
+                " write_full_wait_total_us=%" PRIu64 " write_full_wait_max_us=%u"
+                " finish_full_wait_count=%" PRIu64 " finish_full_wait_total_us=%" PRIu64
+                " finish_full_wait_max_us=%u"
                 " overrun_count=%" PRIu64 " dropped_frames=%" PRIu64 "\n",
                 ctx->workload->name, ctx->sink.full_wait_count,
                 ctx->sink.full_wait_total_us, static_cast<unsigned>(ctx->sink.full_wait_max_us),
+                ctx->sink.finish_full_wait_count, ctx->sink.finish_full_wait_total_us,
+                static_cast<unsigned>(ctx->sink.finish_full_wait_max_us),
                 ctx->consumer.overrun_count, ctx->consumer.dropped_frames);
     std::printf("P4_AUDIO_PCM_CONSUMER workload=%s sequence_errors=%" PRIu64
                 " frame_offset_errors=%" PRIu64 " producer_done=%u consumer_done=%u\n",
@@ -1036,7 +1209,7 @@ static bool finish_identity(RunContext *ctx)
                 ctx->consumer_done_flag.load(std::memory_order_acquire) ? 1U : 0U);
     std::printf("P4_AUDIO_A2_RESULT workload=%s generated_identity=%s"
                 " drained_identity=%s transport=%s lifecycle=%s"
-                " consumer_pacing=NOT_REAL_TIME consumer_service_timing=NOT_MEASURED\n",
+                " consumer_pacing=VIRTUAL_5MS consumer_service_timing=NON_AUTHORITATIVE\n",
                 ctx->workload->name,
                 generated_frames_match && generated_bytes_match && pcm_crc_expected_match && generated_sha_expected_match ? "PASS" : "FAIL",
                 drained_frames_match && drained_bytes_match && drained_crc_expected_match && drained_sha_expected_match ? "PASS" : "FAIL",
@@ -1089,21 +1262,51 @@ static bool print_timing(RunContext *ctx)
         heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
     uint32_t *pure = static_cast<uint32_t *>(
         heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
+    uint32_t *compute = static_cast<uint32_t *>(
+        heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
+    uint32_t *callback = static_cast<uint32_t *>(
+        heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
+    uint32_t *wake = static_cast<uint32_t *>(
+        heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
+    uint32_t *service = static_cast<uint32_t *>(
+        heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_INTERNAL));
     if (full == nullptr)
         full = static_cast<uint32_t *>(heap_caps_malloc(
             ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
     if (pure == nullptr)
         pure = static_cast<uint32_t *>(heap_caps_malloc(
             ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
-    if (full == nullptr || pure == nullptr) {
+    if (compute == nullptr || callback == nullptr || wake == nullptr || service == nullptr) {
+        if (compute == nullptr) compute = static_cast<uint32_t *>(heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
+        if (callback == nullptr) callback = static_cast<uint32_t *>(heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
+        if (wake == nullptr) wake = static_cast<uint32_t *>(heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
+        if (service == nullptr) service = static_cast<uint32_t *>(heap_caps_malloc(ctx->timing.quanta * sizeof(uint32_t), MALLOC_CAP_SPIRAM));
+    }
+    if (full == nullptr || pure == nullptr || compute == nullptr || callback == nullptr || wake == nullptr || service == nullptr) {
         if (full != nullptr) heap_caps_free(full);
         if (pure != nullptr) heap_caps_free(pure);
+        if (compute != nullptr) heap_caps_free(compute);
+        if (callback != nullptr) heap_caps_free(callback);
+        if (wake != nullptr) heap_caps_free(wake);
+        if (service != nullptr) heap_caps_free(service);
         return false;
     }
     std::memcpy(full, ctx->timing.full, ctx->timing.quanta * sizeof(uint32_t));
     std::memcpy(pure, ctx->timing.pure, ctx->timing.quanta * sizeof(uint32_t));
+    bool timing_valid = true;
+    for (size_t i = 0; i < ctx->timing.quanta; ++i) {
+        if (ctx->timing.pcm_full_wait[i] > ctx->timing.full[i]) timing_valid = false;
+        compute[i] = ctx->timing.full[i] - ctx->timing.pcm_full_wait[i];
+    }
+    std::memcpy(callback, ctx->timing.callback_lateness, ctx->timing.quanta * sizeof(uint32_t));
+    std::memcpy(wake, ctx->timing.wake_lateness, ctx->timing.quanta * sizeof(uint32_t));
+    std::memcpy(service, ctx->timing.consumer_service, ctx->timing.quanta * sizeof(uint32_t));
     std::sort(full, full + ctx->timing.quanta);
     std::sort(pure, pure + ctx->timing.quanta);
+    std::sort(compute, compute + ctx->timing.quanta);
+    std::sort(callback, callback + ctx->timing.quanta);
+    std::sort(wake, wake + ctx->timing.quanta);
+    std::sort(service, service + ctx->timing.quanta);
     uint64_t total = 0U;
     uint64_t opngen_total = 0U;
     uint32_t max_consecutive = 0U;
@@ -1111,7 +1314,6 @@ static bool print_timing(RunContext *ctx)
     uint32_t consecutive = 0U;
     uint32_t max_full = 0U;
     uint32_t max_pure = 0U;
-    bool timing_valid = true;
     for (size_t i = 0; i < ctx->timing.quanta; ++i) {
         total += ctx->timing.full[i];
         opngen_total += ctx->timing.pure[i];
@@ -1146,6 +1348,47 @@ static bool print_timing(RunContext *ctx)
     std::printf("P4_AUDIO_SERVICE_ADJUSTED total_active_minus_pcm_wait_us=%" PRIu64
                 " pcm_full_wait_total_us=%" PRIu64 " pcm_full_wait_count=%" PRIu64 "\n",
                 adjusted_total, pcm_wait_us, ctx->sink.full_wait_count);
+    std::printf("P4_AUDIO_COMPUTE_SERVICE measured_quanta=%zu min=%u mean=%" PRIu64
+                " p50=%u p90=%u p95=%u p99=%u max=%u over_5000us=%u\n",
+                ctx->timing.quanta, static_cast<unsigned>(compute[0]),
+                [&](){ uint64_t s=0; for(size_t i=0;i<ctx->timing.quanta;++i)s+=compute[i]; return s/ctx->timing.quanta; }(),
+                static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .50)),
+                static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .90)),
+                static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .95)),
+                static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .99)),
+                static_cast<unsigned>(*std::max_element(compute, compute + ctx->timing.quanta)),
+                static_cast<unsigned>(std::count_if(compute, compute + ctx->timing.quanta,
+                                                    [](uint32_t v){ return v > 5000U; })));
+    std::printf("P4_AUDIO_PCM_FINISH_WAIT finish_full_wait_count=%" PRIu64
+                " finish_full_wait_total_us=%" PRIu64 " finish_full_wait_max_us=%u\n",
+                ctx->sink.finish_full_wait_count, ctx->sink.finish_full_wait_total_us,
+                static_cast<unsigned>(ctx->sink.finish_full_wait_max_us));
+    std::printf("P4_AUDIO_PACING period_us=5000 expected_ticks=%u callback_ticks=%u"
+                " processed_ticks=%" PRIu64 " notification_wakes=%" PRIu64
+                " backlog_events=%" PRIu64 " backlog_ticks=%" PRIu64
+                " missed_ticks=%" PRIu64 " underruns=%" PRIu64
+                " first_underrun_tick=%" PRIu64 "\n",
+                static_cast<unsigned>(ctx->expected_ticks),
+                static_cast<unsigned>(ctx->pacing_callback_sequence.load(std::memory_order_acquire)),
+                ctx->consumer.processed_ticks, ctx->consumer.notification_wakes,
+                ctx->consumer.backlog_events, ctx->consumer.backlog_ticks,
+                ctx->consumer.missed_ticks, ctx->consumer.underrun_count,
+                ctx->consumer.first_underrun_tick == UINT64_MAX ? 0U : ctx->consumer.first_underrun_tick);
+    std::printf("P4_AUDIO_PACING_CALLBACK min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+                static_cast<unsigned>(callback[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=callback[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
+                static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.90)),
+                static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.99)),
+                static_cast<unsigned>(callback[ctx->timing.quanta-1]), static_cast<unsigned>(std::count_if(callback,callback+ctx->timing.quanta,[](uint32_t v){return v>=5000U;})));
+    std::printf("P4_AUDIO_PACING_WAKE min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+                static_cast<unsigned>(wake[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=wake[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
+                static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.90)),
+                static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.99)),
+                static_cast<unsigned>(wake[ctx->timing.quanta-1]), static_cast<unsigned>(std::count_if(wake,wake+ctx->timing.quanta,[](uint32_t v){return v>=5000U;})));
+    std::printf("P4_AUDIO_PACING_CONSUMER min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u service_over_5000us=%u\n",
+                static_cast<unsigned>(service[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=service[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
+                static_cast<unsigned>(percentile(service,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(service,ctx->timing.quanta,.90)),
+                static_cast<unsigned>(percentile(service,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(service,ctx->timing.quanta,.99)),
+                static_cast<unsigned>(service[ctx->timing.quanta-1]), static_cast<unsigned>(std::count_if(service,service+ctx->timing.quanta,[](uint32_t v){return v>5000U;})));
     std::printf("P4_AUDIO_OPNGEN total=%" PRIu64 " mean=%" PRIu64 " p95=%u p99=%u max=%u\n",
                 opngen_total, opngen_total / ctx->timing.quanta,
                 static_cast<unsigned>(percentile(pure, ctx->timing.quanta, .95)),
@@ -1156,6 +1399,10 @@ static bool print_timing(RunContext *ctx)
                 total, logical_us, active_ppm, opngen_ppm);
     heap_caps_free(full);
     heap_caps_free(pure);
+    heap_caps_free(compute);
+    heap_caps_free(callback);
+    heap_caps_free(wake);
+    heap_caps_free(service);
     return timing_valid;
 }
 
@@ -1213,7 +1460,8 @@ static bool preflight_workload(const Workload *workload)
 static bool run_once(const Workload *workload, bool correctness)
 {
     constexpr TickType_t kBenchmarkWaitTicks = pdMS_TO_TICKS(
-        P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 4 ? 100 : 120000);
+        (P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 4 ||
+         P4_NANO_AUDIO_TIMER_FAULT_CASE == 3) ? 100 : 120000);
     RunContext ctx{};
     ctx.workload = workload;
     ctx.correctness = correctness;
@@ -1225,6 +1473,9 @@ static bool run_once(const Workload *workload, bool correctness)
     bool worker_created = false;
     bool producer_created = false;
     bool consumer_created = false;
+    bool timer_fence_observed = false;
+    esp_timer_create_args_t pacing_args{};
+    esp_timer_create_args_t fence_args{};
     size_t ring_bytes = 0U;
     uint32_t free_before = 0U;
     uint32_t free_after = 0U;
@@ -1243,8 +1494,21 @@ static bool run_once(const Workload *workload, bool correctness)
         alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
     ctx.timing.seen = static_cast<uint8_t *>(
         alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint8_t)));
+    ctx.timing.pcm_full_wait = static_cast<uint32_t *>(
+        alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
+    ctx.timing.compute = static_cast<uint32_t *>(
+        alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
+    ctx.timing.callback_lateness = static_cast<uint32_t *>(
+        alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
+    ctx.timing.wake_lateness = static_cast<uint32_t *>(
+        alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
+    ctx.timing.consumer_service = static_cast<uint32_t *>(
+        alloc_timing_array(&ctx, ctx.timing.quanta, sizeof(uint32_t)));
+    ctx.expected_ticks = static_cast<uint32_t>(ctx.timing.quanta);
     if (ctx.timing.full == nullptr || ctx.timing.pure == nullptr ||
-        ctx.timing.seen == nullptr) {
+        ctx.timing.seen == nullptr || ctx.timing.pcm_full_wait == nullptr ||
+        ctx.timing.compute == nullptr || ctx.timing.callback_lateness == nullptr ||
+        ctx.timing.wake_lateness == nullptr || ctx.timing.consumer_service == nullptr) {
         record_failure(&ctx, FailureStage::TimingAlloc);
         std::printf("P4_AUDIO_META workload=%s arrays_placement=allocation_failed\n",
                     workload->name);
@@ -1252,6 +1516,11 @@ static bool run_once(const Workload *workload, bool correctness)
         if (ctx.timing.full) heap_caps_free(ctx.timing.full);
         if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);
         if (ctx.timing.seen) heap_caps_free(ctx.timing.seen);
+        if (ctx.timing.pcm_full_wait) heap_caps_free(ctx.timing.pcm_full_wait);
+        if (ctx.timing.compute) heap_caps_free(ctx.timing.compute);
+        if (ctx.timing.callback_lateness) heap_caps_free(ctx.timing.callback_lateness);
+        if (ctx.timing.wake_lateness) heap_caps_free(ctx.timing.wake_lateness);
+        if (ctx.timing.consumer_service) heap_caps_free(ctx.timing.consumer_service);
         std::printf("P4_AUDIO_RESULT workload=%s identity=FAIL"
                     " characterization=INVALID performance_valid=NO\n",
                     workload->name);
@@ -1261,7 +1530,7 @@ static bool run_once(const Workload *workload, bool correctness)
                 " timing_arrays_bytes=%zu arrays_placement=%s\n",
                 workload->name,
                 correctness ? "CRC32_SHA256" : "CRC32_ONLY",
-                ctx.timing.quanta * (sizeof(uint32_t) * 2U + sizeof(uint8_t)),
+                ctx.timing.quanta * (sizeof(uint32_t) * 7U + sizeof(uint8_t)),
                 ctx.timing.arrays_placement);
     np2opngen_spsc_init(&ctx.queue);
     bool head_lock_free = false;
@@ -1321,6 +1590,7 @@ static bool run_once(const Workload *workload, bool correctness)
     ctx.worker_lifecycle_start = xSemaphoreCreateBinary();
     ctx.producer_lifecycle_start = xSemaphoreCreateBinary();
     ctx.consumer_lifecycle_start = xSemaphoreCreateBinary();
+    ctx.timer_fence = xSemaphoreCreateBinary();
     if (ctx.done == nullptr || ctx.producer_terminal == nullptr) {
         record_failure(&ctx, FailureStage::DoneCreate);
         goto cleanup;
@@ -1331,6 +1601,14 @@ static bool run_once(const Workload *workload, bool correctness)
         ctx.producer_lifecycle_start == nullptr ||
         ctx.consumer_lifecycle_start == nullptr) {
         record_failure(&ctx, FailureStage::SemaphoreCreate);
+        goto cleanup;
+    }
+    pacing_args = {pacing_timer_callback, &ctx, ESP_TIMER_TASK, "p4_audio_pacing", false};
+    fence_args = {pacing_fence_callback, &ctx, ESP_TIMER_TASK, "p4_audio_fence", false};
+    if (ctx.timer_fence == nullptr ||
+        esp_timer_create(&pacing_args, &ctx.pacing_timer) != ESP_OK ||
+        esp_timer_create(&fence_args, &ctx.fence_timer) != ESP_OK) {
+        record_failure(&ctx, FailureStage::TimerCreate);
         goto cleanup;
     }
     if (xTaskCreatePinnedToCore(worker_task, "p4_audio_worker", 8192, &ctx,
@@ -1371,6 +1649,18 @@ static bool run_once(const Workload *workload, bool correctness)
     } else {
         ctx.prefill_actual = np2opngen_pcm_ring_occupancy(ctx.pcm_ring);
     }
+    if (!ctx.failed.load(std::memory_order_acquire)) {
+        ctx.pacing_t0_us = esp_timer_get_time();
+#if P4_NANO_AUDIO_TIMER_FAULT_CASE == 1
+        ctx.pacing_callback_sequence.store(2U, std::memory_order_release);
+#endif
+        if (esp_timer_start_periodic(ctx.pacing_timer, 5000U) != ESP_OK) {
+            record_failure(&ctx, FailureStage::TimerStart);
+        } else {
+            ctx.timer_started = true;
+            ctx.timer_was_started = true;
+        }
+    }
     xSemaphoreGive(ctx.consumer_start);
     if (xSemaphoreTake(ctx.done, kBenchmarkWaitTicks) != pdTRUE) {
         done_timeout = true;
@@ -1399,6 +1689,12 @@ cleanup:
     if (ctx.failed.load(std::memory_order_acquire)) {
         record_failure(&ctx, ctx.failure_stage.load(std::memory_order_acquire));
     }
+    timer_fence_observed = stop_and_fence_timer(&ctx, kBenchmarkWaitTicks);
+    std::printf("P4_AUDIO_TIMER_LIFECYCLE started=%u closing=%u fence=%u quiescent=%u\n",
+                ctx.timer_was_started ? 1U : 0U,
+                ctx.timer_closing.load(std::memory_order_acquire) ? 1U : 0U,
+                (ctx.timer_was_started && timer_fence_observed) ? 1U : 0U,
+                ctx.timer_quiescent.load(std::memory_order_acquire) ? 1U : 0U);
     if (worker_created && !worker_done_observed &&
         ctx.worker_lifecycle_start != nullptr)
         xSemaphoreGive(ctx.worker_lifecycle_start);
@@ -1428,17 +1724,18 @@ cleanup:
         (!producer_created || ctx.producer_quiescent.load(std::memory_order_acquire)) &&
         (!consumer_created ||
          (consumer_done_observed && ctx.consumer_done_flag.load(std::memory_order_acquire)));
-    if (!all_quiescent) {
+    if (!all_quiescent || !timer_fence_observed) {
         std::printf("P4_AUDIO_A2_QUIESCENCE result=FAIL worker=%s producer=%s consumer=%s"
-                    " resources_retained=YES coordinator=FAIL_STOP\n",
+                    " timer=%s resources_retained=YES coordinator=FAIL_STOP\n",
                     (!worker_created || (worker_done_observed &&
                      ctx.worker_quiescent.load(std::memory_order_acquire))) ? "ACK" : "MISSING",
                     (!producer_created || ctx.producer_quiescent.load(std::memory_order_acquire)) ? "ACK" : "MISSING",
                     (!consumer_created || (consumer_done_observed &&
-                     ctx.consumer_done_flag.load(std::memory_order_acquire))) ? "ACK" : "MISSING");
+                     ctx.consumer_done_flag.load(std::memory_order_acquire))) ? "ACK" : "MISSING",
+                    timer_fence_observed ? "ACK" : "MISSING");
         vTaskSuspend(nullptr);
     }
-    std::printf("P4_AUDIO_A2_QUIESCENCE result=PASS worker=ACK producer=ACK consumer=ACK\n");
+    std::printf("P4_AUDIO_A2_QUIESCENCE result=PASS worker=ACK producer=ACK consumer=ACK timer=ACK\n");
     failed = ctx.failed.load(std::memory_order_acquire);
     if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout || consumer_timeout);
     if (worker_created && ctx.worker_task != nullptr) vTaskDelete(ctx.worker_task);
@@ -1455,10 +1752,18 @@ cleanup:
     if (ctx.worker_lifecycle_start != nullptr) vSemaphoreDelete(ctx.worker_lifecycle_start);
     if (ctx.producer_lifecycle_start != nullptr) vSemaphoreDelete(ctx.producer_lifecycle_start);
     if (ctx.consumer_lifecycle_start != nullptr) vSemaphoreDelete(ctx.consumer_lifecycle_start);
+    if (ctx.pacing_timer != nullptr) (void)esp_timer_delete(ctx.pacing_timer);
+    if (ctx.fence_timer != nullptr) (void)esp_timer_delete(ctx.fence_timer);
+    if (ctx.timer_fence != nullptr) vSemaphoreDelete(ctx.timer_fence);
     if (ctx.pcm_ring != nullptr) heap_caps_free(ctx.pcm_ring);
     if (ctx.timing.full) heap_caps_free(ctx.timing.full);
     if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);
     if (ctx.timing.seen) heap_caps_free(ctx.timing.seen);
+    if (ctx.timing.pcm_full_wait) heap_caps_free(ctx.timing.pcm_full_wait);
+    if (ctx.timing.compute) heap_caps_free(ctx.timing.compute);
+    if (ctx.timing.callback_lateness) heap_caps_free(ctx.timing.callback_lateness);
+    if (ctx.timing.wake_lateness) heap_caps_free(ctx.timing.wake_lateness);
+    if (ctx.timing.consumer_service) heap_caps_free(ctx.timing.consumer_service);
     std::printf("P4_AUDIO_RESULT workload=%s identity=%s characterization=%s performance_valid=%s\n",
                 workload->name, failed ? "FAIL" : "PASS",
                 failed ? "INVALID" : "COMPLETE",

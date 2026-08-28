@@ -27,7 +27,7 @@ for case_id in 1 2 3 4; do
             --firmware "${case_root}/merged.bin" --timeout 6s --log-color never 2>&1 | tee "${log}" >/dev/null
         set -e
         grep -q 'P4_AUDIO_A2_QUIESCENCE result=FAIL' "${log}"
-        grep -q 'consumer=MISSING resources_retained=YES coordinator=FAIL_STOP' "${log}"
+        grep -q 'consumer=MISSING .*resources_retained=YES coordinator=FAIL_STOP' "${log}"
         ! grep -q 'P4_AUDIO_RESULT .*identity=PASS' "${log}"
     else
         timeout --foreground 30s "${ESP_EMU}" --chip esp32p4 \
