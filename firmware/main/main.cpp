@@ -10,6 +10,8 @@
 #endif
 #if defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
 #include "p4_nano_audio_benchmark.hpp"
+#elif defined(P4_NANO_AUDIO_I2S_TONE_PROFILE)
+#include "p4_nano_audio_output/p4_nano_audio_output.hpp"
 #elif defined(P4_NANO_REFRESH_VISUAL_PROFILE) || \
     defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE)
 #include "p4_nano_display/p4_nano_display.hpp"
@@ -125,6 +127,7 @@ esp_err_t route_display_benchmark_application_console()
 #endif
 
 #if !defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE) && \
+    !defined(P4_NANO_AUDIO_I2S_TONE_PROFILE) && \
     !defined(P4_NANO_REFRESH_VISUAL_PROFILE) && \
     !defined(P4_NANO_DISPLAY_FOUNDATION_PROFILE) && \
     !defined(P4_NANO_DISPLAY_TRANSFORM_DIAGNOSTIC_PROFILE) && \
@@ -200,6 +203,12 @@ extern "C" void app_main(void)
     const esp_err_t audio_result = p4_nano_audio_benchmark::run();
     std::printf("P4_AUDIO_ONLY_BENCHMARK_RESULT=%s\n",
                 audio_result == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_AUDIO_I2S_TONE_PROFILE)
+    const esp_err_t tone_result = p4_nano_audio_output::run();
+    std::printf("P4_AUDIO_I2S_TONE_RESULT=%s\n",
+                tone_result == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
 #elif defined(P4_NANO_REFRESH_VISUAL_PROFILE)

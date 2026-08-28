@@ -184,6 +184,24 @@ esp_err_t shared_i2c_device_transmit(const I2cDeviceLease *lease,
         length, timeout_ms);
 }
 
+esp_err_t shared_i2c_device_transmit_receive(const I2cDeviceLease *lease,
+                                             const void *write_data,
+                                             std::size_t write_length,
+                                             void *read_data,
+                                             std::size_t read_length,
+                                             int timeout_ms)
+{
+    if ((write_data == nullptr && write_length != 0) ||
+        (read_data == nullptr && read_length != 0) ||
+        !s_i2c_model.owns(lease)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return i2c_master_transmit_receive(
+        reinterpret_cast<i2c_master_dev_handle_t>(lease->token()),
+        static_cast<const std::uint8_t *>(write_data), write_length,
+        static_cast<std::uint8_t *>(read_data), read_length, timeout_ms);
+}
+
 esp_err_t shared_i2c_shutdown()
 {
     const SharedI2cLeaseResult result = s_i2c_model.shutdown();

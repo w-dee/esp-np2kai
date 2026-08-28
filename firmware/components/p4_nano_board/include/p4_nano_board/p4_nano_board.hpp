@@ -30,6 +30,12 @@ esp_err_t shared_i2c_release_device(I2cDeviceLease *lease);
 esp_err_t shared_i2c_device_transmit(const I2cDeviceLease *lease,
                                      const void *data, std::size_t length,
                                      int timeout_ms);
+esp_err_t shared_i2c_device_transmit_receive(const I2cDeviceLease *lease,
+                                             const void *write_data,
+                                             std::size_t write_length,
+                                             void *read_data,
+                                             std::size_t read_length,
+                                             int timeout_ms);
 esp_err_t shared_i2c_shutdown();
 bool shared_i2c_is_initialized();
 

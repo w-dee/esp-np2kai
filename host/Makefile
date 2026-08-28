@@ -123,6 +123,10 @@ P4_NANO_BOARD_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_board/inclu
 P4_NANO_BOARD_TEST_SOURCE := $(CURDIR)/tests/p4_nano_board_test.cpp
 P4_NANO_BOARD_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_board_test
 P4_NANO_BOARD_STATIC_TEST := $(HOST_ROOT)/tools/test_p4_nano_board_service.py
+P4_NANO_AUDIO_TONE_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_audio_output/include
+P4_NANO_AUDIO_TONE_TEST_SOURCE := $(CURDIR)/tests/p4_nano_audio_tone_test.cpp
+P4_NANO_AUDIO_TONE_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio_tone_test
+P4_NANO_AUDIO_TONE_STATIC_TEST := $(HOST_ROOT)/tools/test_p4_nano_audio_output.py
 P4_NANO_TRANSFORM_SOURCE := $(HOST_ROOT)/firmware/components/p4_nano_display/p4_nano_display_transform.cpp
 P4_NANO_TRANSFORM_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_display/include
 P4_NANO_TRANSFORM_TEST_SOURCE := $(CURDIR)/tests/p4_nano_display_transform_test.cpp
@@ -300,7 +304,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 	$(NP2_SHA256_DEPENDENCY) \
 	$(HEADLESS_BMP_DEPENDENCY)
 
-.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-board test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
+.PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-board test-p4-nano-board-static test-p4-nano-audio-tone test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
 .PHONY: test-p4-nano-ppa-rotation-reference
 .PHONY: test-p4-nano-board-static
@@ -1009,6 +1013,16 @@ test-p4-nano-board: test-p4-nano-board-static
 
 test-p4-nano-board-static:
 	@$(PYTHON) "$(P4_NANO_BOARD_STATIC_TEST)"
+
+test-p4-nano-audio-tone:
+	@$(PYTHON) "$(P4_NANO_AUDIO_TONE_STATIC_TEST)"
+	@mkdir -p "$(dir $(P4_NANO_AUDIO_TONE_TEST_OUTPUT))"
+	@$(CXX) -std=c++20 -Wall -Wextra -Werror \
+		-I"$(P4_NANO_AUDIO_TONE_HEADER_DIR)" -I"$(CURDIR)/compat" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2_SHA256_SOURCE)" \
+		"$(P4_NANO_AUDIO_TONE_TEST_SOURCE)" \
+		-o "$(P4_NANO_AUDIO_TONE_TEST_OUTPUT)"
+	@"$(P4_NANO_AUDIO_TONE_TEST_OUTPUT)"
 
 test-p4-nano-display-transform:
 	@mkdir -p "$(dir $(P4_NANO_TRANSFORM_TEST_OUTPUT))"
