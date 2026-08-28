@@ -78,6 +78,39 @@ def main() -> int:
             "diagnostic printing must not finalize SHA state")
     require("if (!identity_match) return false;" in finish_body,
             "identity failure must preserve failure result")
+    require("static bool digest_equal_explicit" in BENCHMARK,
+            "explicit digest comparator is missing")
+    require("static size_t first_digest_mismatch" in BENCHMARK,
+            "digest mismatch helper is missing")
+    for field in (
+            "runtime_expected_pcm_sha256=", "compiled_pcm_sha256=",
+            "actual_expected_memcmp=", "expected_compiled_memcmp=",
+            "actual_compiled_memcmp=", "actual_expected_explicit=",
+            "expected_compiled_explicit=", "actual_compiled_explicit=",
+            "expected_compiled_first_mismatch="):
+        require(field in finish_body,
+                f"cross-check diagnostic field {field} is missing")
+    require("ctx->workload->retro ? kRetroPcmSha : kStressPcmSha" in
+            finish_body,
+            "compiled PCM golden selection is missing")
+    require("digest_equal_explicit" in finish_body and
+            "digest_equal(pcm_sha, ctx->workload->expected.pcm_sha)" in
+            finish_body,
+            "both PCM comparison paths must remain present")
+    explicit = re.search(
+        r"static bool digest_equal_explicit\(.*?\n\}", BENCHMARK, re.DOTALL)
+    require(explicit is not None and "memcmp" not in explicit.group(0),
+            "explicit comparator must not use memcmp")
+    identity_section = re.search(
+        r"const bool identity_match =(?P<body>.*?);\n\n    const char",
+        finish_body, re.DOTALL)
+    require(identity_section is not None, "identity predicate body is missing")
+    require("explicit" not in identity_section.group("body"),
+            "explicit cross-check must not affect identity predicate")
+    require("struct Expected {" in BENCHMARK and "struct Workload {" in BENCHMARK,
+            "Workload/Expected layout declarations must remain present")
+    require("sizeof(kStressPcmSha)" in BENCHMARK,
+            "stress PCM golden copy contract changed unexpectedly")
     diagnostic = re.search(
         r"static void print_failure_record\(.*?\n\}", BENCHMARK, re.DOTALL)
     require(diagnostic is not None, "failure diagnostic helper is missing")

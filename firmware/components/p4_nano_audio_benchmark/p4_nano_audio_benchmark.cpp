@@ -475,6 +475,22 @@ static bool digest_equal(const uint8_t *a, const uint8_t *b)
     return std::memcmp(a, b, NP2_SHA256_DIGEST_SIZE) == 0;
 }
 
+static bool digest_equal_explicit(const uint8_t *a, const uint8_t *b)
+{
+    uint8_t diff = 0U;
+    for (size_t i = 0; i < NP2_SHA256_DIGEST_SIZE; ++i)
+        diff = static_cast<uint8_t>(diff | (a[i] ^ b[i]));
+    return diff == 0U;
+}
+
+static size_t first_digest_mismatch(const uint8_t *a, const uint8_t *b)
+{
+    for (size_t i = 0; i < NP2_SHA256_DIGEST_SIZE; ++i) {
+        if (a[i] != b[i]) return i;
+    }
+    return NP2_SHA256_DIGEST_SIZE;
+}
+
 static void print_hex(const uint8_t *digest);
 
 static void print_failure_record(const RunContext *ctx,
@@ -573,6 +589,27 @@ static bool finish_identity(RunContext *ctx)
         pcm_crc == ctx->workload->expected.pcm_crc;
     const bool pcm_sha_expected_match =
         !ctx->correctness || digest_equal(pcm_sha, ctx->workload->expected.pcm_sha);
+    const uint8_t *compiled_pcm_sha = ctx->workload->retro ? kRetroPcmSha : kStressPcmSha;
+    const bool actual_expected_memcmp = pcm_sha_expected_match;
+    const bool expected_compiled_memcmp =
+        !ctx->correctness ||
+        digest_equal(ctx->workload->expected.pcm_sha, compiled_pcm_sha);
+    const bool actual_compiled_memcmp =
+        !ctx->correctness || digest_equal(pcm_sha, compiled_pcm_sha);
+    const bool actual_expected_explicit =
+        !ctx->correctness ||
+        digest_equal_explicit(pcm_sha, ctx->workload->expected.pcm_sha);
+    const bool expected_compiled_explicit =
+        !ctx->correctness ||
+        digest_equal_explicit(ctx->workload->expected.pcm_sha,
+                              compiled_pcm_sha);
+    const bool actual_compiled_explicit =
+        !ctx->correctness || digest_equal_explicit(pcm_sha, compiled_pcm_sha);
+    const size_t expected_compiled_first_mismatch =
+        ctx->correctness
+            ? first_digest_mismatch(ctx->workload->expected.pcm_sha,
+                                    compiled_pcm_sha)
+            : NP2_SHA256_DIGEST_SIZE;
     const bool producer_loop_valid =
         ctx->producer_trace_valid && event_count == ctx->producer_count;
 
@@ -639,6 +676,27 @@ static bool finish_identity(RunContext *ctx)
         print_hex(producer_trace_sha);
         std::printf(" pcm_sha256=");
         print_hex(pcm_sha);
+        std::printf(" runtime_expected_pcm_sha256=");
+        print_hex(ctx->workload->expected.pcm_sha);
+        std::printf(" compiled_pcm_sha256=");
+        print_hex(compiled_pcm_sha);
+        std::printf(" actual_expected_memcmp=%u"
+                    " expected_compiled_memcmp=%u"
+                    " actual_compiled_memcmp=%u"
+                    " actual_expected_explicit=%u"
+                    " expected_compiled_explicit=%u"
+                    " actual_compiled_explicit=%u"
+                    " expected_compiled_first_mismatch=",
+                    actual_expected_memcmp ? 1U : 0U,
+                    expected_compiled_memcmp ? 1U : 0U,
+                    actual_compiled_memcmp ? 1U : 0U,
+                    actual_expected_explicit ? 1U : 0U,
+                    expected_compiled_explicit ? 1U : 0U,
+                    actual_compiled_explicit ? 1U : 0U);
+        if (expected_compiled_first_mismatch == NP2_SHA256_DIGEST_SIZE)
+            std::printf("none");
+        else
+            std::printf("%zu", expected_compiled_first_mismatch);
         std::printf("\n");
     }
     if (!identity_match) return false;
