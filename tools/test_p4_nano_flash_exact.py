@@ -10,7 +10,9 @@ import sys
 import tempfile
 import time
 import unittest
+import venv
 from pathlib import Path
+from unittest import mock
 
 
 TOOLS_DEV = Path(__file__).resolve().parent / "dev"
@@ -93,6 +95,136 @@ class FlashHelperContractTests(unittest.TestCase):
         self.write_metadata()
         with self.assertRaises(MetadataError):
             parse_flash_plan(self.build)
+
+    @staticmethod
+    def create_venv(path: Path) -> tuple[Path, str, str]:
+        venv.EnvBuilder(with_pip=False, symlinks=True).create(path)
+        launcher = path / "bin" / "python"
+        result = subprocess.run(
+            [str(launcher), "-c", "import sys; print(sys.prefix); print(sys.base_prefix)"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        prefix, base_prefix = result.stdout.splitlines()
+        return launcher, prefix, base_prefix
+
+    def test_venv_symlink_launcher_is_accepted_without_realpath_execution(self) -> None:
+        launcher, prefix, base_prefix = self.create_venv(self.build / "venv-positive")
+        self.assertNotEqual(os.path.realpath(launcher), str(launcher))
+        selected = exact._validate_python_environment(
+            str(launcher), prefix, base_prefix, launcher.parent.parent
+        )
+        self.assertEqual(selected, str(launcher))
+        self.assertNotEqual(selected, os.path.realpath(launcher))
+
+    def test_active_environment_returns_venv_launcher_and_probes_same_environment(self) -> None:
+        launcher, prefix, base_prefix = self.create_venv(self.build / "venv-active")
+        (self.build / "CMakeCache.txt").write_text(
+            "IDF_TARGET:STRING=esp32p4\n"
+            f"PYTHON:UNINITIALIZED={launcher}\n",
+            encoding="utf-8",
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if "import esptool" in command:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(command, 0, f"{prefix}\n{base_prefix}\n", "")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "P4_NANO_SERIAL": "/dev/test",
+                "IDF_PATH": str(self.build / "idf"),
+                "IDF_PYTHON_ENV_PATH": str(launcher.parent.parent),
+            },
+            clear=False,
+        ), mock.patch.object(exact.sys, "executable", str(launcher)), mock.patch.object(
+            exact.sys, "prefix", prefix
+        ), mock.patch.object(exact.sys, "base_prefix", base_prefix), mock.patch.object(
+            exact.subprocess, "run", side_effect=fake_run
+        ):
+            (self.build / "idf/tools").mkdir(parents=True)
+            selected, serial = exact._active_environment(parse_flash_plan(self.build))
+        self.assertEqual(selected, str(launcher))
+        self.assertNotEqual(selected, os.path.realpath(launcher))
+        self.assertEqual(serial, "/dev/test")
+
+    def test_system_python_rejected_even_when_realpath_matches_venv_launcher(self) -> None:
+        launcher, prefix, base_prefix = self.create_venv(self.build / "venv-system-negative")
+        with self.assertRaises(RuntimeError):
+            exact._validate_python_environment(
+                sys.executable, sys.prefix, sys.base_prefix, launcher.parent.parent
+            )
+
+    def test_wrong_venv_rejected(self) -> None:
+        launcher_a, prefix_a, base_a = self.create_venv(self.build / "venv-a")
+        launcher_b, _, _ = self.create_venv(self.build / "venv-b")
+        with self.assertRaises(RuntimeError):
+            exact._validate_python_environment(
+                str(launcher_a), prefix_a, base_a, launcher_b.parent.parent
+            )
+
+    def test_missing_idf_python_environment_rejected(self) -> None:
+        with self.assertRaises(RuntimeError):
+            exact._validate_python_environment(
+                sys.executable, sys.prefix, sys.base_prefix, self.build / "missing-venv"
+            )
+
+    def test_esptool_unavailable_rejected(self) -> None:
+        launcher, prefix, base_prefix = self.create_venv(self.build / "venv-no-esptool")
+        (self.build / "idf/tools").mkdir(parents=True)
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "P4_NANO_SERIAL": "/dev/test",
+                "IDF_PATH": str(self.build / "idf"),
+                "IDF_PYTHON_ENV_PATH": str(launcher.parent.parent),
+            },
+            clear=False,
+        ), mock.patch.object(exact.sys, "executable", str(launcher)), mock.patch.object(
+            exact.sys, "prefix", prefix
+        ), mock.patch.object(exact.sys, "base_prefix", base_prefix), mock.patch.object(
+            exact.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess([], 1, "", "missing esptool"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "esptool is unavailable"):
+                exact._active_environment(parse_flash_plan(self.build))
+
+    def test_build_python_environment_mismatch_rejected(self) -> None:
+        launcher, prefix, base_prefix = self.create_venv(self.build / "venv-build-mismatch")
+        (self.build / "idf/tools").mkdir(parents=True)
+        original_prefix, original_base = sys.prefix, sys.base_prefix
+        (self.build / "CMakeCache.txt").write_text(
+            "IDF_TARGET:STRING=esp32p4\n"
+            f"PYTHON:UNINITIALIZED={sys.executable}\n",
+            encoding="utf-8",
+        )
+
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if "import esptool" in command:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(
+                command, 0, f"{original_prefix}\n{original_base}\n", ""
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "P4_NANO_SERIAL": "/dev/test",
+                "IDF_PATH": str(self.build / "idf"),
+                "IDF_PYTHON_ENV_PATH": str(launcher.parent.parent),
+            },
+            clear=False,
+        ), mock.patch.object(exact.sys, "executable", str(launcher)), mock.patch.object(
+            exact.sys, "prefix", prefix
+        ), mock.patch.object(exact.sys, "base_prefix", base_prefix), mock.patch.object(
+            exact.subprocess, "run", side_effect=fake_run
+        ):
+            with self.assertRaisesRegex(RuntimeError, "build Python does not match"):
+                exact._active_environment(parse_flash_plan(self.build))
 
     def test_rejects_chip_mismatch(self) -> None:
         self.metadata["extra_esptool_args"]["chip"] = "esp32s3"

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -103,6 +102,57 @@ def _print_plan(plan: FlashPlan) -> None:
     )
 
 
+def _canonical_dir(value: str | os.PathLike[str]) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+def _validate_python_environment(
+    active_executable: str,
+    active_prefix: str,
+    active_base_prefix: str,
+    expected_environment: Path,
+) -> str:
+    """Validate venv identity and return a launcher path, never its realpath."""
+    expected = _canonical_dir(expected_environment)
+    launcher = expected / "bin" / "python"
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise RuntimeError("ENVIRONMENT_INVALID: IDF_PYTHON_ENV_PATH launcher is invalid")
+    if _canonical_dir(active_prefix) != expected:
+        raise RuntimeError("ENVIRONMENT_INVALID: active Python prefix does not match IDF_PYTHON_ENV_PATH")
+    if _canonical_dir(active_prefix) == _canonical_dir(active_base_prefix):
+        raise RuntimeError("ENVIRONMENT_INVALID: active interpreter is not an IDF virtual environment")
+
+    candidate = Path(active_executable)
+    if candidate.is_absolute():
+        try:
+            candidate.resolve().relative_to(expected)
+        except ValueError:
+            # Some venvs expose bin/python as a symlink whose sys.executable is
+            # the base interpreter. Keep the venv launcher for subprocesses.
+            return str(launcher)
+        return str(candidate)
+    return str(launcher)
+
+
+def _python_prefixes(executable: str) -> tuple[str, str]:
+    try:
+        probe = subprocess.run(
+            [executable, "-c", "import sys; print(sys.prefix); print(sys.base_prefix)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"ENVIRONMENT_INVALID: cannot execute Python launcher: {exc}") from exc
+    if probe.returncode != 0:
+        raise RuntimeError("ENVIRONMENT_INVALID: cannot inspect Python environment prefix")
+    lines = probe.stdout.splitlines()
+    if len(lines) != 2 or not all(lines):
+        raise RuntimeError("ENVIRONMENT_INVALID: Python environment probe returned malformed output")
+    return lines[0], lines[1]
+
+
 def _active_environment(plan: FlashPlan) -> tuple[str, str]:
     serial = os.environ.get("P4_NANO_SERIAL", "")
     if not serial:
@@ -111,18 +161,17 @@ def _active_environment(plan: FlashPlan) -> tuple[str, str]:
     if not idf_path or not (Path(idf_path) / "tools").is_dir():
         raise RuntimeError("ENVIRONMENT_INVALID: IDF_PATH is not an active ESP-IDF installation")
     python_env = os.environ.get("IDF_PYTHON_ENV_PATH", "")
-    expected = Path(python_env) / "bin" / "python"
-    if not python_env or not expected.is_file() or not os.access(expected, os.X_OK):
+    expected = Path(python_env)
+    if not python_env or not expected.is_dir():
         raise RuntimeError("ENVIRONMENT_INVALID: IDF_PYTHON_ENV_PATH is invalid")
-    active = shutil.which("python")
-    if active is None:
-        raise RuntimeError("ENVIRONMENT_INVALID: active python is unavailable")
-    active_real = os.path.realpath(active)
-    expected_real = os.path.realpath(expected)
-    if active_real != expected_real:
-        raise RuntimeError("ENVIRONMENT_INVALID: active Python does not match IDF_PYTHON_ENV_PATH")
+    active_launcher = _validate_python_environment(
+        sys.executable,
+        sys.prefix,
+        sys.base_prefix,
+        expected,
+    )
     probe = subprocess.run(
-        [active_real, "-c", "import esptool"],
+        [active_launcher, "-c", "import esptool"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -137,9 +186,18 @@ def _active_environment(plan: FlashPlan) -> tuple[str, str]:
             if line.startswith("PYTHON:") and "=" in line:
                 configured = line.split("=", 1)[1]
                 break
-    if configured and os.path.realpath(configured) != active_real:
-        raise RuntimeError("ENVIRONMENT_INVALID: build Python does not match active Python")
-    return active_real, serial
+    if configured:
+        configured_path = Path(configured)
+        if not configured_path.is_absolute():
+            configured_path = plan.build_dir / configured_path
+        if not configured_path.is_file() or not os.access(configured_path, os.X_OK):
+            raise RuntimeError("ENVIRONMENT_INVALID: build Python launcher is invalid")
+        configured_prefix, configured_base_prefix = _python_prefixes(str(configured_path))
+        if _canonical_dir(configured_prefix) != _canonical_dir(expected):
+            raise RuntimeError("ENVIRONMENT_INVALID: build Python does not match IDF_PYTHON_ENV_PATH")
+        if _canonical_dir(configured_base_prefix) != _canonical_dir(sys.base_prefix):
+            raise RuntimeError("ENVIRONMENT_INVALID: build Python base environment does not match active Python")
+    return active_launcher, serial
 
 
 def _esptool_command(plan: FlashPlan, python_path: str, serial: str) -> list[str]:
