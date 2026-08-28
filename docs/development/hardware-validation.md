@@ -198,6 +198,38 @@ the future canonical epoch. A setup-side `Returned from app_main()` must never
 stop canonical capture. The no-second-run rule applies only after the logged
 `Ctrl+T`, `Ctrl+R` reset has begun the canonical epoch.
 
+## Durable raw UART capture
+
+For a formal A2 capture, use the project-owned direct-serial helper instead of
+IDF Monitor logging:
+
+```bash
+python3 tools/dev/p4_nano_capture.py \
+  --port "$P4_NANO_SERIAL" \
+  --raw <capture-dir>/run-03.raw \
+  --status <capture-dir>/run-03.status.json
+```
+
+The helper owns the configured UART at 1,500,000 baud, arms the raw sink, and
+issues the established single RTS/DTR canonical reset itself. The raw artifact
+is byte-exact UART data, written with exclusive-create semantics and
+incremental `os.write()` plus per-chunk `fdatasync()`. It preserves setup
+bytes before reset and records `reset_byte_offset`; it does not include the
+machine-local serial value in status JSON. The hard timeout is 360 seconds
+from reset initiation, with no idle timeout. A complete exact
+`P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS|FAIL` line ends normal capture, followed
+by at most a 500 ms bounded drain and final sync/close. Timeout, serial error,
+parser error, and SIGTERM/SIGINT preserve the raw prefix and emit a separate
+status file where cleanup is possible; SIGKILL may leave status absent but
+already-synced raw bytes remain valid.
+
+Do not invoke `idf.py monitor`, `esp_idf_monitor`, or
+`tools/dev/p4-nano-monitor.sh` in this formal raw path. The monitor wrapper
+and its `Ctrl+T`, `Ctrl+L` transcript logging remain available for interactive
+debugging only; a monitor log is a decoded secondary artifact, not the
+durable raw evidence source. Do not use monitor `Ctrl+]` as the formal
+completion action.
+
 ## Transcript artifacts
 
 IDF Monitor creates `log.*` local artifacts. They are ignored and must not be
