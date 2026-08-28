@@ -35,6 +35,49 @@ def main() -> int:
                 f"failure stage {stage} is missing")
     require(BENCHMARK.count("P4_AUDIO_FAILURE") == 1,
             "failure output must have one structured prefix")
+    require(BENCHMARK.count("P4_AUDIO_IDENTITY_DIAG") == 1,
+            "identity diagnostic must have one structured prefix")
+    finish = re.search(
+        r"static bool finish_identity\(.*?\nstatic void print_hex",
+        BENCHMARK, re.DOTALL)
+    require(finish is not None, "finish_identity helper is missing")
+    finish_body = finish.group(0)
+    require(finish_body.count("np2opngen_e1b_worker_event_trace_finish") == 1 and
+            finish_body.count("np2opngen_synth_event_trace_finish") == 1,
+            "each event trace must be finalized exactly once")
+    require(finish_body.count("np2_sha256_final(&ctx->sink.sha") == 1 and
+            "if (ctx->correctness) np2_sha256_final(&ctx->sink.sha" in
+            finish_body,
+            "PCM SHA must finalize once on correctness runs")
+    require("if (!identity_match && ctx->correctness)" in finish_body,
+            "identity diagnostic must be failure-only and correctness-only")
+    for name in (
+            "worker_trace_finish", "producer_count", "consumer_count",
+            "consumer_crc", "consumer_sha", "producer_trace_finish",
+            "trace_count_equal", "trace_crc_equal", "trace_sha_equal",
+            "sequence", "pcm_frames", "pcm_bytes", "pcm_crc", "pcm_sha",
+            "producer_loop", "none"):
+        require(f'"{name}"' in finish_body,
+                f"first_failure name {name} is missing")
+    for field in (
+            "consumer_count_match", "consumer_crc_match",
+            "producer_count_match", "trace_count_equal", "trace_crc_equal",
+            "consumer_sha_match", "trace_sha_equal", "sequence_match",
+            "pcm_frames_match", "pcm_bytes_match", "pcm_crc_match",
+            "pcm_sha_match", "producer_loop_valid", "identity_match=0",
+            "consumer_event_sha256=", "producer_event_sha256=",
+            "pcm_sha256="):
+        require(field in finish_body,
+                f"identity diagnostic field {field} is missing")
+    diagnostic_section = re.search(
+        r"if \(!identity_match && ctx->correctness\) \{(?P<body>.*?)\n    \}",
+        finish_body, re.DOTALL)
+    require(diagnostic_section is not None,
+            "identity diagnostic gate body is missing")
+    require("np2_sha256_final" not in diagnostic_section.group("body"),
+            "diagnostic printing must not finalize SHA state")
+    require("if (!identity_match) return false;" in finish_body,
+            "identity failure must preserve failure result")
     diagnostic = re.search(
         r"static void print_failure_record\(.*?\n\}", BENCHMARK, re.DOTALL)
     require(diagnostic is not None, "failure diagnostic helper is missing")

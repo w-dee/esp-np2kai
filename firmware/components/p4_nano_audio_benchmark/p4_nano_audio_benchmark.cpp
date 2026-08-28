@@ -536,33 +536,114 @@ static bool finish_identity(RunContext *ctx)
     uint64_t event_count = 0U;
     uint32_t event_crc = 0U;
     uint8_t event_sha[NP2_SHA256_DIGEST_SIZE]{};
-    if (np2opngen_e1b_worker_event_trace_finish(
-            &ctx->worker, &event_count, &event_crc, event_sha) != 0)
-        return false;
+    const bool worker_trace_finish_ok =
+        np2opngen_e1b_worker_event_trace_finish(
+            &ctx->worker, &event_count, &event_crc, event_sha) == 0;
     uint64_t producer_trace_count = 0U;
     uint32_t producer_trace_crc = 0U;
     uint8_t producer_trace_sha[NP2_SHA256_DIGEST_SIZE]{};
-    const bool producer_trace_ok =
+    const bool producer_trace_finish_ok =
         np2opngen_synth_event_trace_finish(
             &ctx->producer_trace, &producer_trace_count,
             &producer_trace_crc, producer_trace_sha) == 0;
-    if (ctx->producer_count != ctx->workload->expected.events ||
-        event_count != ctx->workload->expected.events ||
-        event_crc != ctx->workload->expected.event_crc ||
-        !digest_equal(event_sha, ctx->workload->expected.event_sha) ||
-        !producer_trace_ok || producer_trace_count != event_count ||
-        producer_trace_crc != event_crc ||
-        !digest_equal(producer_trace_sha, event_sha) ||
-        ctx->worker.sequence_errors != 0U ||
-        ctx->sink.frames != ctx->workload->expected.end_frame ||
-        ctx->sink.bytes != ctx->workload->expected.end_frame * 4U ||
-        np2_crc32_iso_hdlc_finish(ctx->sink.crc) !=
-            ctx->workload->expected.pcm_crc)
-        return false;
+    uint8_t pcm_sha[NP2_SHA256_DIGEST_SIZE]{};
+    if (ctx->correctness) np2_sha256_final(&ctx->sink.sha, pcm_sha);
+
+    const bool producer_count_match =
+        ctx->producer_count == ctx->workload->expected.events;
+    const bool consumer_count_match =
+        event_count == ctx->workload->expected.events;
+    const bool consumer_crc_expected_match =
+        event_crc == ctx->workload->expected.event_crc;
+    const bool consumer_sha_expected_match =
+        digest_equal(event_sha, ctx->workload->expected.event_sha);
+    const bool producer_consumer_count_match =
+        producer_trace_count == event_count;
+    const bool producer_consumer_crc_match =
+        producer_trace_crc == event_crc;
+    const bool producer_consumer_sha_match =
+        digest_equal(producer_trace_sha, event_sha);
+    const bool sequence_match = ctx->worker.sequence_errors == 0U;
+    const bool pcm_frames_match =
+        ctx->sink.frames == ctx->workload->expected.end_frame;
+    const bool pcm_bytes_match =
+        ctx->sink.bytes == ctx->workload->expected.end_frame * 4U;
+    const uint32_t pcm_crc = np2_crc32_iso_hdlc_finish(ctx->sink.crc);
+    const bool pcm_crc_expected_match =
+        pcm_crc == ctx->workload->expected.pcm_crc;
+    const bool pcm_sha_expected_match =
+        !ctx->correctness || digest_equal(pcm_sha, ctx->workload->expected.pcm_sha);
+    const bool producer_loop_valid =
+        ctx->producer_trace_valid && event_count == ctx->producer_count;
+
+    const bool identity_match =
+        worker_trace_finish_ok && producer_count_match && consumer_count_match &&
+        consumer_crc_expected_match && consumer_sha_expected_match &&
+        producer_trace_finish_ok && producer_consumer_count_match &&
+        producer_consumer_crc_match && producer_consumer_sha_match &&
+        sequence_match && pcm_frames_match && pcm_bytes_match &&
+        pcm_crc_expected_match && pcm_sha_expected_match && producer_loop_valid;
+
+    const char *first_failure = "none";
+    if (!worker_trace_finish_ok) first_failure = "worker_trace_finish";
+    else if (!producer_count_match) first_failure = "producer_count";
+    else if (!consumer_count_match) first_failure = "consumer_count";
+    else if (!consumer_crc_expected_match) first_failure = "consumer_crc";
+    else if (!consumer_sha_expected_match) first_failure = "consumer_sha";
+    else if (!producer_trace_finish_ok) first_failure = "producer_trace_finish";
+    else if (!producer_consumer_count_match) first_failure = "trace_count_equal";
+    else if (!producer_consumer_crc_match) first_failure = "trace_crc_equal";
+    else if (!producer_consumer_sha_match) first_failure = "trace_sha_equal";
+    else if (!sequence_match) first_failure = "sequence";
+    else if (!pcm_frames_match) first_failure = "pcm_frames";
+    else if (!pcm_bytes_match) first_failure = "pcm_bytes";
+    else if (!pcm_crc_expected_match) first_failure = "pcm_crc";
+    else if (ctx->correctness && !pcm_sha_expected_match) first_failure = "pcm_sha";
+    else if (!producer_loop_valid) first_failure = "producer_loop";
+
+    if (!identity_match && ctx->correctness) {
+        std::printf("P4_AUDIO_IDENTITY_DIAG workload=%s first_failure=%s"
+                    " worker_trace_finish=%u producer_trace_finish=%u"
+                    " consumer_count=%" PRIu64 " consumer_count_match=%u"
+                    " consumer_crc32=0x%08" PRIx32 " consumer_crc_match=%u"
+                    " producer_count=%" PRIu64 " producer_count_match=%u"
+                    " producer_trace_count=%" PRIu64 " trace_count_equal=%u"
+                    " producer_crc32=0x%08" PRIx32 " trace_crc_equal=%u"
+                    " consumer_sha_match=%u trace_sha_equal=%u"
+                    " sequence_errors=%" PRIu64 " sequence_match=%u"
+                    " pcm_frames=%" PRIu64 " pcm_frames_match=%u"
+                    " pcm_bytes=%" PRIu64 " pcm_bytes_match=%u"
+                    " pcm_crc32=0x%08" PRIx32 " pcm_crc_match=%u"
+                    " pcm_sha_match=%u producer_trace_valid=%u"
+                    " producer_loop_valid=%u identity_match=0"
+                    " consumer_event_sha256=",
+                    ctx->workload->name, first_failure,
+                    worker_trace_finish_ok ? 1U : 0U,
+                    producer_trace_finish_ok ? 1U : 0U, event_count,
+                    consumer_count_match ? 1U : 0U, event_crc,
+                    consumer_crc_expected_match ? 1U : 0U, ctx->producer_count,
+                    producer_count_match ? 1U : 0U, producer_trace_count,
+                    producer_consumer_count_match ? 1U : 0U, producer_trace_crc,
+                    producer_consumer_crc_match ? 1U : 0U,
+                    consumer_sha_expected_match ? 1U : 0U,
+                    producer_consumer_sha_match ? 1U : 0U,
+                    ctx->worker.sequence_errors, sequence_match ? 1U : 0U,
+                    ctx->sink.frames, pcm_frames_match ? 1U : 0U,
+                    ctx->sink.bytes, pcm_bytes_match ? 1U : 0U, pcm_crc,
+                    pcm_crc_expected_match ? 1U : 0U,
+                    pcm_sha_expected_match ? 1U : 0U,
+                    ctx->producer_trace_valid ? 1U : 0U,
+                    producer_loop_valid ? 1U : 0U);
+        print_hex(event_sha);
+        std::printf(" producer_event_sha256=");
+        print_hex(producer_trace_sha);
+        std::printf(" pcm_sha256=");
+        print_hex(pcm_sha);
+        std::printf("\n");
+    }
+    if (!identity_match) return false;
+
     if (ctx->correctness) {
-        uint8_t pcm_sha[NP2_SHA256_DIGEST_SIZE]{};
-        np2_sha256_final(&ctx->sink.sha, pcm_sha);
-        if (!digest_equal(pcm_sha, ctx->workload->expected.pcm_sha)) return false;
         std::printf("P4_AUDIO_IDENTITY workload=%s event_count=%" PRIu64
                     " event_crc32=0x%08" PRIx32 " event_sha256=",
                     ctx->workload->name, event_count, event_crc);
@@ -583,8 +664,7 @@ static bool finish_identity(RunContext *ctx)
                     ctx->worker.sequence_errors, ctx->sink.frames,
                     ctx->sink.bytes, np2_crc32_iso_hdlc_finish(ctx->sink.crc));
     }
-    ctx->producer_trace_valid = ctx->producer_trace_valid && event_count == ctx->producer_count;
-    if (!ctx->producer_trace_valid) return false;
+    ctx->producer_trace_valid = producer_loop_valid;
     return true;
 }
 
