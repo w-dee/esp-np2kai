@@ -1,5 +1,9 @@
 #include "p4_nano_audio_benchmark.hpp"
 
+#ifndef P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE
+#define P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE 0
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
@@ -153,15 +157,20 @@ struct RunContext {
     Consumer consumer{};
     Timing timing{};
     SemaphoreHandle_t done = nullptr;
+    SemaphoreHandle_t producer_terminal = nullptr;
     SemaphoreHandle_t pcm_space = nullptr;
     SemaphoreHandle_t prefill_ready = nullptr;
     SemaphoreHandle_t consumer_start = nullptr;
     SemaphoreHandle_t consumer_done = nullptr;
+    SemaphoreHandle_t worker_lifecycle_start = nullptr;
+    SemaphoreHandle_t producer_lifecycle_start = nullptr;
+    SemaphoreHandle_t consumer_lifecycle_start = nullptr;
     TaskHandle_t worker_task = nullptr;
     TaskHandle_t producer_task = nullptr;
     TaskHandle_t consumer_task = nullptr;
     std::atomic<bool> producer_waiting{false};
     std::atomic<bool> pcm_waiting{false};
+    std::atomic<bool> worker_quiescent{false};
     std::atomic<bool> pcm_producer_done{false};
     std::atomic<bool> consumer_done_flag{false};
     std::atomic<bool> prefill_signalled{false};
@@ -185,6 +194,12 @@ static void record_failure(RunContext *ctx, FailureStage stage)
     if (ctx->pcm_space != nullptr) xSemaphoreGive(ctx->pcm_space);
     if (ctx->consumer_start != nullptr) xSemaphoreGive(ctx->consumer_start);
     if (ctx->prefill_ready != nullptr) xSemaphoreGive(ctx->prefill_ready);
+    if (ctx->worker_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx->worker_lifecycle_start);
+    if (ctx->producer_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx->producer_lifecycle_start);
+    if (ctx->consumer_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx->consumer_lifecycle_start);
     if (ctx->worker_task != nullptr) xTaskNotifyGive(ctx->worker_task);
     if (ctx->producer_task != nullptr) xTaskNotifyGive(ctx->producer_task);
     if (ctx->consumer_task != nullptr) xTaskNotifyGive(ctx->consumer_task);
@@ -499,7 +514,12 @@ static int sink_finish(uint64_t final_frame, void *opaque)
 static void pcm_consumer_task(void *opaque)
 {
     auto *ctx = static_cast<RunContext *>(opaque);
-    const bool started = xSemaphoreTake(ctx->consumer_start, portMAX_DELAY) == pdTRUE;
+    const SemaphoreHandle_t lifecycle_start = ctx->consumer_lifecycle_start;
+    const bool lifecycle_started =
+        lifecycle_start != nullptr &&
+        xSemaphoreTake(lifecycle_start, portMAX_DELAY) == pdTRUE;
+    const bool started = lifecycle_started &&
+        xSemaphoreTake(ctx->consumer_start, portMAX_DELAY) == pdTRUE;
     if (started && !ctx->failed.load(std::memory_order_acquire)) {
       for (;;) {
         if (ctx->failed.load(std::memory_order_acquire)) break;
@@ -558,10 +578,16 @@ static void pcm_consumer_task(void *opaque)
         xSemaphoreGive(ctx->pcm_space);
       }
     }
+    const SemaphoreHandle_t terminal = ctx->consumer_done;
+#if P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 4
+    /* Deliberately suppress one terminal acknowledgement for the negative
+       fail-stop test.  No shared state is touched after this point. */
+    vTaskSuspend(nullptr);
+    return;
+#endif
     ctx->consumer_done_flag.store(true, std::memory_order_release);
-    if (ctx->consumer_done != nullptr) xSemaphoreGive(ctx->consumer_done);
-    ctx->consumer_task = nullptr;
-    vTaskDelete(nullptr);
+    if (terminal != nullptr) xSemaphoreGive(terminal);
+    vTaskSuspend(nullptr);
 }
 
 static void producer_fail(RunContext *ctx, enum np2opngen_e1b_error error)
@@ -610,6 +636,17 @@ static bool enqueue_event(RunContext *ctx,
 static void producer_task(void *opaque)
 {
     auto *ctx = static_cast<RunContext *>(opaque);
+    const SemaphoreHandle_t lifecycle_start = ctx->producer_lifecycle_start;
+    if (lifecycle_start == nullptr ||
+        xSemaphoreTake(lifecycle_start, portMAX_DELAY) != pdTRUE ||
+        ctx->failed.load(std::memory_order_acquire)) {
+        const SemaphoreHandle_t terminal = ctx->producer_terminal;
+        ctx->producer_trace_valid = false;
+        ctx->producer_quiescent.store(true, std::memory_order_release);
+        if (terminal != nullptr) xSemaphoreGive(terminal);
+        vTaskSuspend(nullptr);
+        return;
+    }
     bool ok = true;
     np2opngen_synth_event_trace_init(&ctx->producer_trace);
     if (ctx->workload->retro) {
@@ -646,16 +683,29 @@ static void producer_task(void *opaque)
     if (!ok) producer_fail(ctx, NP2_OPNGEN_E1B_ERROR_GENERATOR);
     ctx->producer_trace_valid = ok;
     np2opngen_e1b_control_producer_done(&ctx->control);
+    const SemaphoreHandle_t terminal = ctx->producer_terminal;
+    const TaskHandle_t worker = ctx->worker_task;
+    if (worker != nullptr) xTaskNotifyGive(worker);
     ctx->producer_quiescent.store(true, std::memory_order_release);
-    if (ctx->worker_task != nullptr) xTaskNotifyGive(ctx->worker_task);
-    ctx->producer_task = nullptr;
-    vTaskDelete(nullptr);
+    if (terminal != nullptr) xSemaphoreGive(terminal);
+    vTaskSuspend(nullptr);
 }
 
 static void worker_task(void *opaque)
 {
     auto *ctx = static_cast<RunContext *>(opaque);
+    const SemaphoreHandle_t lifecycle_start = ctx->worker_lifecycle_start;
+    if (lifecycle_start == nullptr ||
+        xSemaphoreTake(lifecycle_start, portMAX_DELAY) != pdTRUE) {
+        record_failure(ctx, FailureStage::WorkerFailed);
+    }
+#if P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 2
+    /* Deterministic emulator fault: fail at the worker wait boundary so the
+       coordinator wake path is exercised without changing production code. */
+    record_failure(ctx, FailureStage::WorkerFailed);
+#endif
     for (;;) {
+        if (ctx->failed.load(std::memory_order_acquire)) break;
         const int step = np2opngen_e1b_worker_step(&ctx->worker);
         if (step == NP2_OPNGEN_E1B_STEP_PROGRESS &&
             ctx->producer_task != nullptr &&
@@ -663,7 +713,9 @@ static void worker_task(void *opaque)
             xTaskNotifyGive(ctx->producer_task);
         }
         if (step == NP2_OPNGEN_E1B_STEP_WAIT) {
+            if (ctx->failed.load(std::memory_order_acquire)) break;
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            if (ctx->failed.load(std::memory_order_acquire)) break;
             continue;
         }
         if (step == NP2_OPNGEN_E1B_STEP_FAILED)
@@ -675,9 +727,10 @@ static void worker_task(void *opaque)
         ctx->producer_waiting.load(std::memory_order_acquire)) {
         xTaskNotifyGive(ctx->producer_task);
     }
-    if (ctx->done != nullptr) xSemaphoreGive(ctx->done);
-    ctx->worker_task = nullptr;
-    vTaskDelete(nullptr);
+    const SemaphoreHandle_t terminal = ctx->done;
+    ctx->worker_quiescent.store(true, std::memory_order_release);
+    if (terminal != nullptr) xSemaphoreGive(terminal);
+    vTaskSuspend(nullptr);
 }
 
 static bool digest_equal(const uint8_t *a, const uint8_t *b)
@@ -1159,6 +1212,8 @@ static bool preflight_workload(const Workload *workload)
 
 static bool run_once(const Workload *workload, bool correctness)
 {
+    constexpr TickType_t kBenchmarkWaitTicks = pdMS_TO_TICKS(
+        P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 4 ? 100 : 120000);
     RunContext ctx{};
     ctx.workload = workload;
     ctx.correctness = correctness;
@@ -1258,16 +1313,23 @@ static bool run_once(const Workload *workload, bool correctness)
         observer_render_end, observer_quantum_complete, &ctx, true};
     np2opngen_e1b_worker_set_observer(&ctx.worker, &ctx.observer);
     ctx.done = xSemaphoreCreateBinary();
+    ctx.producer_terminal = xSemaphoreCreateBinary();
     ctx.pcm_space = xSemaphoreCreateBinary();
     ctx.prefill_ready = xSemaphoreCreateBinary();
     ctx.consumer_start = xSemaphoreCreateBinary();
     ctx.consumer_done = xSemaphoreCreateBinary();
-    if (ctx.done == nullptr) {
+    ctx.worker_lifecycle_start = xSemaphoreCreateBinary();
+    ctx.producer_lifecycle_start = xSemaphoreCreateBinary();
+    ctx.consumer_lifecycle_start = xSemaphoreCreateBinary();
+    if (ctx.done == nullptr || ctx.producer_terminal == nullptr) {
         record_failure(&ctx, FailureStage::DoneCreate);
         goto cleanup;
     }
     if (ctx.pcm_space == nullptr || ctx.prefill_ready == nullptr ||
-        ctx.consumer_start == nullptr || ctx.consumer_done == nullptr) {
+        ctx.consumer_start == nullptr || ctx.consumer_done == nullptr ||
+        ctx.worker_lifecycle_start == nullptr ||
+        ctx.producer_lifecycle_start == nullptr ||
+        ctx.consumer_lifecycle_start == nullptr) {
         record_failure(&ctx, FailureStage::SemaphoreCreate);
         goto cleanup;
     }
@@ -1277,6 +1339,10 @@ static bool run_once(const Workload *workload, bool correctness)
         goto cleanup;
     }
     worker_created = true;
+#if P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 1
+    record_failure(&ctx, FailureStage::ProducerCreate);
+    goto cleanup;
+#endif
     if (xTaskCreatePinnedToCore(producer_task, "p4_audio_producer", 8192, &ctx,
                                 kProducerPriority, &ctx.producer_task, kProducerCore) != pdPASS) {
         record_failure(&ctx, FailureStage::ProducerCreate);
@@ -1289,32 +1355,39 @@ static bool run_once(const Workload *workload, bool correctness)
         goto cleanup;
     }
     consumer_created = true;
-    if (xSemaphoreTake(ctx.prefill_ready, pdMS_TO_TICKS(120000)) != pdTRUE) {
+    /* All handles are now published.  Only the coordinator writes them. */
+    if (ctx.failed.load(std::memory_order_acquire)) {
+        record_failure(&ctx, FailureStage::ConsumerCreate);
+        goto cleanup;
+    }
+#if P4_NANO_AUDIO_LIFECYCLE_FAULT_CASE == 3
+    record_failure(&ctx, FailureStage::ConsumerCreate);
+#endif
+    xSemaphoreGive(ctx.worker_lifecycle_start);
+    xSemaphoreGive(ctx.producer_lifecycle_start);
+    xSemaphoreGive(ctx.consumer_lifecycle_start);
+    if (xSemaphoreTake(ctx.prefill_ready, kBenchmarkWaitTicks) != pdTRUE) {
         record_failure(&ctx, FailureStage::PrefillTimeout);
     } else {
         ctx.prefill_actual = np2opngen_pcm_ring_occupancy(ctx.pcm_ring);
     }
     xSemaphoreGive(ctx.consumer_start);
-    if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) != pdTRUE) {
+    if (xSemaphoreTake(ctx.done, kBenchmarkWaitTicks) != pdTRUE) {
         done_timeout = true;
         record_failure(&ctx, FailureStage::DoneTimeout);
     } else {
         worker_done_observed = true;
     }
-    if (xSemaphoreTake(ctx.consumer_done, pdMS_TO_TICKS(120000)) != pdTRUE) {
+    if (xSemaphoreTake(ctx.consumer_done, kBenchmarkWaitTicks) != pdTRUE) {
         consumer_timeout = true;
         record_failure(&ctx, FailureStage::ConsumerTimeout);
     } else {
         consumer_done_observed = true;
     }
-    if (!ctx.producer_quiescent.load(std::memory_order_acquire)) {
-        const int64_t wait_start = esp_timer_get_time();
-        while (!ctx.producer_quiescent.load(std::memory_order_acquire) &&
-               elapsed_us(wait_start, esp_timer_get_time()) < 120000000U)
-            vTaskDelay(1);
-        if (!ctx.producer_quiescent.load(std::memory_order_acquire))
-            record_failure(&ctx, FailureStage::ProducerFail);
-    }
+    if (!ctx.producer_quiescent.load(std::memory_order_acquire) &&
+        ctx.producer_terminal != nullptr &&
+        xSemaphoreTake(ctx.producer_terminal, kBenchmarkWaitTicks) != pdTRUE)
+        record_failure(&ctx, FailureStage::ProducerFail);
     if (!ctx.failed.load(std::memory_order_acquire) &&
         !finish_identity(&ctx))
         record_failure(&ctx, FailureStage::FinishIdentity);
@@ -1323,31 +1396,65 @@ static bool run_once(const Workload *workload, bool correctness)
         record_failure(&ctx, FailureStage::PrintTiming);
 
 cleanup:
+    if (ctx.failed.load(std::memory_order_acquire)) {
+        record_failure(&ctx, ctx.failure_stage.load(std::memory_order_acquire));
+    }
+    if (worker_created && !worker_done_observed &&
+        ctx.worker_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx.worker_lifecycle_start);
+    if (producer_created && !ctx.producer_quiescent.load(std::memory_order_acquire) &&
+        ctx.producer_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx.producer_lifecycle_start);
+    if (consumer_created && !consumer_done_observed &&
+        ctx.consumer_lifecycle_start != nullptr)
+        xSemaphoreGive(ctx.consumer_lifecycle_start);
     if (worker_created && !worker_done_observed && ctx.done != nullptr) {
         if (ctx.worker_task != nullptr) xTaskNotifyGive(ctx.worker_task);
-        worker_done_observed = xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) == pdTRUE;
+        worker_done_observed = xSemaphoreTake(ctx.done, kBenchmarkWaitTicks) == pdTRUE;
     }
     if (consumer_created && !consumer_done_observed && ctx.consumer_done != nullptr) {
         if (ctx.consumer_start != nullptr) xSemaphoreGive(ctx.consumer_start);
         if (ctx.consumer_task != nullptr) xTaskNotifyGive(ctx.consumer_task);
-        consumer_done_observed = xSemaphoreTake(ctx.consumer_done, pdMS_TO_TICKS(120000)) == pdTRUE;
+        consumer_done_observed = xSemaphoreTake(ctx.consumer_done, kBenchmarkWaitTicks) == pdTRUE;
     }
     if (producer_created && !ctx.producer_quiescent.load(std::memory_order_acquire)) {
         if (ctx.producer_task != nullptr) xTaskNotifyGive(ctx.producer_task);
-        const int64_t producer_wait_start = esp_timer_get_time();
-        while (!ctx.producer_quiescent.load(std::memory_order_acquire) &&
-               elapsed_us(producer_wait_start, esp_timer_get_time()) < 120000000U)
-            vTaskDelay(1);
+        if (ctx.producer_terminal != nullptr)
+            (void)xSemaphoreTake(ctx.producer_terminal, kBenchmarkWaitTicks);
     }
+    const bool all_quiescent =
+        (!worker_created ||
+         (worker_done_observed && ctx.worker_quiescent.load(std::memory_order_acquire))) &&
+        (!producer_created || ctx.producer_quiescent.load(std::memory_order_acquire)) &&
+        (!consumer_created ||
+         (consumer_done_observed && ctx.consumer_done_flag.load(std::memory_order_acquire)));
+    if (!all_quiescent) {
+        std::printf("P4_AUDIO_A2_QUIESCENCE result=FAIL worker=%s producer=%s consumer=%s"
+                    " resources_retained=YES coordinator=FAIL_STOP\n",
+                    (!worker_created || (worker_done_observed &&
+                     ctx.worker_quiescent.load(std::memory_order_acquire))) ? "ACK" : "MISSING",
+                    (!producer_created || ctx.producer_quiescent.load(std::memory_order_acquire)) ? "ACK" : "MISSING",
+                    (!consumer_created || (consumer_done_observed &&
+                     ctx.consumer_done_flag.load(std::memory_order_acquire))) ? "ACK" : "MISSING");
+        vTaskSuspend(nullptr);
+    }
+    std::printf("P4_AUDIO_A2_QUIESCENCE result=PASS worker=ACK producer=ACK consumer=ACK\n");
     failed = ctx.failed.load(std::memory_order_acquire);
     if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout || consumer_timeout);
+    if (worker_created && ctx.worker_task != nullptr) vTaskDelete(ctx.worker_task);
+    if (producer_created && ctx.producer_task != nullptr) vTaskDelete(ctx.producer_task);
+    if (consumer_created && ctx.consumer_task != nullptr) vTaskDelete(ctx.consumer_task);
     if (ctx.worker.s32_pcm != nullptr || ctx.worker.canonical_pcm != nullptr ||
         ctx.worker.opngen != nullptr) np2opngen_e1b_worker_destroy(&ctx.worker);
     if (ctx.done != nullptr) vSemaphoreDelete(ctx.done);
+    if (ctx.producer_terminal != nullptr) vSemaphoreDelete(ctx.producer_terminal);
     if (ctx.pcm_space != nullptr) vSemaphoreDelete(ctx.pcm_space);
     if (ctx.prefill_ready != nullptr) vSemaphoreDelete(ctx.prefill_ready);
     if (ctx.consumer_start != nullptr) vSemaphoreDelete(ctx.consumer_start);
     if (ctx.consumer_done != nullptr) vSemaphoreDelete(ctx.consumer_done);
+    if (ctx.worker_lifecycle_start != nullptr) vSemaphoreDelete(ctx.worker_lifecycle_start);
+    if (ctx.producer_lifecycle_start != nullptr) vSemaphoreDelete(ctx.producer_lifecycle_start);
+    if (ctx.consumer_lifecycle_start != nullptr) vSemaphoreDelete(ctx.consumer_lifecycle_start);
     if (ctx.pcm_ring != nullptr) heap_caps_free(ctx.pcm_ring);
     if (ctx.timing.full) heap_caps_free(ctx.timing.full);
     if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);

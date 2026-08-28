@@ -22,6 +22,37 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> int:
+    # A2.3a lifecycle ownership: task functions may suspend after publishing
+    # terminal state, but they must never mutate or delete their own handles.
+    for task_name in ("worker_task", "producer_task", "pcm_consumer_task"):
+        task_body = re.search(
+            rf"static void {task_name}\(.*?(?=\nstatic void |\nstatic bool |\nstatic int )",
+            BENCHMARK, re.DOTALL)
+        require(task_body is not None, f"{task_name} definition is missing")
+        body = task_body.group(0)
+        require("vTaskDelete(nullptr)" not in body,
+                f"{task_name} must not self-delete")
+        require(not re.search(r"ctx->(?:worker_task|producer_task|consumer_task)\s*=\s*nullptr", body),
+                f"{task_name} must not clear a task handle")
+    require("vTaskDelete(ctx.worker_task)" in BENCHMARK and
+            "vTaskDelete(ctx.producer_task)" in BENCHMARK and
+            "vTaskDelete(ctx.consumer_task)" in BENCHMARK,
+            "coordinator must own all task deletion")
+    require(BENCHMARK.count("vTaskSuspend(nullptr)") >= 3,
+            "all task terminal paths must suspend")
+    for field in (
+            "worker_lifecycle_start", "producer_lifecycle_start",
+            "consumer_lifecycle_start", "producer_terminal",
+            "worker_quiescent", "producer_quiescent", "consumer_done_flag"):
+        require(field in BENCHMARK, f"lifecycle field {field} is missing")
+    require("const bool all_quiescent" in BENCHMARK and
+            "resources_retained=YES coordinator=FAIL_STOP" in BENCHMARK and
+            "P4_AUDIO_A2_QUIESCENCE result=PASS" in BENCHMARK,
+            "quiescence success/fail-stop markers are missing")
+    require("producer_wait_start" not in BENCHMARK and
+            "vTaskDelay(1)" not in BENCHMARK,
+            "producer completion polling must be removed")
+    print("TASK_HANDLE_MUTATION_AUDIT=PASS")
     require("std::atomic<bool> failed" in BENCHMARK,
             "failure flag must be atomic")
     require("std::atomic<FailureStage> failure_stage" in BENCHMARK,
