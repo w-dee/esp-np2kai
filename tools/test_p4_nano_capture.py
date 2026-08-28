@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -36,6 +37,37 @@ class FakeClock:
         self.value += seconds
 
 
+class RecordingSerial:
+    """Small pyserial model for deterministic DTR/RTS sequence tests."""
+
+    def __init__(self) -> None:
+        self.rts = True
+        self.dtr = True
+        self.events: list[tuple[object, ...]] = [
+            ("initial", self.rts, self.dtr),
+        ]
+        self.is_open = False
+
+    def open(self) -> None:
+        self.is_open = True
+        self.events.append(("open", self.rts, self.dtr))
+
+    def setRTS(self, value: bool) -> None:
+        self.rts = value
+        self.events.append(("setRTS", value))
+
+    def setDTR(self, value: bool) -> None:
+        self.dtr = value
+        self.events.append(("setDTR", value))
+
+    def record_sleep(self, duration: float) -> None:
+        self.events.append(("sleep", duration))
+
+    def close(self) -> None:
+        self.is_open = False
+        self.events.append(("close",))
+
+
 def make_session(root: Path, clock: FakeClock, timeout: float = 360.0):
     session = CAPTURE.CaptureSession(
         root / "capture.raw",
@@ -48,6 +80,44 @@ def make_session(root: Path, clock: FakeClock, timeout: float = 360.0):
 
 
 class CaptureHarnessTests(unittest.TestCase):
+    def test_monitor_equivalent_reset_sequence(self) -> None:
+        serial_port = RecordingSerial()
+        serial_port.open()
+        CAPTURE.normalize_after_open(serial_port)
+        with mock.patch.object(CAPTURE.time, "sleep", side_effect=serial_port.record_sleep):
+            CAPTURE.hard_reset(serial_port)
+
+        expected = [
+            ("initial", True, True),
+            ("open", True, True),
+            ("setRTS", False),
+            ("setDTR", False),
+            ("setRTS", True),
+            ("sleep", CAPTURE.RESET_LOW_SECONDS),
+            ("setRTS", False),
+        ]
+        self.assertEqual(serial_port.events, expected)
+
+    def test_reset_final_line_state_is_deasserted(self) -> None:
+        serial_port = RecordingSerial()
+        serial_port.open()
+        CAPTURE.normalize_after_open(serial_port)
+        with mock.patch.object(CAPTURE.time, "sleep", side_effect=serial_port.record_sleep):
+            CAPTURE.hard_reset(serial_port)
+        self.assertFalse(serial_port.rts)
+        self.assertFalse(serial_port.dtr)
+
+    def test_dtr_bootstrap_guard(self) -> None:
+        serial_port = RecordingSerial()
+        serial_port.open()
+        CAPTURE.normalize_after_open(serial_port)
+        with mock.patch.object(CAPTURE.time, "sleep", side_effect=serial_port.record_sleep):
+            CAPTURE.hard_reset(serial_port)
+        dtr_writes = [event[1] for event in serial_port.events if event[0] == "setDTR"]
+        self.assertTrue(dtr_writes)
+        self.assertTrue(all(value is False for value in dtr_writes))
+        self.assertFalse(serial_port.dtr)
+
     def test_pre_reset_terminal_marker_does_not_end_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -292,6 +362,9 @@ def main() -> int:
         return 1
     if not result.wasSuccessful():
         return 1
+    print("P4_NANO_CAPTURE_RESET_SEQUENCE_TEST=PASS")
+    print("P4_NANO_CAPTURE_RESET_FINAL_STATE_TEST=PASS")
+    print("P4_NANO_CAPTURE_DTR_BOOTSTRAP_GUARD_TEST=PASS")
     print("P4_AUDIO_CAPTURE_CHUNK_TEST=PASS")
     print("P4_AUDIO_CAPTURE_CRLF_NUL_ANSI_TEST=PASS")
     print("P4_AUDIO_CAPTURE_INTERMEDIATE_MARKER_TEST=PASS")

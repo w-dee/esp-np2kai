@@ -223,6 +223,10 @@ parser error, and SIGTERM/SIGINT preserve the raw prefix and emit a separate
 status file where cleanup is possible; SIGKILL may leave status absent but
 already-synced raw bytes remain valid.
 
+The helper's control-line sequence is equivalent to the successful ESP-IDF
+Monitor hard reset: after opening, RTS and DTR are deasserted; the canonical
+reset asserts RTS for exactly 5 ms, releases RTS, and keeps DTR deasserted.
+
 Do not invoke `idf.py monitor`, `esp_idf_monitor`, or
 `tools/dev/p4-nano-monitor.sh` in this formal raw path. The monitor wrapper
 and its `Ctrl+T`, `Ctrl+L` transcript logging remain available for interactive

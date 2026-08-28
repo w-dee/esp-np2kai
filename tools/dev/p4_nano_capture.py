@@ -327,15 +327,19 @@ class CaptureSession:
         }
 
 
+def normalize_after_open(serial_port: object) -> None:
+    """Restore the idle DTR/RTS state used by ESP-IDF Monitor."""
+    serial_port.setRTS(False)  # type: ignore[attr-defined]
+    serial_port.setDTR(False)  # type: ignore[attr-defined]
+
+
 def hard_reset(serial_port: object) -> None:
-    """Use the existing IDF Monitor hard-reset RTS pulse (5 ms)."""
+    """Pulse EN through RTS while keeping DTR deasserted (5 ms)."""
     serial_port.setRTS(True)  # type: ignore[attr-defined]
     try:
         time.sleep(RESET_LOW_SECONDS)
     finally:
         serial_port.setRTS(False)  # type: ignore[attr-defined]
-        if hasattr(serial_port, "setDTR") and hasattr(serial_port, "dtr"):
-            serial_port.setDTR(serial_port.dtr)  # type: ignore[attr-defined]
 
 
 def _open_serial(port: str, baud: int, read_timeout: float) -> object:
@@ -389,6 +393,7 @@ def run_serial_capture(
     try:
         try:
             serial_port = _open_serial(port, baud, read_timeout_seconds)
+            normalize_after_open(serial_port)
             session.issue_reset(lambda: hard_reset(serial_port))
         except BaseException as error:
             if session.exit_reason is None:
