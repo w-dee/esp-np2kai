@@ -32,6 +32,10 @@ if(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE AND
     target_compile_definitions(${COMPONENT_LIB} PRIVATE P4_NANO_AUDIO_OPT_O2=1)
 endif()
 
+if(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE P4_NANO_AUDIO_A2_2A=1)
+endif()
+
 # The emulator correctness run intentionally omits the 60-second workload:
 # esp-emu timing is not representative and the synthetic profile is too slow
 # there.  This definition belongs to the benchmark component itself (a

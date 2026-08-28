@@ -19,6 +19,7 @@
 #include "np2_crc32.h"
 #include "np2_sha256.h"
 #include "np2opngen_e1b_stream.h"
+#include "np2opngen_pcm_ring.h"
 #include "np2opngen_s98.h"
 #include "np2opngen_spsc.h"
 #include "np2opngen_synthetic_workload.h"
@@ -37,6 +38,9 @@ constexpr int kProducerCore = 1;
 constexpr int kWorkerCore = 0;
 constexpr UBaseType_t kProducerPriority = tskIDLE_PRIORITY + 3;
 constexpr UBaseType_t kWorkerPriority = tskIDLE_PRIORITY + 4;
+constexpr UBaseType_t kConsumerPriority = tskIDLE_PRIORITY + 5;
+constexpr int kConsumerCore = 0;
+constexpr uint32_t kPcmRingPrefillTarget = 4U;
 constexpr size_t kMaxQuanta = 12000U;
 constexpr uint32_t kHousekeepingQuantumInterval = 64U;
 constexpr uint32_t kHousekeepingDelayTicks = 1U;
@@ -58,12 +62,36 @@ struct Workload {
     Expected expected;
 };
 
+struct RunContext;
+
 struct Sink {
+    struct np2opngen_pcm_ring *ring = nullptr;
+    struct RunContext *owner = nullptr;
     uint64_t frames = 0U;
     uint64_t bytes = 0U;
     uint32_t crc = np2_crc32_iso_hdlc_init();
     np2_sha256_context sha{};
     bool sha_enabled = false;
+    uint64_t full_wait_count = 0U;
+    uint64_t full_wait_total_us = 0U;
+    uint32_t full_wait_max_us = 0U;
+};
+
+struct Consumer {
+    uint64_t frames = 0U;
+    uint64_t bytes = 0U;
+    uint32_t crc = np2_crc32_iso_hdlc_init();
+    np2_sha256_context sha{};
+    bool sha_enabled = false;
+    uint64_t expected_sequence = 0U;
+    uint64_t expected_offset = 0U;
+    uint64_t sequence_errors = 0U;
+    uint64_t frame_offset_errors = 0U;
+    uint64_t overrun_count = 0U;
+    uint64_t dropped_frames = 0U;
+    uint64_t occupancy_min = UINT64_MAX;
+    uint64_t occupancy_max = 0U;
+    uint64_t occupancy_hist[NP2_OPNGEN_PCM_RING_CAPACITY + 1U]{};
 };
 
 struct Timing {
@@ -102,6 +130,12 @@ enum class FailureStage : uint32_t {
     ObserverInvariant,
     FinishIdentity,
     PrintTiming,
+    RingAlloc,
+    SemaphoreCreate,
+    ConsumerCreate,
+    PrefillTimeout,
+    ConsumerTimeout,
+    ConsumerFailed,
 };
 
 struct RunContext {
@@ -114,12 +148,25 @@ struct RunContext {
     struct np2opngen_e1b_control control{};
     struct np2opngen_e1b_worker worker{};
     struct np2opngen_e1b_observer observer{};
+    struct np2opngen_pcm_ring *pcm_ring = nullptr;
     Sink sink{};
+    Consumer consumer{};
     Timing timing{};
     SemaphoreHandle_t done = nullptr;
+    SemaphoreHandle_t pcm_space = nullptr;
+    SemaphoreHandle_t prefill_ready = nullptr;
+    SemaphoreHandle_t consumer_start = nullptr;
+    SemaphoreHandle_t consumer_done = nullptr;
     TaskHandle_t worker_task = nullptr;
     TaskHandle_t producer_task = nullptr;
+    TaskHandle_t consumer_task = nullptr;
     std::atomic<bool> producer_waiting{false};
+    std::atomic<bool> pcm_waiting{false};
+    std::atomic<bool> pcm_producer_done{false};
+    std::atomic<bool> consumer_done_flag{false};
+    std::atomic<bool> prefill_signalled{false};
+    std::atomic<bool> producer_quiescent{false};
+    uint32_t prefill_actual = 0U;
     uint64_t completed_quanta = 0U;
     struct np2opngen_synth_event_trace_state producer_trace{};
     bool producer_trace_valid = false;
@@ -135,6 +182,12 @@ static void record_failure(RunContext *ctx, FailureStage stage)
         expected, stage, std::memory_order_acq_rel,
         std::memory_order_acquire);
     ctx->failed.store(true, std::memory_order_release);
+    if (ctx->pcm_space != nullptr) xSemaphoreGive(ctx->pcm_space);
+    if (ctx->consumer_start != nullptr) xSemaphoreGive(ctx->consumer_start);
+    if (ctx->prefill_ready != nullptr) xSemaphoreGive(ctx->prefill_ready);
+    if (ctx->worker_task != nullptr) xTaskNotifyGive(ctx->worker_task);
+    if (ctx->producer_task != nullptr) xTaskNotifyGive(ctx->producer_task);
+    if (ctx->consumer_task != nullptr) xTaskNotifyGive(ctx->consumer_task);
 }
 
 static const char *failure_stage_name(FailureStage stage)
@@ -153,6 +206,12 @@ static const char *failure_stage_name(FailureStage stage)
     case FailureStage::ObserverInvariant: return "observer_invariant";
     case FailureStage::FinishIdentity: return "finish_identity";
     case FailureStage::PrintTiming: return "print_timing";
+    case FailureStage::RingAlloc: return "ring_alloc";
+    case FailureStage::SemaphoreCreate: return "semaphore_create";
+    case FailureStage::ConsumerCreate: return "consumer_create";
+    case FailureStage::PrefillTimeout: return "prefill_timeout";
+    case FailureStage::ConsumerTimeout: return "consumer_timeout";
+    case FailureStage::ConsumerFailed: return "consumer_failed";
     case FailureStage::None: break;
     }
     return "none";
@@ -345,17 +404,164 @@ static void observer_quantum_complete(void *opaque, uint64_t, uint32_t)
         vTaskDelay(kHousekeepingDelayTicks);
 }
 
+static void signal_prefill(RunContext *ctx)
+{
+    const uint32_t occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
+    const bool producer_done = ctx->pcm_producer_done.load(std::memory_order_acquire);
+    if ((occupancy >= kPcmRingPrefillTarget || producer_done) &&
+        !ctx->prefill_signalled.exchange(true, std::memory_order_acq_rel)) {
+        if (ctx->prefill_ready != nullptr) xSemaphoreGive(ctx->prefill_ready);
+    }
+    if (ctx->consumer_task != nullptr) xTaskNotifyGive(ctx->consumer_task);
+}
+
+static bool wait_pcm_space(RunContext *ctx)
+{
+    for (;;) {
+        if (ctx->failed.load(std::memory_order_acquire)) return false;
+        ctx->pcm_waiting.store(true, std::memory_order_release);
+        if (np2opngen_pcm_ring_occupancy(ctx->pcm_ring) <
+            NP2_OPNGEN_PCM_RING_CAPACITY) {
+            ctx->pcm_waiting.store(false, std::memory_order_release);
+            return true;
+        }
+        const int64_t start = esp_timer_get_time();
+        if (xSemaphoreTake(ctx->pcm_space, portMAX_DELAY) != pdTRUE) {
+            ctx->pcm_waiting.store(false, std::memory_order_release);
+            return false;
+        }
+        const uint32_t elapsed = elapsed_us(start, esp_timer_get_time());
+        if (elapsed != 0U) {
+            ++ctx->sink.full_wait_count;
+            if (ctx->sink.full_wait_total_us > UINT64_MAX - elapsed)
+                ctx->sink.full_wait_total_us = UINT64_MAX;
+            else
+                ctx->sink.full_wait_total_us += elapsed;
+            ctx->sink.full_wait_max_us = std::max(ctx->sink.full_wait_max_us, elapsed);
+        }
+        ctx->pcm_waiting.store(false, std::memory_order_release);
+        return !ctx->failed.load(std::memory_order_acquire);
+    }
+}
+
 static int sink_write(const uint8_t *pcm, size_t bytes, uint64_t offset,
                       void *opaque)
 {
     auto *sink = static_cast<Sink *>(opaque);
-    if (pcm == nullptr || bytes % 4U != 0U || offset != sink->frames)
+    if (sink == nullptr || sink->owner == nullptr || sink->ring == nullptr ||
+        pcm == nullptr || bytes == 0U || bytes % NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME != 0U ||
+        offset != sink->frames || bytes / NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME >
+                                     UINT64_MAX - sink->frames)
         return -1;
+    /* Generated identity is updated once, before transport retry splitting. */
     sink->crc = np2_crc32_iso_hdlc_update(sink->crc, pcm, bytes);
     if (sink->sha_enabled) np2_sha256_update(&sink->sha, pcm, bytes);
-    sink->frames += bytes / 4U;
+    sink->frames += bytes / NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME;
     sink->bytes += bytes;
+
+    size_t consumed = 0U;
+    while (consumed < bytes / NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME) {
+        size_t appended = 0U;
+        const size_t remaining = bytes / NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME - consumed;
+        const int status = np2opngen_pcm_ring_append(
+            sink->ring, pcm + consumed * NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME,
+            remaining, offset + consumed, &appended);
+        consumed += appended;
+        signal_prefill(sink->owner);
+        if (status == NP2_OPNGEN_PCM_RING_OK) continue;
+        if (status == NP2_OPNGEN_PCM_RING_FULL) {
+            if (!wait_pcm_space(sink->owner)) return -1;
+            continue;
+        }
+        return -1;
+    }
     return 0;
+}
+
+static int sink_finish(uint64_t final_frame, void *opaque)
+{
+    auto *sink = static_cast<Sink *>(opaque);
+    if (sink == nullptr || sink->owner == nullptr || sink->ring == nullptr ||
+        final_frame != sink->frames)
+        return -1;
+    for (;;) {
+        const int status = np2opngen_pcm_ring_finish(sink->ring, final_frame);
+        if (status == NP2_OPNGEN_PCM_RING_OK) break;
+        if (status != NP2_OPNGEN_PCM_RING_FULL ||
+            !wait_pcm_space(sink->owner))
+            return -1;
+    }
+    sink->owner->pcm_producer_done.store(true, std::memory_order_release);
+    signal_prefill(sink->owner);
+    return 0;
+}
+
+static void pcm_consumer_task(void *opaque)
+{
+    auto *ctx = static_cast<RunContext *>(opaque);
+    const bool started = xSemaphoreTake(ctx->consumer_start, portMAX_DELAY) == pdTRUE;
+    if (started && !ctx->failed.load(std::memory_order_acquire)) {
+      for (;;) {
+        if (ctx->failed.load(std::memory_order_acquire)) break;
+        const uint32_t occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
+        if (occupancy <= NP2_OPNGEN_PCM_RING_CAPACITY) {
+            ++ctx->consumer.occupancy_hist[occupancy];
+            ctx->consumer.occupancy_min = std::min<uint64_t>(
+                ctx->consumer.occupancy_min, occupancy);
+            ctx->consumer.occupancy_max = std::max<uint64_t>(
+                ctx->consumer.occupancy_max, occupancy);
+        } else {
+            ++ctx->consumer.overrun_count;
+            record_failure(ctx, FailureStage::ConsumerFailed);
+            break;
+        }
+        const struct np2opngen_pcm_ring_slot *slot = nullptr;
+        const int status = np2opngen_pcm_ring_try_peek(ctx->pcm_ring, &slot);
+        if (status == NP2_OPNGEN_PCM_RING_EMPTY) {
+            if (ctx->pcm_producer_done.load(std::memory_order_acquire) &&
+                np2opngen_pcm_ring_occupancy(ctx->pcm_ring) == 0U)
+                break;
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (status != NP2_OPNGEN_PCM_RING_OK || slot == nullptr ||
+            slot->sequence != ctx->consumer.expected_sequence ||
+            slot->frame_offset != ctx->consumer.expected_offset ||
+            slot->valid_frames == 0U ||
+            slot->valid_frames > NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES ||
+            (slot->valid_frames == NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES &&
+             slot->flags != 0U) ||
+            (slot->valid_frames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES &&
+             slot->flags != NP2_OPNGEN_PCM_RING_FLAG_FINAL_PARTIAL)) {
+            if (slot != nullptr && slot->sequence != ctx->consumer.expected_sequence)
+                ++ctx->consumer.sequence_errors;
+            if (slot != nullptr && slot->frame_offset != ctx->consumer.expected_offset)
+                ++ctx->consumer.frame_offset_errors;
+            record_failure(ctx, FailureStage::ConsumerFailed);
+            break;
+        }
+        const size_t bytes = static_cast<size_t>(slot->valid_frames) *
+                             NP2_OPNGEN_PCM_RING_BYTES_PER_FRAME;
+        ctx->consumer.crc = np2_crc32_iso_hdlc_update(ctx->consumer.crc,
+                                                       slot->pcm, bytes);
+        if (ctx->consumer.sha_enabled)
+            np2_sha256_update(&ctx->consumer.sha, slot->pcm, bytes);
+        ctx->consumer.frames += slot->valid_frames;
+        ctx->consumer.bytes += bytes;
+        ++ctx->consumer.expected_sequence;
+        ctx->consumer.expected_offset += slot->valid_frames;
+        if (np2opngen_pcm_ring_consume(ctx->pcm_ring) !=
+            NP2_OPNGEN_PCM_RING_OK) {
+            record_failure(ctx, FailureStage::ConsumerFailed);
+            break;
+        }
+        xSemaphoreGive(ctx->pcm_space);
+      }
+    }
+    ctx->consumer_done_flag.store(true, std::memory_order_release);
+    if (ctx->consumer_done != nullptr) xSemaphoreGive(ctx->consumer_done);
+    ctx->consumer_task = nullptr;
+    vTaskDelete(nullptr);
 }
 
 static void producer_fail(RunContext *ctx, enum np2opngen_e1b_error error)
@@ -368,6 +574,7 @@ static bool enqueue_event(RunContext *ctx,
                           const struct np2opngen_synth_event *event)
 {
     for (;;) {
+        if (ctx->failed.load(std::memory_order_acquire)) return false;
         const int status = np2opngen_spsc_enqueue(&ctx->queue, event);
         if (status == NP2_OPNGEN_SPSC_OK) {
             if (np2opngen_synth_event_trace_update(&ctx->producer_trace,
@@ -439,7 +646,9 @@ static void producer_task(void *opaque)
     if (!ok) producer_fail(ctx, NP2_OPNGEN_E1B_ERROR_GENERATOR);
     ctx->producer_trace_valid = ok;
     np2opngen_e1b_control_producer_done(&ctx->control);
+    ctx->producer_quiescent.store(true, std::memory_order_release);
     if (ctx->worker_task != nullptr) xTaskNotifyGive(ctx->worker_task);
+    ctx->producer_task = nullptr;
     vTaskDelete(nullptr);
 }
 
@@ -467,6 +676,7 @@ static void worker_task(void *opaque)
         xTaskNotifyGive(ctx->producer_task);
     }
     if (ctx->done != nullptr) xSemaphoreGive(ctx->done);
+    ctx->worker_task = nullptr;
     vTaskDelete(nullptr);
 }
 
@@ -562,8 +772,11 @@ static bool finish_identity(RunContext *ctx)
         np2opngen_synth_event_trace_finish(
             &ctx->producer_trace, &producer_trace_count,
             &producer_trace_crc, producer_trace_sha) == 0;
-    uint8_t pcm_sha[NP2_SHA256_DIGEST_SIZE]{};
-    if (ctx->correctness) np2_sha256_final(&ctx->sink.sha, pcm_sha);
+    uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t drained_sha[NP2_SHA256_DIGEST_SIZE]{};
+    if (ctx->correctness) np2_sha256_final(&ctx->sink.sha, generated_sha);
+    if (ctx->correctness) np2_sha256_final(&ctx->consumer.sha, drained_sha);
+    const uint8_t *pcm_sha = generated_sha;
 
     const bool producer_count_match =
         ctx->producer_count == ctx->workload->expected.events;
@@ -580,22 +793,34 @@ static bool finish_identity(RunContext *ctx)
     const bool producer_consumer_sha_match =
         digest_equal(producer_trace_sha, event_sha);
     const bool sequence_match = ctx->worker.sequence_errors == 0U;
-    const bool pcm_frames_match =
+    const uint32_t generated_crc = np2_crc32_iso_hdlc_finish(ctx->sink.crc);
+    const uint32_t drained_crc = np2_crc32_iso_hdlc_finish(ctx->consumer.crc);
+    const bool generated_frames_match =
         ctx->sink.frames == ctx->workload->expected.end_frame;
-    const bool pcm_bytes_match =
+    const bool generated_bytes_match =
         ctx->sink.bytes == ctx->workload->expected.end_frame * 4U;
-    const uint32_t pcm_crc = np2_crc32_iso_hdlc_finish(ctx->sink.crc);
+    const bool drained_frames_match =
+        ctx->consumer.frames == ctx->workload->expected.end_frame;
+    const bool drained_bytes_match =
+        ctx->consumer.bytes == ctx->workload->expected.end_frame * 4U;
     const bool pcm_crc_expected_match =
-        pcm_crc == ctx->workload->expected.pcm_crc;
-    const bool pcm_sha_expected_match =
+        generated_crc == ctx->workload->expected.pcm_crc;
+    const bool drained_crc_expected_match =
+        drained_crc == ctx->workload->expected.pcm_crc;
+    const bool generated_drained_crc_match = generated_crc == drained_crc;
+    const bool generated_sha_expected_match =
         !ctx->correctness || digest_equal(pcm_sha, ctx->workload->expected.pcm_sha);
+    const bool drained_sha_expected_match =
+        !ctx->correctness || digest_equal(drained_sha, ctx->workload->expected.pcm_sha);
+    const bool generated_drained_sha_match =
+        !ctx->correctness || digest_equal(generated_sha, drained_sha);
     const uint8_t *compiled_pcm_sha = ctx->workload->retro ? kRetroPcmSha : kStressPcmSha;
-    const bool actual_expected_memcmp = pcm_sha_expected_match;
+    const bool actual_expected_memcmp = generated_sha_expected_match;
     const bool expected_compiled_memcmp =
         !ctx->correctness ||
         digest_equal(ctx->workload->expected.pcm_sha, compiled_pcm_sha);
     const bool actual_compiled_memcmp =
-        !ctx->correctness || digest_equal(pcm_sha, compiled_pcm_sha);
+        !ctx->correctness || digest_equal(generated_sha, compiled_pcm_sha);
     const bool actual_expected_explicit =
         !ctx->correctness ||
         digest_equal_explicit(pcm_sha, ctx->workload->expected.pcm_sha);
@@ -604,7 +829,7 @@ static bool finish_identity(RunContext *ctx)
         digest_equal_explicit(ctx->workload->expected.pcm_sha,
                               compiled_pcm_sha);
     const bool actual_compiled_explicit =
-        !ctx->correctness || digest_equal_explicit(pcm_sha, compiled_pcm_sha);
+        !ctx->correctness || digest_equal_explicit(generated_sha, compiled_pcm_sha);
     const size_t expected_compiled_first_mismatch =
         ctx->correctness
             ? first_digest_mismatch(ctx->workload->expected.pcm_sha,
@@ -618,8 +843,18 @@ static bool finish_identity(RunContext *ctx)
         consumer_crc_expected_match && consumer_sha_expected_match &&
         producer_trace_finish_ok && producer_consumer_count_match &&
         producer_consumer_crc_match && producer_consumer_sha_match &&
-        sequence_match && pcm_frames_match && pcm_bytes_match &&
-        pcm_crc_expected_match && pcm_sha_expected_match && producer_loop_valid;
+        sequence_match && generated_frames_match && generated_bytes_match &&
+        drained_frames_match && drained_bytes_match && pcm_crc_expected_match &&
+        drained_crc_expected_match && generated_drained_crc_match &&
+        generated_sha_expected_match && drained_sha_expected_match &&
+        generated_drained_sha_match && ctx->consumer.sequence_errors == 0U &&
+        ctx->consumer.frame_offset_errors == 0U &&
+        ctx->consumer.overrun_count == 0U && ctx->consumer.dropped_frames == 0U &&
+        ctx->pcm_producer_done.load(std::memory_order_acquire) &&
+        ctx->consumer_done_flag.load(std::memory_order_acquire) &&
+        np2opngen_pcm_ring_occupancy(ctx->pcm_ring) == 0U &&
+        ctx->consumer.expected_offset == ctx->workload->expected.end_frame &&
+        producer_loop_valid;
 
     const char *first_failure = "none";
     if (!worker_trace_finish_ok) first_failure = "worker_trace_finish";
@@ -632,10 +867,18 @@ static bool finish_identity(RunContext *ctx)
     else if (!producer_consumer_crc_match) first_failure = "trace_crc_equal";
     else if (!producer_consumer_sha_match) first_failure = "trace_sha_equal";
     else if (!sequence_match) first_failure = "sequence";
-    else if (!pcm_frames_match) first_failure = "pcm_frames";
-    else if (!pcm_bytes_match) first_failure = "pcm_bytes";
+    else if (!generated_frames_match || !drained_frames_match) first_failure = "pcm_frames";
+    else if (!generated_bytes_match || !drained_bytes_match) first_failure = "pcm_bytes";
     else if (!pcm_crc_expected_match) first_failure = "pcm_crc";
-    else if (ctx->correctness && !pcm_sha_expected_match) first_failure = "pcm_sha";
+    else if (!drained_crc_expected_match || !generated_drained_crc_match) first_failure = "pcm_crc_transport";
+    else if (ctx->correctness && (!generated_sha_expected_match ||
+                                  !drained_sha_expected_match ||
+                                  !generated_drained_sha_match)) first_failure = "pcm_sha";
+    else if (ctx->consumer.sequence_errors != 0U ||
+             ctx->consumer.frame_offset_errors != 0U) first_failure = "consumer_slot";
+    else if (!ctx->pcm_producer_done.load(std::memory_order_acquire) ||
+             !ctx->consumer_done_flag.load(std::memory_order_acquire) ||
+             np2opngen_pcm_ring_occupancy(ctx->pcm_ring) != 0U) first_failure = "lifecycle";
     else if (!producer_loop_valid) first_failure = "producer_loop";
 
     if (!identity_match && ctx->correctness) {
@@ -665,17 +908,17 @@ static bool finish_identity(RunContext *ctx)
                     consumer_sha_expected_match ? 1U : 0U,
                     producer_consumer_sha_match ? 1U : 0U,
                     ctx->worker.sequence_errors, sequence_match ? 1U : 0U,
-                    ctx->sink.frames, pcm_frames_match ? 1U : 0U,
-                    ctx->sink.bytes, pcm_bytes_match ? 1U : 0U, pcm_crc,
+                    ctx->sink.frames, generated_frames_match ? 1U : 0U,
+                    ctx->sink.bytes, generated_bytes_match ? 1U : 0U, generated_crc,
                     pcm_crc_expected_match ? 1U : 0U,
-                    pcm_sha_expected_match ? 1U : 0U,
+                    generated_sha_expected_match ? 1U : 0U,
                     ctx->producer_trace_valid ? 1U : 0U,
                     producer_loop_valid ? 1U : 0U);
         print_hex(event_sha);
         std::printf(" producer_event_sha256=");
         print_hex(producer_trace_sha);
         std::printf(" pcm_sha256=");
-        print_hex(pcm_sha);
+        print_hex(generated_sha);
         std::printf(" runtime_expected_pcm_sha256=");
         print_hex(ctx->workload->expected.pcm_sha);
         std::printf(" compiled_pcm_sha256=");
@@ -699,6 +942,54 @@ static bool finish_identity(RunContext *ctx)
             std::printf("%zu", expected_compiled_first_mismatch);
         std::printf("\n");
     }
+    const uint64_t occupancy_min = ctx->consumer.occupancy_min == UINT64_MAX
+        ? 0U : ctx->consumer.occupancy_min;
+    const uint32_t final_occupancy = np2opngen_pcm_ring_occupancy(ctx->pcm_ring);
+    std::printf("P4_AUDIO_PCM_RING workload=%s capacity=%u prefill_target=%u"
+                " prefill_actual=%u occupancy_min=%" PRIu64
+                " occupancy_max=%" PRIu64 " final_occupancy=%u\n",
+                ctx->workload->name, static_cast<unsigned>(NP2_OPNGEN_PCM_RING_CAPACITY),
+                static_cast<unsigned>(kPcmRingPrefillTarget),
+                static_cast<unsigned>(ctx->prefill_actual), occupancy_min,
+                ctx->consumer.occupancy_max, static_cast<unsigned>(final_occupancy));
+    std::printf("P4_AUDIO_PCM_IDENTITY workload=%s generated_frames=%" PRIu64
+                " generated_bytes=%" PRIu64 " generated_crc32=0x%08" PRIx32
+                " generated_sha256=", ctx->workload->name, ctx->sink.frames,
+                ctx->sink.bytes, generated_crc);
+    if (ctx->correctness) print_hex(generated_sha); else std::printf("CRC32_ONLY");
+    std::printf(" drained_frames=%" PRIu64 " drained_bytes=%" PRIu64
+                " drained_crc32=0x%08" PRIx32 " drained_sha256=",
+                ctx->consumer.frames, ctx->consumer.bytes, drained_crc);
+    if (ctx->correctness) print_hex(drained_sha); else std::printf("CRC32_ONLY");
+    std::printf(" generated_identity=%s drained_identity=%s mechanical_equal=%s\n",
+                (generated_frames_match && generated_bytes_match &&
+                 pcm_crc_expected_match && generated_sha_expected_match) ? "PASS" : "FAIL",
+                (drained_frames_match && drained_bytes_match &&
+                 drained_crc_expected_match && drained_sha_expected_match) ? "PASS" : "FAIL",
+                (generated_drained_crc_match && generated_drained_sha_match &&
+                 generated_frames_match == drained_frames_match &&
+                 generated_bytes_match == drained_bytes_match) ? "PASS" : "FAIL");
+    std::printf("P4_AUDIO_PCM_BACKPRESSURE workload=%s full_wait_count=%" PRIu64
+                " full_wait_total_us=%" PRIu64 " full_wait_max_us=%u"
+                " overrun_count=%" PRIu64 " dropped_frames=%" PRIu64 "\n",
+                ctx->workload->name, ctx->sink.full_wait_count,
+                ctx->sink.full_wait_total_us, static_cast<unsigned>(ctx->sink.full_wait_max_us),
+                ctx->consumer.overrun_count, ctx->consumer.dropped_frames);
+    std::printf("P4_AUDIO_PCM_CONSUMER workload=%s sequence_errors=%" PRIu64
+                " frame_offset_errors=%" PRIu64 " producer_done=%u consumer_done=%u\n",
+                ctx->workload->name, ctx->consumer.sequence_errors,
+                ctx->consumer.frame_offset_errors,
+                ctx->pcm_producer_done.load(std::memory_order_acquire) ? 1U : 0U,
+                ctx->consumer_done_flag.load(std::memory_order_acquire) ? 1U : 0U);
+    std::printf("P4_AUDIO_A2_RESULT workload=%s generated_identity=%s"
+                " drained_identity=%s transport=%s lifecycle=%s"
+                " consumer_pacing=NOT_REAL_TIME consumer_service_timing=NOT_MEASURED\n",
+                ctx->workload->name,
+                generated_frames_match && generated_bytes_match && pcm_crc_expected_match && generated_sha_expected_match ? "PASS" : "FAIL",
+                drained_frames_match && drained_bytes_match && drained_crc_expected_match && drained_sha_expected_match ? "PASS" : "FAIL",
+                generated_drained_crc_match && generated_drained_sha_match ? "PASS" : "FAIL",
+                ctx->pcm_producer_done.load(std::memory_order_acquire) &&
+                ctx->consumer_done_flag.load(std::memory_order_acquire) && final_occupancy == 0U ? "PASS" : "FAIL");
     if (!identity_match) return false;
 
     if (ctx->correctness) {
@@ -709,9 +1000,8 @@ static bool finish_identity(RunContext *ctx)
         std::printf(" sequence_errors=%" PRIu64 " pcm_frames=%" PRIu64
                     " pcm_bytes=%" PRIu64 " pcm_crc32=0x%08" PRIx32
                     " pcm_sha256=", ctx->worker.sequence_errors,
-                    ctx->sink.frames, ctx->sink.bytes,
-                    np2_crc32_iso_hdlc_finish(ctx->sink.crc));
-        print_hex(pcm_sha);
+                    ctx->sink.frames, ctx->sink.bytes, generated_crc);
+        print_hex(generated_sha);
         std::printf("\n");
     } else {
         std::printf("P4_AUDIO_IDENTITY workload=%s event_count=%" PRIu64
@@ -720,7 +1010,7 @@ static bool finish_identity(RunContext *ctx)
                     " pcm_crc32=0x%08" PRIx32 " timing_sink=CRC32_ONLY\n",
                     ctx->workload->name, event_count, event_crc,
                     ctx->worker.sequence_errors, ctx->sink.frames,
-                    ctx->sink.bytes, np2_crc32_iso_hdlc_finish(ctx->sink.crc));
+                    ctx->sink.bytes, generated_crc);
     }
     ctx->producer_trace_valid = producer_loop_valid;
     return true;
@@ -784,6 +1074,8 @@ static bool print_timing(RunContext *ctx)
         if (ctx->timing.seen[i] == 0U) timing_valid = false;
     }
     const uint64_t logical_us = ctx->workload->expected.end_frame * 1000000ULL / kRate;
+    const uint64_t pcm_wait_us = ctx->sink.full_wait_total_us;
+    const uint64_t adjusted_total = total > pcm_wait_us ? total - pcm_wait_us : 0U;
     const uint64_t active_ppm = logical_us == 0U ? 0U : total * 1000000ULL / logical_us;
     const uint64_t opngen_ppm = logical_us == 0U ? 0U : opngen_total * 1000000ULL / logical_us;
     std::printf("P4_AUDIO_STARTUP timestamp_zero_events=%" PRIu64
@@ -798,6 +1090,9 @@ static bool print_timing(RunContext *ctx)
                 static_cast<unsigned>(percentile(full, ctx->timing.quanta, .99)),
                 static_cast<unsigned>(max_full), static_cast<unsigned>(over_5000),
                 static_cast<unsigned>(max_consecutive));
+    std::printf("P4_AUDIO_SERVICE_ADJUSTED total_active_minus_pcm_wait_us=%" PRIu64
+                " pcm_full_wait_total_us=%" PRIu64 " pcm_full_wait_count=%" PRIu64 "\n",
+                adjusted_total, pcm_wait_us, ctx->sink.full_wait_count);
     std::printf("P4_AUDIO_OPNGEN total=%" PRIu64 " mean=%" PRIu64 " p95=%u p99=%u max=%u\n",
                 opngen_total, opngen_total / ctx->timing.quanta,
                 static_cast<unsigned>(percentile(pure, ctx->timing.quanta, .95)),
@@ -868,8 +1163,16 @@ static bool run_once(const Workload *workload, bool correctness)
     ctx.workload = workload;
     ctx.correctness = correctness;
     bool worker_done_observed = false;
+    bool consumer_done_observed = false;
     bool done_timeout = false;
+    bool consumer_timeout = false;
     bool failed = false;
+    bool worker_created = false;
+    bool producer_created = false;
+    bool consumer_created = false;
+    size_t ring_bytes = 0U;
+    uint32_t free_before = 0U;
+    uint32_t free_after = 0U;
     np2opngen_e1b_control_init(&ctx.control);
     if (!preflight_workload(workload)) {
         record_failure(&ctx, FailureStage::Preflight);
@@ -919,10 +1222,28 @@ static bool run_once(const Workload *workload, bool correctness)
         record_failure(&ctx, FailureStage::AtomicGate);
         goto cleanup;
     }
+    ring_bytes = sizeof(struct np2opngen_pcm_ring);
+    free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ctx.pcm_ring = static_cast<struct np2opngen_pcm_ring *>(
+        heap_caps_calloc(1U, ring_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    free_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    std::printf("P4_AUDIO_PCM_RING_ALLOC workload=%s bytes=%zu free_internal_before=%u"
+                " free_internal_after=%u placement=internal_8bit\n",
+                workload->name, ring_bytes, static_cast<unsigned>(free_before),
+                static_cast<unsigned>(free_after));
+    if (ctx.pcm_ring == nullptr) {
+        record_failure(&ctx, FailureStage::RingAlloc);
+        goto cleanup;
+    }
+    np2opngen_pcm_ring_init(ctx.pcm_ring);
+    ctx.sink.ring = ctx.pcm_ring;
+    ctx.sink.owner = &ctx;
     np2_sha256_init(&ctx.sink.sha);
     ctx.sink.sha_enabled = correctness;
+    np2_sha256_init(&ctx.consumer.sha);
+    ctx.consumer.sha_enabled = correctness;
     {
-        const struct np2opngen_e1b_pcm_sink sink{sink_write, &ctx.sink};
+        const struct np2opngen_e1b_pcm_sink sink{sink_write, &ctx.sink, sink_finish};
         if (np2opngen_e1b_worker_init_with_sink(
                 &ctx.worker, &ctx.queue, &ctx.control, workload->expected.end_frame,
                 0U, workload->expected.events, &sink) != 0) {
@@ -937,8 +1258,17 @@ static bool run_once(const Workload *workload, bool correctness)
         observer_render_end, observer_quantum_complete, &ctx, true};
     np2opngen_e1b_worker_set_observer(&ctx.worker, &ctx.observer);
     ctx.done = xSemaphoreCreateBinary();
+    ctx.pcm_space = xSemaphoreCreateBinary();
+    ctx.prefill_ready = xSemaphoreCreateBinary();
+    ctx.consumer_start = xSemaphoreCreateBinary();
+    ctx.consumer_done = xSemaphoreCreateBinary();
     if (ctx.done == nullptr) {
         record_failure(&ctx, FailureStage::DoneCreate);
+        goto cleanup;
+    }
+    if (ctx.pcm_space == nullptr || ctx.prefill_ready == nullptr ||
+        ctx.consumer_start == nullptr || ctx.consumer_done == nullptr) {
+        record_failure(&ctx, FailureStage::SemaphoreCreate);
         goto cleanup;
     }
     if (xTaskCreatePinnedToCore(worker_task, "p4_audio_worker", 8192, &ctx,
@@ -946,16 +1276,44 @@ static bool run_once(const Workload *workload, bool correctness)
         record_failure(&ctx, FailureStage::WorkerCreate);
         goto cleanup;
     }
+    worker_created = true;
     if (xTaskCreatePinnedToCore(producer_task, "p4_audio_producer", 8192, &ctx,
                                 kProducerPriority, &ctx.producer_task, kProducerCore) != pdPASS) {
         record_failure(&ctx, FailureStage::ProducerCreate);
         goto cleanup;
     }
+    producer_created = true;
+    if (xTaskCreatePinnedToCore(pcm_consumer_task, "p4_audio_consumer", 4096, &ctx,
+                                kConsumerPriority, &ctx.consumer_task, kConsumerCore) != pdPASS) {
+        record_failure(&ctx, FailureStage::ConsumerCreate);
+        goto cleanup;
+    }
+    consumer_created = true;
+    if (xSemaphoreTake(ctx.prefill_ready, pdMS_TO_TICKS(120000)) != pdTRUE) {
+        record_failure(&ctx, FailureStage::PrefillTimeout);
+    } else {
+        ctx.prefill_actual = np2opngen_pcm_ring_occupancy(ctx.pcm_ring);
+    }
+    xSemaphoreGive(ctx.consumer_start);
     if (xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) != pdTRUE) {
         done_timeout = true;
         record_failure(&ctx, FailureStage::DoneTimeout);
     } else {
         worker_done_observed = true;
+    }
+    if (xSemaphoreTake(ctx.consumer_done, pdMS_TO_TICKS(120000)) != pdTRUE) {
+        consumer_timeout = true;
+        record_failure(&ctx, FailureStage::ConsumerTimeout);
+    } else {
+        consumer_done_observed = true;
+    }
+    if (!ctx.producer_quiescent.load(std::memory_order_acquire)) {
+        const int64_t wait_start = esp_timer_get_time();
+        while (!ctx.producer_quiescent.load(std::memory_order_acquire) &&
+               elapsed_us(wait_start, esp_timer_get_time()) < 120000000U)
+            vTaskDelay(1);
+        if (!ctx.producer_quiescent.load(std::memory_order_acquire))
+            record_failure(&ctx, FailureStage::ProducerFail);
     }
     if (!ctx.failed.load(std::memory_order_acquire) &&
         !finish_identity(&ctx))
@@ -965,11 +1323,32 @@ static bool run_once(const Workload *workload, bool correctness)
         record_failure(&ctx, FailureStage::PrintTiming);
 
 cleanup:
+    if (worker_created && !worker_done_observed && ctx.done != nullptr) {
+        if (ctx.worker_task != nullptr) xTaskNotifyGive(ctx.worker_task);
+        worker_done_observed = xSemaphoreTake(ctx.done, pdMS_TO_TICKS(120000)) == pdTRUE;
+    }
+    if (consumer_created && !consumer_done_observed && ctx.consumer_done != nullptr) {
+        if (ctx.consumer_start != nullptr) xSemaphoreGive(ctx.consumer_start);
+        if (ctx.consumer_task != nullptr) xTaskNotifyGive(ctx.consumer_task);
+        consumer_done_observed = xSemaphoreTake(ctx.consumer_done, pdMS_TO_TICKS(120000)) == pdTRUE;
+    }
+    if (producer_created && !ctx.producer_quiescent.load(std::memory_order_acquire)) {
+        if (ctx.producer_task != nullptr) xTaskNotifyGive(ctx.producer_task);
+        const int64_t producer_wait_start = esp_timer_get_time();
+        while (!ctx.producer_quiescent.load(std::memory_order_acquire) &&
+               elapsed_us(producer_wait_start, esp_timer_get_time()) < 120000000U)
+            vTaskDelay(1);
+    }
     failed = ctx.failed.load(std::memory_order_acquire);
-    if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout);
+    if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout || consumer_timeout);
     if (ctx.worker.s32_pcm != nullptr || ctx.worker.canonical_pcm != nullptr ||
         ctx.worker.opngen != nullptr) np2opngen_e1b_worker_destroy(&ctx.worker);
     if (ctx.done != nullptr) vSemaphoreDelete(ctx.done);
+    if (ctx.pcm_space != nullptr) vSemaphoreDelete(ctx.pcm_space);
+    if (ctx.prefill_ready != nullptr) vSemaphoreDelete(ctx.prefill_ready);
+    if (ctx.consumer_start != nullptr) vSemaphoreDelete(ctx.consumer_start);
+    if (ctx.consumer_done != nullptr) vSemaphoreDelete(ctx.consumer_done);
+    if (ctx.pcm_ring != nullptr) heap_caps_free(ctx.pcm_ring);
     if (ctx.timing.full) heap_caps_free(ctx.timing.full);
     if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);
     if (ctx.timing.seen) heap_caps_free(ctx.timing.seen);
@@ -1036,10 +1415,14 @@ esp_err_t run()
 #endif
     );
     std::printf("P4_AUDIO_META sample_rate_hz=%u quantum_frames=%u producer_core=%d producer_priority=%u"
-                " worker_core=%d worker_priority=%u observer=boundary_limited spsc_capacity=8\n",
+                " worker_core=%d worker_priority=%u consumer_core=%d consumer_priority=%u"
+                " pcm_transport=A2.2a pcm_ring_capacity=8 pcm_prefill_target=%u"
+                " observer=boundary_limited spsc_capacity=8\n",
                 static_cast<unsigned>(kRate), static_cast<unsigned>(kQuantum), kProducerCore,
                 static_cast<unsigned>(kProducerPriority),
-                kWorkerCore, static_cast<unsigned>(kWorkerPriority));
+                kWorkerCore, static_cast<unsigned>(kWorkerPriority), kConsumerCore,
+                static_cast<unsigned>(kConsumerPriority),
+                static_cast<unsigned>(kPcmRingPrefillTarget));
     const bool retro_correct = run_once(&retro, true);
     const bool retro_timing = retro_correct && run_once(&retro, false);
     bool ok = retro_correct && retro_timing;
