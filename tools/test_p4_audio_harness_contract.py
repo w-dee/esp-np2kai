@@ -52,7 +52,9 @@ def main() -> int:
     require("producer_wait_start" not in BENCHMARK and
             "vTaskDelay(1)" not in BENCHMARK,
             "producer completion polling must be removed")
-    callback = re.search(r"static void pacing_timer_callback\(.*?\n\}", BENCHMARK, re.DOTALL)
+    callback = re.search(
+        r"static void(?: __attribute__\(\(noinline\)\))? pacing_timer_callback\(.*?\n\}",
+        BENCHMARK, re.DOTALL)
     require(callback is not None, "pacing timer callback is missing")
     callback_body = callback.group(0)
     for forbidden in ("printf", "heap_caps_", "memcpy", "np2_crc", "np2_sha",

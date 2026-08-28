@@ -6,6 +6,9 @@
 #ifndef P4_NANO_AUDIO_TIMER_FAULT_CASE
 #define P4_NANO_AUDIO_TIMER_FAULT_CASE 0
 #endif
+#ifndef P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE
+#define P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE 0
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -134,6 +137,11 @@ struct Timing {
     int64_t opngen_start = 0;
     uint64_t startup_active_us = 0U;
     uint64_t startup_zero_events = 0U;
+    uint64_t compute_underflow_count = 0U;
+    size_t first_compute_underflow_quantum = SIZE_MAX;
+    uint32_t first_compute_underflow_raw_us = 0U;
+    uint32_t first_compute_underflow_wait_us = 0U;
+    bool timing_valid = false;
     const char *arrays_placement = "unallocated";
 };
 
@@ -214,6 +222,9 @@ struct RunContext {
     uint64_t wait_quantum = UINT64_MAX;
     uint32_t prefill_actual = 0U;
     uint64_t completed_quanta = 0U;
+    std::atomic<bool> final_publication_window_active{false};
+    std::atomic<bool> final_publication_window_observed{false};
+    SemaphoreHandle_t final_publication_window_ack = nullptr;
     struct np2opngen_synth_event_trace_state producer_trace{};
     bool producer_trace_valid = false;
     uint64_t producer_count = 0U;
@@ -463,7 +474,7 @@ static void observer_quantum_complete(void *opaque, uint64_t, uint32_t)
         vTaskDelay(kHousekeepingDelayTicks);
 }
 
-static void pacing_timer_callback(void *opaque)
+static void __attribute__((noinline)) pacing_timer_callback(void *opaque)
 {
     auto *ctx = static_cast<RunContext *>(opaque);
     if (ctx == nullptr || ctx->timer_closing.load(std::memory_order_acquire)) return;
@@ -625,7 +636,27 @@ static int sink_finish(uint64_t final_frame, void *opaque)
             !wait_pcm_space(sink->owner, true))
             return -1;
     }
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    /* ESP-EMU-only regression seam: keep the final slot visible to the
+       paced consumer while delaying the independent producer lifecycle
+       publication.  Production builds compile this block out. */
+    if (sink->owner->workload != nullptr &&
+        final_frame == sink->owner->workload->expected.end_frame) {
+        sink->owner->final_publication_window_active.store(
+            true, std::memory_order_release);
+        vTaskDelay(pdMS_TO_TICKS(1));
+        if (sink->owner->final_publication_window_ack != nullptr)
+            (void)xSemaphoreTake(sink->owner->final_publication_window_ack,
+                                  pdMS_TO_TICKS(1000));
+        else
+            vTaskDelay(pdMS_TO_TICKS(25));
+    }
+#endif
     sink->owner->pcm_producer_done.store(true, std::memory_order_release);
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    sink->owner->final_publication_window_active.store(
+        false, std::memory_order_release);
+#endif
     signal_prefill(sink->owner);
     return 0;
 }
@@ -729,9 +760,23 @@ static void pcm_consumer_task(void *opaque)
             ctx->timing.consumer_service[q] = elapsed_us(tick_start, now);
         }
         if (ctx->consumer.processed_ticks == ctx->expected_ticks) {
-            if (ctx->consumer.frames != ctx->workload->expected.end_frame ||
-                !ctx->pcm_producer_done.load(std::memory_order_acquire) ||
-                np2opngen_pcm_ring_occupancy(ctx->pcm_ring) != 0U) {
+            const bool final_frames =
+                ctx->consumer.frames == ctx->workload->expected.end_frame;
+            const bool final_empty =
+                np2opngen_pcm_ring_occupancy(ctx->pcm_ring) == 0U;
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+            const bool producer_done =
+                ctx->pcm_producer_done.load(std::memory_order_acquire);
+            if (final_frames && final_empty && !producer_done &&
+                ctx->final_publication_window_active.load(
+                    std::memory_order_acquire)) {
+                ctx->final_publication_window_observed.store(
+                    true, std::memory_order_release);
+                if (ctx->final_publication_window_ack != nullptr)
+                    xSemaphoreGive(ctx->final_publication_window_ack);
+            }
+#endif
+            if (!final_frames || !final_empty) {
                 record_failure(ctx, FailureStage::PacingCompletion);
             }
             break;
@@ -1209,13 +1254,15 @@ static bool finish_identity(RunContext *ctx)
                 ctx->consumer_done_flag.load(std::memory_order_acquire) ? 1U : 0U);
     std::printf("P4_AUDIO_A2_RESULT workload=%s generated_identity=%s"
                 " drained_identity=%s transport=%s lifecycle=%s"
-                " consumer_pacing=VIRTUAL_5MS consumer_service_timing=NON_AUTHORITATIVE\n",
+                " consumer_pacing=ESP_TIMER_5MS consumer_service_timing=NON_AUTHORITATIVE"
+                " mode=%s\n",
                 ctx->workload->name,
                 generated_frames_match && generated_bytes_match && pcm_crc_expected_match && generated_sha_expected_match ? "PASS" : "FAIL",
                 drained_frames_match && drained_bytes_match && drained_crc_expected_match && drained_sha_expected_match ? "PASS" : "FAIL",
                 generated_drained_crc_match && generated_drained_sha_match ? "PASS" : "FAIL",
                 ctx->pcm_producer_done.load(std::memory_order_acquire) &&
-                ctx->consumer_done_flag.load(std::memory_order_acquire) && final_occupancy == 0U ? "PASS" : "FAIL");
+                ctx->consumer_done_flag.load(std::memory_order_acquire) && final_occupancy == 0U ? "PASS" : "FAIL",
+                ctx->correctness ? "CORRECTNESS" : "TIMING");
     if (!identity_match) return false;
 
     if (ctx->correctness) {
@@ -1294,9 +1341,26 @@ static bool print_timing(RunContext *ctx)
     std::memcpy(full, ctx->timing.full, ctx->timing.quanta * sizeof(uint32_t));
     std::memcpy(pure, ctx->timing.pure, ctx->timing.quanta * sizeof(uint32_t));
     bool timing_valid = true;
+    uint64_t compute_underflow_count = 0U;
+    size_t first_compute_underflow_quantum = SIZE_MAX;
+    uint32_t first_compute_underflow_raw_us = 0U;
+    uint32_t first_compute_underflow_wait_us = 0U;
     for (size_t i = 0; i < ctx->timing.quanta; ++i) {
-        if (ctx->timing.pcm_full_wait[i] > ctx->timing.full[i]) timing_valid = false;
-        compute[i] = ctx->timing.full[i] - ctx->timing.pcm_full_wait[i];
+        const uint32_t raw_us = ctx->timing.full[i];
+        const uint32_t wait_us = ctx->timing.pcm_full_wait[i];
+        if (wait_us > raw_us) {
+            timing_valid = false;
+            ++compute_underflow_count;
+            if (first_compute_underflow_quantum == SIZE_MAX) {
+                first_compute_underflow_quantum = i;
+                first_compute_underflow_raw_us = raw_us;
+                first_compute_underflow_wait_us = wait_us;
+            }
+            /* Do not expose a wrapping subtraction as timing data. */
+            compute[i] = 0U;
+        } else {
+            compute[i] = raw_us - wait_us;
+        }
     }
     std::memcpy(callback, ctx->timing.callback_lateness, ctx->timing.quanta * sizeof(uint32_t));
     std::memcpy(wake, ctx->timing.wake_lateness, ctx->timing.quanta * sizeof(uint32_t));
@@ -1328,14 +1392,20 @@ static bool print_timing(RunContext *ctx)
         if (ctx->timing.pure[i] > ctx->timing.full[i]) timing_valid = false;
         if (ctx->timing.seen[i] == 0U) timing_valid = false;
     }
+    ctx->timing.compute_underflow_count = compute_underflow_count;
+    ctx->timing.first_compute_underflow_quantum = first_compute_underflow_quantum;
+    ctx->timing.first_compute_underflow_raw_us = first_compute_underflow_raw_us;
+    ctx->timing.first_compute_underflow_wait_us = first_compute_underflow_wait_us;
+    ctx->timing.timing_valid = timing_valid;
     const uint64_t logical_us = ctx->workload->expected.end_frame * 1000000ULL / kRate;
     const uint64_t pcm_wait_us = ctx->sink.full_wait_total_us;
     const uint64_t adjusted_total = total > pcm_wait_us ? total - pcm_wait_us : 0U;
     const uint64_t active_ppm = logical_us == 0U ? 0U : total * 1000000ULL / logical_us;
     const uint64_t opngen_ppm = logical_us == 0U ? 0U : opngen_total * 1000000ULL / logical_us;
     std::printf("P4_AUDIO_STARTUP timestamp_zero_events=%" PRIu64
-                " active_us=%" PRIu64 " pure_opngen_us=0\n",
-                ctx->timing.startup_zero_events, ctx->timing.startup_active_us);
+                " active_us=%" PRIu64 " pure_opngen_us=0 workload=%s mode=%s\n",
+                ctx->timing.startup_zero_events, ctx->timing.startup_active_us,
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING");
     std::printf("P4_AUDIO_SERVICE measured_quanta=%zu min=%u mean=%" PRIu64
                 " p50=%u p90=%u p95=%u p99=%u max=%u over_5000us=%u max_consecutive=%u\n",
                 ctx->timing.quanta, static_cast<unsigned>(full[0]), total / ctx->timing.quanta,
@@ -1346,11 +1416,26 @@ static bool print_timing(RunContext *ctx)
                 static_cast<unsigned>(max_full), static_cast<unsigned>(over_5000),
                 static_cast<unsigned>(max_consecutive));
     std::printf("P4_AUDIO_SERVICE_ADJUSTED total_active_minus_pcm_wait_us=%" PRIu64
-                " pcm_full_wait_total_us=%" PRIu64 " pcm_full_wait_count=%" PRIu64 "\n",
-                adjusted_total, pcm_wait_us, ctx->sink.full_wait_count);
-    std::printf("P4_AUDIO_COMPUTE_SERVICE measured_quanta=%zu min=%u mean=%" PRIu64
+                " pcm_full_wait_total_us=%" PRIu64 " pcm_full_wait_count=%" PRIu64
+                " workload=%s mode=%s\n",
+                adjusted_total, pcm_wait_us, ctx->sink.full_wait_count,
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING");
+    std::printf("P4_AUDIO_COMPUTE_SERVICE measured_quanta=%zu workload=%s mode=%s"
+                " timing_valid=%s compute_underflow_count=%" PRIu64
+                " first_compute_underflow_valid=%u"
+                " first_compute_underflow_quantum=%zu"
+                " first_compute_underflow_raw_us=%u"
+                " first_compute_underflow_wait_us=%u"
+                " min=%u mean=%" PRIu64
                 " p50=%u p90=%u p95=%u p99=%u max=%u over_5000us=%u\n",
-                ctx->timing.quanta, static_cast<unsigned>(compute[0]),
+                ctx->timing.quanta, ctx->workload->name,
+                ctx->correctness ? "CORRECTNESS" : "TIMING",
+                timing_valid ? "YES" : "NO", compute_underflow_count,
+                compute_underflow_count != 0U ? 1U : 0U,
+                first_compute_underflow_quantum == SIZE_MAX ? 0U : first_compute_underflow_quantum,
+                static_cast<unsigned>(first_compute_underflow_raw_us),
+                static_cast<unsigned>(first_compute_underflow_wait_us),
+                static_cast<unsigned>(compute[0]),
                 [&](){ uint64_t s=0; for(size_t i=0;i<ctx->timing.quanta;++i)s+=compute[i]; return s/ctx->timing.quanta; }(),
                 static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .50)),
                 static_cast<unsigned>(percentile(compute, ctx->timing.quanta, .90)),
@@ -1359,32 +1444,50 @@ static bool print_timing(RunContext *ctx)
                 static_cast<unsigned>(*std::max_element(compute, compute + ctx->timing.quanta)),
                 static_cast<unsigned>(std::count_if(compute, compute + ctx->timing.quanta,
                                                     [](uint32_t v){ return v > 5000U; })));
-    std::printf("P4_AUDIO_PCM_FINISH_WAIT finish_full_wait_count=%" PRIu64
+    std::printf("P4_AUDIO_PCM_FINISH_WAIT workload=%s mode=%s"
+                " timing_valid=%s compute_underflow_count=%" PRIu64
+                " finish_full_wait_count=%" PRIu64
                 " finish_full_wait_total_us=%" PRIu64 " finish_full_wait_max_us=%u\n",
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING",
+                timing_valid ? "YES" : "NO", compute_underflow_count,
                 ctx->sink.finish_full_wait_count, ctx->sink.finish_full_wait_total_us,
                 static_cast<unsigned>(ctx->sink.finish_full_wait_max_us));
-    std::printf("P4_AUDIO_PACING period_us=5000 expected_ticks=%u callback_ticks=%u"
+    std::printf("P4_AUDIO_PACING period_us=5000 workload=%s mode=%s"
+                " expected_ticks=%u callback_ticks=%u"
                 " processed_ticks=%" PRIu64 " notification_wakes=%" PRIu64
                 " backlog_events=%" PRIu64 " backlog_ticks=%" PRIu64
                 " missed_ticks=%" PRIu64 " underruns=%" PRIu64
                 " first_underrun_tick=%" PRIu64 "\n",
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING",
                 static_cast<unsigned>(ctx->expected_ticks),
                 static_cast<unsigned>(ctx->pacing_callback_sequence.load(std::memory_order_acquire)),
                 ctx->consumer.processed_ticks, ctx->consumer.notification_wakes,
                 ctx->consumer.backlog_events, ctx->consumer.backlog_ticks,
                 ctx->consumer.missed_ticks, ctx->consumer.underrun_count,
                 ctx->consumer.first_underrun_tick == UINT64_MAX ? 0U : ctx->consumer.first_underrun_tick);
-    std::printf("P4_AUDIO_PACING_CALLBACK min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+    std::printf("P4_AUDIO_PACING_CALLBACK workload=%s mode=%s"
+                " timing_valid=%s compute_underflow_count=%" PRIu64
+                " min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING",
+                timing_valid ? "YES" : "NO", compute_underflow_count,
                 static_cast<unsigned>(callback[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=callback[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
                 static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.90)),
                 static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(callback,ctx->timing.quanta,.99)),
                 static_cast<unsigned>(callback[ctx->timing.quanta-1]), static_cast<unsigned>(std::count_if(callback,callback+ctx->timing.quanta,[](uint32_t v){return v>=5000U;})));
-    std::printf("P4_AUDIO_PACING_WAKE min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+    std::printf("P4_AUDIO_PACING_WAKE workload=%s mode=%s"
+                " timing_valid=%s compute_underflow_count=%" PRIu64
+                " min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u lateness_ge_5000us=%u\n",
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING",
+                timing_valid ? "YES" : "NO", compute_underflow_count,
                 static_cast<unsigned>(wake[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=wake[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
                 static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.90)),
                 static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(wake,ctx->timing.quanta,.99)),
                 static_cast<unsigned>(wake[ctx->timing.quanta-1]), static_cast<unsigned>(std::count_if(wake,wake+ctx->timing.quanta,[](uint32_t v){return v>=5000U;})));
-    std::printf("P4_AUDIO_PACING_CONSUMER min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u service_over_5000us=%u\n",
+    std::printf("P4_AUDIO_PACING_CONSUMER workload=%s mode=%s"
+                " timing_valid=%s compute_underflow_count=%" PRIu64
+                " min=%u mean=%u p50=%u p90=%u p95=%u p99=%u max=%u service_over_5000us=%u\n",
+                ctx->workload->name, ctx->correctness ? "CORRECTNESS" : "TIMING",
+                timing_valid ? "YES" : "NO", compute_underflow_count,
                 static_cast<unsigned>(service[0]), [&](){uint64_t s=0;for(size_t i=0;i<ctx->timing.quanta;++i)s+=service[i];return static_cast<unsigned>(s/ctx->timing.quanta);}(),
                 static_cast<unsigned>(percentile(service,ctx->timing.quanta,.50)), static_cast<unsigned>(percentile(service,ctx->timing.quanta,.90)),
                 static_cast<unsigned>(percentile(service,ctx->timing.quanta,.95)), static_cast<unsigned>(percentile(service,ctx->timing.quanta,.99)),
@@ -1403,6 +1506,8 @@ static bool print_timing(RunContext *ctx)
     heap_caps_free(callback);
     heap_caps_free(wake);
     heap_caps_free(service);
+    if (!timing_valid)
+        record_failure(ctx, FailureStage::PacingTimingInvariant);
     return timing_valid;
 }
 
@@ -1591,6 +1696,9 @@ static bool run_once(const Workload *workload, bool correctness)
     ctx.producer_lifecycle_start = xSemaphoreCreateBinary();
     ctx.consumer_lifecycle_start = xSemaphoreCreateBinary();
     ctx.timer_fence = xSemaphoreCreateBinary();
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    ctx.final_publication_window_ack = xSemaphoreCreateBinary();
+#endif
     if (ctx.done == nullptr || ctx.producer_terminal == nullptr) {
         record_failure(&ctx, FailureStage::DoneCreate);
         goto cleanup;
@@ -1606,6 +1714,9 @@ static bool run_once(const Workload *workload, bool correctness)
     pacing_args = {pacing_timer_callback, &ctx, ESP_TIMER_TASK, "p4_audio_pacing", false};
     fence_args = {pacing_fence_callback, &ctx, ESP_TIMER_TASK, "p4_audio_fence", false};
     if (ctx.timer_fence == nullptr ||
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+        ctx.final_publication_window_ack == nullptr ||
+#endif
         esp_timer_create(&pacing_args, &ctx.pacing_timer) != ESP_OK ||
         esp_timer_create(&fence_args, &ctx.fence_timer) != ESP_OK) {
         record_failure(&ctx, FailureStage::TimerCreate);
@@ -1681,16 +1792,26 @@ static bool run_once(const Workload *workload, bool correctness)
     if (!ctx.failed.load(std::memory_order_acquire) &&
         !finish_identity(&ctx))
         record_failure(&ctx, FailureStage::FinishIdentity);
-    if (!ctx.failed.load(std::memory_order_acquire) && !correctness &&
-        !print_timing(&ctx))
-        record_failure(&ctx, FailureStage::PrintTiming);
+    if (!ctx.failed.load(std::memory_order_acquire) && !correctness) {
+        const bool timing_ok = print_timing(&ctx);
+        if (!timing_ok &&
+            ctx.failure_stage.load(std::memory_order_acquire) == FailureStage::None)
+            record_failure(&ctx, FailureStage::PrintTiming);
+    }
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    if (!ctx.failed.load(std::memory_order_acquire) &&
+        !ctx.final_publication_window_observed.load(std::memory_order_acquire))
+        record_failure(&ctx, FailureStage::PacingCompletion);
+#endif
 
 cleanup:
     if (ctx.failed.load(std::memory_order_acquire)) {
         record_failure(&ctx, ctx.failure_stage.load(std::memory_order_acquire));
     }
     timer_fence_observed = stop_and_fence_timer(&ctx, kBenchmarkWaitTicks);
-    std::printf("P4_AUDIO_TIMER_LIFECYCLE started=%u closing=%u fence=%u quiescent=%u\n",
+    std::printf("P4_AUDIO_TIMER_LIFECYCLE workload=%s mode=%s started=%u"
+                " closing=%u fence=%u quiescent=%u\n",
+                workload->name, correctness ? "CORRECTNESS" : "TIMING",
                 ctx.timer_was_started ? 1U : 0U,
                 ctx.timer_closing.load(std::memory_order_acquire) ? 1U : 0U,
                 (ctx.timer_was_started && timer_fence_observed) ? 1U : 0U,
@@ -1738,6 +1859,15 @@ cleanup:
     std::printf("P4_AUDIO_A2_QUIESCENCE result=PASS worker=ACK producer=ACK consumer=ACK timer=ACK\n");
     failed = ctx.failed.load(std::memory_order_acquire);
     if (failed) print_failure_record(&ctx, worker_done_observed, done_timeout || consumer_timeout);
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    std::printf("A2_FINAL_PUBLICATION_WINDOW_TEST=%s workload=%s mode=%s"
+                " consumer_observed_before_producer_done=%u\n",
+                (!failed && ctx.final_publication_window_observed.load(
+                    std::memory_order_acquire)) ? "PASS" : "FAIL",
+                workload->name, correctness ? "CORRECTNESS" : "TIMING",
+                ctx.final_publication_window_observed.load(
+                    std::memory_order_acquire) ? 1U : 0U);
+#endif
     if (worker_created && ctx.worker_task != nullptr) vTaskDelete(ctx.worker_task);
     if (producer_created && ctx.producer_task != nullptr) vTaskDelete(ctx.producer_task);
     if (consumer_created && ctx.consumer_task != nullptr) vTaskDelete(ctx.consumer_task);
@@ -1755,6 +1885,10 @@ cleanup:
     if (ctx.pacing_timer != nullptr) (void)esp_timer_delete(ctx.pacing_timer);
     if (ctx.fence_timer != nullptr) (void)esp_timer_delete(ctx.fence_timer);
     if (ctx.timer_fence != nullptr) vSemaphoreDelete(ctx.timer_fence);
+#if P4_NANO_AUDIO_FINAL_WINDOW_TEST_CASE == 1
+    if (ctx.final_publication_window_ack != nullptr)
+        vSemaphoreDelete(ctx.final_publication_window_ack);
+#endif
     if (ctx.pcm_ring != nullptr) heap_caps_free(ctx.pcm_ring);
     if (ctx.timing.full) heap_caps_free(ctx.timing.full);
     if (ctx.timing.pure) heap_caps_free(ctx.timing.pure);

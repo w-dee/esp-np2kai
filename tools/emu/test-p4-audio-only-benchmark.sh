@@ -31,7 +31,7 @@ python3 "${IDF_PATH}/components/esptool_py/esptool/esptool.py" \
 
 set +e
 timeout --foreground 240s "${ESP_EMU}" --chip esp32p4 --firmware "${MERGED_IMAGE}" \
-    --exit-on 'P4_AUDIO_ONLY_BENCHMARK_RESULT=' --timeout 220s \
+    --exit-on 'P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS' --timeout 220s \
     --log-color never 2>&1 | tee "${LOG}"
 status="${PIPESTATUS[0]}"
 set -e

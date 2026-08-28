@@ -65,6 +65,9 @@ def validate_text(text: str) -> tuple[list[str], str | None]:
         "retro_pcm": r"workload=RETROFM.*pcm_frames=576960 pcm_bytes=2307840 pcm_crc32=0x79b0dfad",
         "stress_pcm": r"workload=STRESS-60.*pcm_frames=2880000 pcm_bytes=11520000 pcm_crc32=0x39c7f2d2",
         "service": r"P4_AUDIO_SERVICE measured_quanta=",
+        "pacing_label": r"P4_AUDIO_A2_RESULT workload=RETROFM .*consumer_pacing=ESP_TIMER_5MS",
+        "timing_records": r"P4_AUDIO_COMPUTE_SERVICE .*workload=RETROFM mode=TIMING .*timing_valid=YES compute_underflow_count=0",
+        "timer_lifecycle": r"P4_AUDIO_TIMER_LIFECYCLE workload=RETROFM mode=TIMING",
         "final": r"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS",
     }
     if "P4_AUDIO_EMU_STRESS=SKIPPED reason=performance_not_valid_in_emulator" in text:
