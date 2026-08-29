@@ -103,6 +103,7 @@ jobs:
       - name: Run A3 audio host regression gates
         run: |
           set -euo pipefail
+          test ! -e firmware/sdkconfig
           make -C host \
             test-p4-nano-board \
             test-p4-nano-audio-tone \
@@ -113,7 +114,6 @@ jobs:
             test-opngen-retrofm-s98-formal \
             test-opngen-e1c-formal
           python3 tools/test_p4_audio_i2s_opngen.py
-          python3 tools/test_p4_audio_i2s_opngen_contract.py
           python3 tools/test_p4_audio_a36o_observability.py
 
   esp32p4-p4-nano-a3-profile-build:
@@ -199,6 +199,14 @@ jobs:
           test "$(idf.py --version)" = "ESP-IDF v5.5.4"
           bash tools/emu/build-production.sh \
             --variant p4-v1x --board p4-nano --audio-i2s-opngen
+
+      - name: Validate final A3 generated configuration contract
+        run: |
+          set -euo pipefail
+          test ! -e firmware/sdkconfig
+          ln -s build-p4-nano-p4-v1x-audio-i2s-opngen/sdkconfig firmware/sdkconfig
+          test -f firmware/sdkconfig
+          python3 tools/test_p4_audio_i2s_opngen_contract.py
 
   ubuntu-native-video-golden:
     name: Ubuntu-native video golden
