@@ -100,6 +100,106 @@ jobs:
       - name: Run Ubuntu-native headless NP2TEST
         run: make -C host test-headless-runner-np2test
 
+      - name: Run A3 audio host regression gates
+        run: |
+          set -euo pipefail
+          make -C host \
+            test-p4-nano-board \
+            test-p4-nano-audio-tone \
+            test-opngen-synth-event \
+            test-opngen-pcm-ring \
+            test-opngen-e1b-formal \
+            test-opngen-e1b-observer \
+            test-opngen-retrofm-s98-formal \
+            test-opngen-e1c-formal
+          python3 tools/test_p4_audio_i2s_opngen.py
+          python3 tools/test_p4_audio_i2s_opngen_contract.py
+          python3 tools/test_p4_audio_a36o_observability.py
+
+  esp32p4-p4-nano-a3-profile-build:
+    name: ESP32-P4 P4-NANO A3 profile compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LC_ALL: C
+      TZ: UTC
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Restore pinned ESP-IDF source
+        id: cache-idf-source
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/esp-idf-v5.5.4
+          key: ${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04-esp-idf-source-v1-esp32p4-recursive-v5.5.4-735507283d5b2f9fb363a1901172dbd9e847945d
+
+      - name: Provision pinned ESP-IDF for profile compilation
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          readonly idf_commit="735507283d5b2f9fb363a1901172dbd9e847945d"
+
+          printf 'ESP_IDF_SOURCE_CACHE_HIT=%s\n' \
+            "${{ steps.cache-idf-source.outputs.cache-hit }}"
+          if [[ -e "${idf_root}" ]]; then
+            [[ -d "${idf_root}/.git" ]] || {
+              printf 'ERROR: cached ESP-IDF path is not a Git checkout: %s\n' "${idf_root}" >&2
+              exit 1
+            }
+          else
+            git clone --depth 1 --branch "${ESP_IDF_VERSION}" --recursive \
+              https://github.com/espressif/esp-idf.git "${idf_root}"
+          fi
+
+          test "$(git -C "${idf_root}" rev-parse HEAD)" = "${idf_commit}"
+          test -z "$(git -C "${idf_root}" status --porcelain=v1 --untracked-files=all)"
+          git -C "${idf_root}" diff --quiet
+          submodule_status="$(git -C "${idf_root}" submodule status --recursive)"
+          if grep -Eq '^[+-U]' <<<"${submodule_status}"; then
+            printf 'ERROR: cached ESP-IDF checkout has an incomplete or mismatched submodule\n' >&2
+            printf '%s\n' "${submodule_status}" >&2
+            exit 1
+          fi
+          git -C "${idf_root}" submodule foreach --quiet --recursive \
+            'git diff --quiet && test -z "$(git status --porcelain=v1 --untracked-files=all)"'
+
+          "${idf_root}/install.sh" esp32p4
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+
+      - name: Compile P4-NANO display foundation profile
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          bash tools/emu/build-production.sh \
+            --variant p4-v1x --board p4-nano --display-foundation
+
+      - name: Compile P4-NANO isolated tone profile
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          bash tools/emu/build-production.sh \
+            --variant p4-v1x --board p4-nano --audio-i2s-tone
+
+      - name: Compile P4-NANO integrated OPNGEN/I2S profile
+        run: |
+          set -euo pipefail
+          source tools/versions.env
+          readonly idf_root="${RUNNER_TEMP}/esp-idf-${ESP_IDF_VERSION}"
+          source "${idf_root}/export.sh"
+          test "$(idf.py --version)" = "ESP-IDF v5.5.4"
+          bash tools/emu/build-production.sh \
+            --variant p4-v1x --board p4-nano --audio-i2s-opngen
+
   ubuntu-native-video-golden:
     name: Ubuntu-native video golden
     runs-on: ubuntu-24.04
