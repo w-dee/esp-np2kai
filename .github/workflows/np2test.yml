@@ -116,6 +116,34 @@ jobs:
           python3 tools/test_p4_audio_i2s_opngen.py
           python3 tools/test_p4_audio_a36o_observability.py
 
+      - name: Run 86H synchronous audio golden
+        run: |
+          set -euo pipefail
+          test ! -e firmware/sdkconfig
+          make -C host test-np2audio86-fixture
+
+      - name: Run 86H async audio exactness
+        run: |
+          set -euo pipefail
+          make -C host test-np2audio86-async-formal
+
+      - name: Run 86H async lifecycle hardening
+        run: |
+          set -euo pipefail
+          make -C host test-np2audio86-hardening
+
+      - name: Run 86H async AddressSanitizer gate
+        run: |
+          set -euo pipefail
+          make -C host test-np2audio86-hardening-asan
+          printf '%s\n' 'ASAN_MEMORY_ERRORS=PASS'
+          printf '%s\n' 'LEAK_SANITIZER=NOT_CLAIMED'
+
+      - name: Run 86H transport UBSan gate
+        run: |
+          set -euo pipefail
+          make -C host test-np2audio86-hardening-ubsan
+
   esp32p4-p4-nano-a3-profile-build:
     name: ESP32-P4 P4-NANO A3 profile compile
     runs-on: ubuntu-24.04
