@@ -1,0 +1,86 @@
+{
+  "golden_version": 1,
+  "fixture": {
+    "id": "np2audio86_sync_full_mix_v1",
+    "rate_hz": 48000,
+    "quantum_frames": 240,
+    "duration_frames": 2880000,
+    "quanta": 12000,
+    "channels": 2,
+    "bits_per_sample": 16,
+    "pcm_bytes": 11520000,
+    "canonical_pcm_format": "s16le-interleaved-stereo"
+  },
+  "provenance": {
+    "np2kai_upstream_commit": "e2dc9046aa5c786fcfbfb87e883457e421026e31",
+    "vendor_allowlisted_files": 304,
+    "vendor_tree_modified": false,
+    "compiled_sources": [
+      "sound/opngenc.c",
+      "sound/opngeng.c",
+      "sound/psggenc.c",
+      "sound/psggeng.c",
+      "sound/pcmmix.c",
+      "sound/pcm86g.c"
+    ]
+  },
+  "load": {
+    "fm_channels": 6,
+    "fm_operators": 24,
+    "psg_channels": 3,
+    "psg_noise": true,
+    "psg_envelope": true,
+    "rhythm_tracks": 6,
+    "rhythm_source": "synthetic_project_owned",
+    "rhythm_mixer": "np2kai_pcmmix",
+    "pcm86_source_rate_hz": 44100,
+    "pcm86_channels": 2,
+    "pcm86_bits": 16,
+    "pcm86_fifo": true,
+    "pcm86_dactrl": "0x30"
+  },
+  "control": {
+    "events": 10,
+    "mid_quantum_events": 4,
+    "crc32": "0xafa2dd74",
+    "sha256": "22fccc625378d2ae4a0715dd94a187a5c04cd5324a42828ac454293f8b1b328d"
+  },
+  "pcm86_source": {
+    "algorithm": "xorshift32_seed_0x86a2f17d",
+    "period_frames": 8192,
+    "period_bytes": 32768,
+    "crc32": "0x905d2517",
+    "sha256": "29783320f21cafc17330b56bc3484e8caf6543044f2f7280dc5703728cad5529"
+  },
+  "pcm86_feed": {
+    "bytes_supplied": 10584064,
+    "bytes_consumed": 10575000,
+    "refills": 323,
+    "fifo_min": 4096,
+    "fifo_max": 36860,
+    "underrun": 0
+  },
+  "activity": {
+    "fm": "PASS",
+    "psg": "PASS",
+    "rhythm": "PASS",
+    "pcm86": "PASS"
+  },
+  "amplitude": {
+    "peak_abs": 4182,
+    "clamped_samples": 0
+  },
+  "pcm": {
+    "frames": 2880000,
+    "bytes": 11520000,
+    "quanta": 12000,
+    "crc32": "0x58929f1f",
+    "sha256": "7f1bc0cdcab519690c0d3580746827199f86dd270868f33ceb01d230e096310e"
+  },
+  "safety": {
+    "pcm86_fifo_underrun": 0,
+    "sequence_error": 0,
+    "arithmetic_error": 0,
+    "same_process_reset": "PASS"
+  }
+}
