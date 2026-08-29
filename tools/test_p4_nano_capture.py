@@ -68,12 +68,21 @@ class RecordingSerial:
         self.events.append(("close",))
 
 
-def make_session(root: Path, clock: FakeClock, timeout: float = 360.0):
+def make_session(
+    root: Path,
+    clock: FakeClock,
+    timeout: float = 360.0,
+    *,
+    pass_marker: str | bytes = CAPTURE.PASS_MARKER,
+    fail_marker: str | bytes = CAPTURE.FAIL_MARKER,
+):
     session = CAPTURE.CaptureSession(
         root / "capture.raw",
         root / "capture.status.json",
         hard_timeout_seconds=timeout,
         clock=clock,
+        terminal_pass_marker=pass_marker,
+        terminal_fail_marker=fail_marker,
     )
     session.prepare()
     return session
@@ -181,6 +190,140 @@ class CaptureHarnessTests(unittest.TestCase):
             self.assertEqual(status["terminal_status"], "FAIL")
             self.assertEqual(status["exit_reason"], "TERMINAL_FAIL")
             self.assertIsNone(status["serial_error"])
+
+    def test_custom_pass_lf_and_crlf_after_reset(self) -> None:
+        pass_marker = "AUDIO86_P4_RESULT=PASS"
+        fail_marker = "AUDIO86_P4_RESULT=FAIL"
+        for suffix in (b"\n", b"\r\n"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                clock = FakeClock()
+                session = make_session(
+                    root,
+                    clock,
+                    pass_marker=pass_marker,
+                    fail_marker=fail_marker,
+                )
+                session.feed(pass_marker.encode("ascii") + suffix)
+                self.assertIsNone(session.terminal_marker)
+                session.issue_reset(lambda: None)
+                encoded = pass_marker.encode("ascii") + suffix
+                for offset in range(0, len(encoded), 2):
+                    session.feed(encoded[offset : offset + 2])
+                status = session.finish()
+                self.assertEqual(status["terminal_status"], "PASS")
+                self.assertEqual(status["exit_reason"], "TERMINAL_PASS")
+                self.assertEqual(status["terminal_pass_marker_config"], pass_marker)
+                self.assertEqual(status["terminal_fail_marker_config"], fail_marker)
+
+    def test_custom_fail_is_target_result_not_host_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clock = FakeClock()
+            session = make_session(
+                root,
+                clock,
+                pass_marker="AUDIO86_P4_RESULT=PASS",
+                fail_marker="AUDIO86_P4_RESULT=FAIL",
+            )
+            session.issue_reset(lambda: None)
+            session.feed(b"AUDIO86_P4_RESULT=FAIL\n")
+            status = session.finish()
+            self.assertEqual(status["terminal_status"], "FAIL")
+            self.assertEqual(status["exit_reason"], "TERMINAL_FAIL")
+            self.assertIsNone(status["serial_error"])
+
+    def test_custom_marker_exclusivity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            custom = make_session(
+                root,
+                FakeClock(),
+                pass_marker="AUDIO86_P4_RESULT=PASS",
+                fail_marker="AUDIO86_P4_RESULT=FAIL",
+            )
+            custom.issue_reset(lambda: None)
+            self.assertIsNone(custom.feed(b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS\n"))
+            custom.feed(b"AUDIO86_P4_RESULT=PASS\n")
+            self.assertEqual(custom.finish()["exit_reason"], "TERMINAL_PASS")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = make_session(root, FakeClock())
+            legacy.issue_reset(lambda: None)
+            self.assertIsNone(legacy.feed(b"AUDIO86_P4_RESULT=PASS\n"))
+            legacy.feed(b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS\n")
+            self.assertEqual(legacy.finish()["exit_reason"], "TERMINAL_PASS")
+
+    def test_custom_near_matches_require_exact_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            clock = FakeClock()
+            session = make_session(
+                root,
+                clock,
+                pass_marker="AUDIO86_P4_RESULT=PASS",
+                fail_marker="AUDIO86_P4_RESULT=FAIL",
+            )
+            session.issue_reset(lambda: None)
+            near_matches = (
+                b"xAUDIO86_P4_RESULT=PASS\n",
+                b"AUDIO86_P4_RESULT=PASSx\n",
+                b"AUDIO86_P4_RESULT=PASS extra\n",
+                b" AUDIO86_P4_RESULT=PASS\n",
+                b"\x1b[32mAUDIO86_P4_RESULT=PASS\x1b[0m\n",
+            )
+            for line in near_matches:
+                self.assertIsNone(session.feed(line))
+            session.feed(b"AUDIO86_P4_RESULT=PASS\n")
+            self.assertEqual(session.finish()["exit_reason"], "TERMINAL_PASS")
+
+    def test_invalid_marker_rejected_before_capture_side_effects(self) -> None:
+        invalid_pairs = (
+            ("", "AUDIO86_P4_RESULT=FAIL"),
+            ("AUDIO86_P4_RESULT=PASS", ""),
+            ("AUDIO86_P4_RESULT=PASS\n", "AUDIO86_P4_RESULT=FAIL"),
+            ("AUDIO86_P4_RESULT=PASS", "AUDIO86_P4_RESULT=FAIL\r"),
+            ("AUDIO86_P4_RÉSULT=PASS", "AUDIO86_P4_RESULT=FAIL"),
+            ("AUDIO86_P4_RESULT=PASS", "AUDIO86_P4_RESULT=PASS"),
+        )
+        for pass_marker, fail_marker in invalid_pairs:
+            with self.subTest(pass_marker=pass_marker, fail_marker=fail_marker), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with mock.patch.object(CAPTURE, "_open_serial") as open_serial:
+                    with self.assertRaises((TypeError, ValueError)):
+                        CAPTURE.run_serial_capture(
+                            port="synthetic",
+                            raw_path=root / "capture.raw",
+                            status_path=root / "capture.status.json",
+                            terminal_pass_marker=pass_marker,
+                            terminal_fail_marker=fail_marker,
+                        )
+                open_serial.assert_not_called()
+                self.assertFalse((root / "capture.raw").exists())
+                self.assertFalse((root / "capture.status.json").exists())
+
+    def test_cli_marker_contract(self) -> None:
+        parser = CAPTURE.build_arg_parser()
+        defaults = parser.parse_args(["--port", "synthetic", "--raw", "raw", "--status", "status"])
+        self.assertEqual(defaults.terminal_pass_marker, "P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS")
+        self.assertEqual(defaults.terminal_fail_marker, "P4_AUDIO_ONLY_BENCHMARK_RESULT=FAIL")
+        custom = parser.parse_args(
+            [
+                "--port",
+                "synthetic",
+                "--raw",
+                "raw",
+                "--status",
+                "status",
+                "--terminal-pass-marker",
+                "AUDIO86_P4_RESULT=PASS",
+                "--terminal-fail-marker",
+                "AUDIO86_P4_RESULT=FAIL",
+            ]
+        )
+        self.assertEqual(custom.terminal_pass_marker, "AUDIO86_P4_RESULT=PASS")
+        self.assertEqual(custom.terminal_fail_marker, "AUDIO86_P4_RESULT=FAIL")
 
     def test_seventy_second_silence_has_no_idle_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

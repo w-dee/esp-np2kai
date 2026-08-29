@@ -27,7 +27,43 @@ RESET_LOW_SECONDS = 0.005
 
 PASS_MARKER = b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS"
 FAIL_MARKER = b"P4_AUDIO_ONLY_BENCHMARK_RESULT=FAIL"
-TERMINAL_MARKERS = {PASS_MARKER: "PASS", FAIL_MARKER: "FAIL"}
+
+
+def _validate_marker(value: str | bytes, name: str) -> tuple[bytes, str]:
+    """Validate one configured terminal marker without changing its bytes."""
+    if isinstance(value, bytes):
+        marker = value
+        try:
+            text = marker.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ValueError(f"{name} must contain only ASCII bytes") from error
+    elif isinstance(value, str):
+        try:
+            marker = value.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError(f"{name} must contain only ASCII characters") from error
+        text = value
+    else:
+        raise TypeError(f"{name} must be a string or bytes")
+    if not marker:
+        raise ValueError(f"{name} must not be empty")
+    if b"\n" in marker:
+        raise ValueError(f"{name} must not contain LF")
+    if b"\r" in marker:
+        raise ValueError(f"{name} must not contain CR")
+    return marker, text
+
+
+def validate_terminal_markers(
+    pass_marker: str | bytes,
+    fail_marker: str | bytes,
+) -> tuple[bytes, bytes, str, str]:
+    """Return validated byte/text marker pairs for one capture instance."""
+    pass_bytes, pass_text = _validate_marker(pass_marker, "terminal pass marker")
+    fail_bytes, fail_text = _validate_marker(fail_marker, "terminal fail marker")
+    if pass_bytes == fail_bytes:
+        raise ValueError("terminal pass and fail markers must differ")
+    return pass_bytes, fail_bytes, pass_text, fail_text
 
 
 class CaptureState(str, Enum):
@@ -108,7 +144,14 @@ class RawSink:
 class TerminalLineDetector:
     """Incrementally detect only complete LF/CRLF terminal lines."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        pass_marker: str | bytes = PASS_MARKER,
+        fail_marker: str | bytes = FAIL_MARKER,
+    ) -> None:
+        self._pass_marker, self._fail_marker, _, _ = validate_terminal_markers(
+            pass_marker, fail_marker
+        )
         self._line = bytearray()
         self.terminal_marker: Optional[str] = None
 
@@ -138,10 +181,12 @@ class TerminalLineDetector:
             del self._line[: newline + 1]
             if line.endswith(b"\r"):
                 line = line[:-1]
-            marker = TERMINAL_MARKERS.get(line)
-            if marker is not None:
-                self.terminal_marker = marker
-                return marker
+            if line == self._pass_marker:
+                self.terminal_marker = "PASS"
+                return self.terminal_marker
+            if line == self._fail_marker:
+                self.terminal_marker = "FAIL"
+                return self.terminal_marker
 
 
 def _sanitize_error(error: BaseException, serial_label: Optional[str] = None) -> str:
@@ -161,16 +206,26 @@ class CaptureSession:
         *,
         hard_timeout_seconds: float = DEFAULT_HARD_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        terminal_pass_marker: str | bytes = PASS_MARKER,
+        terminal_fail_marker: str | bytes = FAIL_MARKER,
     ) -> None:
         if hard_timeout_seconds <= 0:
             raise ValueError("hard timeout must be positive")
+        (
+            self.terminal_pass_marker,
+            self.terminal_fail_marker,
+            self.terminal_pass_marker_config,
+            self.terminal_fail_marker_config,
+        ) = validate_terminal_markers(terminal_pass_marker, terminal_fail_marker)
         self.raw_path = raw_path
         self.status_path = status_path
         self.hard_timeout_seconds = hard_timeout_seconds
         self.clock = clock
         self.state = CaptureState.PREPARED
         self.raw: Optional[RawSink] = None
-        self.detector = TerminalLineDetector()
+        self.detector = TerminalLineDetector(
+            self.terminal_pass_marker, self.terminal_fail_marker
+        )
         self.start_monotonic: Optional[float] = None
         self.reset_monotonic: Optional[float] = None
         self.end_monotonic: Optional[float] = None
@@ -318,6 +373,8 @@ class CaptureSession:
             "reset_count": self.reset_count,
             "terminal_status": self.terminal_status,
             "terminal_marker": self.terminal_marker,
+            "terminal_pass_marker_config": self.terminal_pass_marker_config,
+            "terminal_fail_marker_config": self.terminal_fail_marker_config,
             "exit_reason": self.exit_reason.value if self.exit_reason else None,
             "state": self.state.value,
             "hard_timeout_seconds": self.hard_timeout_seconds,
@@ -368,14 +425,21 @@ def run_serial_capture(
     hard_timeout_seconds: float = DEFAULT_HARD_TIMEOUT_SECONDS,
     read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS,
     post_terminal_drain_seconds: float = DEFAULT_POST_TERMINAL_DRAIN_SECONDS,
+    terminal_pass_marker: str | bytes = PASS_MARKER,
+    terminal_fail_marker: str | bytes = FAIL_MARKER,
 ) -> int:
     """Run one physical capture; return zero for either observed terminal."""
     if post_terminal_drain_seconds < 0:
         raise ValueError("post-terminal drain must not be negative")
+    pass_bytes, fail_bytes, _, _ = validate_terminal_markers(
+        terminal_pass_marker, terminal_fail_marker
+    )
     session = CaptureSession(
         raw_path,
         status_path,
         hard_timeout_seconds=hard_timeout_seconds,
+        terminal_pass_marker=pass_bytes,
+        terminal_fail_marker=fail_bytes,
     )
     session.prepare()
     serial_port: Optional[object] = None
@@ -503,6 +567,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=DEFAULT_POST_TERMINAL_DRAIN_SECONDS,
         help="bounded drain after terminal line (default: 0.5)",
     )
+    parser.add_argument(
+        "--terminal-pass-marker",
+        default=PASS_MARKER.decode("ascii"),
+        help="complete ASCII line selecting terminal PASS",
+    )
+    parser.add_argument(
+        "--terminal-fail-marker",
+        default=FAIL_MARKER.decode("ascii"),
+        help="complete ASCII line selecting terminal FAIL",
+    )
     return parser
 
 
@@ -510,6 +584,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.hard_timeout <= 0 or args.read_timeout <= 0:
         raise SystemExit("timeouts must be positive")
+    try:
+        validate_terminal_markers(args.terminal_pass_marker, args.terminal_fail_marker)
+    except (TypeError, ValueError) as error:
+        raise SystemExit(str(error)) from error
     return run_serial_capture(
         port=args.port,
         raw_path=args.raw,
@@ -518,6 +596,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         hard_timeout_seconds=args.hard_timeout,
         read_timeout_seconds=args.read_timeout,
         post_terminal_drain_seconds=args.post_terminal_drain,
+        terminal_pass_marker=args.terminal_pass_marker,
+        terminal_fail_marker=args.terminal_fail_marker,
     )
 
 
