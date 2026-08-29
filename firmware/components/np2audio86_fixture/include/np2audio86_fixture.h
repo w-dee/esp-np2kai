@@ -1,6 +1,7 @@
 #ifndef NP2_AUDIO86_FIXTURE_H
 #define NP2_AUDIO86_FIXTURE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -147,6 +148,34 @@ enum np2audio86_async_mode {
     NP2_AUDIO86_ASYNC_BYTE_TRANSPORT_PRESSURE,
 };
 
+/* Stable semantic classifications used by the host async proof.  The first
+ * 15 values are retained for compatibility with the 86H.3 host result; the
+ * additional values separate transport faults without entering the portable
+ * P4 runtime API. */
+enum np2audio86_async_error {
+    NP2_AUDIO86_ASYNC_ERROR_NONE = 0,
+    NP2_AUDIO86_ASYNC_ERROR_ARGUMENT,
+    NP2_AUDIO86_ASYNC_ERROR_PLAN,
+    NP2_AUDIO86_ASYNC_ERROR_SEQUENCE,
+    NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP,
+    NP2_AUDIO86_ASYNC_ERROR_OPCODE,
+    NP2_AUDIO86_ASYNC_ERROR_PAYLOAD,
+    NP2_AUDIO86_ASYNC_ERROR_BYTE_RING,
+    NP2_AUDIO86_ASYNC_ERROR_PCM86_UNDERRUN,
+    NP2_AUDIO86_ASYNC_ERROR_ARITHMETIC,
+    NP2_AUDIO86_ASYNC_ERROR_CANONICAL,
+    NP2_AUDIO86_ASYNC_ERROR_PRODUCER,
+    NP2_AUDIO86_ASYNC_ERROR_WORKER,
+    NP2_AUDIO86_ASYNC_ERROR_COMPLETION,
+    NP2_AUDIO86_ASYNC_ERROR_LIVENESS,
+    NP2_AUDIO86_ASYNC_ERROR_DATA_LENGTH,
+    NP2_AUDIO86_ASYNC_ERROR_DATA_AVAILABILITY,
+    NP2_AUDIO86_ASYNC_ERROR_WATERMARK,
+    NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION,
+    NP2_AUDIO86_ASYNC_ERROR_TRANSPORT_INVARIANT,
+    NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH,
+};
+
 struct np2audio86_async_result {
     struct np2audio86_fixture_result oracle;
     uint32_t mode;
@@ -172,10 +201,112 @@ struct np2audio86_async_result {
     uint8_t transport_event_sha256[NP2_SHA256_DIGEST_SIZE];
 };
 
+/* Async fixture lifecycles are supported sequentially.  Independent
+ * simultaneous calls remain unsupported because the upstream OPNGEN/PSG
+ * initialization uses shared global configuration. */
 int np2audio86_async_run(enum np2audio86_async_mode mode,
                          struct np2audio86_async_result *result);
 const char *np2audio86_async_mode_name(enum np2audio86_async_mode mode);
 const char *np2audio86_async_error_name(uint32_t error);
+
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+
+enum np2audio86_async_test_fault {
+    NP2_AUDIO86_TEST_FAULT_NONE = 0,
+    NP2_AUDIO86_TEST_FAULT_DUPLICATE_SEQUENCE,
+    NP2_AUDIO86_TEST_FAULT_SKIPPED_SEQUENCE,
+    NP2_AUDIO86_TEST_FAULT_TIMESTAMP_BEHIND,
+    NP2_AUDIO86_TEST_FAULT_TIMESTAMP_END,
+    NP2_AUDIO86_TEST_FAULT_INVALID_OPCODE,
+    NP2_AUDIO86_TEST_FAULT_RESERVED_OPCODE,
+    NP2_AUDIO86_TEST_FAULT_DATA_ZERO,
+    NP2_AUDIO86_TEST_FAULT_DATA_UNALIGNED,
+    NP2_AUDIO86_TEST_FAULT_DATA_OVERSIZE,
+    NP2_AUDIO86_TEST_FAULT_DATA_UNAVAILABLE,
+    NP2_AUDIO86_TEST_FAULT_CUT_BEFORE_BYTES,
+    NP2_AUDIO86_TEST_FAULT_CUT_AFTER_BYTES,
+    NP2_AUDIO86_TEST_FAULT_CUT_AFTER_EVENT,
+    NP2_AUDIO86_TEST_FAULT_CUT_AFTER_WATERMARK,
+    NP2_AUDIO86_TEST_FAULT_WATERMARK_REGRESSION,
+    NP2_AUDIO86_TEST_FAULT_WATERMARK_OVER_END,
+    NP2_AUDIO86_TEST_FAULT_DONE_EARLY,
+    NP2_AUDIO86_TEST_FAULT_WITHHOLD_FINAL,
+    NP2_AUDIO86_TEST_FAULT_WATERMARK_PAST_EVENT,
+    NP2_AUDIO86_TEST_FAULT_INCOMPLETE_GROUP,
+    NP2_AUDIO86_TEST_FAULT_WORKER,
+    NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY,
+    NP2_AUDIO86_TEST_FAULT_PRODUCER_CREATE,
+    NP2_AUDIO86_TEST_FAULT_WORKER_CREATE,
+};
+
+enum np2audio86_async_test_gate {
+    NP2_AUDIO86_TEST_GATE_NONE = 0,
+    NP2_AUDIO86_TEST_GATE_AFTER_BYTE_PUBLICATION,
+    NP2_AUDIO86_TEST_GATE_AFTER_EVENT_PUBLICATION,
+    NP2_AUDIO86_TEST_GATE_BEFORE_WATERMARK,
+    NP2_AUDIO86_TEST_GATE_AFTER_WATERMARK,
+    NP2_AUDIO86_TEST_GATE_BEFORE_EVENT_TAIL,
+    NP2_AUDIO86_TEST_GATE_AFTER_BYTE_COPY,
+    NP2_AUDIO86_TEST_GATE_WORKER_WATERMARK_WAIT,
+    NP2_AUDIO86_TEST_GATE_PRODUCER_BYTE_FULL,
+};
+
+#define NP2_AUDIO86_TEST_YIELD_AFTER_BYTE_PUBLICATION (1U << 0)
+#define NP2_AUDIO86_TEST_YIELD_AFTER_EVENT_PUBLICATION (1U << 1)
+#define NP2_AUDIO86_TEST_YIELD_BEFORE_WATERMARK (1U << 2)
+#define NP2_AUDIO86_TEST_YIELD_AFTER_WATERMARK (1U << 3)
+#define NP2_AUDIO86_TEST_YIELD_BEFORE_EVENT_TAIL (1U << 4)
+#define NP2_AUDIO86_TEST_YIELD_AFTER_BYTE_COPY (1U << 5)
+#define NP2_AUDIO86_TEST_YIELD_WATERMARK_WAIT (1U << 6)
+
+struct np2audio86_async_test_control {
+    uint32_t fault;
+    uint32_t gate;
+    uint32_t target_event;
+    uint32_t yield_flags;
+    NP2_AUDIO86_ASYNC_ATOMIC(bool) gate_reached;
+    NP2_AUDIO86_ASYNC_ATOMIC(bool) gate_release;
+    NP2_AUDIO86_ASYNC_ATOMIC(bool) fault_injected;
+};
+
+enum np2audio86_async_test_terminal {
+    NP2_AUDIO86_TEST_TERMINAL_NOT_STARTED = 0,
+    NP2_AUDIO86_TEST_TERMINAL_COMPLETED,
+    NP2_AUDIO86_TEST_TERMINAL_ABORTED,
+};
+
+struct np2audio86_async_test_observer {
+    uint32_t expected_error;
+    uint32_t observed_error;
+    uint8_t injected;
+    uint8_t detected;
+    uint8_t producer_created;
+    uint8_t worker_created;
+    uint8_t producer_reaped;
+    uint8_t worker_reaped;
+    uint8_t workload_success;
+    uint8_t peer_unblocked;
+    uint8_t later_error_attempted;
+    uint32_t producer_terminal;
+    uint32_t worker_terminal;
+    uint32_t event_residual;
+    uint32_t byte_residual;
+};
+
+void np2audio86_async_test_control_init(
+    struct np2audio86_async_test_control *control);
+int np2audio86_async_run_with_test_control(
+    enum np2audio86_async_mode mode,
+    struct np2audio86_async_test_control *control,
+    struct np2audio86_async_test_observer *observer,
+    struct np2audio86_async_result *result);
+int np2audio86_async_test_prevalidate(unsigned case_id);
+int np2audio86_async_test_byte_copy(
+    const struct np2audio86_byte_ring *ring, uint8_t *bytes, size_t count);
+int np2audio86_async_test_byte_consume(struct np2audio86_byte_ring *ring,
+                                       size_t count);
+
+#endif
 
 /* Render the complete synchronous native reference into compact identities. */
 int np2audio86_fixture_render(struct np2audio86_fixture_result *result);

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #ifdef NP2_AUDIO86_ASYNC_HOST
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #endif
@@ -820,25 +821,21 @@ int np2audio86_byte_ring_pop(struct np2audio86_byte_ring *ring,
     return np2audio86_byte_ring_consume(ring, count);
 }
 
-#ifdef NP2_AUDIO86_ASYNC_HOST
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+int np2audio86_async_test_byte_copy(
+    const struct np2audio86_byte_ring *ring, uint8_t *bytes, size_t count)
+{
+    return np2audio86_byte_ring_copy(ring, bytes, count);
+}
 
-enum np2audio86_async_error {
-    NP2_AUDIO86_ASYNC_ERROR_NONE = 0,
-    NP2_AUDIO86_ASYNC_ERROR_ARGUMENT,
-    NP2_AUDIO86_ASYNC_ERROR_PLAN,
-    NP2_AUDIO86_ASYNC_ERROR_SEQUENCE,
-    NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP,
-    NP2_AUDIO86_ASYNC_ERROR_OPCODE,
-    NP2_AUDIO86_ASYNC_ERROR_PAYLOAD,
-    NP2_AUDIO86_ASYNC_ERROR_BYTE_RING,
-    NP2_AUDIO86_ASYNC_ERROR_PCM86_UNDERRUN,
-    NP2_AUDIO86_ASYNC_ERROR_ARITHMETIC,
-    NP2_AUDIO86_ASYNC_ERROR_CANONICAL,
-    NP2_AUDIO86_ASYNC_ERROR_PRODUCER,
-    NP2_AUDIO86_ASYNC_ERROR_WORKER,
-    NP2_AUDIO86_ASYNC_ERROR_COMPLETION,
-    NP2_AUDIO86_ASYNC_ERROR_LIVENESS,
-};
+int np2audio86_async_test_byte_consume(struct np2audio86_byte_ring *ring,
+                                       size_t count)
+{
+    return np2audio86_byte_ring_consume(ring, count);
+}
+#endif
+
+#ifdef NP2_AUDIO86_ASYNC_HOST
 
 /* These are the exact long (38-quantum) gaps observed by the unchanged
  * synchronous feed_pcm86() implementation.  The remaining gaps are 37
@@ -997,15 +994,107 @@ struct np2audio86_async_context {
     _Atomic bool producer_done;
     _Atomic bool producer_prefill_ready;
     _Atomic bool worker_done;
+    _Atomic uint32_t published_event_count;
+    uint64_t producer_last_watermark;
+    uint64_t worker_last_watermark;
     uint32_t producer_event_index;
     uint64_t producer_source_frame;
     uint32_t producer_data_runs;
     uint32_t worker_next_sequence;
     bool worker_started;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    bool worker_error_attempted;
+#endif
     uint32_t transport_crc32;
     np2_sha256_context transport_sha;
     uint64_t transport_count;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    struct np2audio86_async_test_control *test_control;
+#endif
 };
+
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+
+void np2audio86_async_test_control_init(
+    struct np2audio86_async_test_control *control)
+{
+    if (control == NULL) {
+        return;
+    }
+    memset(control, 0, sizeof(*control));
+    atomic_init(&control->gate_reached, false);
+    atomic_init(&control->gate_release, false);
+    atomic_init(&control->fault_injected, false);
+}
+
+static int async_test_fault(const struct np2audio86_async_context *context,
+                            enum np2audio86_async_test_fault fault)
+{
+    return context != NULL && context->test_control != NULL &&
+           context->test_control->fault == (uint32_t)fault;
+}
+
+static int async_test_take_fault(struct np2audio86_async_context *context,
+                                 enum np2audio86_async_test_fault fault)
+{
+    bool expected = false;
+    if (!async_test_fault(context, fault)) {
+        return 0;
+    }
+    return atomic_compare_exchange_strong_explicit(
+               &context->test_control->fault_injected, &expected, true,
+               memory_order_acq_rel, memory_order_acquire)
+               ? 1
+               : 0;
+}
+
+static int async_test_at_target(const struct np2audio86_async_context *context,
+                                size_t event_index)
+{
+    return context != NULL && context->test_control != NULL &&
+           event_index == context->test_control->target_event;
+}
+
+static void async_test_gate(struct np2audio86_async_context *context,
+                            enum np2audio86_async_test_gate gate,
+                            size_t event_index)
+{
+    bool expected = false;
+    struct np2audio86_async_test_control *control;
+    if (context == NULL || context->test_control == NULL ||
+        context->test_control->gate != (uint32_t)gate ||
+        (context->test_control->target_event != UINT32_MAX &&
+         event_index != context->test_control->target_event)) {
+        return;
+    }
+    control = context->test_control;
+    if (!atomic_compare_exchange_strong_explicit(
+            &control->gate_reached, &expected, true, memory_order_acq_rel,
+            memory_order_acquire)) {
+        return;
+    }
+    while (!atomic_load_explicit(&control->gate_release,
+                                 memory_order_acquire)) {
+        sched_yield();
+    }
+}
+
+static int async_test_yield_enabled(
+    const struct np2audio86_async_context *context, uint32_t flag)
+{
+    return context != NULL && context->test_control != NULL &&
+           (context->test_control->yield_flags & flag) != 0U;
+}
+
+static void async_test_mark_injected(struct np2audio86_async_context *context)
+{
+    if (context != NULL && context->test_control != NULL) {
+        atomic_store_explicit(&context->test_control->fault_injected, true,
+                              memory_order_release);
+    }
+}
+
+#endif
 
 static void async_fail(struct np2audio86_async_context *context,
                        enum np2audio86_async_error error)
@@ -1079,7 +1168,7 @@ static int async_copy_run(struct np2audio86_async_context *context,
     transport_status = np2audio86_byte_ring_copy(
         &context->pcm_bytes, context->worker_run, count);
     if (transport_status != NP2_AUDIO86_TRANSPORT_OK) {
-        return -2;
+        return transport_status == NP2_AUDIO86_TRANSPORT_EMPTY ? -2 : -3;
     }
     remaining = count;
     destination = feed->pcm.wrtpos & PCM86_BUFMSK;
@@ -1095,9 +1184,17 @@ static int async_copy_run(struct np2audio86_async_context *context,
     }
     feed->pcm.wrtpos = (feed->pcm.wrtpos + count) & PCM86_BUFMSK;
     feed->pcm.realbuf += (SINT32)count;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    if (async_test_yield_enabled(context,
+                                 NP2_AUDIO86_TEST_YIELD_AFTER_BYTE_COPY)) {
+        async_yield(context, false);
+    }
+    async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_BYTE_COPY,
+                    context->worker_next_sequence);
+#endif
     transport_status = np2audio86_byte_ring_consume(&context->pcm_bytes, count);
     if (transport_status != NP2_AUDIO86_TRANSPORT_OK) {
-        return -2;
+        return -3;
     }
     feed->supplied += count;
     ++feed->refills;
@@ -1137,7 +1234,8 @@ static int async_apply_event(struct np2audio86_async_context *context,
         async_fail(context, NP2_AUDIO86_ASYNC_ERROR_SEQUENCE);
         return -1;
     }
-    if (event->frame_timestamp != context->worker_state.rendered_frames) {
+    if (event->frame_timestamp >= NP2_AUDIO86_DURATION_FRAMES ||
+        event->frame_timestamp != context->worker_state.rendered_frames) {
         async_fail(context, NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP);
         return -1;
     }
@@ -1165,9 +1263,10 @@ static int async_apply_event(struct np2audio86_async_context *context,
             int copy_status = 0;
             if (event->payload == 0U ||
                 event->payload > NP2_AUDIO86_ASYNC_MAX_DATA_RUN ||
-                (event->payload & 3U) != 0U ||
-                context->worker_state.pcm86.pcm.realbuf >= 4096) {
+                (event->payload & 3U) != 0U) {
                 copy_status = -1;
+            } else if (context->worker_state.pcm86.pcm.realbuf >= 4096) {
+                copy_status = -4;
             } else {
                 copy_status = async_copy_run(context, event->payload);
             }
@@ -1177,10 +1276,12 @@ static int async_apply_event(struct np2audio86_async_context *context,
                                    event->payload >
                                        NP2_AUDIO86_ASYNC_MAX_DATA_RUN ||
                                    (event->payload & 3U) != 0U
-                               ? NP2_AUDIO86_ASYNC_ERROR_PAYLOAD
+                               ? NP2_AUDIO86_ASYNC_ERROR_DATA_LENGTH
                                : copy_status == -2
-                                     ? NP2_AUDIO86_ASYNC_ERROR_BYTE_RING
-                                     : NP2_AUDIO86_ASYNC_ERROR_PCM86_UNDERRUN);
+                                     ? NP2_AUDIO86_ASYNC_ERROR_DATA_AVAILABILITY
+                                     : copy_status == -3
+                                           ? NP2_AUDIO86_ASYNC_ERROR_TRANSPORT_INVARIANT
+                                           : NP2_AUDIO86_ASYNC_ERROR_PCM86_UNDERRUN);
                 return -1;
             }
         }
@@ -1225,6 +1326,14 @@ static int async_enqueue_event(struct np2audio86_async_context *context,
                     context->result->event_high_water = occupancy;
                 }
             }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (async_test_yield_enabled(
+                    context, NP2_AUDIO86_TEST_YIELD_AFTER_EVENT_PUBLICATION)) {
+                async_yield(context, true);
+            }
+            async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_EVENT_PUBLICATION,
+                            context->producer_event_index);
+#endif
             return 0;
         }
         if (status != NP2_AUDIO86_TRANSPORT_FULL) {
@@ -1254,15 +1363,75 @@ static int async_enqueue_bytes(struct np2audio86_async_context *context,
                     context->result->pcm86_byte_high_water = occupancy;
                 }
             }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (async_test_yield_enabled(
+                    context, NP2_AUDIO86_TEST_YIELD_AFTER_BYTE_PUBLICATION)) {
+                async_yield(context, true);
+            }
+            async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_BYTE_PUBLICATION,
+                            context->producer_event_index);
+#endif
             return 0;
         }
         if (status != NP2_AUDIO86_TRANSPORT_FULL) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
             return -1;
         }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+        async_test_gate(context, NP2_AUDIO86_TEST_GATE_PRODUCER_BYTE_FULL,
+                        context->producer_event_index);
+#endif
         ++context->result->pcm86_byte_full_wait_count;
         async_yield(context, true);
     }
+}
+
+static int async_publish_watermark(struct np2audio86_async_context *context,
+                                   uint64_t next)
+{
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    const uint64_t publication = context->result->watermark_publish_count;
+    if (async_test_fault(context,
+                         NP2_AUDIO86_TEST_FAULT_WATERMARK_REGRESSION) &&
+        publication == (uint64_t)context->test_control->target_event) {
+        next = context->producer_last_watermark == 0U
+                   ? 0U
+                   : context->producer_last_watermark - 240U;
+        async_test_mark_injected(context);
+    }
+    if (async_test_fault(context,
+                         NP2_AUDIO86_TEST_FAULT_WATERMARK_OVER_END) &&
+        publication == (uint64_t)context->test_control->target_event) {
+        next = NP2_AUDIO86_DURATION_FRAMES + 1U;
+        async_test_mark_injected(context);
+    }
+#endif
+    if (next < context->producer_last_watermark ||
+        next > NP2_AUDIO86_DURATION_FRAMES) {
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WATERMARK);
+        return -1;
+    }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    if (async_test_yield_enabled(context,
+                                 NP2_AUDIO86_TEST_YIELD_BEFORE_WATERMARK)) {
+        async_yield(context, true);
+    }
+    async_test_gate(context, NP2_AUDIO86_TEST_GATE_BEFORE_WATERMARK,
+                    (size_t)publication);
+#endif
+    atomic_store_explicit(&context->committed_through_frame, next,
+                          memory_order_release);
+    context->producer_last_watermark = next;
+    ++context->result->watermark_publish_count;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    if (async_test_yield_enabled(context,
+                                 NP2_AUDIO86_TEST_YIELD_AFTER_WATERMARK)) {
+        async_yield(context, true);
+    }
+    async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_WATERMARK,
+                    (size_t)publication);
+#endif
+    return 0;
 }
 
 static void *async_producer_thread(void *opaque)
@@ -1270,6 +1439,7 @@ static void *async_producer_thread(void *opaque)
     struct np2audio86_async_context *context = opaque;
     size_t i = 0U;
     uint64_t yield_counter = 0U;
+    uint32_t published_count = 0U;
     if (context == NULL) {
         return NULL;
     }
@@ -1277,17 +1447,140 @@ static void *async_producer_thread(void *opaque)
     for (i = 0U; i < context->plan_count; ) {
         const uint64_t frame = context->plan[i].frame_timestamp;
         do {
-            const struct np2audio86_event *event = &context->plan[i];
-            if (event->opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN) {
+            struct np2audio86_event event = context->plan[i];
+            const int is_data = event.opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            const int is_cut = is_data &&
+                               (async_test_fault(
+                                    context, NP2_AUDIO86_TEST_FAULT_CUT_BEFORE_BYTES) ||
+                                async_test_fault(
+                                    context, NP2_AUDIO86_TEST_FAULT_CUT_AFTER_BYTES) ||
+                                async_test_fault(
+                                    context, NP2_AUDIO86_TEST_FAULT_CUT_AFTER_EVENT) ||
+                                async_test_fault(
+                                    context, NP2_AUDIO86_TEST_FAULT_CUT_AFTER_WATERMARK));
+            if (async_test_fault(context,
+                                NP2_AUDIO86_TEST_FAULT_DUPLICATE_SEQUENCE) &&
+                async_test_at_target(context, i)) {
+                event.sequence = i == 0U ? 1U : context->plan[i - 1U].sequence;
+                async_test_mark_injected(context);
+            } else if (async_test_fault(
+                           context, NP2_AUDIO86_TEST_FAULT_SKIPPED_SEQUENCE) &&
+                       async_test_at_target(context, i)) {
+                event.sequence += 1U;
+                async_test_mark_injected(context);
+            } else if (async_test_fault(
+                           context, NP2_AUDIO86_TEST_FAULT_TIMESTAMP_BEHIND) &&
+                       async_test_at_target(context, i)) {
+                event.frame_timestamp = 0U;
+                async_test_mark_injected(context);
+            } else if (async_test_fault(
+                           context, NP2_AUDIO86_TEST_FAULT_TIMESTAMP_END) &&
+                       async_test_at_target(context, i)) {
+                event.frame_timestamp = NP2_AUDIO86_DURATION_FRAMES;
+                async_test_mark_injected(context);
+            } else if (async_test_fault(
+                           context, NP2_AUDIO86_TEST_FAULT_INVALID_OPCODE) &&
+                       async_test_at_target(context, i)) {
+                event.opcode = 0x7fU;
+                async_test_mark_injected(context);
+            } else if (async_test_fault(
+                           context, NP2_AUDIO86_TEST_FAULT_RESERVED_OPCODE) &&
+                       async_test_at_target(context, i)) {
+                event.opcode = NP2_AUDIO86_EVENT_BARRIER_RESERVED;
+                async_test_mark_injected(context);
+            } else if (is_data && async_test_at_target(context, i) &&
+                       async_test_fault(context, NP2_AUDIO86_TEST_FAULT_DATA_ZERO)) {
+                event.payload = 0U;
+                async_test_mark_injected(context);
+            } else if (is_data && async_test_at_target(context, i) &&
+                       async_test_fault(context, NP2_AUDIO86_TEST_FAULT_DATA_UNALIGNED)) {
+                event.payload = 2U;
+                async_test_mark_injected(context);
+            } else if (is_data && async_test_at_target(context, i) &&
+                       async_test_fault(context, NP2_AUDIO86_TEST_FAULT_DATA_OVERSIZE)) {
+                event.payload = NP2_AUDIO86_ASYNC_MAX_DATA_RUN + 4U;
+                async_test_mark_injected(context);
+            }
+            if (is_data && async_test_fault(
+                               context, NP2_AUDIO86_TEST_FAULT_CUT_BEFORE_BYTES)) {
+                async_test_gate(context, NP2_AUDIO86_TEST_GATE_BEFORE_WATERMARK, i);
+                async_test_mark_injected(context);
+                async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+                return NULL;
+            }
+#endif
+            context->producer_event_index = (uint32_t)i;
+            if (is_data &&
+                event.payload != 0U && event.payload <= NP2_AUDIO86_ASYNC_MAX_DATA_RUN &&
+                (event.payload & 3U) == 0U) {
+                uint32_t byte_count = event.payload;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+                if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_WORKER) &&
+                    async_test_at_target(context, i)) {
+                    async_test_gate(context,
+                                    NP2_AUDIO86_TEST_GATE_PRODUCER_BYTE_FULL,
+                                    i);
+                }
+                if (async_test_fault(
+                        context, NP2_AUDIO86_TEST_FAULT_DATA_UNAVAILABLE) &&
+                    async_test_at_target(context, i)) {
+                    byte_count -= 4U;
+                    async_test_mark_injected(context);
+                }
+#endif
                 if (async_enqueue_bytes(context, context->producer_source,
-                                        event->payload) != 0) {
+                                        byte_count) != 0) {
                     return NULL;
                 }
                 ++context->producer_data_runs;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+                if (is_cut && async_test_fault(
+                                  context, NP2_AUDIO86_TEST_FAULT_CUT_AFTER_BYTES)) {
+                    async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_BYTE_PUBLICATION,
+                                    i);
+                    async_test_mark_injected(context);
+                    async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+                    return NULL;
+                }
+#endif
             }
-            if (async_enqueue_event(context, event) != 0) {
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_WITHHOLD_FINAL) &&
+                async_test_at_target(context, i)) {
+                async_test_mark_injected(context);
+                ++i;
+                continue;
+            }
+            if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_INCOMPLETE_GROUP) &&
+                async_test_at_target(context, i)) {
+                async_test_mark_injected(context);
+                ++i;
+                continue;
+            }
+            if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_WATERMARK_PAST_EVENT) &&
+                async_test_at_target(context, i)) {
+                async_test_mark_injected(context);
+                ++i;
+                continue;
+            }
+#endif
+            if (async_enqueue_event(context, &event) != 0) {
                 return NULL;
             }
+            ++published_count;
+            atomic_store_explicit(&context->published_event_count,
+                                  published_count, memory_order_release);
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (is_cut && async_test_fault(
+                              context, NP2_AUDIO86_TEST_FAULT_CUT_AFTER_EVENT)) {
+                async_test_gate(context, NP2_AUDIO86_TEST_GATE_AFTER_EVENT_PUBLICATION,
+                                i);
+                async_test_mark_injected(context);
+                async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+                return NULL;
+            }
+#endif
             ++i;
             ++yield_counter;
             if (context->mode == NP2_AUDIO86_ASYNC_BYTE_TRANSPORT_PRESSURE &&
@@ -1304,9 +1597,25 @@ static void *async_producer_thread(void *opaque)
             const uint64_t next = i < context->plan_count
                                       ? context->plan[i].frame_timestamp
                                       : NP2_AUDIO86_DURATION_FRAMES;
-            atomic_store_explicit(&context->committed_through_frame, next,
-                                  memory_order_release);
-            ++context->result->watermark_publish_count;
+            if (async_publish_watermark(context, next) != 0) {
+                return NULL;
+            }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (async_test_fault(context,
+                                 NP2_AUDIO86_TEST_FAULT_CUT_AFTER_WATERMARK) &&
+                next != 0U) {
+                async_test_mark_injected(context);
+                async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+                return NULL;
+            }
+            if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_DONE_EARLY) &&
+                context->result->watermark_publish_count == 1U) {
+                async_test_mark_injected(context);
+                atomic_store_explicit(&context->producer_done, true,
+                                      memory_order_release);
+                return NULL;
+            }
+#endif
         }
     }
     if (async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE) {
@@ -1320,9 +1629,71 @@ static int async_worker_wait(struct np2audio86_async_context *context)
 {
     ++context->result->event_empty_wait_count;
     ++context->result->worker_wait_watermark_count;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    if (async_test_yield_enabled(context,
+                                 NP2_AUDIO86_TEST_YIELD_WATERMARK_WAIT)) {
+        async_yield(context, false);
+    }
+    async_test_gate(context, NP2_AUDIO86_TEST_GATE_WORKER_WATERMARK_WAIT,
+                    UINT32_MAX);
+#endif
     async_yield(context, false);
     return async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE ? 0 : -1;
 }
+
+static uint32_t async_plan_prefix_count(
+    const struct np2audio86_async_context *context, uint64_t frame)
+{
+    uint32_t count = 0U;
+    while (count < context->plan_count &&
+           context->plan[count].frame_timestamp < frame) {
+        ++count;
+    }
+    return count;
+}
+
+static int async_validate_watermark(
+    struct np2audio86_async_context *context, uint64_t watermark)
+{
+    const uint32_t published = atomic_load_explicit(
+        &context->published_event_count, memory_order_acquire);
+    const uint32_t required = async_plan_prefix_count(context, watermark);
+    if (watermark < context->worker_last_watermark ||
+        watermark > NP2_AUDIO86_DURATION_FRAMES) {
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WATERMARK);
+        return -1;
+    }
+    if (published < required) {
+        async_fail(context, watermark == NP2_AUDIO86_DURATION_FRAMES
+                               ? NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION
+                               : NP2_AUDIO86_ASYNC_ERROR_WATERMARK);
+        return -1;
+    }
+    context->worker_last_watermark = watermark;
+    return 0;
+}
+
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+static int async_test_worker_fault(struct np2audio86_async_context *context)
+{
+    if (async_test_fault(context, NP2_AUDIO86_TEST_FAULT_WORKER) &&
+        atomic_load_explicit(&context->test_control->gate_reached,
+                             memory_order_acquire) &&
+        async_test_take_fault(context, NP2_AUDIO86_TEST_FAULT_WORKER)) {
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
+        return -1;
+    }
+    if (async_test_fault(
+            context, NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY) &&
+        async_test_take_fault(context,
+                              NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY)) {
+        async_test_mark_injected(context);
+        context->worker_error_attempted = true;
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
+    }
+    return 0;
+}
+#endif
 
 static int async_worker_apply_at_cursor(
     struct np2audio86_async_context *context)
@@ -1337,14 +1708,26 @@ static int async_worker_apply_at_cursor(
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
             return -1;
         }
-        if (event->frame_timestamp < context->worker_state.rendered_frames) {
+        if (event->frame_timestamp >= NP2_AUDIO86_DURATION_FRAMES ||
+            event->frame_timestamp < context->worker_state.rendered_frames) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP);
             return -1;
         }
         if (event->frame_timestamp != context->worker_state.rendered_frames) {
             return 0;
         }
-        if (async_apply_event(context, event) != 0 ||
+        if (async_apply_event(context, event) != 0) {
+            return -1;
+        }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+        if (async_test_yield_enabled(context,
+                                     NP2_AUDIO86_TEST_YIELD_BEFORE_EVENT_TAIL)) {
+            async_yield(context, false);
+        }
+        async_test_gate(context, NP2_AUDIO86_TEST_GATE_BEFORE_EVENT_TAIL,
+                        (size_t)event->sequence);
+#endif
+        if (
             np2audio86_event_ring_consume(&context->events) !=
                 NP2_AUDIO86_TRANSPORT_OK) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
@@ -1377,6 +1760,11 @@ static void *async_worker_thread(void *opaque)
     np2_sha256_init(&context->transport_sha);
     pcm_crc = np2_crc32_iso_hdlc_init();
     np2_sha256_init(&pcm_sha);
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    if (async_test_worker_fault(context) != 0) {
+        return NULL;
+    }
+#endif
     for (quantum = 0U; quantum < NP2_AUDIO86_QUANTA; ++quantum) {
         SINT32 mix[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
         size_t offset = 0U;
@@ -1386,16 +1774,28 @@ static void *async_worker_thread(void *opaque)
             uint64_t next_frame;
             const struct np2audio86_event *event = NULL;
             int peek_status;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+            if (async_test_worker_fault(context) != 0) {
+                return NULL;
+            }
+#endif
+            if (async_error(context) != NP2_AUDIO86_ASYNC_ERROR_NONE) {
+                return NULL;
+            }
             if (async_worker_apply_at_cursor(context) != 0) {
                 return NULL;
             }
             watermark = atomic_load_explicit(&context->committed_through_frame,
                                              memory_order_acquire);
+            if (async_validate_watermark(context, watermark) != 0) {
+                return NULL;
+            }
             if (context->worker_state.rendered_frames >= watermark) {
                 if (atomic_load_explicit(&context->producer_done,
                                          memory_order_acquire) &&
                     watermark < NP2_AUDIO86_DURATION_FRAMES) {
-                    async_fail(context, NP2_AUDIO86_ASYNC_ERROR_COMPLETION);
+                    async_fail(context,
+                               NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION);
                     return NULL;
                 }
                 if (async_worker_wait(context) != 0) {
@@ -1409,7 +1809,8 @@ static void *async_worker_thread(void *opaque)
             }
             peek_status = np2audio86_event_ring_peek(&context->events, &event);
             if (peek_status == NP2_AUDIO86_TRANSPORT_OK && event != NULL) {
-                if (event->frame_timestamp < context->worker_state.rendered_frames) {
+                if (event->frame_timestamp >= NP2_AUDIO86_DURATION_FRAMES ||
+                    event->frame_timestamp < context->worker_state.rendered_frames) {
                     async_fail(context, NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP);
                     return NULL;
                 }
@@ -1475,7 +1876,7 @@ static void *async_worker_thread(void *opaque)
         np2audio86_event_ring_occupancy(&context->events) != 0U ||
         np2audio86_byte_ring_occupancy(&context->pcm_bytes) != 0U ||
         context->worker_state.rendered_frames != NP2_AUDIO86_DURATION_FRAMES) {
-        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_COMPLETION);
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION);
         return NULL;
     }
     np2_sha256_final(&context->transport_sha,
@@ -1522,6 +1923,76 @@ static int async_oracle_equal(const struct np2audio86_fixture_result *actual,
     return 1;
 }
 
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+static int async_test_pthread_create(
+    struct np2audio86_async_context *context, pthread_t *thread,
+    void *(*entry)(void *), int producer)
+{
+    if (producer &&
+        async_test_take_fault(context, NP2_AUDIO86_TEST_FAULT_PRODUCER_CREATE)) {
+        return EAGAIN;
+    }
+    if (!producer &&
+        async_test_take_fault(context, NP2_AUDIO86_TEST_FAULT_WORKER_CREATE)) {
+        return EAGAIN;
+    }
+    return pthread_create(thread, NULL, entry, context);
+}
+
+static void async_test_observe(
+    const struct np2audio86_async_context *context,
+    struct np2audio86_async_test_observer *observer,
+    uint32_t expected_error, uint8_t producer_created,
+    uint8_t worker_created, uint8_t producer_reaped, uint8_t worker_reaped)
+{
+    if (observer == NULL) {
+        return;
+    }
+    memset(observer, 0, sizeof(*observer));
+    observer->expected_error = expected_error;
+    observer->observed_error = (uint32_t)async_error(context);
+    observer->injected = context->test_control != NULL &&
+                         atomic_load_explicit(
+                             &context->test_control->fault_injected,
+                             memory_order_acquire);
+    observer->detected = observer->injected &&
+                         observer->observed_error == expected_error;
+    observer->producer_created = producer_created;
+    observer->worker_created = worker_created;
+    observer->producer_reaped = producer_reaped;
+    observer->worker_reaped = worker_reaped;
+    observer->workload_success = context->result->passed;
+    observer->peer_unblocked = observer->detected &&
+                               (!producer_created || producer_reaped) &&
+                               (!worker_created || worker_reaped);
+    observer->later_error_attempted = context->worker_error_attempted ? 1U : 0U;
+    observer->producer_terminal = producer_created
+                                      ? atomic_load_explicit(
+                                            &context->producer_done,
+                                            memory_order_acquire)
+                                            ? NP2_AUDIO86_TEST_TERMINAL_COMPLETED
+                                            : NP2_AUDIO86_TEST_TERMINAL_ABORTED
+                                      : NP2_AUDIO86_TEST_TERMINAL_NOT_STARTED;
+    observer->worker_terminal = worker_created
+                                    ? atomic_load_explicit(
+                                          &context->worker_done,
+                                          memory_order_acquire)
+                                          ? NP2_AUDIO86_TEST_TERMINAL_COMPLETED
+                                          : NP2_AUDIO86_TEST_TERMINAL_ABORTED
+                                    : NP2_AUDIO86_TEST_TERMINAL_NOT_STARTED;
+    observer->event_residual = np2audio86_event_ring_occupancy(&context->events);
+    observer->byte_residual = np2audio86_byte_ring_occupancy(&context->pcm_bytes);
+}
+#else
+static int async_test_pthread_create(
+    struct np2audio86_async_context *context, pthread_t *thread,
+    void *(*entry)(void *), int producer)
+{
+    (void)producer;
+    return pthread_create(thread, NULL, entry, context);
+}
+#endif
+
 const char *np2audio86_async_mode_name(enum np2audio86_async_mode mode)
 {
     switch (mode) {
@@ -1555,12 +2026,26 @@ const char *np2audio86_async_error_name(uint32_t error)
     case NP2_AUDIO86_ASYNC_ERROR_WORKER: return "WORKER";
     case NP2_AUDIO86_ASYNC_ERROR_COMPLETION: return "COMPLETION";
     case NP2_AUDIO86_ASYNC_ERROR_LIVENESS: return "LIVENESS";
+    case NP2_AUDIO86_ASYNC_ERROR_DATA_LENGTH: return "DATA_LENGTH";
+    case NP2_AUDIO86_ASYNC_ERROR_DATA_AVAILABILITY: return "DATA_AVAILABILITY";
+    case NP2_AUDIO86_ASYNC_ERROR_WATERMARK: return "WATERMARK";
+    case NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION:
+        return "PREMATURE_COMPLETION";
+    case NP2_AUDIO86_ASYNC_ERROR_TRANSPORT_INVARIANT:
+        return "TRANSPORT_INVARIANT";
+    case NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH:
+        return "ORACLE_MISMATCH";
     }
     return "UNKNOWN";
 }
 
-int np2audio86_async_run(enum np2audio86_async_mode mode,
-                         struct np2audio86_async_result *result)
+static int np2audio86_async_run_internal(
+    enum np2audio86_async_mode mode, struct np2audio86_async_result *result
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    , struct np2audio86_async_test_control *test_control,
+    struct np2audio86_async_test_observer *observer
+#endif
+)
 {
     struct np2audio86_fixture_result expected;
     struct np2audio86_async_context *context;
@@ -1568,6 +2053,9 @@ int np2audio86_async_run(enum np2audio86_async_mode mode,
     pthread_t worker;
     bool producer_created = false;
     bool worker_created = false;
+    uint8_t producer_reaped = 0U;
+    uint8_t worker_reaped = 0U;
+    bool allow_worker_after_error = false;
     if (result == NULL || mode > NP2_AUDIO86_ASYNC_BYTE_TRANSPORT_PRESSURE) {
         return -1;
     }
@@ -1585,11 +2073,15 @@ int np2audio86_async_run(enum np2audio86_async_mode mode,
     }
     context->mode = mode;
     context->result = result;
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    context->test_control = test_control;
+#endif
     atomic_init(&context->first_error, NP2_AUDIO86_ASYNC_ERROR_NONE);
     atomic_init(&context->committed_through_frame, 0U);
     atomic_init(&context->producer_done, false);
     atomic_init(&context->producer_prefill_ready, false);
     atomic_init(&context->worker_done, false);
+    atomic_init(&context->published_event_count, 0U);
     np2audio86_event_ring_init(&context->events);
     np2audio86_byte_ring_init(&context->pcm_bytes);
     if (async_build_plan(context->plan, &context->plan_count) != 0 ||
@@ -1600,7 +2092,8 @@ int np2audio86_async_run(enum np2audio86_async_mode mode,
         return -1;
     }
     if (mode == NP2_AUDIO86_ASYNC_BYTE_TRANSPORT_PRESSURE) {
-        if (pthread_create(&producer, NULL, async_producer_thread, context) != 0) {
+        if (async_test_pthread_create(context, &producer,
+                                      async_producer_thread, 1) != 0) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
         } else {
             producer_created = true;
@@ -1610,29 +2103,44 @@ int np2audio86_async_run(enum np2audio86_async_mode mode,
                async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE) {
             sched_yield();
         }
-        if (async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE &&
-            pthread_create(&worker, NULL, async_worker_thread, context) == 0) {
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+        if (async_test_fault(
+                context, NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY) &&
+            async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE) {
+            async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+        }
+        allow_worker_after_error =
+            test_control != NULL &&
+            test_control->fault ==
+                NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY;
+#endif
+        if ((async_error(context) == NP2_AUDIO86_ASYNC_ERROR_NONE ||
+             allow_worker_after_error) &&
+            async_test_pthread_create(context, &worker, async_worker_thread, 0) ==
+                0) {
             worker_created = true;
         } else {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
         }
     } else {
-        if (pthread_create(&worker, NULL, async_worker_thread, context) != 0) {
+        if (async_test_pthread_create(context, &worker,
+                                      async_worker_thread, 0) != 0) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
         } else {
             worker_created = true;
         }
-        if (pthread_create(&producer, NULL, async_producer_thread, context) != 0) {
+        if (async_test_pthread_create(context, &producer,
+                                      async_producer_thread, 1) != 0) {
             async_fail(context, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
         } else {
             producer_created = true;
         }
     }
     if (producer_created) {
-        (void)pthread_join(producer, NULL);
+        producer_reaped = pthread_join(producer, NULL) == 0 ? 1U : 0U;
     }
     if (worker_created) {
-        (void)pthread_join(worker, NULL);
+        worker_reaped = pthread_join(worker, NULL) == 0 ? 1U : 0U;
     }
     result->first_error = atomic_load_explicit(&context->first_error,
                                                memory_order_acquire);
@@ -1648,11 +2156,148 @@ int np2audio86_async_run(enum np2audio86_async_mode mode,
                      np2audio86_event_ring_occupancy(&context->events) == 0U &&
                      np2audio86_byte_ring_occupancy(&context->pcm_bytes) == 0U;
     if (result->first_error == NP2_AUDIO86_ASYNC_ERROR_NONE && !result->passed) {
-        result->first_error = NP2_AUDIO86_ASYNC_ERROR_COMPLETION;
+        result->first_error = async_oracle_equal(&result->oracle, &expected)
+                                  ? NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION
+                                  : NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH;
     }
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+    async_test_observe(context, observer,
+                       test_control == NULL
+                           ? NP2_AUDIO86_ASYNC_ERROR_NONE
+                           : test_control->fault ==
+                                     NP2_AUDIO86_TEST_FAULT_DATA_ZERO ||
+                                 test_control->fault ==
+                                     NP2_AUDIO86_TEST_FAULT_DATA_UNALIGNED ||
+                                 test_control->fault ==
+                                     NP2_AUDIO86_TEST_FAULT_DATA_OVERSIZE
+                             ? NP2_AUDIO86_ASYNC_ERROR_DATA_LENGTH
+                             : test_control->fault ==
+                                       NP2_AUDIO86_TEST_FAULT_DATA_UNAVAILABLE
+                                 ? NP2_AUDIO86_ASYNC_ERROR_DATA_AVAILABILITY
+                                 : test_control->fault ==
+                                           NP2_AUDIO86_TEST_FAULT_WATERMARK_REGRESSION ||
+                                       test_control->fault ==
+                                           NP2_AUDIO86_TEST_FAULT_WATERMARK_OVER_END ||
+                                       test_control->fault ==
+                                           NP2_AUDIO86_TEST_FAULT_WATERMARK_PAST_EVENT ||
+                                       test_control->fault ==
+                                           NP2_AUDIO86_TEST_FAULT_INCOMPLETE_GROUP
+                                     ? NP2_AUDIO86_ASYNC_ERROR_WATERMARK
+                                     : test_control->fault ==
+                                               NP2_AUDIO86_TEST_FAULT_DONE_EARLY ||
+                                           test_control->fault ==
+                                               NP2_AUDIO86_TEST_FAULT_WITHHOLD_FINAL
+                                         ? NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION
+                                         : test_control->fault ==
+                                                   NP2_AUDIO86_TEST_FAULT_WORKER
+                                             ? NP2_AUDIO86_ASYNC_ERROR_WORKER
+                                             : test_control->fault ==
+                                                       NP2_AUDIO86_TEST_FAULT_FIRST_ERROR_IMMUTABILITY
+                                                 ? NP2_AUDIO86_ASYNC_ERROR_PRODUCER
+                                                 : test_control->fault ==
+                                                           NP2_AUDIO86_TEST_FAULT_PRODUCER_CREATE
+                                                     ? NP2_AUDIO86_ASYNC_ERROR_PRODUCER
+                                                     : test_control->fault ==
+                                                               NP2_AUDIO86_TEST_FAULT_WORKER_CREATE
+                                                         ? NP2_AUDIO86_ASYNC_ERROR_WORKER
+                                                         : test_control->fault ==
+                                                                       NP2_AUDIO86_TEST_FAULT_CUT_BEFORE_BYTES ||
+                                                                   test_control->fault ==
+                                                                       NP2_AUDIO86_TEST_FAULT_CUT_AFTER_BYTES ||
+                                                                   test_control->fault ==
+                                                                       NP2_AUDIO86_TEST_FAULT_CUT_AFTER_EVENT ||
+                                                                   test_control->fault ==
+                                                                       NP2_AUDIO86_TEST_FAULT_CUT_AFTER_WATERMARK
+                                                               ? NP2_AUDIO86_ASYNC_ERROR_PRODUCER
+                                                               : test_control->fault ==
+                                                                         NP2_AUDIO86_TEST_FAULT_DUPLICATE_SEQUENCE ||
+                                                                     test_control->fault ==
+                                                                         NP2_AUDIO86_TEST_FAULT_SKIPPED_SEQUENCE
+                                                                 ? NP2_AUDIO86_ASYNC_ERROR_SEQUENCE
+                                                                 : test_control->fault ==
+                                                                           NP2_AUDIO86_TEST_FAULT_TIMESTAMP_BEHIND ||
+                                                                       test_control->fault ==
+                                                                           NP2_AUDIO86_TEST_FAULT_TIMESTAMP_END
+                                                                     ? NP2_AUDIO86_ASYNC_ERROR_TIMESTAMP
+                                                                     : test_control->fault ==
+                                                                               NP2_AUDIO86_TEST_FAULT_INVALID_OPCODE ||
+                                                                           test_control->fault ==
+                                                                               NP2_AUDIO86_TEST_FAULT_RESERVED_OPCODE
+                                                                       ? NP2_AUDIO86_ASYNC_ERROR_OPCODE
+                                                                       : NP2_AUDIO86_ASYNC_ERROR_NONE,
+                       producer_created ? 1U : 0U, worker_created ? 1U : 0U,
+                       producer_reaped, worker_reaped);
+#else
+    (void)producer_reaped;
+    (void)worker_reaped;
+#endif
     free(context);
     return result->passed ? 0 : -1;
 }
+
+int np2audio86_async_run(enum np2audio86_async_mode mode,
+                         struct np2audio86_async_result *result)
+{
+    return np2audio86_async_run_internal(mode, result
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+                                         , NULL, NULL
+#endif
+    );
+}
+
+#if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
+int np2audio86_async_run_with_test_control(
+    enum np2audio86_async_mode mode,
+    struct np2audio86_async_test_control *control,
+    struct np2audio86_async_test_observer *observer,
+    struct np2audio86_async_result *result)
+{
+    if (control == NULL || observer == NULL) {
+        return -1;
+    }
+    return np2audio86_async_run_internal(mode, result, control, observer);
+}
+
+int np2audio86_async_test_prevalidate(unsigned case_id)
+{
+    struct np2audio86_event plan[NP2_AUDIO86_ASYNC_MAX_EVENTS];
+    size_t count = 0U;
+    if (async_build_plan(plan, &count) != 0) {
+        return -1;
+    }
+    switch (case_id) {
+    case 1U:
+        plan[1U].sequence = plan[0U].sequence;
+        if (async_validate_plan(plan, count) == 0 ||
+            async_build_plan(plan, &count) != 0) {
+            return -1;
+        }
+        plan[1U].sequence += 1U;
+        return async_validate_plan(plan, count) != 0 ? 0 : -1;
+    case 2U:
+        plan[8U].frame_timestamp = plan[7U].frame_timestamp - 1U;
+        if (async_validate_plan(plan, count) == 0) {
+            return -1;
+        }
+        if (async_build_plan(plan, &count) != 0) {
+            return -1;
+        }
+        plan[count - 1U].frame_timestamp = NP2_AUDIO86_DURATION_FRAMES;
+        return async_validate_plan(plan, count) != 0 ? 0 : -1;
+    case 3U:
+        plan[6U].payload = 0U;
+        return async_validate_plan(plan, count) != 0 ? 0 : -1;
+    case 4U:
+        plan[6U].payload = 2U;
+        return async_validate_plan(plan, count) != 0 ? 0 : -1;
+    case 5U:
+        plan[6U].payload = NP2_AUDIO86_ASYNC_MAX_DATA_RUN + 4U;
+        return async_validate_plan(plan, count) != 0 ? 0 : -1;
+    default:
+        return -1;
+    }
+}
+#endif
 
 #else
 
