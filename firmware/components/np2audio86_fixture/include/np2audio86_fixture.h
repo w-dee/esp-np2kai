@@ -5,7 +5,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <compiler.h>
 #include "np2_sha256.h"
+#include <sound/opngen.h>
+#include <sound/pcmmix.h>
+#include <sound/pcm86.h>
+#include <sound/psggen.h>
 
 #ifdef __cplusplus
 #include <atomic>
@@ -94,6 +99,55 @@ struct np2audio86_event {
     uint32_t payload;
 };
 
+/* Shared renderer state.  The state is deliberately concrete so the P4
+ * adapter can place it in a capability-selected allocation; no platform
+ * thread or allocator type crosses this boundary. */
+#define NP2_AUDIO86_FM_CHANNELS 6U
+#define NP2_AUDIO86_RHYTHM_TRACKS 6U
+#define NP2_AUDIO86_RHYTHM_MAX_SAMPLES 313U
+#define NP2_AUDIO86_PCM86_FIFO_BYTES PCM86_BUFSIZE
+#define NP2_AUDIO86_PCM86_REFILL_BYTES 32768U
+
+struct np2audio86_pcm86_feed {
+    _PCM86 pcm;
+    uint8_t source[NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES];
+    uint32_t source_frame;
+    uint64_t supplied;
+    uint32_t refills;
+    int32_t fifo_min;
+    int32_t fifo_max;
+    uint8_t underrun;
+};
+
+struct np2audio86_render_state {
+    _OPNGEN fm;
+    _PSGGEN psg;
+    struct {
+        PMIXHDR hdr;
+        PMIXTRK trk[NP2_AUDIO86_RHYTHM_TRACKS];
+    } rhythm;
+    PMIXTRK rhythm_tracks[NP2_AUDIO86_RHYTHM_TRACKS];
+    SINT16 rhythm_samples[NP2_AUDIO86_RHYTHM_TRACKS]
+                          [NP2_AUDIO86_RHYTHM_MAX_SAMPLES];
+    struct np2audio86_pcm86_feed pcm86;
+    SINT32 fm_scratch[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
+    SINT32 psg_scratch[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
+    SINT32 rhythm_scratch[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
+    SINT32 pcm86_scratch[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
+    SINT32 mix_scratch[NP2_AUDIO86_QUANTUM_FRAMES * 2U];
+    size_t next_event;
+    uint64_t rendered_frames;
+#if defined(NP2_AUDIO86_PROFILE)
+    uint64_t profile_opngen_us;
+    uint64_t profile_psggen_us;
+    uint64_t profile_rhythm_us;
+    uint64_t profile_pcm86_generation_us;
+    uint64_t profile_mix_us;
+    uint64_t (*profile_now_us)(void *opaque);
+    void *profile_clock_opaque;
+#endif
+};
+
 NP2_AUDIO86_STATIC_ASSERT(sizeof(struct np2audio86_event) == 24U,
                           "86H.3 Audio86Event must remain 24 bytes");
 
@@ -130,6 +184,10 @@ int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,
                                    const struct np2audio86_event *event);
 int np2audio86_event_ring_dequeue(struct np2audio86_event_ring *ring,
                                    struct np2audio86_event *event);
+int np2audio86_event_ring_peek(
+    const struct np2audio86_event_ring *ring,
+    const struct np2audio86_event **event);
+int np2audio86_event_ring_consume(struct np2audio86_event_ring *ring);
 uint32_t np2audio86_event_ring_occupancy(
     const struct np2audio86_event_ring *ring);
 
@@ -138,8 +196,44 @@ int np2audio86_byte_ring_push(struct np2audio86_byte_ring *ring,
                               const uint8_t *bytes, size_t count);
 int np2audio86_byte_ring_pop(struct np2audio86_byte_ring *ring,
                              uint8_t *bytes, size_t count);
+int np2audio86_byte_ring_copy(const struct np2audio86_byte_ring *ring,
+                              uint8_t *bytes, size_t count);
+int np2audio86_byte_ring_consume(struct np2audio86_byte_ring *ring,
+                                 size_t count);
 uint32_t np2audio86_byte_ring_occupancy(
     const struct np2audio86_byte_ring *ring);
+
+/* Portable plan and incremental renderer API shared by native and P4 paths. */
+int np2audio86_async_build_plan(struct np2audio86_event *plan,
+                                size_t *count);
+int np2audio86_async_validate_plan(const struct np2audio86_event *plan,
+                                   size_t count);
+int np2audio86_render_init(struct np2audio86_render_state *state);
+int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
+                                       const uint8_t *source);
+void np2audio86_render_set_profile_clock(
+    struct np2audio86_render_state *state,
+    uint64_t (*now_us)(void *opaque), void *opaque);
+int np2audio86_render_apply_event(struct np2audio86_render_state *state,
+                                  const struct np2audio86_event *event);
+int np2audio86_render_pcm86_push(struct np2audio86_render_state *state,
+                                 const uint8_t *bytes, size_t count);
+int np2audio86_render_span(struct np2audio86_render_state *state,
+                           SINT32 *mix, size_t frames,
+                           struct np2audio86_fixture_result *result);
+int np2audio86_render_quantum(struct np2audio86_render_state *state,
+                              const struct np2audio86_event *plan,
+                              size_t plan_count, uint8_t *canonical,
+                              size_t canonical_bytes,
+                              struct np2audio86_fixture_result *result);
+void np2audio86_fixture_hash_control(struct np2audio86_fixture_result *result);
+void np2audio86_fixture_hash_source(struct np2audio86_fixture_result *result,
+                                    const uint8_t *source);
+int np2audio86_fixture_generate_source(uint8_t *source);
+int np2audio86_fixture_control_matches_golden(
+    const struct np2audio86_fixture_result *result);
+int np2audio86_fixture_source_matches_golden(
+    const struct np2audio86_fixture_result *result);
 
 enum np2audio86_async_mode {
     NP2_AUDIO86_ASYNC_PRODUCER_FAST_WORKER_YIELD = 0,

@@ -31,4 +31,13 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -fdata-sections
     -Wall
     -Wextra
+    -Wno-error=format
     -Werror=implicit-function-declaration)
+
+if(P4_NANO_AUDIO86_CAPACITY_PROFILE)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
+endif()
+
+if(P4_AUDIO86_PROFILE_MODE OR "$ENV{P4_AUDIO86_PROFILE_MODE}" STREQUAL "1")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE NP2_AUDIO86_PROFILE=1)
+endif()

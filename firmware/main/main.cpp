@@ -8,7 +8,9 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #endif
-#if defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_AUDIO86_CAPACITY_PROFILE)
+#include "p4_nano_audio86_capacity/p4_nano_audio86_capacity.hpp"
+#elif defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
 #include "p4_nano_audio_benchmark.hpp"
 #elif defined(P4_NANO_AUDIO_I2S_OPNGEN_PROFILE)
 #include "p4_nano_audio_i2s_opngen/p4_nano_audio_i2s_opngen.hpp"
@@ -128,7 +130,8 @@ esp_err_t route_display_benchmark_application_console()
 } // namespace
 #endif
 
-#if !defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE) && \
+#if !defined(P4_NANO_AUDIO86_CAPACITY_PROFILE) && \
+    !defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_AUDIO_I2S_OPNGEN_PROFILE) && \
     !defined(P4_NANO_AUDIO_I2S_TONE_PROFILE) && \
     !defined(P4_NANO_REFRESH_VISUAL_PROFILE) && \
@@ -202,7 +205,15 @@ extern "C" void app_main(void)
     std::printf("ESP-NP2KAI HELLO WORLD OK\n");
     std::fflush(stdout);
 
-#if defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
+#if defined(P4_NANO_AUDIO86_CAPACITY_PROFILE)
+    const esp_err_t profile_status = p4_nano_audio86_capacity::run();
+    if (profile_status != ESP_OK) {
+        std::printf("P4_NANO_AUDIO86_CAPACITY_STATUS=FAIL err=%s\n",
+                    esp_err_to_name(profile_status));
+    }
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
     const esp_err_t audio_result = p4_nano_audio_benchmark::run();
     std::printf("P4_AUDIO_ONLY_BENCHMARK_RESULT=%s\n",
                 audio_result == ESP_OK ? "PASS" : "FAIL");
