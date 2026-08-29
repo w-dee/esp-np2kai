@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-only-benchmark | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -26,6 +26,7 @@ display_transform_diagnostic=0
 display_transform_diagnostic_variant=""
 display_transform_diagnostic_rotation=""
 audio_only_benchmark=0
+audio_i2s_opngen=0
 audio_i2s_tone=0
 live_display=0
 live_display_variant=""
@@ -165,6 +166,10 @@ while (($# > 0)); do
             ;;
         --audio-only-benchmark)
             audio_only_benchmark=1
+            shift
+            ;;
+        --audio-i2s-opngen)
+            audio_i2s_opngen=1
             shift
             ;;
         --audio-i2s-tone)
@@ -408,7 +413,7 @@ if [[ -n "${refresh_visual_profile}" ]]; then
     refresh_visual_selected=1
     refresh_visual_board=1
 fi
-if (( display_foundation + refresh_visual_selected + display_transform_diagnostic + audio_i2s_tone + audio_only_benchmark + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + exact2x_grouped_store_benchmark + exact2x_dma2d_correctness + exact2x_dma2d_benchmark + ppa_pie_overlap_benchmark + ppa_pie_burst_benchmark + pie_preemption_correctness + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
+if (( display_foundation + refresh_visual_selected + display_transform_diagnostic + audio_i2s_opngen + audio_i2s_tone + audio_only_benchmark + live_display + live_display_motion_validation + live_display_benchmark + live_display_transform_isolated_benchmark + transform_isolated_compute_control_benchmark + transform_isolated_psram_read_control_benchmark + ppa_rotation_benchmark + ppa_internal_tile_benchmark + exact2x_scaler_benchmark + exact2x_internal_source_benchmark + exact2x_grouped_store_benchmark + exact2x_dma2d_correctness + exact2x_dma2d_benchmark + ppa_pie_overlap_benchmark + ppa_pie_burst_benchmark + pie_preemption_correctness + real_runtime + runtime_validation + keyboard_validation + usb_keyboard_validation > 1 )); then
     printf 'ERROR: display, live display, and runtime composition profiles are mutually exclusive\n' >&2
     exit 2
 fi
@@ -763,6 +768,17 @@ if (( audio_i2s_tone )) &&
     exit 2
 fi
 
+if (( audio_i2s_opngen )) &&
+   [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
+    printf 'ERROR: --audio-i2s-opngen requires --variant p4-v1x --board p4-nano\n' >&2
+    exit 2
+fi
+
+if (( audio_i2s_opngen && esp_emu_test )); then
+    printf 'ERROR: --audio-i2s-opngen is hardware-only and cannot use --esp-emu-test\n' >&2
+    exit 2
+fi
+
 if [[ -z "${audio_opt}" ]]; then
     if (( audio_only_benchmark )); then
         audio_opt=o2
@@ -848,6 +864,8 @@ if [[ -z "${build_dir}" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-pie-preemption-correctness"
     elif (( audio_i2s_tone )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio-i2s-tone"
+    elif (( audio_i2s_opngen )); then
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio-i2s-opngen"
     elif (( audio_only_benchmark )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio-only-benchmark"
     elif (( ppa_pie_burst_benchmark )); then
@@ -946,6 +964,11 @@ if (( audio_i2s_tone )); then
 else
     unset P4_NANO_AUDIO_I2S_TONE_PROFILE
 fi
+if (( audio_i2s_opngen )); then
+    export P4_NANO_AUDIO_I2S_OPNGEN_PROFILE=1
+else
+    unset P4_NANO_AUDIO_I2S_OPNGEN_PROFILE
+fi
 if [[ -n "${refresh_visual_profile}" ]]; then
     refresh_visual_variant="${variant}"
 fi
@@ -974,6 +997,9 @@ cmake_args=(
     -D "P4_NANO_AUDIO_I2S_TONE_PROFILE=${audio_i2s_tone}"
     -D "P4_NANO_AUDIO_I2S_TONE_BOARD=${audio_i2s_tone}"
     -D "P4_NANO_AUDIO_I2S_TONE_VARIANT=${variant}"
+    -D "P4_NANO_AUDIO_I2S_OPNGEN_PROFILE=${audio_i2s_opngen}"
+    -D "P4_NANO_AUDIO_I2S_OPNGEN_BOARD=${audio_i2s_opngen}"
+    -D "P4_NANO_AUDIO_I2S_OPNGEN_VARIANT=${variant}"
     -D "P4_NANO_AUDIO_OPT=${audio_opt}"
     -D "P4_NANO_LIVE_DISPLAY_PROFILE=${live_display}"
     -D "P4_NANO_LIVE_DISPLAY_BOARD=${live_display}"
@@ -1312,8 +1338,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s audio_i2s_tone=%s audio_only_benchmark=%s audio_opt=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${audio_i2s_tone}" "${audio_only_benchmark}" "${audio_opt}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s audio_i2s_opngen=%s audio_i2s_tone=%s audio_only_benchmark=%s audio_opt=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${audio_i2s_opngen}" "${audio_i2s_tone}" "${audio_only_benchmark}" "${audio_opt}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
     "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${exact2x_grouped_store_benchmark}" "${ppa_pie_overlap_benchmark}" "${ppa_pie_burst_benchmark}" "${pie_preemption_correctness}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"
