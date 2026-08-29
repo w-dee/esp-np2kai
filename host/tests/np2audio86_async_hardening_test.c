@@ -309,7 +309,10 @@ static int ring_byte_stress(void)
 struct event_stress_context {
     struct np2audio86_event_ring ring;
     atomic_bool failed;
-    atomic_bool full_seen;
+    atomic_bool full_observed;
+    atomic_bool consumer_release;
+    atomic_uint full_attempt_occupancy;
+    atomic_int full_attempt_result;
 };
 
 static struct np2audio86_event event_stress_make(uint32_t sequence)
@@ -333,10 +336,36 @@ static void *event_stress_producer(void *opaque)
          ++sequence) {
         const struct np2audio86_event event = event_stress_make(sequence);
         int status;
+        if (sequence == NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
+            const uint32_t occupancy = np2audio86_event_ring_occupancy(
+                &context->ring);
+            atomic_store_explicit(&context->full_attempt_occupancy,
+                                  occupancy, memory_order_release);
+            status = np2audio86_event_ring_enqueue(&context->ring, &event);
+            atomic_store_explicit(&context->full_attempt_result, status,
+                                  memory_order_release);
+            if (occupancy != NP2_AUDIO86_ASYNC_EVENT_CAPACITY ||
+                status != NP2_AUDIO86_TRANSPORT_FULL) {
+                atomic_store_explicit(&context->failed, true,
+                                      memory_order_release);
+                return NULL;
+            }
+            atomic_store_explicit(&context->full_observed, true,
+                                  memory_order_release);
+            while (!atomic_load_explicit(&context->consumer_release,
+                                         memory_order_acquire) &&
+                   !atomic_load_explicit(&context->failed,
+                                         memory_order_acquire)) {
+                sched_yield();
+            }
+            if (atomic_load_explicit(&context->failed, memory_order_acquire)) {
+                return NULL;
+            }
+        }
         do {
             status = np2audio86_event_ring_enqueue(&context->ring, &event);
             if (status == NP2_AUDIO86_TRANSPORT_FULL) {
-                atomic_store_explicit(&context->full_seen, true,
+                atomic_store_explicit(&context->full_observed, true,
                                       memory_order_release);
                 sched_yield();
             } else if (status != NP2_AUDIO86_TRANSPORT_OK) {
@@ -354,6 +383,14 @@ static void *event_stress_consumer(void *opaque)
 {
     struct event_stress_context *context = opaque;
     uint32_t sequence;
+    while (!atomic_load_explicit(&context->consumer_release,
+                                 memory_order_acquire) &&
+           !atomic_load_explicit(&context->failed, memory_order_acquire)) {
+        sched_yield();
+    }
+    if (atomic_load_explicit(&context->failed, memory_order_acquire)) {
+        return NULL;
+    }
     for (sequence = 0U; sequence < EVENT_STRESS_EVENTS; ++sequence) {
         struct np2audio86_event actual;
         const struct np2audio86_event expected = event_stress_make(sequence);
@@ -391,7 +428,10 @@ static int ring_event_stress(void)
     atomic_store_explicit(&context.ring.tail, UINT32_MAX - 63U,
                           memory_order_relaxed);
     atomic_init(&context.failed, false);
-    atomic_init(&context.full_seen, false);
+    atomic_init(&context.full_observed, false);
+    atomic_init(&context.consumer_release, false);
+    atomic_init(&context.full_attempt_occupancy, 0U);
+    atomic_init(&context.full_attempt_result, NP2_AUDIO86_TRANSPORT_EMPTY);
     for (sequence = 0U; sequence < NP2_AUDIO86_ASYNC_EVENT_CAPACITY;
          ++sequence) {
         const struct np2audio86_event event = event_stress_make(sequence);
@@ -407,6 +447,23 @@ static int ring_event_stress(void)
     if (!producer_started || !consumer_started) {
         atomic_store_explicit(&context.failed, true, memory_order_release);
     }
+    while (producer_started && consumer_started &&
+           !atomic_load_explicit(&context.full_observed, memory_order_acquire) &&
+           !atomic_load_explicit(&context.failed, memory_order_acquire)) {
+        sched_yield();
+    }
+    if (producer_started && consumer_started &&
+        (!atomic_load_explicit(&context.full_observed, memory_order_acquire) ||
+         atomic_load_explicit(&context.full_attempt_occupancy,
+                              memory_order_acquire) !=
+             NP2_AUDIO86_ASYNC_EVENT_CAPACITY ||
+         atomic_load_explicit(&context.full_attempt_result,
+                              memory_order_acquire) !=
+             NP2_AUDIO86_TRANSPORT_FULL)) {
+        atomic_store_explicit(&context.failed, true, memory_order_release);
+    }
+    atomic_store_explicit(&context.consumer_release, true,
+                          memory_order_release);
     if (producer_started) {
         (void)pthread_join(producer, NULL);
     }
@@ -415,7 +472,8 @@ static int ring_event_stress(void)
     }
     return producer_started && consumer_started &&
                    !atomic_load_explicit(&context.failed, memory_order_acquire) &&
-                   atomic_load_explicit(&context.full_seen, memory_order_acquire) &&
+                   atomic_load_explicit(&context.full_observed,
+                                        memory_order_acquire) &&
                    np2audio86_event_ring_occupancy(&context.ring) == 0U
                ? 0
                : 1;
