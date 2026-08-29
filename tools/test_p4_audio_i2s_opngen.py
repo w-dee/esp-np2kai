@@ -192,6 +192,17 @@ def source_digest(name: str) -> str:
 
 
 class A34BoundaryTests(unittest.TestCase):
+    def test_context_allocation_failure_is_fail_closed(self) -> None:
+        run_start = SOURCE.index("static bool run_workload")
+        run = SOURCE[run_start:SOURCE.index("\n} // namespace", run_start)]
+        allocation_failure = run.index("if (ctx == nullptr)")
+        task_creation = run.index("xTaskCreatePinnedToCore")
+        self.assertLess(allocation_failure, task_creation)
+        self.assertNotIn("successful = true", run[allocation_failure:task_creation])
+        self.assertEqual(run.count("heap_caps_free(ctx);"), 1)
+        self.assertEqual(run.count("ctx->~Context();"), 1)
+        self.assertLess(run.index("ctx->~Context();"), run.index("heap_caps_free(ctx);"))
+
     def test_exact_write_and_identity(self) -> None:
         result = run_workload(5)
         self.assertEqual(result["complete"], 5)

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <utility>
 
 #include "driver/gpio.h"
@@ -161,6 +162,9 @@ struct Context {
     uint64_t expected_slot_frame_offset = 0U;
     uint32_t prefill_actual = 0U;
 };
+
+static_assert(sizeof(Context) == 9112U,
+              "A3 Context layout changed; refresh the placement contract");
 
 static const Workload kRetro = {
     "RETROFM", true, NP2_OPNGEN_SYNTHETIC_LIGHT, 0U,
@@ -661,168 +665,211 @@ static void print_latency(Context *ctx)
 
 static bool run_workload(const Workload *workload)
 {
-    Context ctx{};
-    ctx.workload = workload;
-    ctx.expected_blocks = static_cast<uint32_t>(workload->expected.frames / kQuantumFrames);
-    ctx.metrics.latency_ticks = static_cast<uint32_t *>(
-        heap_caps_calloc(ctx.expected_blocks > kMaxBlocks ? kMaxBlocks : ctx.expected_blocks,
+    const size_t context_bytes = sizeof(Context);
+    const uint32_t context_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t internal_free_before = heap_caps_get_free_size(context_caps);
+    const size_t internal_largest_before =
+        heap_caps_get_largest_free_block(context_caps);
+    if (internal_largest_before < context_bytes) {
+        std::printf("P4_AUDIO_I2S_OPNGEN_CONTEXT_HEAP workload=%s context_bytes=%zu"
+                    " internal_free_before=%zu internal_largest_before=%zu"
+                    " allocation=SKIPPED result=FAIL\n",
+                    workload->name, context_bytes, internal_free_before,
+                    internal_largest_before);
+        return false;
+    }
+    Context *ctx = static_cast<Context *>(
+        heap_caps_calloc(1U, context_bytes, context_caps));
+    if (ctx == nullptr) {
+        const size_t internal_free_after = heap_caps_get_free_size(context_caps);
+        const size_t internal_largest_after =
+            heap_caps_get_largest_free_block(context_caps);
+        std::printf("P4_AUDIO_I2S_OPNGEN_CONTEXT_HEAP workload=%s context_bytes=%zu"
+                    " internal_free_before=%zu internal_largest_before=%zu"
+                    " internal_free_after=%zu internal_largest_after=%zu"
+                    " allocation=FAIL result=FAIL\n",
+                    workload->name, context_bytes, internal_free_before,
+                    internal_largest_before, internal_free_after,
+                    internal_largest_after);
+        return false;
+    }
+    /* The zeroed allocation provides the required heap placement; construct
+     * the C++ members in place so their default state remains identical to
+     * the former automatic Context{} object. */
+    ctx = new (ctx) Context{};
+    const size_t internal_free_after = heap_caps_get_free_size(context_caps);
+    const size_t internal_largest_after =
+        heap_caps_get_largest_free_block(context_caps);
+    std::printf("P4_AUDIO_I2S_OPNGEN_CONTEXT_HEAP workload=%s context_bytes=%zu"
+                " internal_free_before=%zu internal_largest_before=%zu"
+                " internal_free_after=%zu internal_largest_after=%zu"
+                " allocation=PASS result=PASS\n",
+                workload->name, context_bytes, internal_free_before,
+                internal_largest_before, internal_free_after,
+                internal_largest_after);
+    ctx->workload = workload;
+    ctx->expected_blocks = static_cast<uint32_t>(workload->expected.frames / kQuantumFrames);
+    ctx->metrics.latency_ticks = static_cast<uint32_t *>(
+        heap_caps_calloc(ctx->expected_blocks > kMaxBlocks ? kMaxBlocks : ctx->expected_blocks,
                          sizeof(uint32_t), MALLOC_CAP_INTERNAL));
-    np2_sha256_init(&ctx.generated.sha);
-    np2_sha256_init(&ctx.submitted.sha);
-    np2opngen_spsc_init(&ctx.events);
-    np2opngen_pcm_ring_init(&ctx.ring);
-    np2opngen_e1b_control_init(&ctx.control);
+    np2_sha256_init(&ctx->generated.sha);
+    np2_sha256_init(&ctx->submitted.sha);
+    np2opngen_spsc_init(&ctx->events);
+    np2opngen_pcm_ring_init(&ctx->ring);
+    np2opngen_e1b_control_init(&ctx->control);
     bool successful = false;
     uint8_t mute = 0xffU;
     uint64_t occupancy_min = 0U;
     const struct np2opngen_e1b_observer observer{
         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
         worker_render_begin, worker_opngen_begin, worker_opngen_end,
-        nullptr, nullptr, &ctx, true};
-    if (ctx.metrics.latency_ticks == nullptr || !configure_i2s_and_codec(&ctx)) {
-        fail(&ctx);
+        nullptr, nullptr, ctx, true};
+    if (ctx->metrics.latency_ticks == nullptr || !configure_i2s_and_codec(ctx)) {
+        fail(ctx);
         goto cleanup;
     }
     {
-        const struct np2opngen_e1b_pcm_sink sink{ring_sink_write, &ctx, ring_sink_finish};
+        const struct np2opngen_e1b_pcm_sink sink{ring_sink_write, ctx, ring_sink_finish};
         if (np2opngen_e1b_worker_init_with_sink(
-                &ctx.worker, &ctx.events, &ctx.control, workload->expected.frames,
+                &ctx->worker, &ctx->events, &ctx->control, workload->expected.frames,
                 0U, workload->expected.events, &sink) != 0) {
-            fail(&ctx);
+            fail(ctx);
             goto cleanup;
         }
     }
-    np2opngen_e1b_worker_set_observer(&ctx.worker, &observer);
-    ctx.pcm_space = xSemaphoreCreateBinary();
-    ctx.prefill_ready = xSemaphoreCreateBinary();
-    ctx.consumer_start = xSemaphoreCreateBinary();
-    ctx.worker_terminal = xSemaphoreCreateBinary();
-    ctx.producer_terminal = xSemaphoreCreateBinary();
-    ctx.consumer_terminal = xSemaphoreCreateBinary();
-    if (ctx.pcm_space == nullptr || ctx.prefill_ready == nullptr ||
-        ctx.consumer_start == nullptr || ctx.worker_terminal == nullptr ||
-        ctx.producer_terminal == nullptr || ctx.consumer_terminal == nullptr)
+    np2opngen_e1b_worker_set_observer(&ctx->worker, &observer);
+    ctx->pcm_space = xSemaphoreCreateBinary();
+    ctx->prefill_ready = xSemaphoreCreateBinary();
+    ctx->consumer_start = xSemaphoreCreateBinary();
+    ctx->worker_terminal = xSemaphoreCreateBinary();
+    ctx->producer_terminal = xSemaphoreCreateBinary();
+    ctx->consumer_terminal = xSemaphoreCreateBinary();
+    if (ctx->pcm_space == nullptr || ctx->prefill_ready == nullptr ||
+        ctx->consumer_start == nullptr || ctx->worker_terminal == nullptr ||
+        ctx->producer_terminal == nullptr || ctx->consumer_terminal == nullptr)
         goto cleanup;
-    if (xTaskCreatePinnedToCore(worker_task, "p4_i2s_worker", 8192, &ctx,
-                                kWorkerPriority, &ctx.worker_task, kWorkerCore) != pdPASS)
+    if (xTaskCreatePinnedToCore(worker_task, "p4_i2s_worker", 8192, ctx,
+                                kWorkerPriority, &ctx->worker_task, kWorkerCore) != pdPASS)
         goto cleanup;
-    if (xTaskCreatePinnedToCore(producer_task, "p4_i2s_producer", 8192, &ctx,
-                                kProducerPriority, &ctx.producer_task, kProducerCore) != pdPASS)
+    if (xTaskCreatePinnedToCore(producer_task, "p4_i2s_producer", 8192, ctx,
+                                kProducerPriority, &ctx->producer_task, kProducerCore) != pdPASS)
         goto cleanup;
-    if (xTaskCreatePinnedToCore(consumer_task, "p4_i2s_consumer", 8192, &ctx,
-                                kConsumerPriority, &ctx.consumer_task, kConsumerCore) != pdPASS)
+    if (xTaskCreatePinnedToCore(consumer_task, "p4_i2s_consumer", 8192, ctx,
+                                kConsumerPriority, &ctx->consumer_task, kConsumerCore) != pdPASS)
         goto cleanup;
-    if (xSemaphoreTake(ctx.prefill_ready, pdMS_TO_TICKS(120000U)) != pdTRUE ||
-        ctx.failed.load(std::memory_order_acquire)) goto cleanup;
-    ctx.prefill_actual = np2opngen_pcm_ring_occupancy(&ctx.ring);
+    if (xSemaphoreTake(ctx->prefill_ready, pdMS_TO_TICKS(120000U)) != pdTRUE ||
+        ctx->failed.load(std::memory_order_acquire)) goto cleanup;
+    ctx->prefill_actual = np2opngen_pcm_ring_occupancy(&ctx->ring);
     std::printf("P4_AUDIO_I2S_OPNGEN_PREFILL workload=%s mode=REAL_I2S target=%u actual=%u result=%s\n",
                 workload->name, static_cast<unsigned>(kPrefillTarget),
-                static_cast<unsigned>(ctx.prefill_actual),
-                ctx.prefill_actual >= kPrefillTarget ? "PASS" : "FAIL");
-    if (ctx.prefill_actual < kPrefillTarget) goto cleanup;
+                static_cast<unsigned>(ctx->prefill_actual),
+                ctx->prefill_actual >= kPrefillTarget ? "PASS" : "FAIL");
+    if (ctx->prefill_actual < kPrefillTarget) goto cleanup;
     std::printf("P4_AUDIO_I2S_OPNGEN_STARTUP_PCM workload=%s first_frame_offset=0 dropped_frames=0 result=PASS\n",
                 workload->name);
-    if (i2s_channel_enable(ctx.tx) != ESP_OK) goto cleanup;
-    ctx.i2s_enabled = true;
+    if (i2s_channel_enable(ctx->tx) != ESP_OK) goto cleanup;
+    ctx->i2s_enabled = true;
     std::printf("P4_AUDIO_I2S_OPNGEN_I2S_ENABLE result=ESP_OK\n");
     if (p4_nano_board::pa_service_enable() != ESP_OK) goto cleanup;
     std::printf("P4_AUDIO_I2S_OPNGEN_PA transition=HIGH gpio=53 result=ESP_OK\n");
     vTaskDelay(kPaSettle);
     std::printf("P4_AUDIO_I2S_OPNGEN_PA_SETTLE duration_ms=150 result=ESP_OK\n");
-    if (codec_mute(ctx.codec, false) != ESP_OK) goto cleanup;
-    if (codec_read(ctx.codec, kDacMuteRegister, &mute) != ESP_OK ||
+    if (codec_mute(ctx->codec, false) != ESP_OK) goto cleanup;
+    if (codec_read(ctx->codec, kDacMuteRegister, &mute) != ESP_OK ||
         (mute & kMuteMask) != 0U) goto cleanup;
     std::printf("P4_AUDIO_I2S_OPNGEN_CODEC_UNMUTE_READBACK expected=0x00 actual=0x%02x result=ESP_OK\n",
                 static_cast<unsigned>(mute & kMuteMask));
-    xSemaphoreGive(ctx.consumer_start);
-    (void)xSemaphoreTake(ctx.worker_terminal, pdMS_TO_TICKS(120000U));
-    (void)xSemaphoreTake(ctx.producer_terminal, pdMS_TO_TICKS(120000U));
-    (void)xSemaphoreTake(ctx.consumer_terminal, pdMS_TO_TICKS(120000U));
-    if (!ctx.worker_done.load(std::memory_order_acquire) ||
-        !ctx.producer_done.load(std::memory_order_acquire) ||
-        !ctx.consumer_done.load(std::memory_order_acquire)) goto cleanup;
-    if (!ctx.producer_trace_valid || ctx.producer_count != workload->expected.events ||
-        !event_identity_ok(&ctx) || !final_identities_ok(&ctx) ||
-        np2opngen_pcm_ring_occupancy(&ctx.ring) != 0U ||
-        ctx.worker.sequence_errors != 0U ||
-        ctx.metrics.underruns != 0U || ctx.metrics.sequence_errors != 0U ||
-        ctx.metrics.frame_offset_errors != 0U || ctx.metrics.overrun != 0U ||
-        ctx.metrics.dropped != 0U || ctx.metrics.partial != 0U ||
-        ctx.metrics.timeout != 0U || ctx.metrics.errors != 0U) goto cleanup;
-    print_latency(&ctx);
-    occupancy_min = ctx.metrics.occupancy_min == UINT64_MAX
-        ? 0U : ctx.metrics.occupancy_min;
+    xSemaphoreGive(ctx->consumer_start);
+    (void)xSemaphoreTake(ctx->worker_terminal, pdMS_TO_TICKS(120000U));
+    (void)xSemaphoreTake(ctx->producer_terminal, pdMS_TO_TICKS(120000U));
+    (void)xSemaphoreTake(ctx->consumer_terminal, pdMS_TO_TICKS(120000U));
+    if (!ctx->worker_done.load(std::memory_order_acquire) ||
+        !ctx->producer_done.load(std::memory_order_acquire) ||
+        !ctx->consumer_done.load(std::memory_order_acquire)) goto cleanup;
+    if (!ctx->producer_trace_valid || ctx->producer_count != workload->expected.events ||
+        !event_identity_ok(ctx) || !final_identities_ok(ctx) ||
+        np2opngen_pcm_ring_occupancy(&ctx->ring) != 0U ||
+        ctx->worker.sequence_errors != 0U ||
+        ctx->metrics.underruns != 0U || ctx->metrics.sequence_errors != 0U ||
+        ctx->metrics.frame_offset_errors != 0U || ctx->metrics.overrun != 0U ||
+        ctx->metrics.dropped != 0U || ctx->metrics.partial != 0U ||
+        ctx->metrics.timeout != 0U || ctx->metrics.errors != 0U) goto cleanup;
+    print_latency(ctx);
+    occupancy_min = ctx->metrics.occupancy_min == UINT64_MAX
+        ? 0U : ctx->metrics.occupancy_min;
     std::printf("P4_AUDIO_I2S_OPNGEN_RING workload=%s mode=REAL_I2S capacity=8 prefill_target=4 prefill_actual=%u pre_dequeue_occupancy_min=%" PRIu64
                 " pre_dequeue_occupancy_max=%" PRIu64 " final_occupancy=0 sequence_errors=%" PRIu64
                 " frame_offset_errors=%" PRIu64 " overrun=%" PRIu64 " dropped=%" PRIu64
                 " worker_sequence_errors=%" PRIu64 " i2s_consumer_underrun_count=%" PRIu64 " occupancy_hist=",
-                workload->name, static_cast<unsigned>(ctx.prefill_actual), occupancy_min,
-                ctx.metrics.occupancy_max, ctx.metrics.sequence_errors,
-                ctx.metrics.frame_offset_errors, ctx.metrics.overrun, ctx.metrics.dropped,
-                ctx.worker.sequence_errors, ctx.metrics.underruns);
+                workload->name, static_cast<unsigned>(ctx->prefill_actual), occupancy_min,
+                ctx->metrics.occupancy_max, ctx->metrics.sequence_errors,
+                ctx->metrics.frame_offset_errors, ctx->metrics.overrun, ctx->metrics.dropped,
+                ctx->worker.sequence_errors, ctx->metrics.underruns);
     for (size_t i = 0U; i <= NP2_OPNGEN_PCM_RING_CAPACITY; ++i) {
         if (i != 0U) std::printf(",");
-        std::printf("%" PRIu64, ctx.metrics.occupancy_hist[i]);
+        std::printf("%" PRIu64, ctx->metrics.occupancy_hist[i]);
     }
     std::printf("\n");
     std::printf("P4_AUDIO_I2S_OPNGEN_WRITES workload=%s mode=REAL_I2S complete_write_count=%" PRIu64
                 " partial_write_count=%" PRIu64 " timeout_count=%" PRIu64
                 " i2s_error_count=%" PRIu64 " result=%s\n", workload->name,
-                ctx.metrics.complete, ctx.metrics.partial, ctx.metrics.timeout,
-                ctx.metrics.errors,
-                (ctx.metrics.partial == 0U && ctx.metrics.timeout == 0U &&
-                 ctx.metrics.errors == 0U) ? "PASS" : "FAIL");
+                ctx->metrics.complete, ctx->metrics.partial, ctx->metrics.timeout,
+                ctx->metrics.errors,
+                (ctx->metrics.partial == 0U && ctx->metrics.timeout == 0U &&
+                 ctx->metrics.errors == 0U) ? "PASS" : "FAIL");
     std::printf("P4_AUDIO_I2S_OPNGEN_BACKPRESSURE workload=%s mode=REAL_I2S full_wait_count=%" PRIu64
                 " full_wait_ticks=%" PRIu64 " full_wait_max_ticks=%u\n", workload->name,
-                ctx.metrics.full_wait_count, ctx.metrics.full_wait_ticks,
-                static_cast<unsigned>(ctx.metrics.full_wait_max_ticks));
+                ctx->metrics.full_wait_count, ctx->metrics.full_wait_ticks,
+                static_cast<unsigned>(ctx->metrics.full_wait_max_ticks));
     std::printf("P4_AUDIO_I2S_OPNGEN_COMPUTE workload=%s mode=REAL_I2S opngen_ticks=%" PRIu64
                 " compute_ticks=%" PRIu64 " i2s_wait_separate=YES\n", workload->name,
-                ctx.metrics.opngen_ticks, ctx.metrics.compute_ticks);
+                ctx->metrics.opngen_ticks, ctx->metrics.compute_ticks);
     successful = true;
 
 cleanup:
-    if (!successful) fail(&ctx);
+    if (!successful) fail(ctx);
     /* Quiesce all task users before tearing down the shared hardware handles. */
-    if (ctx.worker_task != nullptr) vTaskDelete(ctx.worker_task);
-    if (ctx.producer_task != nullptr) vTaskDelete(ctx.producer_task);
-    if (ctx.consumer_task != nullptr) vTaskDelete(ctx.consumer_task);
+    if (ctx->worker_task != nullptr) vTaskDelete(ctx->worker_task);
+    if (ctx->producer_task != nullptr) vTaskDelete(ctx->producer_task);
+    if (ctx->consumer_task != nullptr) vTaskDelete(ctx->consumer_task);
     std::printf("P4_AUDIO_I2S_OPNGEN_LIFECYCLE workload=%s mode=REAL_I2S states=Init>Prefill>I2sReady>Running>ProducerDone>Draining>I2sDrain>Complete tasks_quiesced=1 result=ESP_OK\n",
                 workload->name);
-    if (ctx.pa_ready) {
+    if (ctx->pa_ready) {
         (void)p4_nano_board::pa_service_disable();
         std::printf("P4_AUDIO_I2S_OPNGEN_PA transition=LOW gpio=53 result=ESP_OK\n");
     }
-    if (ctx.codec_ready) {
-        (void)codec_mute(ctx.codec, true);
+    if (ctx->codec_ready) {
+        (void)codec_mute(ctx->codec, true);
         std::printf("P4_AUDIO_I2S_OPNGEN_CODEC_SHUTDOWN_MUTE result=ESP_OK\n");
     }
-    if (ctx.i2s_enabled) {
+    if (ctx->i2s_enabled) {
         /* A completed write has copied to DMA; allow the configured four
          * 240-frame descriptors to advance before stopping BCLK/WS. */
         vTaskDelay(kFinalDmaDrain);
-        (void)i2s_channel_disable(ctx.tx);
+        (void)i2s_channel_disable(ctx->tx);
     }
-    if (ctx.i2s_created && ctx.tx != nullptr) (void)i2s_del_channel(ctx.tx);
-    if (ctx.codec.is_active()) (void)p4_nano_board::shared_i2c_release_device(&ctx.codec);
-    if (ctx.pa_ready) {
+    if (ctx->i2s_created && ctx->tx != nullptr) (void)i2s_del_channel(ctx->tx);
+    if (ctx->codec.is_active()) (void)p4_nano_board::shared_i2c_release_device(&ctx->codec);
+    if (ctx->pa_ready) {
         (void)p4_nano_board::pa_service_shutdown();
     }
-    if (ctx.worker.s32_pcm != nullptr || ctx.worker.canonical_pcm != nullptr ||
-        ctx.worker.opngen != nullptr) np2opngen_e1b_worker_destroy(&ctx.worker);
-    if (ctx.pcm_space != nullptr) vSemaphoreDelete(ctx.pcm_space);
-    if (ctx.prefill_ready != nullptr) vSemaphoreDelete(ctx.prefill_ready);
-    if (ctx.consumer_start != nullptr) vSemaphoreDelete(ctx.consumer_start);
-    if (ctx.worker_terminal != nullptr) vSemaphoreDelete(ctx.worker_terminal);
-    if (ctx.producer_terminal != nullptr) vSemaphoreDelete(ctx.producer_terminal);
-    if (ctx.consumer_terminal != nullptr) vSemaphoreDelete(ctx.consumer_terminal);
-    if (ctx.metrics.latency_ticks != nullptr) heap_caps_free(ctx.metrics.latency_ticks);
-    const bool ok = successful && !ctx.failed.load(std::memory_order_acquire) &&
-        ctx.generated.frames == workload->expected.frames &&
-        ctx.submitted.frames == workload->expected.frames;
+    if (ctx->worker.s32_pcm != nullptr || ctx->worker.canonical_pcm != nullptr ||
+        ctx->worker.opngen != nullptr) np2opngen_e1b_worker_destroy(&ctx->worker);
+    if (ctx->pcm_space != nullptr) vSemaphoreDelete(ctx->pcm_space);
+    if (ctx->prefill_ready != nullptr) vSemaphoreDelete(ctx->prefill_ready);
+    if (ctx->consumer_start != nullptr) vSemaphoreDelete(ctx->consumer_start);
+    if (ctx->worker_terminal != nullptr) vSemaphoreDelete(ctx->worker_terminal);
+    if (ctx->producer_terminal != nullptr) vSemaphoreDelete(ctx->producer_terminal);
+    if (ctx->consumer_terminal != nullptr) vSemaphoreDelete(ctx->consumer_terminal);
+    if (ctx->metrics.latency_ticks != nullptr) heap_caps_free(ctx->metrics.latency_ticks);
+    const bool ok = successful && !ctx->failed.load(std::memory_order_acquire) &&
+        ctx->generated.frames == workload->expected.frames &&
+        ctx->submitted.frames == workload->expected.frames;
     std::printf("P4_AUDIO_I2S_OPNGEN_SHUTDOWN workload=%s mode=REAL_I2S pa=LOW codec_muted=1 i2s_disabled=1 ring_occupancy=%u result=%s\n",
-                workload->name, static_cast<unsigned>(np2opngen_pcm_ring_occupancy(&ctx.ring)),
+                workload->name, static_cast<unsigned>(np2opngen_pcm_ring_occupancy(&ctx->ring)),
                 ok ? "PASS" : "FAIL");
+    ctx->~Context();
+    heap_caps_free(ctx);
     return ok;
 }
 

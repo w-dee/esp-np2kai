@@ -16,6 +16,7 @@ COMPONENT = (ROOT / "firmware/components/p4_nano_audio_i2s_opngen/CMakeLists.txt
              ).read_text(encoding="utf-8")
 MAIN = (ROOT / "firmware/main/main.cpp").read_text(encoding="utf-8")
 CMAKE = (ROOT / "firmware/main/CMakeLists.txt").read_text(encoding="utf-8")
+SDKCONFIG = (ROOT / "firmware/sdkconfig").read_text(encoding="utf-8")
 BUILD = (ROOT / "tools/emu/build-production.sh").read_text(encoding="utf-8")
 DOC = (ROOT / "docs/development/p4-audio-a3.4-i2s-sink.md").read_text(
     encoding="utf-8")
@@ -70,6 +71,51 @@ def main() -> int:
             "integrated profile must not use a user I2S ISR callback")
     require("p4_nano_display" not in SOURCE and "display" not in COMPONENT.lower(),
             "integrated profile must not depend on display components")
+
+    run_workload_at = SOURCE.index("static bool run_workload")
+    run_workload = SOURCE[run_workload_at:SOURCE.index("\n} // namespace", run_workload_at)]
+    require("Context ctx{};" not in run_workload,
+            "run_workload must not place Context on the task stack")
+    require("Context *ctx" in run_workload and
+            "heap_caps_calloc(1U, context_bytes, context_caps)" in run_workload,
+            "Context must use one explicit zeroed heap allocation")
+    require("MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT" in run_workload,
+            "Context allocation must require INTERNAL and 8-bit capabilities")
+    for token in (
+        "heap_caps_get_free_size",
+        "heap_caps_get_largest_free_block",
+        "internal_free_before",
+        "internal_largest_before",
+        "internal_free_after",
+        "internal_largest_after",
+        "context_bytes",
+    ):
+        require(token in run_workload, f"missing Context heap evidence token {token}")
+    allocation_failure_at = run_workload.index("if (ctx == nullptr)")
+    hardware_init_at = run_workload.index("configure_i2s_and_codec")
+    task_creation_at = run_workload.index("xTaskCreatePinnedToCore")
+    require(allocation_failure_at < hardware_init_at,
+            "Context allocation failure must precede hardware initialization")
+    require(allocation_failure_at < task_creation_at,
+            "Context allocation failure must precede task creation")
+    require("successful = true" not in run_workload[allocation_failure_at:task_creation_at],
+            "Context allocation failure must not emit success semantics")
+    require(run_workload.count("heap_caps_free(ctx);") == 1 and
+            run_workload.index("ctx->~Context();") < run_workload.index("heap_caps_free(ctx);"),
+            "Context must be destroyed and freed exactly once at cleanup tail")
+    require("static_assert(sizeof(Context) == 9112U" in SOURCE,
+            "Context size evidence must remain machine-visible")
+    require("xTaskCreatePinnedToCore(worker_task, \"p4_i2s_worker\", 8192, ctx" in run_workload and
+            "xTaskCreatePinnedToCore(producer_task, \"p4_i2s_producer\", 8192, ctx" in run_workload and
+            "xTaskCreatePinnedToCore(consumer_task, \"p4_i2s_consumer\", 8192, ctx" in run_workload,
+            "all tasks must receive the stable heap Context pointer")
+    cleanup = run_workload[run_workload.index("cleanup:"):]
+    require(cleanup.index("vTaskDelete") < cleanup.index("np2opngen_e1b_worker_destroy") <
+            cleanup.index("heap_caps_free(ctx->metrics.latency_ticks)") <
+            cleanup.index("ctx->~Context()") < cleanup.index("heap_caps_free(ctx);"),
+            "Context lifetime cleanup order is not fail-safe")
+    require("CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584" in SDKCONFIG,
+            "main-task stack configuration unexpectedly changed")
     write_at = SOURCE.index("i2s_channel_write(")
     consume_at = SOURCE.index("np2opngen_pcm_ring_consume", write_at)
     require(consume_at > write_at,
@@ -84,18 +130,18 @@ def main() -> int:
 
     # Startup ordering is intentionally narrow and machine-checkable.
     require(SOURCE.index("P4_AUDIO_I2S_OPNGEN_PREFILL") <
-            SOURCE.index("i2s_channel_enable(ctx.tx)"),
+            SOURCE.index("i2s_channel_enable(ctx->tx)"),
             "I2S cannot be enabled before ring prefill")
-    require(SOURCE.index("i2s_channel_enable(ctx.tx)") <
+    require(SOURCE.index("i2s_channel_enable(ctx->tx)") <
             SOURCE.index("pa_service_enable()"),
             "PA must remain LOW until I2S is enabled")
     require(SOURCE.index("P4_AUDIO_I2S_OPNGEN_PA_SETTLE") <
-            SOURCE.index("codec_mute(ctx.codec, false)"),
+            SOURCE.index("codec_mute(ctx->codec, false)"),
             "codec unmute must follow the 150 ms PA settle")
     cleanup = SOURCE[SOURCE.index("cleanup:"):]
-    require(cleanup.index("pa_service_disable") < cleanup.index("codec_mute(ctx.codec, true)"),
+    require(cleanup.index("pa_service_disable") < cleanup.index("codec_mute(ctx->codec, true)"),
             "shutdown must lower PA before codec mute")
-    require(cleanup.index("codec_mute(ctx.codec, true)") <
+    require(cleanup.index("codec_mute(ctx->codec, true)") <
             cleanup.index("i2s_channel_disable"),
             "shutdown must mute codec before disabling I2S")
 
@@ -125,6 +171,8 @@ def main() -> int:
         require(token in DOC, f"missing source-lifetime/drain documentation token {token}")
 
     print("A3_I2S_HARDWARE_PACING_CONTRACT=PASS")
+    print("A3_CONTEXT_HEAP_PLACEMENT_CONTRACT=PASS")
+    print("A3_MAIN_STACK_CONFIG_UNCHANGED=PASS")
     print("P4_AUDIO_I2S_OPNGEN_STATIC_CONTRACT=PASS")
     return 0
 
