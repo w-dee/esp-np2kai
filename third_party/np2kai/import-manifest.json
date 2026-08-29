@@ -4121,6 +4121,150 @@
       }
     },
     {
+      "upstream_path": "sound/psggenc.c",
+      "destination_path": "src/sound/psggenc.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/psggeng.c",
+      "destination_path": "src/sound/psggeng.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/pcm86c.c",
+      "destination_path": "src/sound/pcm86c.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/pcm86g.c",
+      "destination_path": "src/sound/pcm86g.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/pcmmix.c",
+      "destination_path": "src/sound/pcmmix.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getsnd.c",
+      "destination_path": "src/sound/getsnd/getsnd.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getsmix.c",
+      "destination_path": "src/sound/getsnd/getsmix.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getwave.c",
+      "destination_path": "src/sound/getsnd/getwave.c",
+      "role": "source",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getsnd.h",
+      "destination_path": "src/sound/getsnd/getsnd.h",
+      "role": "header",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getsndmn.mcr",
+      "destination_path": "src/sound/getsnd/getsndmn.mcr",
+      "role": "include-fragment",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/getsnd/getsndst.mcr",
+      "destination_path": "src/sound/getsnd/getsndst.mcr",
+      "role": "include-fragment",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "sound/sndmtcs.h",
+      "destination_path": "src/sound/sndmtcs.h",
+      "role": "header",
+      "build_group": "opngen-fixture",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": ["LICENSES/LICENSE.TXT"],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
       "upstream_path": "LICENSE",
       "destination_path": "LICENSE",
       "role": "license",

@@ -16,7 +16,7 @@ snapshot; it is not an upstream working-tree copy or Git submodule.
 ## Import policy
 
 - Import command: `python3 tools/np2kai/import_np2kai.py --source <local-checkout>`
-- Imported non-license entries: 289
+- Imported non-license entries: 301
 - Preserved upstream license/notice entries: 3
 - All imported upstream bytes are obtained from the pinned Git commit.
 - Local modifications to vendored upstream source: none.
