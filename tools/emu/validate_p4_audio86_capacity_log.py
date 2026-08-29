@@ -22,10 +22,10 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 
-def parse(path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
-    records: dict[str, dict[str, str]] = {}
-    lines = path.read_text(encoding="utf-8", errors="strict").splitlines()
-    for raw in lines:
+def parse(path: Path) -> tuple[dict[str, list[dict[str, str]]], dict[str, list[str]]]:
+    records: dict[str, list[dict[str, str]]] = {}
+    markers: dict[str, list[str]] = {}
+    for raw in path.read_text(encoding="utf-8", errors="strict").splitlines():
         if not raw.startswith("AUDIO86_P4_"):
             continue
         tokens = shlex.split(raw)
@@ -34,89 +34,88 @@ def parse(path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
         head = tokens[0]
         if "=" in head:
             name, value = head.split("=", 1)
-            records.setdefault(name, {})["value"] = value
+            markers.setdefault(name, []).append(value)
             continue
-        fields = records.setdefault(head, {})
+        fields: dict[str, str] = {}
         for token in tokens[1:]:
             if not FIELD_RE.fullmatch(token):
-                fail(f"malformed field in {head}: {token!r}")
+                fail(f"malformed_field_{head}")
             key, value = token.split("=", 1)
             if key in fields:
-                fail(f"duplicate field {head}.{key}")
+                fail(f"duplicate_field_{head}_{key}")
             fields[key] = value
-    return records, lines
+        records.setdefault(head, []).append(fields)
+    return records, markers
 
 
-def integer(records: dict[str, dict[str, str]], record: str, field: str) -> int:
+def one(records: dict[str, list[dict[str, str]]], name: str) -> dict[str, str]:
+    entries = records.get(name, [])
+    if len(entries) != 1:
+        fail(f"{name}_count_{len(entries)}")
+    return entries[0]
+
+
+def integer(record: dict[str, str], name: str) -> int:
     try:
-        return int(records[record][field], 0)
-    except (KeyError, ValueError) as exc:
-        fail(f"missing or invalid {record}.{field}")
-        raise AssertionError from exc
+        return int(record[name], 0)
+    except (KeyError, ValueError):
+        fail(f"invalid_{name}")
+        raise AssertionError
 
 
-def require(records: dict[str, dict[str, str]], record: str, *fields: str) -> None:
-    if record not in records:
-        fail(f"missing {record}")
+def require(record: dict[str, str], *fields: str) -> None:
     for field in fields:
-        if field not in records[record]:
-            fail(f"missing {record}.{field}")
+        if field not in record:
+            fail(f"missing_{field}")
 
 
-def validate_smoke(records: dict[str, dict[str, str]]) -> None:
-    require(records, "AUDIO86_P4_SMOKE", "profile", "scope")
-    if records["AUDIO86_P4_SMOKE"]["profile"] != "P4_NANO_AUDIO86_CAPACITY_PROFILE":
-        fail("wrong smoke profile")
-    if records["AUDIO86_P4_SMOKE"]["scope"] != "BOOT_SMOKE":
-        fail("smoke scope is not BOOT_SMOKE")
-    require(records, "AUDIO86_P4_SMOKE_S1", "task_create_failure")
-    require(records, "AUDIO86_P4_SMOKE_S2", "worker_wait_peer_error_wake")
-    if records["AUDIO86_P4_SMOKE_S1"]["task_create_failure"] != "PASS":
-        fail("S1 failed")
-    if records["AUDIO86_P4_SMOKE_S2"]["worker_wait_peer_error_wake"] != "PASS":
-        fail("S2 failed")
-    require(records, "AUDIO86_P4_LIFECYCLE", "terminal")
-    if records["AUDIO86_P4_LIFECYCLE"]["terminal"] != "PASS":
-        fail("smoke lifecycle did not terminate")
-    if records.get("AUDIO86_P4_EMU_SMOKE", {}).get("value") != "PASS":
-        fail("missing AUDIO86_P4_EMU_SMOKE=PASS")
-    if "AUDIO86_P4_RESULT" in records:
-        fail("short smoke must not emit a formal result")
-
-
-def validate_formal(records: dict[str, dict[str, str]]) -> None:
-    require(records, "AUDIO86_P4_CONFIG", "git_sha", "profile", "mode", "cpu_hz",
-            "tick_hz", "psram_bytes", "psram_mhz", "rate", "quantum_frames",
+def validate_config(records: dict[str, list[dict[str, str]]]) -> dict[str, str]:
+    config = one(records, "AUDIO86_P4_CONFIG")
+    require(config, "git_sha", "profile", "mode", "cpu_hz", "tick_hz",
+            "psram_bytes", "psram_mhz", "rate", "quantum_frames",
             "quantum_us", "quanta")
-    config = records["AUDIO86_P4_CONFIG"]
     if config["profile"] != "P4_NANO_AUDIO86_CAPACITY_PROFILE":
-        fail("wrong profile")
+        fail("wrong_profile")
     if config["mode"] not in {"PACED_FORMAL", "PROFILE", "UNPACED"}:
-        fail("unknown mode")
+        fail("unknown_mode")
     if not re.fullmatch(r"[0-9a-f]{40}", config["git_sha"]):
-        fail("invalid git_sha")
-    if integer(records, "AUDIO86_P4_CONFIG", "cpu_hz") != 360000000:
-        fail("wrong CPU frequency")
-    if integer(records, "AUDIO86_P4_CONFIG", "tick_hz") != 100:
-        fail("wrong tick rate")
-    if integer(records, "AUDIO86_P4_CONFIG", "psram_mhz") != 200:
-        fail("wrong PSRAM frequency")
-    if integer(records, "AUDIO86_P4_CONFIG", "rate") != 48000:
-        fail("wrong sample rate")
-    if integer(records, "AUDIO86_P4_CONFIG", "quantum_frames") != 240:
-        fail("wrong quantum geometry")
-    if integer(records, "AUDIO86_P4_CONFIG", "quantum_us") != 5000:
-        fail("wrong period")
-    if integer(records, "AUDIO86_P4_CONFIG", "quanta") != 12000:
-        fail("wrong quantum count")
+        fail("invalid_git_sha")
+    for field, expected in (("cpu_hz", 360000000), ("tick_hz", 100),
+                            ("psram_mhz", 200), ("rate", 48000),
+                            ("quantum_frames", 240), ("quantum_us", 5000),
+                            ("quanta", 12000)):
+        if integer(config, field) != expected:
+            fail(f"wrong_{field}")
+    return config
 
-    require(records, "AUDIO86_P4_IDENTITY", "frames", "bytes", "quanta", "pcm_crc32",
-            *SHA_FIELDS, "control_events", "control_crc32", "source_crc32",
-            "transport_events", "transport_crc32", "pcm86_data_runs", "pcm86_supplied",
-            "pcm86_consumed", "pcm86_fifo_min", "pcm86_fifo_max", "pcm86_underrun",
-            "peak_abs", "clamped_samples", "fm", "psg", "rhythm", "pcm86",
-            "mid_quantum_events")
-    identity = records["AUDIO86_P4_IDENTITY"]
+
+def validate_smoke(records: dict[str, list[dict[str, str]]],
+                   markers: dict[str, list[str]]) -> None:
+    smoke = one(records, "AUDIO86_P4_SMOKE")
+    require(smoke, "profile", "scope")
+    if smoke["profile"] != "P4_NANO_AUDIO86_CAPACITY_PROFILE" or smoke["scope"] != "BOOT_SMOKE":
+        fail("wrong_smoke_profile")
+    if one(records, "AUDIO86_P4_SMOKE_S1").get("task_create_failure") != "PASS":
+        fail("smoke_s1")
+    if one(records, "AUDIO86_P4_SMOKE_S2").get("worker_wait_peer_error_wake") != "PASS":
+        fail("smoke_s2")
+    if one(records, "AUDIO86_P4_LIFECYCLE").get("terminal") != "PASS":
+        fail("smoke_lifecycle")
+    if markers.get("AUDIO86_P4_EMU_SMOKE") != ["PASS"]:
+        fail("smoke_terminal")
+    if "AUDIO86_P4_RESULT" in markers:
+        fail("smoke_formal_result")
+
+
+def validate_full_pass(records: dict[str, list[dict[str, str]]]) -> None:
+    validate_config(records)
+    identity = one(records, "AUDIO86_P4_IDENTITY")
+    require(identity, "frames", "bytes", "quanta", "pcm_crc32", *SHA_FIELDS,
+            "control_events", "control_crc32", "source_crc32",
+            "transport_events", "transport_crc32", "pcm86_data_runs",
+            "pcm86_supplied", "pcm86_consumed", "pcm86_fifo_min",
+            "pcm86_fifo_max", "pcm86_underrun", "peak_abs", "clamped_samples",
+            "fm", "psg", "rhythm", "pcm86", "mid_quantum_events")
     expected = {
         "frames": 2880000, "bytes": 11520000, "quanta": 12000,
         "pcm_crc32": "0x58929f1f", "control_events": 10,
@@ -129,54 +128,98 @@ def validate_formal(records: dict[str, dict[str, str]]) -> None:
         "mid_quantum_events": 4,
     }
     for key, value in expected.items():
-        actual = integer(records, "AUDIO86_P4_IDENTITY", key) if isinstance(value, int) else identity[key].lower()
+        actual = integer(identity, key) if isinstance(value, int) else identity[key].lower()
         if actual != value:
-            fail(f"wrong identity {key}: {actual!r}")
-    for key, value in {
-        "pcm_sha256": PCM_SHA, "control_sha256": CONTROL_SHA,
-        "source_sha256": SOURCE_SHA, "transport_sha256": TRANSPORT_SHA,
-    }.items():
+            fail(f"wrong_identity_{key}")
+    for key, value in {"pcm_sha256": PCM_SHA, "control_sha256": CONTROL_SHA,
+                       "source_sha256": SOURCE_SHA, "transport_sha256": TRANSPORT_SHA}.items():
         if not SHA_RE.fullmatch(identity[key]) or identity[key] != value:
-            fail(f"wrong or malformed {key}")
+            fail(f"wrong_or_malformed_{key}")
 
-    require(records, "AUDIO86_P4_TRANSPORT", "event_wait_count", "byte_wait_count",
-            "worker_wait_count", "event_high_water", "byte_high_water",
-            "final_event_occupancy", "final_byte_occupancy")
-    if integer(records, "AUDIO86_P4_TRANSPORT", "event_high_water") > 128:
-        fail("event ring capacity exceeded")
-    if integer(records, "AUDIO86_P4_TRANSPORT", "byte_high_water") > 65536:
-        fail("PCM86 byte ring capacity exceeded")
-    if integer(records, "AUDIO86_P4_TRANSPORT", "final_event_occupancy") != 0 or integer(records, "AUDIO86_P4_TRANSPORT", "final_byte_occupancy") != 0:
-        fail("residual transport occupancy")
+    transport = one(records, "AUDIO86_P4_TRANSPORT")
+    require(transport, "event_wait_count", "byte_wait_count", "worker_wait_count",
+            "event_high_water", "byte_high_water", "final_event_occupancy",
+            "final_byte_occupancy")
+    if integer(transport, "event_high_water") > 128 or integer(transport, "byte_high_water") > 65536:
+        fail("transport_capacity")
+    if integer(transport, "final_event_occupancy") != 0 or integer(transport, "final_byte_occupancy") != 0:
+        fail("transport_residual")
 
-    require(records, "AUDIO86_P4_STACK", "coordinator_hwm", "producer_hwm", "worker_hwm")
-    if integer(records, "AUDIO86_P4_STACK", "coordinator_hwm") < 256 or integer(records, "AUDIO86_P4_STACK", "producer_hwm") < 256 or integer(records, "AUDIO86_P4_STACK", "worker_hwm") < 512:
-        fail("insufficient stack margin")
-    require(records, "AUDIO86_P4_WORKER_TIMING", "sample_count", "p99", "max",
-            "absolute_deadline_miss_count", "pacing_backlog_count",
-            "paced_input_starvation_count")
-    if integer(records, "AUDIO86_P4_WORKER_TIMING", "sample_count") != 12000:
-        fail("wrong timing sample count")
-    if integer(records, "AUDIO86_P4_WORKER_TIMING", "p99") > 3500 or integer(records, "AUDIO86_P4_WORKER_TIMING", "max") >= 4500:
-        fail("formal timing gate failed")
+    stack = one(records, "AUDIO86_P4_STACK")
+    require(stack, "coordinator_hwm", "producer_hwm", "worker_hwm")
+    if integer(stack, "coordinator_hwm") < 256 or integer(stack, "producer_hwm") < 256 or integer(stack, "worker_hwm") < 512:
+        fail("stack_margin")
+    timing = one(records, "AUDIO86_P4_WORKER_TIMING")
+    require(timing, "sample_count", "p99", "max", "absolute_deadline_miss_count",
+            "pacing_backlog_count", "paced_input_starvation_count")
+    if integer(timing, "sample_count") != 12000 or integer(timing, "p99") > 3500 or integer(timing, "max") >= 4500:
+        fail("timing_gate")
     for field in ("absolute_deadline_miss_count", "pacing_backlog_count", "paced_input_starvation_count"):
-        if integer(records, "AUDIO86_P4_WORKER_TIMING", field) != 0:
-            fail(f"nonzero {field}")
-    require(records, "AUDIO86_P4_EVENT_SPLIT", "count", "q0", "q1", "q2", "q3")
-    split = records["AUDIO86_P4_EVENT_SPLIT"]
-    if integer(records, "AUDIO86_P4_EVENT_SPLIT", "count") != 4 or [int(split[f]) for f in ("q0", "q1", "q2", "q3")] != [0, 2, 4, 6]:
-        fail("wrong event split classification")
-    require(records, "AUDIO86_P4_PCM86_REFILL", "count", "non_refill_count")
-    if integer(records, "AUDIO86_P4_PCM86_REFILL", "count") != 323 or integer(records, "AUDIO86_P4_PCM86_REFILL", "non_refill_count") != 11677:
-        fail("wrong PCM86 refill classification")
-    require(records, "AUDIO86_P4_LIFECYCLE", "producer_done", "worker_done", "terminal", "first_error")
-    lifecycle = records["AUDIO86_P4_LIFECYCLE"]
-    if lifecycle["terminal"] != "PASS" or integer(records, "AUDIO86_P4_LIFECYCLE", "producer_done") != 1 or integer(records, "AUDIO86_P4_LIFECYCLE", "worker_done") != 1 or integer(records, "AUDIO86_P4_LIFECYCLE", "first_error") != 0:
-        fail("lifecycle terminal failure")
-    if records.get("AUDIO86_P4_RESULT", {}).get("value") != "PASS":
-        fail("missing final formal PASS")
-    if "AUDIO86_P4_FAILURE" in records:
-        fail("explicit failure record")
+        if integer(timing, field) != 0:
+            fail(f"nonzero_{field}")
+    split = one(records, "AUDIO86_P4_EVENT_SPLIT")
+    require(split, "count", "q0", "q1", "q2", "q3")
+    if integer(split, "count") != 4 or [integer(split, f) for f in ("q0", "q1", "q2", "q3")] != [0, 2, 4, 6]:
+        fail("event_split")
+    refill = one(records, "AUDIO86_P4_PCM86_REFILL")
+    require(refill, "count", "non_refill_count")
+    if integer(refill, "count") != 323 or integer(refill, "non_refill_count") != 11677:
+        fail("refill_classification")
+    lifecycle = one(records, "AUDIO86_P4_LIFECYCLE")
+    require(lifecycle, "producer_done", "worker_done", "terminal", "first_error")
+    if lifecycle["terminal"] != "PASS" or integer(lifecycle, "producer_done") != 1 or integer(lifecycle, "worker_done") != 1 or integer(lifecycle, "first_error") != 0:
+        fail("lifecycle")
+    if records.get("AUDIO86_P4_FAILURE"):
+        fail("unexpected_failure")
+    for allocation in records.get("AUDIO86_P4_ALLOC", []):
+        if allocation.get("result") == "FAIL":
+            fail("failed_allocation_in_pass")
+
+
+def validate_target_fail(records: dict[str, list[dict[str, str]]]) -> str:
+    failure = one(records, "AUDIO86_P4_FAILURE")
+    failure_class = failure.get("first_error")
+    if failure_class is None:
+        fail("missing_failure_class")
+    validate_config(records)
+    allocations = records.get("AUDIO86_P4_ALLOC", [])
+    if failure_class == "CONFIGURATION":
+        if allocations or records.get("AUDIO86_P4_MEMORY_PREALLOC"):
+            fail("configuration_allocation_evidence")
+        return failure_class
+    runtime_class = failure_class.isdigit() and 1 <= int(failure_class) <= 20
+    if failure_class not in {"ALLOCATION", "SEMAPHORE", "WORKER_TASK",
+                             "PRODUCER_TASK", "TIMER"} and not runtime_class:
+        fail("unknown_failure_class")
+    prealloc = one(records, "AUDIO86_P4_MEMORY_PREALLOC")
+    require(prealloc, "requested_context_bytes", "requested_owned_bytes",
+            "internal_free_before", "internal_largest_before")
+    if not allocations:
+        fail("missing_allocations")
+    for allocation in allocations:
+        require(allocation, "seq", "name", "api", "requested_bytes", "managed_bytes",
+                "caps", "free_before", "largest_before", "result", "free_after",
+                "largest_after")
+    failed = [a for a in allocations if a["result"] == "FAIL"]
+    if runtime_class:
+        if failed:
+            fail("runtime_failure_with_failed_allocation")
+        return failure_class
+    if not failed or allocations[-1]["result"] != "FAIL":
+        fail("missing_final_failed_allocation")
+    expected_field = "allocation" if failure_class == "ALLOCATION" else "resource"
+    if failure.get(expected_field) != failed[-1].get("name"):
+        fail("failed_resource_mismatch")
+    if failure_class == "ALLOCATION" and failed[-1].get("caps") != "INTERNAL|8BIT":
+        fail("allocation_caps")
+    identity = records.get("AUDIO86_P4_IDENTITY", [])
+    if identity:
+        if len(identity) != 1:
+            fail("identity_count")
+        for field in SHA_FIELDS:
+            if field in identity[0] and not SHA_RE.fullmatch(identity[0][field]):
+                fail(f"malformed_{field}")
+    return failure.get("first_error", "ALLOCATION")
 
 
 def main() -> int:
@@ -184,18 +227,31 @@ def main() -> int:
     parser.add_argument("--log", type=Path, required=True)
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
-    records, _ = parse(args.log)
-    if args.smoke:
-        validate_smoke(records)
-    else:
-        validate_formal(records)
-    print("AUDIO86_P4_LOG_VALIDATION=PASS")
-    return 0
+    try:
+        records, markers = parse(args.log)
+        if args.smoke:
+            validate_smoke(records, markers)
+            print("AUDIO86_P4_LOG_VALIDATION=PASS")
+            return 0
+        results = markers.get("AUDIO86_P4_RESULT", [])
+        if len(results) != 1:
+            fail("result_marker_count")
+        if results[0] == "PASS":
+            validate_full_pass(records)
+            print("AUDIO86_P4_LOG_VALIDATION=FULL_FORMAL_PASS_VALIDATION")
+            print("AUDIO86_P4_LOG_VALIDATION=PASS")
+            return 0
+        if results[0] == "FAIL":
+            failure_class = validate_target_fail(records)
+            print("AUDIO86_P4_LOG_VALIDATION=WELL_FORMED_TARGET_FAIL_VALIDATION"
+                  f" target_result=FAIL failure_class={failure_class}")
+            return 1
+        fail("unknown_result")
+    except (OSError, UnicodeError, ValueError) as exc:
+        reason = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(exc)).strip("_") or "parse_error"
+        print(f"AUDIO86_P4_LOG_VALIDATION=MALFORMED_LOG reason={reason}")
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except ValueError as exc:
-        print(f"AUDIO86_P4_LOG_VALIDATION=FAIL: {exc}")
-        raise SystemExit(1)
+    raise SystemExit(main())

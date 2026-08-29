@@ -26,6 +26,8 @@ namespace p4_nano_audio86_capacity {
 namespace {
 
 constexpr uint32_t kQuantumUs = 5000U;
+constexpr size_t kCanonicalBytes = NP2_AUDIO86_QUANTUM_FRAMES *
+                                   sizeof(int16_t) * NP2_AUDIO86_CHANNELS;
 constexpr uint32_t kCoordinatorStack = 6144U;
 constexpr uint32_t kProducerStack = 6144U;
 constexpr uint32_t kWorkerStack = 8192U;
@@ -48,21 +50,21 @@ static uint64_t profile_now_us(void *)
 
 struct Context {
     Mode mode = Mode::PacedFormal;
-    struct np2audio86_event plan[NP2_AUDIO86_ASYNC_MAX_EVENTS]{};
+    struct np2audio86_event *plan = nullptr;
     size_t plan_count = 0U;
-    struct np2audio86_event_ring events{};
-    struct np2audio86_byte_ring pcm_bytes{};
-    uint8_t source[NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES]{};
-    struct np2audio86_render_state render{};
+    struct np2audio86_event_ring *events = nullptr;
+    struct np2audio86_byte_ring *pcm_bytes = nullptr;
+    uint8_t *source = nullptr;
+    struct np2audio86_render_state *render = nullptr;
     struct np2audio86_fixture_result result{};
     np2_sha256_context transport_sha{};
     uint64_t event_pop_count = 0U;
     uint64_t transport_event_count = 0U;
     uint32_t transport_event_crc32 = 0U;
     uint8_t transport_event_sha256[NP2_SHA256_DIGEST_SIZE]{};
-    uint8_t worker_run[NP2_AUDIO86_ASYNC_MAX_DATA_RUN]{};
-    uint8_t canonical[NP2_AUDIO86_QUANTUM_FRAMES * 4U]{};
-    uint32_t service_us[NP2_AUDIO86_QUANTA]{};
+    uint8_t *worker_run = nullptr;
+    uint8_t *canonical = nullptr;
+    uint32_t *service_us = nullptr;
     std::atomic<uint32_t> first_error{0U};
     std::atomic<uint64_t> committed_through_frame{0U};
     std::atomic<uint32_t> published_events{0U};
@@ -88,10 +90,7 @@ struct Context {
     uint32_t split_count = 0U;
     uint32_t split_quanta[4]{};
     uint32_t split_times[4]{};
-    uint32_t refill_quanta[NP2_AUDIO86_QUANTA]{};
-    uint32_t refill_times[NP2_AUDIO86_QUANTA]{};
     uint32_t refill_count = 0U;
-    uint32_t nonrefill_count = 0U;
     uint32_t deadline_misses = 0U;
     uint32_t pacing_backlog = 0U;
     uint32_t input_starvation = 0U;
@@ -156,9 +155,9 @@ static bool wait_event_space(Context *ctx, const struct np2audio86_event *event)
         if (ctx->first_error.load(std::memory_order_acquire) != 0U) {
             return false;
         }
-        const int status = np2audio86_event_ring_enqueue(&ctx->events, event);
+        const int status = np2audio86_event_ring_enqueue(ctx->events, event);
         if (status == NP2_AUDIO86_TRANSPORT_OK) {
-            const uint32_t high = np2audio86_event_ring_occupancy(&ctx->events);
+            const uint32_t high = np2audio86_event_ring_occupancy(ctx->events);
             ctx->event_high_water = std::max(ctx->event_high_water, high);
             notify(ctx->worker_task);
             return true;
@@ -169,7 +168,7 @@ static bool wait_event_space(Context *ctx, const struct np2audio86_event *event)
         }
         ++ctx->event_waits;
         ctx->producer_waiting.store(true, std::memory_order_release);
-        if (np2audio86_event_ring_occupancy(&ctx->events) <
+        if (np2audio86_event_ring_occupancy(ctx->events) <
             NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
             ctx->producer_waiting.store(false, std::memory_order_release);
             continue;
@@ -185,9 +184,9 @@ static bool wait_byte_space(Context *ctx, const uint8_t *bytes, size_t count)
         if (ctx->first_error.load(std::memory_order_acquire) != 0U) {
             return false;
         }
-        const int status = np2audio86_byte_ring_push(&ctx->pcm_bytes, bytes, count);
+        const int status = np2audio86_byte_ring_push(ctx->pcm_bytes, bytes, count);
         if (status == NP2_AUDIO86_TRANSPORT_OK) {
-            const uint32_t high = np2audio86_byte_ring_occupancy(&ctx->pcm_bytes);
+            const uint32_t high = np2audio86_byte_ring_occupancy(ctx->pcm_bytes);
             ctx->byte_high_water = std::max(ctx->byte_high_water, high);
             notify(ctx->worker_task);
             return true;
@@ -198,7 +197,7 @@ static bool wait_byte_space(Context *ctx, const uint8_t *bytes, size_t count)
         }
         ++ctx->byte_waits;
         ctx->producer_waiting.store(true, std::memory_order_release);
-        if (np2audio86_byte_ring_occupancy(&ctx->pcm_bytes) + count <=
+        if (np2audio86_byte_ring_occupancy(ctx->pcm_bytes) + count <=
             NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
             ctx->producer_waiting.store(false, std::memory_order_release);
             continue;
@@ -211,7 +210,7 @@ static bool wait_byte_space(Context *ctx, const uint8_t *bytes, size_t count)
 static bool wait_event(Context *ctx, const struct np2audio86_event **event)
 {
     for (;;) {
-        const int status = np2audio86_event_ring_peek(&ctx->events, event);
+        const int status = np2audio86_event_ring_peek(ctx->events, event);
         if (status == NP2_AUDIO86_TRANSPORT_OK) {
             return true;
         }
@@ -226,7 +225,7 @@ static bool wait_event(Context *ctx, const struct np2audio86_event **event)
         ctx->worker_waiting.store(true, std::memory_order_release);
         const uint64_t watermark =
             ctx->committed_through_frame.load(std::memory_order_acquire);
-        if (watermark > ctx->render.rendered_frames ||
+        if (watermark > ctx->render->rendered_frames ||
             ctx->producer_done.load(std::memory_order_acquire)) {
             ctx->worker_waiting.store(false, std::memory_order_release);
             continue;
@@ -244,7 +243,7 @@ static bool pop_bytes(Context *ctx, size_t count)
 #else
         0U;
 #endif
-    const int status = np2audio86_byte_ring_pop(&ctx->pcm_bytes, ctx->worker_run,
+    const int status = np2audio86_byte_ring_pop(ctx->pcm_bytes, ctx->worker_run,
                                                 count);
     if (status != NP2_AUDIO86_TRANSPORT_OK) {
         if (status == NP2_AUDIO86_TRANSPORT_EMPTY) {
@@ -255,7 +254,7 @@ static bool pop_bytes(Context *ctx, size_t count)
     }
     notify(ctx->producer_task);
     const bool pushed = np2audio86_render_pcm86_push(
-        &ctx->render, ctx->worker_run, count) == 0;
+        ctx->render, ctx->worker_run, count) == 0;
 #if defined(P4_AUDIO86_PROFILE_MODE)
     ctx->profile_pcm86_copy_us +=
         static_cast<uint64_t>(esp_timer_get_time()) - copy_begin;
@@ -266,7 +265,7 @@ static bool pop_bytes(Context *ctx, size_t count)
 static bool apply_event(Context *ctx, const struct np2audio86_event *event)
 {
     if (event == nullptr || event->sequence != ctx->event_pop_count ||
-        event->frame_timestamp != ctx->render.rendered_frames) {
+        event->frame_timestamp != ctx->render->rendered_frames) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_SEQUENCE);
         return false;
     }
@@ -285,7 +284,7 @@ static bool apply_event(Context *ctx, const struct np2audio86_event *event)
         ++ctx->refill_count;
     } else if (event->opcode == NP2_AUDIO86_EVENT_FM_KEY ||
                event->opcode == NP2_AUDIO86_EVENT_PSG_REGISTER) {
-        if (np2audio86_render_apply_event(&ctx->render, event) != 0) {
+        if (np2audio86_render_apply_event(ctx->render, event) != 0) {
             fail(ctx, NP2_AUDIO86_ASYNC_ERROR_PAYLOAD);
             return false;
         }
@@ -306,7 +305,7 @@ static bool apply_event(Context *ctx, const struct np2audio86_event *event)
         ctx->transport_event_crc32, record, sizeof(record));
     np2_sha256_update(&ctx->transport_sha, record, sizeof(record));
     ++ctx->transport_event_count;
-    if (np2audio86_event_ring_consume(&ctx->events) != NP2_AUDIO86_TRANSPORT_OK) {
+    if (np2audio86_event_ring_consume(ctx->events) != NP2_AUDIO86_TRANSPORT_OK) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_TRANSPORT_INVARIANT);
         return false;
     }
@@ -323,19 +322,17 @@ struct HashState {
 static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
                            uint64_t t0_us)
 {
-    const uint64_t quantum_start = ctx->render.rendered_frames;
+    const uint64_t quantum_start = ctx->render->rendered_frames;
     const uint64_t quantum_end = quantum_start + NP2_AUDIO86_QUANTUM_FRAMES;
-    bool had_refill = false;
     bool had_split = false;
     const uint64_t service_start = esp_timer_get_time();
     size_t offset = 0U;
     while (offset < NP2_AUDIO86_QUANTUM_FRAMES) {
         const struct np2audio86_event *event = nullptr;
-        if (np2audio86_event_ring_peek(&ctx->events, &event) ==
+        if (np2audio86_event_ring_peek(ctx->events, &event) ==
                 NP2_AUDIO86_TRANSPORT_OK &&
-            event->frame_timestamp <= ctx->render.rendered_frames) {
-            had_refill |= event->opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN;
-            if (event->frame_timestamp != ctx->render.rendered_frames ||
+            event->frame_timestamp <= ctx->render->rendered_frames) {
+            if (event->frame_timestamp != ctx->render->rendered_frames ||
                 !apply_event(ctx, event)) {
                 return false;
             }
@@ -354,10 +351,10 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
             }
             continue;
         }
-        const size_t frames = static_cast<size_t>(next - ctx->render.rendered_frames);
+        const size_t frames = static_cast<size_t>(next - ctx->render->rendered_frames);
         if (frames != 0U &&
-            np2audio86_render_span(&ctx->render,
-                                   ctx->render.mix_scratch + offset * 2U, frames,
+            np2audio86_render_span(ctx->render,
+                                   ctx->render->mix_scratch + offset * 2U, frames,
                                    &ctx->result) != 0) {
             fail(ctx, NP2_AUDIO86_ASYNC_ERROR_PCM86_UNDERRUN);
             return false;
@@ -376,8 +373,8 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
         0U;
 #endif
     if (np2opngen_pcm_canonicalize_s16le(
-            ctx->render.mix_scratch, NP2_AUDIO86_QUANTUM_FRAMES,
-            NP2_AUDIO86_CHANNELS, ctx->canonical, sizeof(ctx->canonical), &stats) != 0) {
+            ctx->render->mix_scratch, NP2_AUDIO86_QUANTUM_FRAMES,
+            NP2_AUDIO86_CHANNELS, ctx->canonical, kCanonicalBytes, &stats) != 0) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_CANONICAL);
         return false;
     }
@@ -394,8 +391,8 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
         0U;
 #endif
     ctx->result.pcm_crc32 = np2_crc32_iso_hdlc_update(
-        ctx->result.pcm_crc32, ctx->canonical, sizeof(ctx->canonical));
-    np2_sha256_update(&hash->pcm, ctx->canonical, sizeof(ctx->canonical));
+        ctx->result.pcm_crc32, ctx->canonical, kCanonicalBytes);
+    np2_sha256_update(&hash->pcm, ctx->canonical, kCanonicalBytes);
 #if defined(P4_AUDIO86_PROFILE_MODE)
     ctx->profile_hash_sink_us +=
         static_cast<uint64_t>(esp_timer_get_time()) - hash_begin;
@@ -406,10 +403,6 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
         ctx->split_quanta[ctx->split_count] = quantum;
         ctx->split_times[ctx->split_count] = ctx->service_us[quantum];
         ++ctx->split_count;
-    }
-    if (had_refill && ctx->refill_count < NP2_AUDIO86_QUANTA) {
-        ctx->refill_quanta[ctx->refill_count - 1U] = quantum;
-        ctx->refill_times[ctx->refill_count - 1U] = ctx->service_us[quantum];
     }
     const uint64_t deadline = t0_us + (static_cast<uint64_t>(quantum) + 1U) * kQuantumUs;
     if (ctx->mode == Mode::PacedFormal && finish >= deadline) {
@@ -458,8 +451,8 @@ static void producer_task(void *opaque)
     ctx->prefill_us = static_cast<uint32_t>(esp_timer_get_time() - prefill_start);
     xSemaphoreGive(ctx->terminal);
     ctx->producer_hwm.store(uxTaskGetStackHighWaterMark(nullptr),
-                            std::memory_order_release);
-    vTaskDelete(nullptr);
+                             std::memory_order_release);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
 static void worker_task(void *opaque)
@@ -468,11 +461,11 @@ static void worker_task(void *opaque)
     np2_sha256_context pcm_sha{};
     np2_sha256_init(&pcm_sha);
     const uint64_t generator_init_start = esp_timer_get_time();
-    if (np2audio86_render_init_with_source(&ctx->render, ctx->source) != 0) {
+    if (np2audio86_render_init_with_source(ctx->render, ctx->source) != 0) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH);
     }
 #if defined(P4_AUDIO86_PROFILE_MODE)
-    np2audio86_render_set_profile_clock(&ctx->render, profile_now_us, nullptr);
+    np2audio86_render_set_profile_clock(ctx->render, profile_now_us, nullptr);
 #endif
     ctx->result.pcm_crc32 = np2_crc32_iso_hdlc_init();
     ctx->transport_event_crc32 = np2_crc32_iso_hdlc_init();
@@ -512,19 +505,19 @@ static void worker_task(void *opaque)
     ctx->result.frames = NP2_AUDIO86_DURATION_FRAMES;
     ctx->result.bytes = NP2_AUDIO86_PCM_BYTES;
     ctx->result.quanta = NP2_AUDIO86_QUANTA;
-    ctx->result.pcm86_bytes_supplied = ctx->render.pcm86.supplied;
-    ctx->result.pcm86_bytes_consumed = ctx->render.pcm86.supplied -
-                                       static_cast<uint64_t>(ctx->render.pcm86.pcm.realbuf);
-    ctx->result.pcm86_refills = ctx->render.pcm86.refills;
-    ctx->result.pcm86_fifo_min = ctx->render.pcm86.fifo_min;
-    ctx->result.pcm86_fifo_max = ctx->render.pcm86.fifo_max;
-    ctx->result.pcm86_fifo_underrun = ctx->render.pcm86.underrun;
+    ctx->result.pcm86_bytes_supplied = ctx->render->pcm86.supplied;
+    ctx->result.pcm86_bytes_consumed = ctx->render->pcm86.supplied -
+                                       static_cast<uint64_t>(ctx->render->pcm86.pcm.realbuf);
+    ctx->result.pcm86_refills = ctx->render->pcm86.refills;
+    ctx->result.pcm86_fifo_min = ctx->render->pcm86.fifo_min;
+    ctx->result.pcm86_fifo_max = ctx->render->pcm86.fifo_max;
+    ctx->result.pcm86_fifo_underrun = ctx->render->pcm86.underrun;
     ctx->finish_us = esp_timer_get_time();
     ctx->worker_done.store(true, std::memory_order_release);
     xSemaphoreGive(ctx->terminal);
     ctx->worker_hwm.store(uxTaskGetStackHighWaterMark(nullptr),
                           std::memory_order_release);
-    vTaskDelete(nullptr);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
 static void timer_callback(void *arg)
@@ -569,11 +562,11 @@ static void print_timing(Context *ctx)
     subset_stats(ctx, true, &refill_samples, &refill_p99, &refill_max);
     subset_stats(ctx, false, &nonrefill_samples, &nonrefill_p99, &nonrefill_max);
 #if defined(P4_AUDIO86_PROFILE_MODE)
-    ctx->profile_opngen_us = ctx->render.profile_opngen_us;
-    ctx->profile_psggen_us = ctx->render.profile_psggen_us;
-    ctx->profile_rhythm_us = ctx->render.profile_rhythm_us;
-    ctx->profile_pcm86_generation_us = ctx->render.profile_pcm86_generation_us;
-    ctx->profile_mix_canonical_us += ctx->render.profile_mix_us;
+    ctx->profile_opngen_us = ctx->render->profile_opngen_us;
+    ctx->profile_psggen_us = ctx->render->profile_psggen_us;
+    ctx->profile_rhythm_us = ctx->render->profile_rhythm_us;
+    ctx->profile_pcm86_generation_us = ctx->render->profile_pcm86_generation_us;
+    ctx->profile_mix_canonical_us += ctx->render->profile_mix_us;
 #endif
     uint32_t *sorted = ctx->service_us;
     std::sort(sorted, sorted + NP2_AUDIO86_QUANTA);
@@ -617,8 +610,12 @@ static void print_timing(Context *ctx)
 
 static bool quantum_contains_refill(const Context *ctx, uint32_t quantum)
 {
-    for (uint32_t i = 0U; i < ctx->refill_count; ++i) {
-        if (ctx->refill_quanta[i] == quantum) {
+    const uint64_t begin = static_cast<uint64_t>(quantum) * NP2_AUDIO86_QUANTUM_FRAMES;
+    const uint64_t end = begin + NP2_AUDIO86_QUANTUM_FRAMES;
+    for (size_t i = 0U; i < ctx->plan_count; ++i) {
+        if (ctx->plan[i].opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN &&
+            ctx->plan[i].frame_timestamp >= begin &&
+            ctx->plan[i].frame_timestamp < end) {
             return true;
         }
     }
@@ -687,56 +684,216 @@ static esp_err_t run_smoke()
     return ESP_OK;
 }
 
+static size_t direct_owned_bytes()
+{
+    return sizeof(struct np2audio86_render_state) +
+           sizeof(struct np2audio86_byte_ring) +
+           NP2_AUDIO86_QUANTA * sizeof(uint32_t) +
+           NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES +
+           NP2_AUDIO86_ASYNC_MAX_DATA_RUN +
+           NP2_AUDIO86_ASYNC_MAX_EVENTS * sizeof(struct np2audio86_event) +
+           kCanonicalBytes;
+}
+
+static void emit_allocation(uint32_t sequence, const char *name,
+                            size_t requested, const char *caps,
+                            size_t free_before, size_t largest_before,
+                            bool success, size_t free_after,
+                            size_t largest_after)
+{
+    std::printf("AUDIO86_P4_ALLOC seq=%u name=%s api=heap_caps_calloc"
+                " requested_bytes=%u managed_bytes=0 caps=%s"
+                " free_before=%u largest_before=%u result=%s"
+                " free_after=%u largest_after=%u\n",
+                sequence, name, static_cast<unsigned>(requested), caps,
+                static_cast<unsigned>(free_before),
+                static_cast<unsigned>(largest_before), success ? "PASS" : "FAIL",
+                static_cast<unsigned>(free_after),
+                static_cast<unsigned>(largest_after));
+}
+
+static void emit_resource(uint32_t sequence, const char *name, const char *api,
+                          size_t requested, const char *caps,
+                          size_t free_before, size_t largest_before,
+                          bool success, size_t free_after,
+                          size_t largest_after)
+{
+    std::printf("AUDIO86_P4_ALLOC seq=%u name=%s api=%s"
+                " requested_bytes=%u managed_bytes=0 caps=%s"
+                " free_before=%u largest_before=%u result=%s"
+                " free_after=%u largest_after=%u\n",
+                sequence, name, api, static_cast<unsigned>(requested), caps,
+                static_cast<unsigned>(free_before),
+                static_cast<unsigned>(largest_before), success ? "PASS" : "FAIL",
+                static_cast<unsigned>(free_after),
+                static_cast<unsigned>(largest_after));
+}
+
+static void stop_timer(Context *ctx)
+{
+    if (ctx != nullptr && ctx->timer != nullptr) {
+        (void)esp_timer_stop(ctx->timer);
+        (void)esp_timer_delete(ctx->timer);
+        ctx->timer = nullptr;
+    }
+}
+
+static void wait_for_tasks(Context *ctx)
+{
+    while (ctx->worker_task != nullptr || ctx->producer_task != nullptr) {
+        if (ctx->worker_task != nullptr &&
+            ctx->worker_done.load(std::memory_order_acquire)) {
+            stop_timer(ctx);
+            vTaskDelete(ctx->worker_task);
+            ctx->worker_task = nullptr;
+        }
+        if (ctx->producer_task != nullptr &&
+            ctx->producer_done.load(std::memory_order_acquire)) {
+            vTaskDelete(ctx->producer_task);
+            ctx->producer_task = nullptr;
+        }
+        if (ctx->worker_task == nullptr && ctx->producer_task == nullptr) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void cleanup(Context *ctx, void *raw)
+{
+    if (ctx == nullptr) {
+        return;
+    }
+    stop_timer(ctx);
+    wait_for_tasks(ctx);
+    if (ctx->ready != nullptr) {
+        vSemaphoreDelete(ctx->ready);
+    }
+    if (ctx->producer_start != nullptr) {
+        vSemaphoreDelete(ctx->producer_start);
+    }
+    if (ctx->prefill != nullptr) {
+        vSemaphoreDelete(ctx->prefill);
+    }
+    if (ctx->worker_start != nullptr) {
+        vSemaphoreDelete(ctx->worker_start);
+    }
+    if (ctx->terminal != nullptr) {
+        vSemaphoreDelete(ctx->terminal);
+    }
+    if (ctx->pacing != nullptr) {
+        vSemaphoreDelete(ctx->pacing);
+    }
+    heap_caps_free(ctx->render);
+    heap_caps_free(ctx->pcm_bytes);
+    heap_caps_free(ctx->service_us);
+    heap_caps_free(ctx->source);
+    heap_caps_free(ctx->worker_run);
+    heap_caps_free(ctx->plan);
+    heap_caps_free(ctx->events);
+    heap_caps_free(ctx->canonical);
+    ctx->~Context();
+    heap_caps_free(raw);
+}
 static esp_err_t run_benchmark(Mode mode)
 {
-    const uint64_t allocation_begin = esp_timer_get_time();
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    const size_t free_before = heap_caps_get_free_size(internal_caps);
-    const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+    const uint32_t requested_context = static_cast<uint32_t>(sizeof(Context));
+    const uint32_t requested_owned = static_cast<uint32_t>(direct_owned_bytes());
+    const size_t prealloc_free = heap_caps_get_free_size(internal_caps);
+    const size_t prealloc_largest = heap_caps_get_largest_free_block(internal_caps);
+    std::printf("AUDIO86_P4_MEMORY_PREALLOC requested_context_bytes=%u"
+                " requested_owned_bytes=%u internal_free_before=%u"
+                " internal_largest_before=%u\n",
+                requested_context, requested_owned,
+                static_cast<unsigned>(prealloc_free),
+                static_cast<unsigned>(prealloc_largest));
+
+    const uint64_t allocation_begin = esp_timer_get_time();
+    uint32_t sequence = 1U;
+    const size_t context_free_before = heap_caps_get_free_size(internal_caps);
+    const size_t context_largest_before =
+        heap_caps_get_largest_free_block(internal_caps);
     void *raw = heap_caps_calloc(1U, sizeof(Context), internal_caps);
+    const size_t context_free_after = heap_caps_get_free_size(internal_caps);
+    const size_t context_largest_after =
+        heap_caps_get_largest_free_block(internal_caps);
+    emit_allocation(sequence++, "context", sizeof(Context), "INTERNAL|8BIT",
+                    context_free_before, context_largest_before, raw != nullptr,
+                    context_free_after, context_largest_after);
     if (raw == nullptr) {
-        std::printf("AUDIO86_P4_FAILURE first_error=ALLOCATION\n");
+        std::printf("AUDIO86_P4_FAILURE first_error=ALLOCATION allocation=context\n");
         return ESP_ERR_NO_MEM;
     }
     auto *ctx = new (raw) Context{};
     ctx->mode = mode;
     np2_sha256_init(&ctx->transport_sha);
-    ctx->allocation_us = static_cast<uint32_t>(esp_timer_get_time() - allocation_begin);
-    std::printf("AUDIO86_P4_ALLOC name=context requested=%u caps=INTERNAL|8BIT result=PASS\n",
-                static_cast<unsigned>(sizeof(Context)));
-    std::printf("AUDIO86_P4_ALLOC name=event_ring requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->events)));
-    std::printf("AUDIO86_P4_ALLOC name=pcm86_byte_ring requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->pcm_bytes)));
-    std::printf("AUDIO86_P4_ALLOC name=pcm86_state requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->render.pcm86)));
-    std::printf("AUDIO86_P4_ALLOC name=rhythm_payload requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->render.rhythm) +
-                                      sizeof(ctx->render.rhythm_tracks) +
-                                      sizeof(ctx->render.rhythm_samples)));
-    std::printf("AUDIO86_P4_ALLOC name=pcm86_source requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->source)));
-    std::printf("AUDIO86_P4_ALLOC name=worker_scratch requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->worker_run) +
-                                      sizeof(ctx->canonical) +
-                                      sizeof(ctx->render.fm_scratch) +
-                                      sizeof(ctx->render.psg_scratch) +
-                                      sizeof(ctx->render.rhythm_scratch) +
-                                      sizeof(ctx->render.pcm86_scratch) +
-                                      sizeof(ctx->render.mix_scratch)));
-    std::printf("AUDIO86_P4_ALLOC name=formal_service_samples requested=%u caps=INTERNAL|8BIT result=PASS placement=context\n",
-                static_cast<unsigned>(sizeof(ctx->service_us)));
-    std::printf("AUDIO86_P4_ALLOC name=coordinator_stack requested=%u caps=INTERNAL|8BIT result=BASELINE_APP_TASK\n",
-                static_cast<unsigned>(kCoordinatorStack));
-    np2audio86_event_ring_init(&ctx->events);
-    np2audio86_byte_ring_init(&ctx->pcm_bytes);
+
+    auto allocate = [&](const char *name, size_t bytes) -> void * {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        void *block = heap_caps_calloc(1U, bytes, internal_caps);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_allocation(sequence++, name, bytes, "INTERNAL|8BIT", free_before,
+                        largest_before, block != nullptr, free_after, largest_after);
+        return block;
+    };
+    const auto allocation_failure = [&](const char *name) {
+        std::printf("AUDIO86_P4_FAILURE first_error=ALLOCATION allocation=%s\n", name);
+        cleanup(ctx, raw);
+        return ESP_ERR_NO_MEM;
+    };
+
+    ctx->render = static_cast<struct np2audio86_render_state *>(
+        allocate("render_state", sizeof(*ctx->render)));
+    if (ctx->render == nullptr) {
+        return allocation_failure("render_state");
+    }
+    ctx->pcm_bytes = static_cast<struct np2audio86_byte_ring *>(
+        allocate("pcm86_byte_ring", sizeof(*ctx->pcm_bytes)));
+    if (ctx->pcm_bytes == nullptr) {
+        return allocation_failure("pcm86_byte_ring");
+    }
+    ctx->service_us = static_cast<uint32_t *>(
+        allocate("service_us", NP2_AUDIO86_QUANTA * sizeof(uint32_t)));
+    if (ctx->service_us == nullptr) {
+        return allocation_failure("service_us");
+    }
+    ctx->source = static_cast<uint8_t *>(
+        allocate("producer_source", NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES));
+    if (ctx->source == nullptr) {
+        return allocation_failure("producer_source");
+    }
+    ctx->worker_run = static_cast<uint8_t *>(
+        allocate("worker_run", NP2_AUDIO86_ASYNC_MAX_DATA_RUN));
+    if (ctx->worker_run == nullptr) {
+        return allocation_failure("worker_run");
+    }
+    ctx->plan = static_cast<struct np2audio86_event *>(
+        allocate("plan", NP2_AUDIO86_ASYNC_MAX_EVENTS * sizeof(*ctx->plan)));
+    if (ctx->plan == nullptr) {
+        return allocation_failure("plan");
+    }
+    ctx->events = static_cast<struct np2audio86_event_ring *>(
+        allocate("event_ring", sizeof(*ctx->events)));
+    if (ctx->events == nullptr) {
+        return allocation_failure("event_ring");
+    }
+    ctx->canonical = static_cast<uint8_t *>(
+        allocate("canonical", kCanonicalBytes));
+    if (ctx->canonical == nullptr) {
+        return allocation_failure("canonical");
+    }
+
+    np2audio86_event_ring_init(ctx->events);
+    np2audio86_byte_ring_init(ctx->pcm_bytes);
     const uint64_t source_begin = esp_timer_get_time();
     if (np2audio86_fixture_generate_source(ctx->source) != 0) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH);
     }
     np2audio86_fixture_hash_source(&ctx->result, ctx->source);
-    const uint32_t source_us = static_cast<uint32_t>(esp_timer_get_time() - source_begin);
-    ctx->source_setup_us = source_us;
+    ctx->source_setup_us = static_cast<uint32_t>(esp_timer_get_time() - source_begin);
     if (!np2audio86_fixture_source_matches_golden(&ctx->result) ||
         np2audio86_async_build_plan(ctx->plan, &ctx->plan_count) != 0 ||
         np2audio86_async_validate_plan(ctx->plan, ctx->plan_count) != 0) {
@@ -746,96 +903,155 @@ static esp_err_t run_benchmark(Mode mode)
     if (!np2audio86_fixture_control_matches_golden(&ctx->result)) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH);
     }
-    const size_t free_after = heap_caps_get_free_size(internal_caps);
-    const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
-    std::printf("AUDIO86_P4_MEMORY internal_free_before=%u internal_largest_before=%u"
-                " internal_free_after=%u internal_largest_after=%u context=%u"
-                " event_ring=%u byte_ring=%u pcm86_state=%u plan=%u source=%u"
-                " worker_scratch=%u formal_samples=%u\n",
-                static_cast<unsigned>(free_before), static_cast<unsigned>(largest_before),
-                static_cast<unsigned>(free_after), static_cast<unsigned>(largest_after),
-                static_cast<unsigned>(sizeof(Context)),
-                static_cast<unsigned>(sizeof(ctx->events)),
-                static_cast<unsigned>(sizeof(ctx->pcm_bytes)),
-                static_cast<unsigned>(sizeof(ctx->render.pcm86)),
-                static_cast<unsigned>(sizeof(ctx->plan)),
-                static_cast<unsigned>(sizeof(ctx->source)),
-                static_cast<unsigned>(sizeof(ctx->render.mix_scratch)),
-                static_cast<unsigned>(sizeof(ctx->service_us)));
-    std::printf("AUDIO86_P4_ABI sizeof_event=%u sizeof_event_ring=%u sizeof_byte_ring=%u"
-                " sizeof_pcm86_state=%u sizeof_plan=%u sizeof_source=%u"
-                " sizeof_scratch=%u sizeof_formal_samples=%u sizeof_context=%u\n",
-                static_cast<unsigned>(sizeof(struct np2audio86_event)),
-                static_cast<unsigned>(sizeof(ctx->events)),
-                static_cast<unsigned>(sizeof(ctx->pcm_bytes)),
-                static_cast<unsigned>(sizeof(ctx->render.pcm86)),
-                static_cast<unsigned>(sizeof(ctx->plan)),
-                static_cast<unsigned>(sizeof(ctx->source)),
-                static_cast<unsigned>(sizeof(ctx->render.mix_scratch)),
-                static_cast<unsigned>(sizeof(ctx->service_us)),
-                static_cast<unsigned>(sizeof(Context)));
-    ctx->ready = xSemaphoreCreateBinary();
-    ctx->producer_start = xSemaphoreCreateBinary();
-    ctx->prefill = xSemaphoreCreateBinary();
-    ctx->worker_start = xSemaphoreCreateBinary();
-    ctx->terminal = xSemaphoreCreateCounting(4U, 0U);
-    ctx->pacing = xSemaphoreCreateCounting(NP2_AUDIO86_QUANTA, 0U);
-    if (ctx->ready == nullptr || ctx->producer_start == nullptr || ctx->prefill == nullptr ||
-        ctx->worker_start == nullptr || ctx->terminal == nullptr || ctx->pacing == nullptr) {
-        fail(ctx, NP2_AUDIO86_ASYNC_ERROR_ARGUMENT);
+    ctx->allocation_us = static_cast<uint32_t>(esp_timer_get_time() - allocation_begin);
+
+    if (ctx->first_error.load(std::memory_order_acquire) != 0U) {
+        std::printf("AUDIO86_P4_FAILURE first_error=%u\n",
+                    ctx->first_error.load(std::memory_order_acquire));
+        cleanup(ctx, raw);
+        return ESP_FAIL;
     }
-    if (ctx->first_error.load() == 0U &&
-        xTaskCreatePinnedToCore(worker_task, "audio86_worker", kWorkerStack, ctx,
-                                kWorkerPriority, &ctx->worker_task, kWorkerCore) != pdPASS) {
-        fail(ctx, NP2_AUDIO86_ASYNC_ERROR_WORKER);
-        ctx->worker_done.store(true, std::memory_order_release);
+
+    const char *failed_semaphore = nullptr;
+    auto create_binary = [&](const char *name, SemaphoreHandle_t *out) -> bool {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        *out = xSemaphoreCreateBinary();
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, name, "xSemaphoreCreateBinary", 0U,
+                      "IDF_MANAGED", free_before, largest_before, *out != nullptr,
+                      free_after, largest_after);
+        if (*out == nullptr && failed_semaphore == nullptr) {
+            failed_semaphore = name;
+        }
+        return *out != nullptr;
+    };
+    if (!create_binary("ready", &ctx->ready) ||
+        !create_binary("producer_start", &ctx->producer_start) ||
+        !create_binary("prefill", &ctx->prefill) ||
+        !create_binary("worker_start", &ctx->worker_start)) {
+        std::printf("AUDIO86_P4_FAILURE first_error=SEMAPHORE resource=%s\n",
+                    failed_semaphore != nullptr ? failed_semaphore : "unknown");
+        cleanup(ctx, raw);
+        return ESP_FAIL;
     }
-    std::printf("AUDIO86_P4_ALLOC name=worker_stack requested=%u caps=INTERNAL|8BIT result=%s\n",
-                static_cast<unsigned>(kWorkerStack * sizeof(StackType_t)),
-                ctx->worker_task != nullptr ? "PASS" : "FAIL");
-    if (ctx->first_error.load() == 0U && xSemaphoreTake(ctx->ready, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        ctx->terminal = xSemaphoreCreateCounting(4U, 0U);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, "terminal", "xSemaphoreCreateCounting", 0U,
+                      "IDF_MANAGED", free_before, largest_before,
+                      ctx->terminal != nullptr, free_after, largest_after);
+    }
+    if (ctx->terminal == nullptr) {
+        std::printf("AUDIO86_P4_FAILURE first_error=SEMAPHORE resource=terminal\n");
+        cleanup(ctx, raw);
+        return ESP_FAIL;
+    }
+    {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        ctx->pacing = xSemaphoreCreateCounting(NP2_AUDIO86_QUANTA, 0U);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, "pacing", "xSemaphoreCreateCounting", 0U,
+                      "IDF_MANAGED", free_before, largest_before,
+                      ctx->pacing != nullptr, free_after, largest_after);
+    }
+    if (ctx->pacing == nullptr) {
+        std::printf("AUDIO86_P4_FAILURE first_error=SEMAPHORE resource=pacing\n");
+        cleanup(ctx, raw);
+        return ESP_FAIL;
+    }
+
+    {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        const BaseType_t status = xTaskCreatePinnedToCore(
+            worker_task, "audio86_worker", kWorkerStack, ctx, kWorkerPriority,
+            &ctx->worker_task, kWorkerCore);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, "worker_task", "xTaskCreatePinnedToCore",
+                      0U, "IDF_MANAGED", free_before, largest_before,
+                      status == pdPASS, free_after, largest_after);
+        if (status != pdPASS) {
+            ctx->worker_done.store(true, std::memory_order_release);
+            std::printf("AUDIO86_P4_FAILURE first_error=WORKER_TASK resource=worker_task\n");
+            cleanup(ctx, raw);
+            return ESP_FAIL;
+        }
+    }
+    if (xSemaphoreTake(ctx->ready, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+        std::printf("AUDIO86_P4_FAILURE first_error=%u\n",
+                    ctx->first_error.load(std::memory_order_acquire));
+        xSemaphoreGive(ctx->worker_start);
+        cleanup(ctx, raw);
+        return ESP_FAIL;
+    }
+    {
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        const BaseType_t status = xTaskCreatePinnedToCore(
+            producer_task, "audio86_producer", kProducerStack, ctx,
+            kProducerPriority, &ctx->producer_task, kProducerCore);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, "producer_task", "xTaskCreatePinnedToCore",
+                      0U, "IDF_MANAGED", free_before, largest_before,
+                      status == pdPASS, free_after, largest_after);
+        if (status != pdPASS) {
+            ctx->producer_done.store(true, std::memory_order_release);
+            fail(ctx, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
+            std::printf("AUDIO86_P4_FAILURE first_error=PRODUCER_TASK resource=producer_task\n");
+            xSemaphoreGive(ctx->worker_start);
+            cleanup(ctx, raw);
+            return ESP_FAIL;
+        }
+    }
+
+    xSemaphoreGive(ctx->producer_start);
+    if (xSemaphoreTake(ctx->prefill, pdMS_TO_TICKS(1000)) != pdTRUE) {
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
     }
-    if (ctx->first_error.load() == 0U &&
-        xTaskCreatePinnedToCore(producer_task, "audio86_producer", kProducerStack, ctx,
-                                kProducerPriority, &ctx->producer_task, kProducerCore) != pdPASS) {
-        fail(ctx, NP2_AUDIO86_ASYNC_ERROR_PRODUCER);
-        ctx->producer_done.store(true, std::memory_order_release);
-    }
-    std::printf("AUDIO86_P4_ALLOC name=producer_stack requested=%u caps=INTERNAL|8BIT result=%s\n",
-                static_cast<unsigned>(kProducerStack * sizeof(StackType_t)),
-                ctx->producer_task != nullptr ? "PASS" : "FAIL");
-    if (ctx->first_error.load() == 0U) {
-        xSemaphoreGive(ctx->producer_start);
-        xSemaphoreTake(ctx->prefill, pdMS_TO_TICKS(1000));
-        if (mode == Mode::PacedFormal) {
-            const uint64_t timer_begin = esp_timer_get_time();
-            esp_timer_create_args_t args{};
-            args.callback = timer_callback;
-            args.arg = ctx;
-            args.name = "audio86_pace";
-            if (esp_timer_create(&args, &ctx->timer) != ESP_OK ||
-                esp_timer_start_periodic(ctx->timer, kQuantumUs) != ESP_OK) {
-                fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
-            }
-            ctx->timer_setup_us = static_cast<uint32_t>(esp_timer_get_time() - timer_begin);
+    if (ctx->first_error.load(std::memory_order_acquire) == 0U &&
+        mode == Mode::PacedFormal) {
+        const uint64_t timer_begin = esp_timer_get_time();
+        esp_timer_create_args_t args{};
+        args.callback = timer_callback;
+        args.arg = ctx;
+        args.name = "audio86_pace";
+        const size_t free_before = heap_caps_get_free_size(internal_caps);
+        const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
+        const esp_err_t create_status = esp_timer_create(&args, &ctx->timer);
+        esp_err_t start_status = create_status;
+        if (start_status == ESP_OK) {
+            start_status = esp_timer_start_periodic(ctx->timer, kQuantumUs);
         }
-        xSemaphoreGive(ctx->worker_start);
+        const size_t free_after = heap_caps_get_free_size(internal_caps);
+        const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
+        emit_resource(sequence++, "pacing_timer", "esp_timer_create/start_periodic",
+                      0U, "IDF_MANAGED", free_before, largest_before,
+                      start_status == ESP_OK, free_after, largest_after);
+        ctx->timer_setup_us = static_cast<uint32_t>(esp_timer_get_time() - timer_begin);
+        if (start_status != ESP_OK) {
+            fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+            std::printf("AUDIO86_P4_FAILURE first_error=TIMER resource=pacing_timer\n");
+            xSemaphoreGive(ctx->worker_start);
+            wait_for_tasks(ctx);
+            cleanup(ctx, raw);
+            return ESP_FAIL;
+        }
     }
-    while ((!ctx->worker_done.load(std::memory_order_acquire) ||
-            !ctx->producer_done.load(std::memory_order_acquire)) &&
-           (ctx->worker_task != nullptr || ctx->producer_task != nullptr)) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (ctx->timer != nullptr) {
-        esp_timer_stop(ctx->timer);
-        esp_timer_delete(ctx->timer);
-        ctx->timer = nullptr;
-    }
+    xSemaphoreGive(ctx->worker_start);
+    wait_for_tasks(ctx);
     ctx->coordinator_hwm = uxTaskGetStackHighWaterMark(nullptr);
     ctx->result.pcm_crc32 = np2_crc32_iso_hdlc_finish(ctx->result.pcm_crc32);
-    const uint32_t transport_crc32 =
-        np2_crc32_iso_hdlc_finish(ctx->transport_event_crc32);
+    const uint32_t transport_crc32 = np2_crc32_iso_hdlc_finish(ctx->transport_event_crc32);
     std::printf("AUDIO86_P4_STARTUP allocation_us=%u source_generation_us=%u"
                 " generator_init_us=%u producer_prefill_us=%u timer_setup_us=%u"
                 " first_quantum_service_us=%u\n",
@@ -852,14 +1068,14 @@ static esp_err_t run_benchmark(Mode mode)
                 " final_event_occupancy=%u final_byte_occupancy=%u\n",
                 ctx->event_waits, ctx->byte_waits, ctx->worker_waits,
                 ctx->event_high_water, ctx->byte_high_water,
-                np2audio86_event_ring_occupancy(&ctx->events),
-                np2audio86_byte_ring_occupancy(&ctx->pcm_bytes));
+                np2audio86_event_ring_occupancy(ctx->events),
+                np2audio86_byte_ring_occupancy(ctx->pcm_bytes));
     std::printf("AUDIO86_P4_PRODUCER published_events=%u plan_events=%u"
                 " source_bytes=%u committed_through_frame=%" PRIu64
                 " producer_done=%u\n",
                 ctx->published_events.load(std::memory_order_acquire),
                 static_cast<unsigned>(ctx->plan_count),
-                static_cast<unsigned>(sizeof(ctx->source)),
+                static_cast<unsigned>(NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES),
                 ctx->committed_through_frame.load(std::memory_order_acquire),
                 ctx->producer_done.load(std::memory_order_acquire) ? 1U : 0U);
     print_timing(ctx);
@@ -914,12 +1130,10 @@ static esp_err_t run_benchmark(Mode mode)
                 ctx->producer_done.load(std::memory_order_acquire) ? 1U : 0U,
                 ctx->worker_done.load(std::memory_order_acquire) ? 1U : 0U,
                 terminal_ok ? "PASS" : "FAIL", first_error);
-    if (first_error != 0U) {
-        std::printf("AUDIO86_P4_FAILURE first_error=%u\n", first_error);
-    }
-    const bool pass = first_error == 0U &&
+    const bool pass = terminal_ok &&
                       np2audio86_fixture_matches_golden(&ctx->result) &&
-                      ctx->transport_event_count == 333U && transport_crc32 == UINT32_C(0x8fc674d3) &&
+                      ctx->transport_event_count == 333U &&
+                      transport_crc32 == UINT32_C(0x8fc674d3) &&
                       std::memcmp(ctx->transport_event_sha256,
                                   "\xb2\xe5\x0d\xaa\xb7\x72\x92\x00\x49\xb6\x1e\xe2\xfe\xc1\x8b\x2f\xe4\x6e\x67\x21\x47\xbc\x67\x40\x2b\xf0\x0e\xe6\xed\x84\x48\x75",
                                   NP2_SHA256_DIGEST_SIZE) == 0 &&
@@ -938,14 +1152,13 @@ static esp_err_t run_benchmark(Mode mode)
                       ctx->worker_hwm.load() >= kStackWorkerMin &&
                       ctx->deadline_misses == 0U && ctx->pacing_backlog == 0U &&
                       ctx->input_starvation == 0U &&
-                      np2audio86_event_ring_occupancy(&ctx->events) == 0U &&
-                      np2audio86_byte_ring_occupancy(&ctx->pcm_bytes) == 0U;
-    std::printf("AUDIO86_P4_RESULT=%s\n", pass ? "PASS" : "FAIL");
-    if (ctx->timer != nullptr) {
-        esp_timer_delete(ctx->timer);
+                      np2audio86_event_ring_occupancy(ctx->events) == 0U &&
+                      np2audio86_byte_ring_occupancy(ctx->pcm_bytes) == 0U;
+    if (!pass) {
+        std::printf("AUDIO86_P4_FAILURE first_error=%u\n",
+                    first_error != 0U ? first_error : NP2_AUDIO86_ASYNC_ERROR_ORACLE_MISMATCH);
     }
-    ctx->~Context();
-    heap_caps_free(raw);
+    cleanup(ctx, raw);
     return pass ? ESP_OK : ESP_FAIL;
 }
 
@@ -988,9 +1201,12 @@ esp_err_t run()
                 kWorkerCore, static_cast<unsigned>(kWorkerPriority));
     if (cpu_hz != 360000000U || configTICK_RATE_HZ != 100) {
         std::printf("AUDIO86_P4_FAILURE first_error=CONFIGURATION\n");
+        std::printf("AUDIO86_P4_RESULT=FAIL\n");
         return ESP_FAIL;
     }
-    return run_benchmark(Mode::PacedFormal);
+    const esp_err_t status = run_benchmark(Mode::PacedFormal);
+    std::printf("AUDIO86_P4_RESULT=%s\n", status == ESP_OK ? "PASS" : "FAIL");
+    return status;
 #endif
 }
 
