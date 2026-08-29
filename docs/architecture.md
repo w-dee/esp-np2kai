@@ -696,8 +696,11 @@ integration. These remain FUTURE / UNVALIDATED.
 
 Emulated sound generation feeds a generic audio output boundary. Codec type,
 I2S/TDM implementation, DMA details, and board wiring belong below that
-boundary. No specific P4-NANO or TAB5 codec implementation has been integrated
-or validated.
+boundary. The scoped P4-NANO A3 path is now integrated and physically validated
+for I2S0/APLL -> ES8311 -> NS4150B -> H4 on the Waveshare
+ESP32-P4-NANO-KIT-D; see
+[`p4-audio-a3-completion.md`](development/p4-audio-a3-completion.md). This
+does not qualify TAB5 or broader audio/display coexistence.
 
 ## Storage, input, and connectivity
 

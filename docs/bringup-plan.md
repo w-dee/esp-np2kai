@@ -797,7 +797,11 @@ display backends. These remain FUTURE / UNVALIDATED.
 The future input stage covers USB keyboard, USB mouse, and touch coordinates
 where board support is available. No physical input transport is validated.
 
-## Step 9: audio — FUTURE, hardware required
+## Step 9: audio — A3 STREAMING PATH COMPLETE; BROADER AUDIO FUTURE
 
-The future audio stage covers beep, SSG, FM, YM2608 rhythm, ADPCM, and PCM86
-output policy and board integration. No physical audio path is validated.
+The scoped P4-NANO A3 physical path is formally complete. It covers the
+48 kHz I2S0/APLL -> ES8311 -> NS4150B -> H4 stream and its bounded OPNGEN/PCM
+transport; see
+[`p4-audio-a3-completion.md`](development/p4-audio-a3-completion.md).
+Broader beep, SSG, YM2608 rhythm, ADPCM, PCM86 capacity, and display/audio
+coexistence remain future work.
