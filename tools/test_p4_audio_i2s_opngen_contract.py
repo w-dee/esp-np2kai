@@ -55,16 +55,35 @@ def main() -> int:
         "P4_AUDIO_I2S_OPNGEN_SHUTDOWN",
         "i2s_consumer_underrun_count",
         "full_wait_count",
+        "full_wait_total_us",
+        "full_wait_max_us",
         "occupancy_hist",
         "i2s_wait_separate=YES",
+        "ring_full_wait_separate=YES",
+        "opngen_call_count",
+        "opngen_service_total_us",
+        "opngen_service_mean_us",
+        "opngen_service_max_us",
+        "compute_step_count",
+        "compute_service_total_us",
+        "compute_service_mean_us",
+        "compute_service_max_us",
+        "producer_terminal_ack",
+        "worker_terminal_ack",
+        "consumer_terminal_ack",
+        "completion=",
+        "tasks_quiesced=",
     ):
         require(token in SOURCE, f"missing integrated contract token {token}")
     require("P4_NANO_AUDIO_I2S_OPNGEN_PROFILE" in MAIN and
             "P4_NANO_AUDIO_I2S_OPNGEN_PROFILE" in CMAKE,
             "missing integrated profile macro routing")
 
-    require("esp_timer" not in SOURCE,
-            "integrated I2S consumer must not import esp_timer pacing")
+    require('#include "esp_timer.h"' in SOURCE and
+            "esp_timer_get_time()" in SOURCE,
+            "formal performance timing must use esp_timer_get_time")
+    require("xTaskGetTickCount" not in SOURCE,
+            "performance timing must not use FreeRTOS tick counts")
     require("FMGEN" not in SOURCE,
             "integrated profile must use the accepted OPNGEN worker boundary")
     require("i2s_channel_register_event_callback" not in SOURCE,
@@ -103,7 +122,7 @@ def main() -> int:
     require(run_workload.count("heap_caps_free(ctx);") == 1 and
             run_workload.index("ctx->~Context();") < run_workload.index("heap_caps_free(ctx);"),
             "Context must be destroyed and freed exactly once at cleanup tail")
-    require("static_assert(sizeof(Context) == 9112U" in SOURCE,
+    require("static_assert(sizeof(Context) == 9152U" in SOURCE,
             "Context size evidence must remain machine-visible")
     require("xTaskCreatePinnedToCore(worker_task, \"p4_i2s_worker\", 8192, ctx" in run_workload and
             "xTaskCreatePinnedToCore(producer_task, \"p4_i2s_producer\", 8192, ctx" in run_workload and
@@ -111,7 +130,7 @@ def main() -> int:
             "all tasks must receive the stable heap Context pointer")
     cleanup = run_workload[run_workload.index("cleanup:"):]
     require(cleanup.index("vTaskDelete") < cleanup.index("np2opngen_e1b_worker_destroy") <
-            cleanup.index("heap_caps_free(ctx->metrics.latency_ticks)") <
+            cleanup.index("heap_caps_free(ctx->metrics.latency_us)") <
             cleanup.index("ctx->~Context()") < cleanup.index("heap_caps_free(ctx);"),
             "Context lifetime cleanup order is not fail-safe")
     require("CONFIG_ESP_MAIN_TASK_STACK_SIZE=3584" in SDKCONFIG,
@@ -121,6 +140,12 @@ def main() -> int:
     require(consume_at > write_at,
             "ring slot must be consumed only after i2s_channel_write")
     write_region = SOURCE[write_at:consume_at]
+    require("constexpr uint32_t kWriteTimeoutMs = 1000U" in SOURCE,
+            "I2S write timeout must be a literal millisecond constant")
+    require("kWriteTimeoutMs" in write_region and "pdMS_TO_TICKS" not in write_region,
+            "i2s_channel_write must receive the literal millisecond timeout")
+    require("A3_I2S_WRITE_TIMEOUT_UNIT_CONTRACT=PASS" in SOURCE,
+            "timeout unit contract marker is missing")
     require("written != kQuantumBytes" in write_region and "fail(ctx)" in write_region,
             "short I2S writes must fail closed before ring consume")
     require("submitted_update(ctx, slot->pcm, written);" in write_region,

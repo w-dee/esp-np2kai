@@ -11,7 +11,7 @@ idf_component_register(
          "${NP2_AUDIO_REPO_ROOT}/host/compat/np2_sha256.c"
     INCLUDE_DIRS "include"
                  "${NP2_AUDIO_REPO_ROOT}/host/compat"
-    PRIV_REQUIRES np2opngen_fixture p4_nano_board esp_driver_i2s freertos
+    PRIV_REQUIRES np2opngen_fixture p4_nano_board esp_driver_i2s freertos esp_timer
     EMBED_FILES "${NP2_AUDIO_EMBED_FIXTURE}")
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++20)
