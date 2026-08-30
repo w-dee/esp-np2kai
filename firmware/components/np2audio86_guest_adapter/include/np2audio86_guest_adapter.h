@@ -203,6 +203,17 @@ void np2audio86_guest_pcm86_set_options(uint8_t dip_switch);
 void np2audio86_guest_pcm86_stream_bind(void);
 void np2audio86_guest_pcm86_stream_unbind(void);
 
+#if defined(NP2AUDIO86_GUEST_TEST)
+/* Test-only state seam.  It is deliberately absent from production builds. */
+void np2audio86_guest_test_set_pcm_state(uint32_t virtual_buffer,
+                                         uint32_t real_buffer,
+                                         uint16_t fifo_size, uint8_t fifo,
+                                         uint8_t stepbit, uint8_t reqirq,
+                                         uint8_t irqflag,
+                                         uint64_t lastclock);
+void np2audio86_guest_test_schedule_pcm(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

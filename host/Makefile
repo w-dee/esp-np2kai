@@ -372,7 +372,7 @@ build-audio86-guest-runtime:
 		--patch-set "$(AUDIO86_PATCH_SET)" \
 		--output-root "$(NP2_AUDIO86_RUNTIME_PREPARED)"
 	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration \
-		-DDISABLE_SOUND=1 -DNP2_ASYNC_AUDIO86=1 -DBYTESEX_LITTLE \
+		-DDISABLE_SOUND=1 -DNP2_ASYNC_AUDIO86=1 -DNP2AUDIO86_GUEST_TEST=1 -DBYTESEX_LITTLE \
 		-DOSLANG_UTF8 -DSUPPORT_UTF8 -DMEMOPTIMIZE=2 \
 		-ffunction-sections -fdata-sections -fcommon $(NP2_AUDIO86_RUNTIME_EXTRA_CFLAGS) \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \

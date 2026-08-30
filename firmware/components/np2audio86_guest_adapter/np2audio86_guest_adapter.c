@@ -677,3 +677,27 @@ void np2audio86_guest_pcm86_set_options(uint8_t dip_switch)
 }
 void np2audio86_guest_pcm86_stream_bind(void) { g_state.bound = 1; }
 void np2audio86_guest_pcm86_stream_unbind(void) { g_state.bound = 0; flush_pending_run(); }
+
+#if defined(NP2AUDIO86_GUEST_TEST)
+void np2audio86_guest_test_set_pcm_state(uint32_t virtual_buffer,
+                                         uint32_t real_buffer,
+                                         uint16_t fifo_size, uint8_t fifo,
+                                         uint8_t stepbit, uint8_t reqirq,
+                                         uint8_t irqflag,
+                                         uint64_t lastclock)
+{
+    g_state.pcm_virtual_buffer = virtual_buffer;
+    g_state.pcm_real_buffer = real_buffer;
+    g_state.pcm_fifo_size = fifo_size;
+    g_state.pcm_fifo = fifo;
+    g_state.pcm_stepbit = stepbit;
+    g_state.pcm_stepmask = (uint16_t)((1u << stepbit) - 1u);
+    g_state.pcm_reqirq = reqirq;
+    g_state.pcm_irq = irqflag;
+    g_state.pcm_lastclock = lastclock;
+    g_state.pcm_clock_valid = 1;
+    pcm_set_rate(fifo);
+}
+
+void np2audio86_guest_test_schedule_pcm(void) { pcm_set_next_interrupt(); }
+#endif

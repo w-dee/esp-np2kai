@@ -27,6 +27,19 @@ FIXTURE_MARKERS = (
     "A468_SEMANTICS",
     "A46A_SEMANTICS",
     "DOMAIN_G_CONSUMER_INDEPENDENCE",
+    "AUDIO86_GUEST_A46C_LOGICAL_FULL_WAIT",
+    "AUDIO86_GUEST_PCM86_SETNEXTINTR_SELECTION",
+    "AUDIO86_GUEST_PCM86_NEVENT_IMMEDIATE",
+    "AUDIO86_GUEST_PCM86_NEVENT_FALLBACK",
+    "AUDIO86_GUEST_TIMER_B_ACTUAL_PIC",
+    "A466_END_TO_END",
+    "A468_IRQ_CLEAR_BRANCH",
+    "A468_FORCED_IRQ_BRANCH",
+    "A468_RESCUE",
+    "A468_NEVENT_CONTROL",
+    "A46A_RESCUE",
+    "A46A_INVALID_FORMAT_PRESERVATION",
+    "A46A_REQIRQ_RESCHEDULE",
     "AUDIO86_GUEST_REAL_IO_PATH",
     "AUDIO86_GUEST_TIMER_PIC",
     "AUDIO86_GUEST_PCM86_ACCOUNTING",
@@ -99,6 +112,8 @@ def main() -> int:
         for marker in FIXTURE_MARKERS:
             if values.get(marker) != "PASS":
                 raise RuntimeError(f"runtime fixture did not report {marker}=PASS")
+        if values.get("AUDIO86_GUEST_PCM86_UNDERFLOW_HISTORY_BOUNDARY") != "ZERO_HISTORY_MVP":
+            raise RuntimeError("runtime fixture did not report the zero-history boundary")
         snapshots.append(values)
     if any(snapshot != snapshots[0] for snapshot in snapshots[1:]):
         raise RuntimeError("fresh-process oracle output is not byte-identical")
