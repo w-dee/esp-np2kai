@@ -72,6 +72,21 @@ struct sync_pcm_result {
     size_t apply_count;
 };
 
+struct sync_input_snapshot {
+    size_t event_bytes;
+    size_t run_bytes;
+    size_t pcm_bytes;
+    uint32_t event_crc;
+    uint32_t run_crc;
+    uint32_t pcm_crc;
+    uint8_t event_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t run_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t pcm_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t events[SYNC_MAX_EVENTS * 24U];
+    uint8_t runs[SYNC_MAX_RUNS * 32U];
+    uint8_t pcm[32768U];
+};
+
 static int validate_action_stream(const struct sync_action *actions,
                                   size_t action_count, size_t pcm_count);
 
@@ -121,6 +136,15 @@ static void sha_hex(const uint8_t *bytes, size_t length, char out[65])
     out[64] = '\0';
 }
 
+static void sha_digest(const uint8_t *bytes, size_t length,
+                       uint8_t digest[NP2_SHA256_DIGEST_SIZE])
+{
+    np2_sha256_context context;
+    np2_sha256_init(&context);
+    np2_sha256_update(&context, bytes, length);
+    np2_sha256_final(&context, digest);
+}
+
 static void print_digest(const char *name, const uint8_t *bytes, size_t length)
 {
     char sha[65];
@@ -156,6 +180,74 @@ static size_t serialize_guest_runs(const np2audio86_guest_data_run_t *runs,
         put_le32(out + i * 32U + 28U, 0U);
     }
     return count * 32U;
+}
+
+static int snapshot_inputs(struct sync_input_snapshot *snapshot,
+                           const np2audio86_guest_event_t *events,
+                           size_t event_count,
+                           const np2audio86_guest_data_run_t *runs,
+                           size_t run_count, const uint8_t *pcm_bytes,
+                           size_t pcm_count)
+{
+    if (snapshot == NULL || pcm_bytes == NULL ||
+        event_count > SYNC_MAX_EVENTS || run_count > SYNC_MAX_RUNS ||
+        pcm_count > sizeof(snapshot->pcm)) {
+        return -1;
+    }
+    snapshot->event_bytes = serialize_guest_events(events, event_count,
+                                                    snapshot->events);
+    snapshot->run_bytes = serialize_guest_runs(runs, run_count, snapshot->runs);
+    snapshot->pcm_bytes = pcm_count;
+    memcpy(snapshot->pcm, pcm_bytes, pcm_count);
+    snapshot->event_crc = np2_crc32_iso_hdlc(snapshot->events,
+                                              snapshot->event_bytes);
+    snapshot->run_crc = np2_crc32_iso_hdlc(snapshot->runs, snapshot->run_bytes);
+    snapshot->pcm_crc = np2_crc32_iso_hdlc(snapshot->pcm, snapshot->pcm_bytes);
+    sha_digest(snapshot->events, snapshot->event_bytes, snapshot->event_sha);
+    sha_digest(snapshot->runs, snapshot->run_bytes, snapshot->run_sha);
+    sha_digest(snapshot->pcm, snapshot->pcm_bytes, snapshot->pcm_sha);
+    return 0;
+}
+
+static int snapshot_pcm_matches(const struct sync_input_snapshot *snapshot,
+                                const uint8_t *pcm_bytes, size_t pcm_count)
+{
+    uint8_t digest[NP2_SHA256_DIGEST_SIZE];
+    return snapshot != NULL && pcm_bytes != NULL &&
+           pcm_count == snapshot->pcm_bytes &&
+           memcmp(snapshot->pcm, pcm_bytes, pcm_count) == 0 &&
+           np2_crc32_iso_hdlc(pcm_bytes, pcm_count) == snapshot->pcm_crc &&
+           (sha_digest(pcm_bytes, pcm_count, digest),
+            memcmp(snapshot->pcm_sha, digest, sizeof(digest)) == 0);
+}
+
+static int snapshot_inputs_match(const struct sync_input_snapshot *snapshot,
+                                 const np2audio86_guest_event_t *events,
+                                 size_t event_count,
+                                 const np2audio86_guest_data_run_t *runs,
+                                 size_t run_count, const uint8_t *pcm_bytes,
+                                 size_t pcm_count)
+{
+    uint8_t event_bytes[SYNC_MAX_EVENTS * 24U];
+    uint8_t run_bytes[SYNC_MAX_RUNS * 32U];
+    uint8_t digest[NP2_SHA256_DIGEST_SIZE];
+    const size_t event_length = serialize_guest_events(events, event_count,
+                                                        event_bytes);
+    const size_t run_length = serialize_guest_runs(runs, run_count, run_bytes);
+    if (snapshot == NULL || event_count > SYNC_MAX_EVENTS ||
+        run_count > SYNC_MAX_RUNS || event_length != snapshot->event_bytes ||
+        run_length != snapshot->run_bytes ||
+        memcmp(snapshot->events, event_bytes, event_length) != 0 ||
+        memcmp(snapshot->runs, run_bytes, run_length) != 0 ||
+        np2_crc32_iso_hdlc(event_bytes, event_length) != snapshot->event_crc ||
+        np2_crc32_iso_hdlc(run_bytes, run_length) != snapshot->run_crc) {
+        return -1;
+    }
+    sha_digest(event_bytes, event_length, digest);
+    if (memcmp(snapshot->event_sha, digest, sizeof(digest)) != 0) return -1;
+    sha_digest(run_bytes, run_length, digest);
+    if (memcmp(snapshot->run_sha, digest, sizeof(digest)) != 0) return -1;
+    return snapshot_pcm_matches(snapshot, pcm_bytes, pcm_count) ? 0 : -1;
 }
 
 static int parse_events(const uint8_t *bytes, size_t length,
@@ -207,8 +299,7 @@ static int validate_one_stream(uint64_t frame, uint64_t sequence,
                                uint64_t *last_frame, uint64_t *last_sequence,
                                uint8_t *have_last)
 {
-    if (*have_last && (frame < *last_frame ||
-                       (frame == *last_frame && sequence <= *last_sequence))) {
+    if (*have_last && (frame < *last_frame || sequence <= *last_sequence)) {
         return -1;
     }
     *last_frame = frame;
@@ -240,6 +331,8 @@ static int build_actions(const np2audio86_guest_event_t *events, size_t event_co
     }
     stream_have = 0U;
     for (ri = 0U; ri < run_count; ++ri) {
+        size_t prior;
+        size_t following;
         if (runs[ri].count == 0U || runs[ri].count > 32768U ||
             runs[ri].byte_offset > pcm_count ||
             runs[ri].count > pcm_count - (size_t)runs[ri].byte_offset ||
@@ -247,6 +340,19 @@ static int build_actions(const np2audio86_guest_event_t *events, size_t event_co
                                 &stream_frame, &stream_sequence,
                                 &stream_have) != 0) {
             return -1;
+        }
+        for (prior = 0U; prior < event_count; ++prior) {
+            if (events[prior].frame_timestamp > runs[ri].frame_timestamp) {
+                break;
+            }
+            if (events[prior].sequence >= runs[ri].sequence) return -1;
+        }
+        for (following = 0U; following < event_count; ++following) {
+            const np2audio86_guest_event_t *event = &events[following];
+            if (event->frame_timestamp > runs[ri].frame_timestamp) {
+                if (event->sequence <= runs[ri].sequence) return -1;
+                break;
+            }
         }
     }
     ei = 0U;
@@ -289,14 +395,11 @@ static int build_actions(const np2audio86_guest_event_t *events, size_t event_co
             action->kind = SYNC_ACTION_DATA_RUN;
         }
         if (action->kind == 0U ||
-            (have_last && (action->frame < last_frame ||
-                           (action->frame == last_frame &&
-                            action->sequence <= last_sequence)))) {
+            validate_one_stream(action->frame, action->sequence,
+                                &last_frame, &last_sequence,
+                                &have_last) != 0) {
             return -1;
         }
-        last_frame = action->frame;
-        last_sequence = action->sequence;
-        have_last = 1U;
     }
     *action_count = count;
     return 0;
@@ -569,9 +672,14 @@ static int run_negative_tests(const struct sync_action *actions, size_t count,
         return -1;
     }
 
-    /* Global sequence regression must fail before any worker mutation. */
+    /* Same-frame duplicate sequence must fail before any worker mutation. */
     memcpy(bad, actions, count * sizeof(bad[0]));
     bad[1].sequence = bad[0].sequence;
+    if (replay_actions(bad, count, pcm_bytes, pcm_count, 240U, &result) == 0) return -1;
+
+    /* Same-frame sequence regression must also fail. */
+    memcpy(bad, actions, count * sizeof(bad[0]));
+    bad[1].sequence = bad[0].sequence - 1U;
     if (replay_actions(bad, count, pcm_bytes, pcm_count, 240U, &result) == 0) return -1;
 
     /* A timestamp regression must not be silently re-ordered. */
@@ -616,6 +724,105 @@ static int run_negative_tests(const struct sync_action *actions, size_t count,
     one.opcode = NP2AUDIO86_TRACE_PCM_CONTROL;
     one.payload = UINT32_C(0xff00);
     if (replay_actions(&one, 1U, pcm_bytes, pcm_count, 240U, &result) == 0) return -1;
+    return 0;
+}
+
+static int run_global_sequence_tests(const uint8_t *pcm_bytes, size_t pcm_count)
+{
+    struct sync_action sequence_cases[2] = {
+        {0U, 10U, NP2AUDIO86_TRACE_OPNA_REGISTER, 0x2400U, 0U, 0U,
+         SYNC_ACTION_OPNA_REGISTER},
+        {0U, 11U, NP2AUDIO86_TRACE_OPNA_REGISTER, 0x2400U, 0U, 0U,
+         SYNC_ACTION_OPNA_REGISTER},
+    };
+    np2audio86_guest_event_t events[2] = {
+        {0U, 15U, NP2AUDIO86_TRACE_OPNA_REGISTER, 0x2400U},
+        {13U, 17U, NP2AUDIO86_TRACE_OPNA_REGISTER, 0x2400U},
+    };
+    np2audio86_guest_data_run_t run = {0U, 16U, 0U, 4U};
+    struct sync_action merged[3];
+    size_t count = 0U;
+
+    (void)pcm_bytes;
+    sequence_cases[1].frame = 0U;
+    sequence_cases[1].sequence = 9U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) == 0) return -1;
+    sequence_cases[1].sequence = 10U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) == 0) return -1;
+    sequence_cases[1].frame = 1U;
+    sequence_cases[1].sequence = 9U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) == 0) return -1;
+    sequence_cases[1].sequence = 10U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) == 0) return -1;
+    sequence_cases[1].sequence = 11U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) != 0) return -1;
+    sequence_cases[0].frame = 1U;
+    sequence_cases[0].sequence = 10U;
+    sequence_cases[1].frame = 0U;
+    sequence_cases[1].sequence = 11U;
+    if (validate_action_stream(sequence_cases, 2U, pcm_count) == 0) return -1;
+
+    if (build_actions(events, 2U, &run, 1U, pcm_count, merged,
+                      sizeof(merged) / sizeof(merged[0]), &count) != 0 ||
+        count != 3U || merged[1].kind != SYNC_ACTION_DATA_RUN ||
+        merged[1].sequence != 16U) {
+        return -1;
+    }
+    run.sequence = 15U;
+    if (build_actions(events, 2U, &run, 1U, pcm_count, merged,
+                      sizeof(merged) / sizeof(merged[0]), &count) == 0) return -1;
+    run.sequence = 14U;
+    if (build_actions(events, 2U, &run, 1U, pcm_count, merged,
+                      sizeof(merged) / sizeof(merged[0]), &count) == 0) return -1;
+    run.sequence = 17U;
+    if (build_actions(events, 2U, &run, 1U, pcm_count, merged,
+                      sizeof(merged) / sizeof(merged[0]), &count) == 0) return -1;
+    return 0;
+}
+
+static int run_domain_a_pcm_split_test(void)
+{
+    struct np2audio86_render_state state;
+    PCM86 pcm;
+    SINT32 virbuf;
+    UINT8 irqflag;
+    UINT8 reqirq;
+    UINT64 lastclockforwait;
+    UINT64 lastclock;
+    UINT8 soundflags;
+    SINT32 fifosize;
+    if (np2audio86_render_init(&state) != 0) return -1;
+    pcm = &state.pcm86.pcm;
+    pcm->virbuf = 123;
+    pcm->irqflag = 1U;
+    pcm->reqirq = 1U;
+    pcm->lastclockforwait = UINT64_C(0x123456789abcdef0);
+    pcm->lastclock = UINT64_C(0x0fedcba987654321);
+    pcm->soundflags = 0xa4U;
+    pcm->fifosize = 789;
+    pcm->readpos = 5U;
+    pcm->wrtpos = 7U;
+    pcm->realbuf = 64;
+    pcm->fifo = 0U;
+    virbuf = pcm->virbuf;
+    irqflag = pcm->irqflag;
+    reqirq = pcm->reqirq;
+    lastclockforwait = pcm->lastclockforwait;
+    lastclock = pcm->lastclock;
+    soundflags = pcm->soundflags;
+    fifosize = pcm->fifosize;
+    if (np2audio86_render_apply_pcm86_control(&state, 0x08U, 0x08U) != 0 ||
+        pcm->readpos != 0U || pcm->wrtpos != 0U || pcm->realbuf != 0 ||
+        pcm->fifo != 0x08U || pcm->virbuf != virbuf ||
+        pcm->irqflag != irqflag || pcm->reqirq != reqirq ||
+        pcm->lastclockforwait != lastclockforwait ||
+        pcm->lastclock != lastclock || pcm->fifosize != fifosize) {
+        return -1;
+    }
+    if (np2audio86_render_apply_pcm86_control(&state, 0x00U, 0x01U) != 0 ||
+        pcm->soundflags != soundflags) {
+        return -1;
+    }
     return 0;
 }
 
@@ -751,8 +958,8 @@ int main(void)
     size_t event_bytes, run_bytes, event_copy_bytes, run_copy_bytes;
     size_t event_count, run_count, action_count, serialized_action_count;
     int build_rc;
-    uint8_t input_events_before[SYNC_MAX_EVENTS * 24U];
-    uint8_t input_runs_before[SYNC_MAX_RUNS * 32U];
+    struct sync_input_snapshot input_snapshot;
+    uint8_t pcm_mutation_copy[32768];
 
     if (np2audio86_guest_runtime_capture(&trace, &guest_state) != 0) return 1;
     printf("SOURCE_86R2_HEAD=0639a606842d04842f68baf717d41c4d93d794bf\n");
@@ -767,14 +974,18 @@ int main(void)
         np2_crc32_iso_hdlc(run_serialized, run_bytes) != UINT32_C(0xb5843125)) {
         return 1;
     }
-    memcpy(input_events_before, event_serialized, event_bytes);
-    memcpy(input_runs_before, run_serialized, run_bytes);
+    if (snapshot_inputs(&input_snapshot, trace.events, trace.event_count,
+                        trace.data_runs, trace.data_run_count,
+                        trace.pcm_bytes, trace.pcm_count) != 0) return 1;
     build_rc = build_actions(trace.events, trace.event_count, trace.data_runs,
                       trace.data_run_count, trace.pcm_count, actions,
                       SYNC_MAX_ACTIONS, &action_count);
     if (build_rc != 0 ||
         replay_actions(actions, action_count, trace.pcm_bytes, trace.pcm_count,
-                       240U, &direct) != 0) {
+                       240U, &direct) != 0 ||
+        snapshot_inputs_match(&input_snapshot, trace.events, trace.event_count,
+                               trace.data_runs, trace.data_run_count,
+                               trace.pcm_bytes, trace.pcm_count) != 0) {
         return 1;
     }
     event_copy_bytes = serialize_guest_events(trace.events, trace.event_count,
@@ -790,16 +1001,26 @@ int main(void)
                       &serialized_action_count) != 0 ||
         replay_actions(serialized_actions, serialized_action_count,
                        trace.pcm_bytes, trace.pcm_count, 240U, &serialized) != 0 ||
-        !compare_pcm_results(&direct, &serialized)) {
+        !compare_pcm_results(&direct, &serialized) ||
+        snapshot_inputs_match(&input_snapshot, trace.events, trace.event_count,
+                               trace.data_runs, trace.data_run_count,
+                               trace.pcm_bytes, trace.pcm_count) != 0) {
         return 1;
     }
     if (replay_actions(actions, action_count, trace.pcm_bytes, trace.pcm_count,
                        120U, &alternate) != 0 ||
-        !compare_pcm_results(&direct, &alternate)) {
+        !compare_pcm_results(&direct, &alternate) ||
+        snapshot_inputs_match(&input_snapshot, trace.events, trace.event_count,
+                               trace.data_runs, trace.data_run_count,
+                               trace.pcm_bytes, trace.pcm_count) != 0) {
         return 1;
     }
-    if (memcmp(input_events_before, event_serialized, event_bytes) != 0 ||
-        memcmp(input_runs_before, run_serialized, run_bytes) != 0 ||
+    memcpy(pcm_mutation_copy, trace.pcm_bytes, trace.pcm_count);
+    pcm_mutation_copy[0] ^= UINT8_C(0x01);
+    if (snapshot_pcm_matches(&input_snapshot, pcm_mutation_copy,
+                             trace.pcm_count) ||
+        run_global_sequence_tests(trace.pcm_bytes, trace.pcm_count) != 0 ||
+        run_domain_a_pcm_split_test() != 0 ||
         run_negative_tests(actions, action_count, trace.pcm_bytes,
                            trace.pcm_count) != 0 ||
         run_boundary_tests(trace.pcm_bytes, trace.pcm_count) != 0 ||
@@ -811,11 +1032,19 @@ int main(void)
     if (emit_result(&direct, &trace, event_serialized, event_bytes,
                     run_serialized, run_bytes) != 0) return 1;
     printf("AUDIO86_GUEST_SYNC_INPUT=PASS\n");
+    printf("AUDIO86_GUEST_SYNC_GLOBAL_SEQUENCE_VALIDATION=PASS\n");
+    printf("MERGED_ACTION_SEQUENCE_VALIDATION=PASS\n");
+    printf("PCM_BYTE_IMMUTABILITY_CHECKER_SENSITIVE=PASS\n");
+    printf("AUDIO86_GUEST_REPLAY_EVENTS_IMMUTABLE=PASS\n");
+    printf("AUDIO86_GUEST_REPLAY_DATA_RUNS_IMMUTABLE=PASS\n");
+    printf("AUDIO86_GUEST_REPLAY_PCM_BYTES_IMMUTABLE=PASS\n");
+    printf("AUDIO86_GUEST_REPLAY_INPUT_IMMUTABLE=PASS\n");
+    printf("AUDIO86_GUEST_SYNC_DOMAIN_A_PCM_SPLIT=PASS\n");
     printf("AUDIO86_GUEST_SYNC_WORKER_APPLY=PASS\n");
+    printf("AUDIO86_GUEST_SYNC_FAIL_CLOSED=PASS\n");
     printf("AUDIO86_GUEST_SYNC_PCM=PASS\n");
     printf("AUDIO86_GUEST_SYNC_SERIALIZED_REPLAY=PASS\n");
     printf("AUDIO86_GUEST_SYNC_QUANTUM_INDEPENDENCE=PASS\n");
-    printf("AUDIO86_GUEST_REPLAY_INPUT_IMMUTABLE=PASS\n");
     printf("AUDIO86_GUEST_SYNC_PCM_DETERMINISM=PASS\n");
     printf("AUDIO86_GUEST_SYNC_NEGATIVE_TESTS=PASS\n");
     printf("AUDIO86_GUEST_SYNC_BOUNDARY_TESTS=PASS\n");

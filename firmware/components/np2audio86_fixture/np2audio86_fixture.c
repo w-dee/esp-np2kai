@@ -478,9 +478,6 @@ static void worker_pcm_set_rate(PCM86 pcm, uint8_t rate_index)
         88200U, 66150U, 44010U, 33075U
     };
     const uint32_t rate = rates[rate_index & 7U];
-    pcm->rateval = rate;
-    pcm->stepclock = ((uint64_t)2457600U << 6) / rate;
-    pcm->stepclock *= (uint64_t)(20U << 3);
     pcm->div = (SINT32)((rate << (PCM86_DIVBIT - 3U)) /
                         NP2_AUDIO86_RATE_HZ);
     pcm->div2 = (SINT32)((NP2_AUDIO86_RATE_HZ << (PCM86_DIVBIT + 3U)) /
@@ -539,20 +536,13 @@ int np2audio86_render_apply_pcm86_control(
 {
     PCM86 pcm;
     uint8_t old;
-    static const uint8_t bits[8] = {1U, 1U, 1U, 2U, 0U, 0U, 0U, 1U};
-    static const uint32_t rescue[8] = {
-        20U * 32U, 20U * 24U, 20U * 16U, 20U * 12U,
-        20U * 8U, 20U * 6U, 20U * 4U, 20U * 3U
-    };
     if (state == NULL) {
         return -1;
     }
     pcm = &state->pcm86.pcm;
     switch (register_index) {
     case 0x00U:
-        /* A460 is guest extension selection; it has no waveform mutation. */
-        pcm->soundflags = (uint8_t)((pcm->soundflags & 0xfeU) |
-                                    (value & 1U));
+        /* A460 extension selection belongs entirely to the guest domain. */
         break;
     case 0x06U:
         if ((value & 0xe0U) == 0xa0U) {
@@ -566,34 +556,15 @@ int np2audio86_render_apply_pcm86_control(
             pcm->wrtpos = 0U;
             pcm->readpos = 0U;
             pcm->realbuf = 0;
-            pcm->virbuf = 0;
-            pcm->lastclock = 0;
-            pcm->lastclockforwait = 0;
-        }
-        if (!(value & 0x10U)) {
-            pcm->irqflag = 0;
-            if (pcm->virbuf == 0) {
-                pcm->lastclockforwait = 0;
-            }
-        }
-        if (pcm->virbuf <= pcm->fifosize) {
-            pcm->irqflag = 1;
         }
         if ((old ^ value) & 7U) {
-            pcm->rescue = rescue[value & 7U] << pcm->stepbit;
             worker_pcm_set_rate(pcm, value);
         }
         pcm->fifo = value;
         break;
     case 0x0aU:
-        if (pcm->fifo & 0x20U) {
-            pcm->fifosize = value == 0xffU
-                ? 0x7ffcU : (SINT32)((value + 1U) << 7U);
-        } else if ((value & 15U) != 15U) {
+        if (!(pcm->fifo & 0x20U) && (value & 15U) != 15U) {
             pcm->dactrl = value;
-            pcm->stepbit = bits[(value >> 4U) & 7U];
-            pcm->stepmask = (1U << pcm->stepbit) - 1U;
-            pcm->rescue = rescue[pcm->fifo & 7U] << pcm->stepbit;
             worker_pcm_set_rate(pcm, pcm->fifo);
         }
         break;
