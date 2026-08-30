@@ -565,14 +565,13 @@ int np2audio86_render_span(struct np2audio86_render_state *state,
         return -1;
     }
     {
-        const int status = render_span(state, mix, frames, result, 0);
         if (state->pcm86.pcm.realbuf < state->pcm86.fifo_min) {
             state->pcm86.fifo_min = state->pcm86.pcm.realbuf;
         }
         if (state->pcm86.pcm.realbuf > state->pcm86.fifo_max) {
             state->pcm86.fifo_max = state->pcm86.pcm.realbuf;
         }
-        return status;
+        return render_span(state, mix, frames, result, 0);
     }
 }
 

@@ -10,8 +10,11 @@ MAIN_CMAKE = (ROOT / "firmware/main/CMakeLists.txt").read_text()
 MAIN_CPP = (ROOT / "firmware/main/main.cpp").read_text()
 COMP_CMAKE = (ROOT / "firmware/components/p4_nano_audio86_capacity/CMakeLists.txt").read_text()
 COMP_CPP = (ROOT / "firmware/components/p4_nano_audio86_capacity/p4_nano_audio86_capacity.cpp").read_text()
+FIXTURE_C = (ROOT / "firmware/components/np2audio86_fixture/np2audio86_fixture.c").read_text()
 BUILD = (ROOT / "tools/emu/build-production.sh").read_text()
 DEFAULTS = (ROOT / "firmware/sdkconfig.defaults.p4-audio86-capacity").read_text()
+GOLDEN = (ROOT / "tools/emu/np2audio86_fixture_golden.json").read_text()
+VALIDATOR = (ROOT / "tools/emu/validate_p4_audio86_capacity_log.py").read_text()
 VALIDATOR_TEST = ROOT / "tools/test_validate_p4_audio86_capacity_log.py"
 
 
@@ -34,6 +37,35 @@ def main() -> int:
     check("PRIV_REQUIRES np2audio86_fixture" in COMP_CMAKE, "portable fixture not required")
     check("P4_AUDIO86_PROFILE_MODE" in COMP_CMAKE,
           "profile component-timing mode is not selectable")
+
+    # The public incremental renderer samples FIFO occupancy at the same
+    # pre-consumption service boundary as the canonical async renderer.
+    public_span = re.search(
+        r"int np2audio86_render_span\(.*?\n\}", FIXTURE_C, re.DOTALL).group(0)
+    push_span = re.search(
+        r"int np2audio86_render_pcm86_push\(.*?\n\}", FIXTURE_C, re.DOTALL).group(0)
+    stats_min = "state->pcm86.pcm.realbuf < state->pcm86.fifo_min"
+    stats_max = "state->pcm86.pcm.realbuf > state->pcm86.fifo_max"
+    render_call = "render_span(state, mix, frames, result, 0)"
+    check("state->pcm86.pcm.realbuf < 4096" in public_span,
+          "public renderer admission threshold missing")
+    check(public_span.index(stats_min) < public_span.index(render_call) and
+          public_span.index(stats_max) < public_span.index(render_call),
+          "public renderer FIFO stats are not pre-render")
+    render_tail = public_span[public_span.index(render_call):]
+    check(stats_min not in render_tail and stats_max not in render_tail,
+          "post-render FIFO stats update remains")
+    check("feed->pcm.realbuf += (SINT32)count" in push_span and
+          "feed->pcm.realbuf < feed->fifo_min" in push_span and
+          "feed->pcm.realbuf > feed->fifo_max" in push_span,
+          "PCM86 push post-refill FIFO accounting changed")
+    check("ctx->result.pcm86_fifo_min == 4096" in COMP_CPP and
+          "ctx->result.pcm86_fifo_max == 36860" in COMP_CPP,
+          "P4 FIFO checker expectation changed")
+    for golden in ("0x58929f1f", "7f1bc0cdcab519690c0d3580746827199f86dd270868f33ceb01d230e096310e",
+                   "333", "0x8fc674d3", "b2e50daab772920049b61ee2fec18b2fe46e672147bc67402bf00ee6ed844875"):
+        check(golden in GOLDEN or golden in COMP_CPP or golden in VALIDATOR,
+              f"PCM/transport golden changed: {golden}")
 
     # The capacity branch must not pull the normal runtime/display/audio sink.
     branch = re.search(
