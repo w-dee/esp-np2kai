@@ -35,12 +35,19 @@ def full_pass_log() -> str:
         "AUDIO86_P4_TRANSPORT event_wait_count=1 byte_wait_count=1 worker_wait_count=1"
         " event_high_water=128 byte_high_water=65536 final_event_occupancy=0 final_byte_occupancy=0",
         "AUDIO86_P4_STACK coordinator_hwm=512 producer_hwm=512 worker_hwm=1024",
+        "AUDIO86_P4_PROGRESS planned_quanta=12000 planned_frames=2880000"
+        " planned_bytes=11520000 completed_quanta=12000 completed_frames=2880000"
+        " completed_bytes=11520000 canonicalized_quanta=12000 service_sample_count=12000"
+        " failed_quantum=NONE",
+        "AUDIO86_P4_PACING_EPOCH t0_us=100 worker_release_us=101"
+        " q0_service_start_us=102 first_timer_callback_us=5100",
         "AUDIO86_P4_WORKER_TIMING sample_count=12000 min=1 mean=1 p50=1 p90=1 p95=1"
         " p99=1 p999=1 max=1 absolute_deadline_miss_count=0 pacing_backlog_count=0"
         " paced_input_starvation_count=0",
         "AUDIO86_P4_EVENT_SPLIT count=4 q0=0 q1=2 q2=4 q3=6",
         "AUDIO86_P4_PCM86_REFILL count=323 p99=1 max=1 non_refill_count=11677"
-        " non_refill_p99=1 non_refill_max=1",
+        " non_refill_p99=1 non_refill_max=1 planned_refill_quanta=323"
+        " planned_non_refill_quanta=11677",
         "AUDIO86_P4_LIFECYCLE producer_done=1 worker_done=1 terminal=PASS first_error=0",
         "AUDIO86_P4_RESULT=PASS",
     ]) + "\n"
@@ -73,6 +80,16 @@ def runtime_target_fail_log() -> str:
         "AUDIO86_P4_ALLOC seq=1 name=context api=heap_caps_calloc requested_bytes=600"
         " managed_bytes=0 caps=INTERNAL|8BIT free_before=589784 largest_before=393216"
         " result=PASS free_after=589184 largest_after=393216",
+        "AUDIO86_P4_PROGRESS planned_quanta=12000 planned_frames=2880000"
+        " planned_bytes=11520000 completed_quanta=2 completed_frames=480"
+        " completed_bytes=1920 canonicalized_quanta=3 service_sample_count=3"
+        " failed_quantum=2",
+        "AUDIO86_P4_WORKER_TIMING sample_count=3 min=1 mean=1 p50=1 p90=1 p95=1"
+        " p99=1 p999=1 max=1 absolute_deadline_miss_count=1 pacing_backlog_count=0"
+        " paced_input_starvation_count=0",
+        "AUDIO86_P4_PCM86_REFILL count=1 p99=1 max=1 non_refill_count=2"
+        " non_refill_p99=1 non_refill_max=1 planned_refill_quanta=323"
+        " planned_non_refill_quanta=11677",
         "AUDIO86_P4_FAILURE first_error=14",
         "AUDIO86_P4_RESULT=FAIL",
     ]) + "\n"
@@ -102,6 +119,65 @@ class ValidatorTests(unittest.TestCase):
         result = self.run_validator(runtime_target_fail_log())
         self.assertEqual(result.returncode, 1)
         self.assertIn("failure_class=14", result.stdout)
+        self.assertIn("progress=PRESENT", result.stdout)
+
+    def test_legacy_runtime_fail_is_explicitly_accepted(self) -> None:
+        result = self.run_validator(runtime_target_fail_log().replace(
+            "AUDIO86_P4_PROGRESS planned_quanta=12000 planned_frames=2880000 planned_bytes=11520000 completed_quanta=2 completed_frames=480 completed_bytes=1920 canonicalized_quanta=3 service_sample_count=3 failed_quantum=2\n",
+            "").replace(
+            "AUDIO86_P4_WORKER_TIMING sample_count=3 min=1 mean=1 p50=1 p90=1 p95=1 p99=1 p999=1 max=1 absolute_deadline_miss_count=1 pacing_backlog_count=0 paced_input_starvation_count=0\n",
+            "").replace(
+            "AUDIO86_P4_PCM86_REFILL count=1 p99=1 max=1 non_refill_count=2 non_refill_p99=1 non_refill_max=1 planned_refill_quanta=323 planned_non_refill_quanta=11677\n",
+            ""))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("progress=LEGACY_UNAVAILABLE", result.stdout)
+
+    def test_partial_progress_is_accepted(self) -> None:
+        result = self.run_validator(runtime_target_fail_log())
+        self.assertEqual(result.returncode, 1)
+
+    def test_partial_timing_cannot_claim_planned_samples(self) -> None:
+        result = self.run_validator(runtime_target_fail_log().replace(
+            "sample_count=3", "sample_count=12000"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_completed_cannot_exceed_canonicalized(self) -> None:
+        result = self.run_validator(runtime_target_fail_log().replace(
+            "completed_quanta=2", "completed_quanta=4"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_completed_frame_geometry_is_checked(self) -> None:
+        result = self.run_validator(runtime_target_fail_log().replace(
+            "completed_frames=480", "completed_frames=481"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_partial_refill_counts_match_samples(self) -> None:
+        result = self.run_validator(runtime_target_fail_log().replace(
+            "non_refill_count=2", "non_refill_count=1"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_full_pass_requires_progress(self) -> None:
+        progress = next(line for line in full_pass_log().splitlines()
+                        if line.startswith("AUDIO86_P4_PROGRESS"))
+        result = self.run_validator(full_pass_log().replace(progress + "\n", ""))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_full_pass_progress_must_be_complete(self) -> None:
+        result = self.run_validator(full_pass_log().replace(
+            "completed_quanta=12000", "completed_quanta=11999"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
+
+    def test_pacing_epoch_order_is_checked(self) -> None:
+        result = self.run_validator(full_pass_log().replace(
+            "worker_release_us=101", "worker_release_us=99"))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("MALFORMED_LOG", result.stdout)
 
     def test_malformed_early_fail_without_allocation(self) -> None:
         result = self.run_validator(target_fail_log().replace("AUDIO86_P4_ALLOC seq=1 name=context api=heap_caps_calloc requested_bytes=512 managed_bytes=0 caps=INTERNAL|8BIT free_before=589784 largest_before=393216 result=FAIL free_after=589784 largest_after=393216\n", ""))

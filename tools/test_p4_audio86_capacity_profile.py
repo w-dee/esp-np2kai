@@ -51,8 +51,8 @@ def main() -> int:
           "capacity component contains forbidden sink/runtime integration")
     check("xTaskNotifyGive" in COMP_CPP and "xSemaphoreGive(ctx->pacing)" in COMP_CPP,
           "transport and pacing wake channels are not distinct")
-    check("compare_exchange_strong" in COMP_CPP and "PACING" not in COMP_CPP,
-          "first-error CAS or accidental pacing serialization missing")
+    check("compare_exchange_strong" in COMP_CPP,
+          "first-error CAS missing")
     check("static_cast<uint64_t>(q) * kQuantumUs" in COMP_CPP and
           "finish >= deadline" in COMP_CPP, "absolute schedule/deadline missing")
     check("ceil(p * N) - 1" not in COMP_CPP, "placeholder percentile text present")
@@ -69,7 +69,7 @@ def main() -> int:
           "refill_times[NP2_AUDIO86_QUANTA]" not in COMP_CPP and
           "nonrefill_count = 0U" not in COMP_CPP,
           "redundant refill arrays remain")
-    check("ctx->plan[i].opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN" in COMP_CPP and
+    check("ctx->plan[scan].opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN" in COMP_CPP and
           "ctx->service_us[q]" in COMP_CPP,
           "refill statistics are not derived from plan and samples")
     check("MALLOC_CAP_SPIRAM)" not in COMP_CPP or
@@ -92,6 +92,57 @@ def main() -> int:
           "kProducerPriority = tskIDLE_PRIORITY + 3" in COMP_CPP and
           "kWorkerPriority = tskIDLE_PRIORITY + 4" in COMP_CPP,
           "task topology changed")
+
+    # TIME.1 pacing epoch and per-quantum correctness contracts.
+    worker_epoch = COMP_CPP[COMP_CPP.index("static void worker_task"):
+                             COMP_CPP.index("static void timer_callback")]
+    benchmark = COMP_CPP[COMP_CPP.index("static esp_err_t run_benchmark"):
+                         COMP_CPP.index("esp_err_t run()")]
+    check("const uint64_t t0 = ctx->start_us;" in worker_epoch and
+          "const uint64_t t0 = esp_timer_get_time();" not in worker_epoch,
+          "worker establishes an independent pacing epoch")
+    check("ctx->start_us = esp_timer_get_time();" in benchmark and
+          "esp_timer_start_periodic(ctx->timer, kQuantumUs)" in benchmark,
+          "coordinator-owned epoch or timer arm missing")
+    start = benchmark.index("if (start_status == ESP_OK) {")
+    release = benchmark.index("xSemaphoreGive(ctx->worker_start);", start)
+    formal_start = benchmark[start:release]
+    check("std::printf" not in formal_start and "emit_resource" not in formal_start and
+          "heap_caps_" not in formal_start,
+          "formal timer arm has logging/allocation before worker release")
+    check("xSemaphoreTake(ctx->pacing, portMAX_DELAY)" in worker_epoch and
+          "q != 0U" in worker_epoch and "ticks > q" in worker_epoch and
+          "ticks < q" in worker_epoch,
+          "q0/q1 pacing permit contract missing")
+    check("vTaskDelay(1)" not in worker_epoch and "taskYIELD" not in worker_epoch,
+          "100Hz pacing wait remains")
+    callback = COMP_CPP[COMP_CPP.index("static void timer_callback"):
+                        COMP_CPP.index("static uint32_t percentile")]
+    check("fetch_add" in callback and "xSemaphoreGive(ctx->pacing)" in callback and
+          "notify(ctx->worker_task)" not in callback,
+          "timer callback pacing semantics changed")
+    render = COMP_CPP[COMP_CPP.index("static bool render_quantum"):
+                      COMP_CPP.index("static void producer_task")]
+    check("std::memset(ctx->render->mix_scratch, 0," in render and
+          render.index("service_start") < render.index("std::memset") <
+          render.index("np2audio86_render_span"),
+          "per-quantum scratch clear is not inside service interval")
+    check(render.count("std::memset(ctx->render->mix_scratch") == 1,
+          "scratch is cleared more than once in the quantum adapter")
+    check(all(token in COMP_CPP for token in (
+        "completed_quanta", "canonicalized_quanta", "service_sample_count",
+        "failed_quantum")), "explicit progress state missing")
+    check("AUDIO86_P4_PROGRESS" in COMP_CPP and
+          "completed_frames" in COMP_CPP and "completed_bytes" in COMP_CPP,
+          "actual progress log missing")
+    check("ctx->input_starvation" in COMP_CPP and
+          "formal_epoch_started.load" in COMP_CPP and
+          "fail(ctx, NP2_AUDIO86_ASYNC_ERROR_WATERMARK)" in COMP_CPP,
+          "post-epoch input starvation gate missing")
+    check("subset_order_statistic" not in COMP_CPP and
+          "NP2_AUDIO86_ASYNC_MAX_EVENTS]{}" in COMP_CPP and
+          "ctx->service_sample_count" in COMP_CPP,
+          "bounded partial timing algorithm missing")
 
     # LIFE.1 task ownership and terminal-park contracts.
     check("std::atomic<bool> producer_reap_ready{false};" in COMP_CPP and

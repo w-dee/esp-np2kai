@@ -38,6 +38,7 @@ constexpr int kWorkerCore = 0;
 constexpr uint32_t kStackCoordinatorMin = 256U;
 constexpr uint32_t kStackProducerMin = 256U;
 constexpr uint32_t kStackWorkerMin = 512U;
+constexpr uint32_t kNoFailedQuantum = UINT32_MAX;
 
 enum class Mode : uint32_t { Unpaced = 0, PacedFormal = 1 };
 
@@ -97,6 +98,10 @@ struct Context {
     uint32_t pacing_backlog = 0U;
     uint32_t input_starvation = 0U;
     uint64_t start_us = 0U;
+    uint64_t worker_release_us = 0U;
+    uint64_t q0_service_start_us = 0U;
+    std::atomic<uint64_t> first_timer_callback_us{0U};
+    std::atomic<bool> formal_epoch_started{false};
     uint64_t finish_us = 0U;
     uint32_t source_setup_us = 0U;
     uint32_t allocation_us = 0U;
@@ -107,6 +112,10 @@ struct Context {
     std::atomic<uint32_t> producer_hwm{0U};
     std::atomic<uint32_t> worker_hwm{0U};
     uint32_t first_quantum_service_us = 0U;
+    uint32_t completed_quanta = 0U;
+    uint32_t canonicalized_quanta = 0U;
+    uint32_t service_sample_count = 0U;
+    uint32_t failed_quantum = kNoFailedQuantum;
 #if defined(P4_AUDIO86_PROFILE_MODE)
     uint64_t profile_event_apply_us = 0U;
     uint64_t profile_pcm86_copy_us = 0U;
@@ -224,6 +233,12 @@ static bool wait_event(Context *ctx, const struct np2audio86_event **event)
             return false;
         }
         ++ctx->worker_waits;
+        if (ctx->mode == Mode::PacedFormal &&
+            ctx->formal_epoch_started.load(std::memory_order_acquire)) {
+            ++ctx->input_starvation;
+            fail(ctx, NP2_AUDIO86_ASYNC_ERROR_WATERMARK);
+            return false;
+        }
         ctx->worker_waiting.store(true, std::memory_order_release);
         const uint64_t watermark =
             ctx->committed_through_frame.load(std::memory_order_acquire);
@@ -250,6 +265,10 @@ static bool pop_bytes(Context *ctx, size_t count)
     if (status != NP2_AUDIO86_TRANSPORT_OK) {
         if (status == NP2_AUDIO86_TRANSPORT_EMPTY) {
             ++ctx->worker_waits;
+            if (ctx->mode == Mode::PacedFormal &&
+                ctx->formal_epoch_started.load(std::memory_order_acquire)) {
+                ++ctx->input_starvation;
+            }
         }
         fail(ctx, NP2_AUDIO86_ASYNC_ERROR_DATA_AVAILABILITY);
         return false;
@@ -328,6 +347,11 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
     const uint64_t quantum_end = quantum_start + NP2_AUDIO86_QUANTUM_FRAMES;
     bool had_split = false;
     const uint64_t service_start = esp_timer_get_time();
+    if (quantum == 0U) {
+        ctx->q0_service_start_us = service_start;
+    }
+    std::memset(ctx->render->mix_scratch, 0,
+                NP2_AUDIO86_QUANTUM_FRAMES * NP2_AUDIO86_CHANNELS * sizeof(SINT32));
     size_t offset = 0U;
     while (offset < NP2_AUDIO86_QUANTUM_FRAMES) {
         const struct np2audio86_event *event = nullptr;
@@ -401,6 +425,8 @@ static bool render_quantum(Context *ctx, uint32_t quantum, HashState *hash,
 #endif
     const uint64_t finish = esp_timer_get_time();
     ctx->service_us[quantum] = static_cast<uint32_t>(finish - service_start);
+    ++ctx->canonicalized_quanta;
+    ++ctx->service_sample_count;
     if (had_split && ctx->split_count < 4U) {
         ctx->split_quanta[ctx->split_count] = quantum;
         ctx->split_times[ctx->split_count] = ctx->service_us[quantum];
@@ -475,33 +501,43 @@ static void worker_task(void *opaque)
     ctx->generator_init_us = static_cast<uint32_t>(esp_timer_get_time() - generator_init_start);
     xSemaphoreGive(ctx->ready);
     xSemaphoreTake(ctx->worker_start, portMAX_DELAY);
-    const uint64_t t0 = esp_timer_get_time();
-    ctx->start_us = t0;
+    const uint64_t t0 = ctx->start_us;
     for (uint32_t q = 0U; q < NP2_AUDIO86_QUANTA &&
                            ctx->first_error.load(std::memory_order_acquire) == 0U;
          ++q) {
         if (ctx->mode == Mode::PacedFormal && q != 0U) {
             xSemaphoreTake(ctx->pacing, portMAX_DELAY);
             const uint32_t ticks = ctx->pace_tick_count.load(std::memory_order_acquire);
-            if (ticks != q) {
+            if (ticks > q) {
                 ++ctx->pacing_backlog;
                 fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+                ctx->failed_quantum = q;
+                break;
+            }
+            if (ticks < q) {
+                fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+                ctx->failed_quantum = q;
                 break;
             }
             const uint64_t start = t0 + static_cast<uint64_t>(q) * kQuantumUs;
             while (esp_timer_get_time() < start) {
-                const uint64_t remaining = start - esp_timer_get_time();
-                if (remaining > 50U) {
-                    vTaskDelay(1);
-                }
             }
         }
         HashState hash{};
         hash.pcm = pcm_sha;
         if (!render_quantum(ctx, q, &hash, t0)) {
+            if (ctx->failed_quantum == kNoFailedQuantum) {
+                ctx->failed_quantum = q;
+            }
             break;
         }
         pcm_sha = hash.pcm;
+        ++ctx->completed_quanta;
+    }
+    if (ctx->failed_quantum == kNoFailedQuantum &&
+        ctx->first_error.load(std::memory_order_acquire) != 0U &&
+        ctx->completed_quanta < NP2_AUDIO86_QUANTA) {
+        ctx->failed_quantum = ctx->completed_quanta;
     }
     np2_sha256_final(&pcm_sha, ctx->result.pcm_sha256);
     np2_sha256_final(&ctx->transport_sha, ctx->transport_event_sha256);
@@ -530,9 +566,14 @@ static void timer_callback(void *arg)
     if (ctx == nullptr) {
         return;
     }
-    ctx->pace_tick_count.fetch_add(1U, std::memory_order_acq_rel);
+    const uint32_t previous = ctx->pace_tick_count.fetch_add(
+        1U, std::memory_order_acq_rel);
+    if (previous == 0U) {
+        ctx->first_timer_callback_us.store(
+            static_cast<uint64_t>(esp_timer_get_time()),
+            std::memory_order_release);
+    }
     xSemaphoreGive(ctx->pacing);
-    notify(ctx->worker_task);
 }
 
 static uint32_t percentile(const uint32_t *values, size_t count, double p)
@@ -545,9 +586,6 @@ static uint32_t percentile(const uint32_t *values, size_t count, double p)
     return values[std::min(index, count - 1U)];
 }
 
-static void subset_stats(const Context *ctx, bool refill, size_t *count,
-                         uint32_t *p99, uint32_t *max);
-
 static void print_hex(const uint8_t *digest)
 {
     for (size_t i = 0U; i < NP2_SHA256_DIGEST_SIZE; ++i) {
@@ -555,16 +593,91 @@ static void print_hex(const uint8_t *digest)
     }
 }
 
-static void print_timing(Context *ctx)
-{
+struct TimingStats {
+    size_t sample_count = 0U;
+    uint32_t min = 0U;
+    uint32_t max = 0U;
+    uint64_t sum = 0U;
+    size_t refill_count = 0U;
+    size_t nonrefill_count;
     uint32_t refill_p99 = 0U;
     uint32_t refill_max = 0U;
     uint32_t nonrefill_p99 = 0U;
     uint32_t nonrefill_max = 0U;
-    size_t refill_samples = 0U;
-    size_t nonrefill_samples = 0U;
-    subset_stats(ctx, true, &refill_samples, &refill_p99, &refill_max);
-    subset_stats(ctx, false, &nonrefill_samples, &nonrefill_p99, &nonrefill_max);
+};
+
+static void compute_timing_stats(Context *ctx, TimingStats *stats)
+{
+    *stats = TimingStats{};
+    stats->sample_count = ctx->service_sample_count;
+    uint32_t refill_values[NP2_AUDIO86_ASYNC_MAX_EVENTS]{};
+    size_t plan_index = 0U;
+    for (size_t q = 0U; q < stats->sample_count; ++q) {
+        const uint64_t begin = static_cast<uint64_t>(q) * NP2_AUDIO86_QUANTUM_FRAMES;
+        const uint64_t end = begin + NP2_AUDIO86_QUANTUM_FRAMES;
+        while (plan_index < ctx->plan_count &&
+               ctx->plan[plan_index].frame_timestamp < begin) {
+            ++plan_index;
+        }
+        bool refill = false;
+        size_t scan = plan_index;
+        while (scan < ctx->plan_count && ctx->plan[scan].frame_timestamp < end) {
+            if (ctx->plan[scan].opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN) {
+                refill = true;
+            }
+            ++scan;
+        }
+        plan_index = scan;
+        if (refill) {
+            refill_values[stats->refill_count++] = ctx->service_us[q];
+        } else {
+            ++stats->nonrefill_count;
+            stats->nonrefill_max = std::max(stats->nonrefill_max,
+                                            ctx->service_us[q]);
+        }
+    }
+    std::sort(refill_values, refill_values + stats->refill_count);
+    std::sort(ctx->service_us, ctx->service_us + stats->sample_count);
+    if (stats->sample_count != 0U) {
+        stats->min = ctx->service_us[0];
+        stats->max = ctx->service_us[stats->sample_count - 1U];
+        for (size_t i = 0U; i < stats->sample_count; ++i) {
+            stats->sum += ctx->service_us[i];
+        }
+    }
+    stats->refill_max = stats->refill_count == 0U
+                           ? 0U
+                           : refill_values[stats->refill_count - 1U];
+    stats->refill_p99 = percentile(refill_values, stats->refill_count, .99);
+
+    /* Subtract the refill multiset from all valid samples without allocating
+     * another 12,000-entry array.  Equal values are consumed one at a time. */
+    const size_t nonrefill_rank = stats->nonrefill_count == 0U
+                                      ? 0U
+                                      : static_cast<size_t>(
+                                            (0.99 * static_cast<double>(
+                                                 stats->nonrefill_count)) +
+                                            0.999999999) - 1U;
+    size_t refill_index = 0U;
+    size_t nonrefill_index = 0U;
+    for (size_t i = 0U; i < stats->sample_count; ++i) {
+        const uint32_t value = ctx->service_us[i];
+        if (refill_index < stats->refill_count &&
+            value == refill_values[refill_index]) {
+            ++refill_index;
+            continue;
+        }
+        if (nonrefill_index == nonrefill_rank) {
+            stats->nonrefill_p99 = value;
+        }
+        ++nonrefill_index;
+    }
+}
+
+static void print_timing(Context *ctx)
+{
+    TimingStats stats{};
+    compute_timing_stats(ctx, &stats);
 #if defined(P4_AUDIO86_PROFILE_MODE)
     ctx->profile_opngen_us = ctx->render->profile_opngen_us;
     ctx->profile_psggen_us = ctx->render->profile_psggen_us;
@@ -572,29 +685,33 @@ static void print_timing(Context *ctx)
     ctx->profile_pcm86_generation_us = ctx->render->profile_pcm86_generation_us;
     ctx->profile_mix_canonical_us += ctx->render->profile_mix_us;
 #endif
-    uint32_t *sorted = ctx->service_us;
-    std::sort(sorted, sorted + NP2_AUDIO86_QUANTA);
-    uint64_t sum = 0U;
-    for (size_t i = 0U; i < NP2_AUDIO86_QUANTA; ++i) {
-        sum += sorted[i];
-    }
     std::printf("AUDIO86_P4_WORKER_TIMING sample_count=%u min=%u mean=%" PRIu64
                 " p50=%u p90=%u p95=%u p99=%u p999=%u max=%u"
                 " absolute_deadline_miss_count=%u pacing_backlog_count=%u"
                 " paced_input_starvation_count=%u\n",
-                NP2_AUDIO86_QUANTA, sorted[0], sum / NP2_AUDIO86_QUANTA,
-                percentile(sorted, NP2_AUDIO86_QUANTA, .50),
-                percentile(sorted, NP2_AUDIO86_QUANTA, .90),
-                percentile(sorted, NP2_AUDIO86_QUANTA, .95),
-                percentile(sorted, NP2_AUDIO86_QUANTA, .99),
-                percentile(sorted, NP2_AUDIO86_QUANTA, .999),
-                sorted[NP2_AUDIO86_QUANTA - 1U], ctx->deadline_misses,
-                ctx->pacing_backlog, ctx->input_starvation);
+                static_cast<unsigned>(stats.sample_count),
+                static_cast<unsigned>(stats.min),
+                stats.sample_count == 0U ? 0U : stats.sum / stats.sample_count,
+                static_cast<unsigned>(percentile(ctx->service_us,
+                                                 stats.sample_count, .50)),
+                static_cast<unsigned>(percentile(ctx->service_us,
+                                                 stats.sample_count, .90)),
+                static_cast<unsigned>(percentile(ctx->service_us,
+                                                 stats.sample_count, .95)),
+                static_cast<unsigned>(percentile(ctx->service_us,
+                                                 stats.sample_count, .99)),
+                static_cast<unsigned>(percentile(ctx->service_us,
+                                                 stats.sample_count, .999)),
+                static_cast<unsigned>(stats.max),
+                static_cast<unsigned>(ctx->deadline_misses),
+                static_cast<unsigned>(ctx->pacing_backlog),
+                static_cast<unsigned>(ctx->input_starvation));
     std::printf("AUDIO86_P4_PCM86_REFILL count=%u p99=%u max=%u non_refill_count=%u"
-                " non_refill_p99=%u non_refill_max=%u\n",
-                static_cast<unsigned>(refill_samples), refill_p99, refill_max,
-                static_cast<unsigned>(nonrefill_samples), nonrefill_p99,
-                nonrefill_max);
+                " non_refill_p99=%u non_refill_max=%u"
+                " planned_refill_quanta=323 planned_non_refill_quanta=11677\n",
+                static_cast<unsigned>(stats.refill_count), stats.refill_p99,
+                stats.refill_max, static_cast<unsigned>(stats.nonrefill_count),
+                stats.nonrefill_p99, stats.nonrefill_max);
 #if defined(P4_AUDIO86_PROFILE_MODE)
     std::printf("AUDIO86_P4_COMPONENT_TIMING event_transport_apply_us=%" PRIu64
                 " pcm86_descriptor_copy_us=%" PRIu64 " opngen_us=%" PRIu64
@@ -612,70 +729,37 @@ static void print_timing(Context *ctx)
 #endif
 }
 
-static bool quantum_contains_refill(const Context *ctx, uint32_t quantum)
+static void print_progress(const Context *ctx)
 {
-    const uint64_t begin = static_cast<uint64_t>(quantum) * NP2_AUDIO86_QUANTUM_FRAMES;
-    const uint64_t end = begin + NP2_AUDIO86_QUANTUM_FRAMES;
-    for (size_t i = 0U; i < ctx->plan_count; ++i) {
-        if (ctx->plan[i].opcode == NP2_AUDIO86_EVENT_PCM86_DATA_RUN &&
-            ctx->plan[i].frame_timestamp >= begin &&
-            ctx->plan[i].frame_timestamp < end) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static uint32_t subset_order_statistic(const Context *ctx, bool refill,
-                                       size_t rank)
-{
-    size_t count = 0U;
-    for (uint32_t q = 0U; q < NP2_AUDIO86_QUANTA; ++q) {
-        if (quantum_contains_refill(ctx, q) == refill) {
-            ++count;
-        }
-    }
-    if (count == 0U || rank >= count) {
-        return 0U;
-    }
-    uint32_t low = 0U;
-    uint32_t high = UINT32_MAX;
-    while (low < high) {
-        const uint32_t mid = low + (high - low) / 2U;
-        size_t less_equal = 0U;
-        for (uint32_t q = 0U; q < NP2_AUDIO86_QUANTA; ++q) {
-            if (quantum_contains_refill(ctx, q) == refill &&
-                ctx->service_us[q] <= mid) {
-                ++less_equal;
-            }
-        }
-        if (less_equal > rank) {
-            high = mid;
-        } else {
-            low = mid + 1U;
-        }
-    }
-    return low;
-}
-
-static void subset_stats(const Context *ctx, bool refill, size_t *count,
-                         uint32_t *p99, uint32_t *max)
-{
-    *count = 0U;
-    *max = 0U;
-    for (uint32_t q = 0U; q < NP2_AUDIO86_QUANTA; ++q) {
-        if (quantum_contains_refill(ctx, q) == refill) {
-            ++*count;
-            *max = std::max(*max, ctx->service_us[q]);
-        }
-    }
-    if (*count != 0U) {
-        const size_t rank = static_cast<size_t>(
-            (0.99 * static_cast<double>(*count)) + 0.999999999) - 1U;
-        *p99 = subset_order_statistic(ctx, refill, rank);
+    const uint64_t completed_frames =
+        static_cast<uint64_t>(ctx->completed_quanta) * NP2_AUDIO86_QUANTUM_FRAMES;
+    const uint64_t completed_bytes =
+        completed_frames * NP2_AUDIO86_CHANNELS * sizeof(int16_t);
+    char failed_quantum[16]{};
+    if (ctx->failed_quantum == kNoFailedQuantum) {
+        std::strcpy(failed_quantum, "NONE");
     } else {
-        *p99 = 0U;
+        std::snprintf(failed_quantum, sizeof(failed_quantum), "%u",
+                      ctx->failed_quantum);
     }
+    std::printf("AUDIO86_P4_PROGRESS planned_quanta=%u planned_frames=%" PRIu64
+                " planned_bytes=%" PRIu64 " completed_quanta=%u"
+                " completed_frames=%" PRIu64 " completed_bytes=%" PRIu64
+                " canonicalized_quanta=%u service_sample_count=%u"
+                " failed_quantum=%s\n",
+                NP2_AUDIO86_QUANTA, static_cast<uint64_t>(NP2_AUDIO86_DURATION_FRAMES),
+                static_cast<uint64_t>(NP2_AUDIO86_PCM_BYTES), ctx->completed_quanta,
+                completed_frames, completed_bytes, ctx->canonicalized_quanta,
+                ctx->service_sample_count, failed_quantum);
+}
+
+static void print_pacing_epoch(const Context *ctx)
+{
+    std::printf("AUDIO86_P4_PACING_EPOCH t0_us=%" PRIu64
+                " worker_release_us=%" PRIu64 " q0_service_start_us=%" PRIu64
+                " first_timer_callback_us=%" PRIu64 "\n",
+                ctx->start_us, ctx->worker_release_us, ctx->q0_service_start_us,
+                ctx->first_timer_callback_us.load(std::memory_order_acquire));
 }
 
 static esp_err_t run_smoke()
@@ -1033,17 +1117,13 @@ static esp_err_t run_benchmark(Mode mode)
         const size_t free_before = heap_caps_get_free_size(internal_caps);
         const size_t largest_before = heap_caps_get_largest_free_block(internal_caps);
         const esp_err_t create_status = esp_timer_create(&args, &ctx->timer);
-        esp_err_t start_status = create_status;
-        if (start_status == ESP_OK) {
-            start_status = esp_timer_start_periodic(ctx->timer, kQuantumUs);
-        }
         const size_t free_after = heap_caps_get_free_size(internal_caps);
         const size_t largest_after = heap_caps_get_largest_free_block(internal_caps);
-        emit_resource(sequence++, "pacing_timer", "esp_timer_create/start_periodic",
+        emit_resource(sequence++, "pacing_timer", "esp_timer_create",
                       0U, "IDF_MANAGED", free_before, largest_before,
-                      start_status == ESP_OK, free_after, largest_after);
+                      create_status == ESP_OK, free_after, largest_after);
         ctx->timer_setup_us = static_cast<uint32_t>(esp_timer_get_time() - timer_begin);
-        if (start_status != ESP_OK) {
+        if (create_status != ESP_OK) {
             fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
             std::printf("AUDIO86_P4_FAILURE first_error=TIMER resource=pacing_timer\n");
             xSemaphoreGive(ctx->worker_start);
@@ -1052,7 +1132,38 @@ static esp_err_t run_benchmark(Mode mode)
             return ESP_FAIL;
         }
     }
-    xSemaphoreGive(ctx->worker_start);
+    if (ctx->first_error.load(std::memory_order_acquire) == 0U &&
+        mode == Mode::PacedFormal) {
+        if (uxSemaphoreGetCount(ctx->pacing) != 0U ||
+            ctx->pace_tick_count.load(std::memory_order_acquire) != 0U) {
+            fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+            std::printf("AUDIO86_P4_FAILURE first_error=%u resource=pacing_epoch\n",
+                        ctx->first_error.load(std::memory_order_acquire));
+            xSemaphoreGive(ctx->worker_start);
+            wait_for_tasks(ctx);
+            cleanup(ctx, raw);
+            return ESP_FAIL;
+        }
+        const esp_err_t start_status = esp_timer_start_periodic(ctx->timer, kQuantumUs);
+        if (start_status == ESP_OK) {
+            ctx->start_us = esp_timer_get_time();
+            ctx->formal_epoch_started.store(true, std::memory_order_release);
+            ctx->worker_release_us = esp_timer_get_time();
+            xSemaphoreGive(ctx->worker_start);
+        } else {
+            emit_resource(sequence++, "pacing_timer_start", "esp_timer_start_periodic",
+                          0U, "IDF_MANAGED", 0U, 0U, false, 0U, 0U);
+            fail(ctx, NP2_AUDIO86_ASYNC_ERROR_LIVENESS);
+            std::printf("AUDIO86_P4_FAILURE first_error=TIMER resource=pacing_timer_start\n");
+            xSemaphoreGive(ctx->worker_start);
+            wait_for_tasks(ctx);
+            cleanup(ctx, raw);
+            return ESP_FAIL;
+        }
+    } else {
+        ctx->worker_release_us = esp_timer_get_time();
+        xSemaphoreGive(ctx->worker_start);
+    }
     wait_for_tasks(ctx);
     ctx->coordinator_hwm = uxTaskGetStackHighWaterMark(nullptr);
     ctx->result.pcm_crc32 = np2_crc32_iso_hdlc_finish(ctx->result.pcm_crc32);
@@ -1061,7 +1172,8 @@ static esp_err_t run_benchmark(Mode mode)
                 " generator_init_us=%u producer_prefill_us=%u timer_setup_us=%u"
                 " first_quantum_service_us=%u\n",
                 ctx->allocation_us, ctx->source_setup_us, ctx->generator_init_us,
-                ctx->prefill_us, ctx->timer_setup_us, ctx->service_us[0]);
+                ctx->prefill_us, ctx->timer_setup_us,
+                ctx->service_sample_count != 0U ? ctx->service_us[0] : 0U);
     std::printf("AUDIO86_P4_STACK coordinator_hwm=%u producer_hwm=%u worker_hwm=%u"
                 " units=words required_coordinator=256 required_producer=256"
                 " required_worker=512\n",
@@ -1083,6 +1195,8 @@ static esp_err_t run_benchmark(Mode mode)
                 static_cast<unsigned>(NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES),
                 ctx->committed_through_frame.load(std::memory_order_acquire),
                 ctx->producer_done.load(std::memory_order_acquire) ? 1U : 0U);
+    print_progress(ctx);
+    print_pacing_epoch(ctx);
     print_timing(ctx);
     std::printf("AUDIO86_P4_EVENT_SPLIT count=%u q0=%u us0=%u q1=%u us1=%u"
                 " q2=%u us2=%u q3=%u us3=%u max_us=%u\n",
@@ -1152,6 +1266,10 @@ static esp_err_t run_benchmark(Mode mode)
                       ctx->result.fm_contribution != 0U && ctx->result.psg_contribution != 0U &&
                       ctx->result.rhythm_contribution != 0U && ctx->result.pcm86_contribution != 0U &&
                       ctx->result.mid_quantum_events == 4U && ctx->split_count == 4U &&
+                      ctx->completed_quanta == NP2_AUDIO86_QUANTA &&
+                      ctx->canonicalized_quanta == NP2_AUDIO86_QUANTA &&
+                      ctx->service_sample_count == NP2_AUDIO86_QUANTA &&
+                      ctx->failed_quantum == kNoFailedQuantum &&
                       ctx->coordinator_hwm >= kStackCoordinatorMin &&
                       ctx->producer_hwm.load() >= kStackProducerMin &&
                       ctx->worker_hwm.load() >= kStackWorkerMin &&

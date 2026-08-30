@@ -69,6 +69,60 @@ def require(record: dict[str, str], *fields: str) -> None:
             fail(f"missing_{field}")
 
 
+def validate_progress(records: dict[str, list[dict[str, str]]], *, full: bool) -> dict[str, int | str] | None:
+    entries = records.get("AUDIO86_P4_PROGRESS", [])
+    if not entries:
+        if full:
+            fail("missing_progress")
+        return None
+    if len(entries) != 1:
+        fail("progress_count")
+    progress = entries[0]
+    require(progress, "planned_quanta", "planned_frames", "planned_bytes",
+            "completed_quanta", "completed_frames", "completed_bytes",
+            "canonicalized_quanta", "service_sample_count", "failed_quantum")
+    values: dict[str, int | str] = {}
+    for field in ("planned_quanta", "planned_frames", "planned_bytes",
+                  "completed_quanta", "completed_frames", "completed_bytes",
+                  "canonicalized_quanta", "service_sample_count"):
+        values[field] = integer(progress, field)
+    failed = progress["failed_quantum"]
+    if failed == "NONE":
+        values["failed_quantum"] = failed
+    else:
+        try:
+            failed_value = int(failed, 0)
+        except ValueError:
+            fail("invalid_failed_quantum")
+        if failed_value < 0:
+            fail("invalid_failed_quantum")
+        values["failed_quantum"] = failed_value
+
+    if values["planned_quanta"] != 12000 or values["planned_frames"] != 2880000 or values["planned_bytes"] != 11520000:
+        fail("wrong_planned_geometry")
+    if values["completed_quanta"] > values["canonicalized_quanta"] or values["canonicalized_quanta"] > values["planned_quanta"]:
+        fail("progress_order")
+    if values["completed_frames"] != values["completed_quanta"] * 240:
+        fail("completed_frame_geometry")
+    if values["completed_bytes"] != values["completed_frames"] * 4:
+        fail("completed_byte_geometry")
+    if values["service_sample_count"] != values["canonicalized_quanta"]:
+        fail("sample_progress_mismatch")
+    if isinstance(values["failed_quantum"], int):
+        if values["failed_quantum"] >= values["planned_quanta"]:
+            fail("failed_quantum_range")
+        if values["failed_quantum"] != values["completed_quanta"]:
+            fail("failed_quantum_progress_mismatch")
+    elif values["completed_quanta"] != values["planned_quanta"]:
+        fail("missing_failed_quantum")
+    if full and (values["completed_quanta"] != 12000 or
+                 values["canonicalized_quanta"] != 12000 or
+                 values["service_sample_count"] != 12000 or
+                 values["failed_quantum"] != "NONE"):
+        fail("incomplete_full_progress")
+    return values
+
+
 def validate_config(records: dict[str, list[dict[str, str]]]) -> dict[str, str]:
     config = one(records, "AUDIO86_P4_CONFIG")
     require(config, "git_sha", "profile", "mode", "cpu_hz", "tick_hz",
@@ -87,6 +141,23 @@ def validate_config(records: dict[str, list[dict[str, str]]]) -> dict[str, str]:
         if integer(config, field) != expected:
             fail(f"wrong_{field}")
     return config
+
+
+def validate_pacing_epoch(records: dict[str, list[dict[str, str]]]) -> None:
+    entries = records.get("AUDIO86_P4_PACING_EPOCH", [])
+    if not entries:
+        return
+    epoch = one(records, "AUDIO86_P4_PACING_EPOCH")
+    require(epoch, "t0_us", "worker_release_us", "q0_service_start_us",
+            "first_timer_callback_us")
+    t0 = integer(epoch, "t0_us")
+    worker_release = integer(epoch, "worker_release_us")
+    q0_start = integer(epoch, "q0_service_start_us")
+    first_callback = integer(epoch, "first_timer_callback_us")
+    if min(t0, worker_release, q0_start, first_callback) < 0:
+        fail("negative_pacing_epoch")
+    if worker_release < t0 or q0_start < t0:
+        fail("pacing_epoch_order")
 
 
 def validate_smoke(records: dict[str, list[dict[str, str]]],
@@ -109,6 +180,9 @@ def validate_smoke(records: dict[str, list[dict[str, str]]],
 
 def validate_full_pass(records: dict[str, list[dict[str, str]]]) -> None:
     validate_config(records)
+    validate_pacing_epoch(records)
+    progress = validate_progress(records, full=True)
+    assert progress is not None
     identity = one(records, "AUDIO86_P4_IDENTITY")
     require(identity, "frames", "bytes", "quanta", "pcm_crc32", *SHA_FIELDS,
             "control_events", "control_crc32", "source_crc32",
@@ -165,6 +239,12 @@ def validate_full_pass(records: dict[str, list[dict[str, str]]]) -> None:
     require(refill, "count", "non_refill_count")
     if integer(refill, "count") != 323 or integer(refill, "non_refill_count") != 11677:
         fail("refill_classification")
+    if "planned_refill_quanta" in refill and integer(refill, "planned_refill_quanta") != 323:
+        fail("planned_refill_classification")
+    if "planned_non_refill_quanta" in refill and integer(refill, "planned_non_refill_quanta") != 11677:
+        fail("planned_refill_classification")
+    if integer(timing, "sample_count") != integer(refill, "count") + integer(refill, "non_refill_count"):
+        fail("refill_sample_mismatch")
     lifecycle = one(records, "AUDIO86_P4_LIFECYCLE")
     require(lifecycle, "producer_done", "worker_done", "terminal", "first_error")
     if lifecycle["terminal"] != "PASS" or integer(lifecycle, "producer_done") != 1 or integer(lifecycle, "worker_done") != 1 or integer(lifecycle, "first_error") != 0:
@@ -182,6 +262,7 @@ def validate_target_fail(records: dict[str, list[dict[str, str]]]) -> str:
     if failure_class is None:
         fail("missing_failure_class")
     validate_config(records)
+    validate_pacing_epoch(records)
     allocations = records.get("AUDIO86_P4_ALLOC", [])
     if failure_class == "CONFIGURATION":
         if allocations or records.get("AUDIO86_P4_MEMORY_PREALLOC"):
@@ -204,6 +285,24 @@ def validate_target_fail(records: dict[str, list[dict[str, str]]]) -> str:
     if runtime_class:
         if failed:
             fail("runtime_failure_with_failed_allocation")
+        progress = validate_progress(records, full=False)
+        if progress is not None:
+            timing_entries = records.get("AUDIO86_P4_WORKER_TIMING", [])
+            if timing_entries:
+                timing = one(records, "AUDIO86_P4_WORKER_TIMING")
+                require(timing, "sample_count")
+                if integer(timing, "sample_count") != progress["service_sample_count"]:
+                    fail("partial_timing_sample_mismatch")
+            refill_entries = records.get("AUDIO86_P4_PCM86_REFILL", [])
+            if refill_entries:
+                refill = one(records, "AUDIO86_P4_PCM86_REFILL")
+                require(refill, "count", "non_refill_count")
+                if integer(refill, "count") + integer(refill, "non_refill_count") != progress["service_sample_count"]:
+                    fail("partial_refill_sample_mismatch")
+                if "planned_refill_quanta" in refill and integer(refill, "planned_refill_quanta") != 323:
+                    fail("planned_refill_classification")
+                if "planned_non_refill_quanta" in refill and integer(refill, "planned_non_refill_quanta") != 11677:
+                    fail("planned_refill_classification")
         return failure_class
     if not failed or allocations[-1]["result"] != "FAIL":
         fail("missing_final_failed_allocation")
@@ -243,8 +342,11 @@ def main() -> int:
             return 0
         if results[0] == "FAIL":
             failure_class = validate_target_fail(records)
+            progress_status = ("PRESENT" if records.get("AUDIO86_P4_PROGRESS")
+                               else "LEGACY_UNAVAILABLE")
             print("AUDIO86_P4_LOG_VALIDATION=WELL_FORMED_TARGET_FAIL_VALIDATION"
-                  f" target_result=FAIL failure_class={failure_class}")
+                  f" target_result=FAIL failure_class={failure_class}"
+                  f" progress={progress_status}")
             return 1
         fail("unknown_result")
     except (OSError, UnicodeError, ValueError) as exc:
