@@ -42,6 +42,18 @@ static void (*g_extension_callback)(uint8_t enabled);
 static uint8_t g_failed;
 static char g_failure_reason[96];
 
+/* These are the pinned pcm86.c fixed-point delays.  The first MVP keeps the
+ * waveform-owned underflow history out of Domain G, so the supported boundary
+ * is the pinned zero-history (non-underflow) branch. */
+static const uint32_t g_pcm_clk25_128[8] = {
+    0x00001bdeu, 0x00002527u, 0x000037bbu, 0x00004a4eu,
+    0x00006f75u, 0x0000949cu, 0x0000df5fu, 0x00012938u
+};
+static const uint32_t g_pcm_clk20_128[8] = {
+    0x000016a4u, 0x00001e30u, 0x00002d48u, 0x00003c60u,
+    0x00005a8fu, 0x000078bfu, 0x0000b57du, 0x0000f17du
+};
+
 static uint32_t current_cpu_position(void)
 { return g_cpu_position ? g_cpu_position() : g_manual_cpu_position; }
 
@@ -115,7 +127,8 @@ static void start_or_append_byte(uint8_t value)
         flush_pending_run();
         if (g_state.sequence == UINT64_MAX) { fail("sequence overflow"); return; }
         g_run_pending = 1; g_run_timestamp = g_state.frame_timestamp;
-        g_run_sequence = g_state.sequence++; g_run_offset = g_trace->pcm_count;
+        g_run_sequence = g_state.sequence++;
+        g_run_offset = g_trace->pcm_offset_base + g_trace->pcm_count;
         g_run_count = 0;
     }
     g_trace->pcm_bytes[g_trace->pcm_count++] = value; ++g_run_count;
@@ -268,6 +281,18 @@ static void pcm_set_rate(uint8_t rate_index)
     g_state.pcm_rescue = rescue[index] << g_state.pcm_stepbit;
 }
 
+static int64_t pcm_select_next_count(int64_t cntv, int64_t cntr,
+                                     uint32_t real_buffer,
+                                     uint16_t stepmask)
+{
+    /* pcm86.c's bufunferflag/vbufunferflag are written by the waveform
+     * consumer.  They are deliberately not Domain-G state in this MVP.  With
+     * both pinned histories at zero, every source branch selects cntv,
+     * including the cntr < cntv branch. */
+    if (real_buffer > stepmask && cntr < cntv) return cntv;
+    return cntv;
+}
+
 static uint8_t pcmgen_intrq(uint8_t from_timer)
 {
     /* GUEST_SEMANTICS_PRESERVED: only counter/IRQ predicates are retained;
@@ -289,16 +314,19 @@ static uint8_t pcmgen_intrq(uint8_t from_timer)
 
 static void pcm_set_next_interrupt(void)
 {
-    int64_t count; uint64_t clocks;
+    int64_t cntv, cntr, count; uint64_t clocks;
+    const uint32_t *clock_table;
     if (!(g_state.pcm_fifo & 0x80u)) return;
-    count = (int64_t)g_state.pcm_virtual_buffer - g_state.pcm_fifo_size;
-    if (g_state.pcm_real_buffer > g_state.pcm_stepmask) {
-        int64_t real = (int64_t)g_state.pcm_real_buffer - g_state.pcm_fifo_size;
-        if (real < count) count = real;
-    }
+    cntv = (int64_t)g_state.pcm_virtual_buffer - g_state.pcm_fifo_size;
+    cntr = (int64_t)g_state.pcm_real_buffer - g_state.pcm_fifo_size;
+    count = pcm_select_next_count(cntv, cntr, g_state.pcm_real_buffer,
+                                  g_state.pcm_stepmask);
     if (count > 0) {
         count = (count + g_state.pcm_stepmask) >> g_state.pcm_stepbit;
-        clocks = ((uint64_t)count * g_state.pcm_stepclock) >> 6;
+        clock_table = (g_cpumode & 0x20u) ? g_pcm_clk20_128 : g_pcm_clk25_128;
+        clocks = ((uint64_t)clock_table[g_state.pcm_fifo & 7u] *
+                  (uint64_t)count) >> 7;
+        clocks *= g_multiple;
         schedule_event(NP2AUDIO86_TRACE_PCM, clocks ? clocks : 1u, 1);
     } else if (g_state.pcm_reqirq) schedule_event(NP2AUDIO86_TRACE_PCM, 1u, 1);
     else { g_state.pcm_reqirq = 1; schedule_event(NP2AUDIO86_TRACE_PCM,
@@ -581,7 +609,7 @@ void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
             if (!g_state.pcm_virtual_buffer) g_state.pcm_lastclockforwait = cur;
         }
         if (g_state.pcm_virtual_buffer <= g_state.pcm_fifo_size) g_state.pcm_irq = 1;
-        if ((old ^ value) & 7u) { g_state.pcm_stepbit = bits[(value >> 4) & 7u]; pcm_set_rate(value); }
+        if ((old ^ value) & 7u) pcm_set_rate(value);
         g_state.pcm_fifo = value;
         if ((old ^ value) & 0x80u && (value & 0x80u)) {
             g_state.pcm_lastclock = cur << 6; g_state.pcm_clock_valid = 1;
@@ -604,7 +632,8 @@ void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
 }
 void np2audio86_guest_pcm86_write_data(uint8_t value)
 {
-    uint64_t cur = pcm_current_clock();
+    uint64_t cur = pcm_current_clock(), wait = 20000u * (uint64_t)g_multiple;
+    uint64_t add_clock = 0;
     if (g_state.pcm_virtual_buffer < 0x8000u) ++g_state.pcm_virtual_buffer;
     ++g_state.pcm_real_buffer;
     if (g_state.pcm_real_buffer >= 0x8000u + g_state.pcm_rescue) {
@@ -613,8 +642,11 @@ void np2audio86_guest_pcm86_write_data(uint8_t value)
     g_state.pcm_write_position = (g_state.pcm_write_position + 1u) & 0xffffu;
     g_state.pcm_reqirq = 1;
     if (g_state.pcm_fifo_size < 8192u)
-        g_state.pcm_lastclockforwait = cur + 20000u * g_multiple - (20000u * g_multiple * g_state.pcm_fifo_size) / 8192u;
-    else g_state.pcm_lastclockforwait = cur + 20000u * g_multiple;
+        add_clock = wait - (wait * g_state.pcm_fifo_size) / 8192u;
+    if (g_state.pcm_virtual_buffer > (uint32_t)g_state.pcm_fifo_size * 2u ||
+        g_state.pcm_virtual_buffer >= 0x8000u)
+        add_clock = wait;
+    g_state.pcm_lastclockforwait = cur + add_clock;
     start_or_append_byte(value);
 }
 void np2audio86_guest_pcm86_set_mixer_volume(uint8_t value) { g_state.pcm_volume = value & 15u; }

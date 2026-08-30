@@ -41,6 +41,26 @@ set(NP2CORE_IMPORT_MANIFEST "${NP2CORE_VENDOR_ROOT}/import-manifest.json")
 set(NP2CORE_VENDOR_VERIFY "${NP2CORE_REPO_ROOT}/tools/np2kai/verify_np2kai.py")
 set(NP2CORE_PREPARED_ROOT "${CMAKE_CURRENT_BINARY_DIR}/step4-prepared")
 
+if(NP2_ASYNC_AUDIO86 STREQUAL "1")
+    # Feature-on builds consume the separately pinned PC-9801-86 guest source
+    # closure.  Keep it prepared below the component build directory just as
+    # Step 4, and never compile pristine vendor paths for this boundary.
+    set(NP2CORE_AUDIO_SOURCE_LIST
+        "${NP2CORE_REPO_ROOT}/host/probe/audio86_guest_sources.txt")
+    set(NP2CORE_AUDIO_PATCH_SET
+        "${NP2CORE_REPO_ROOT}/host/patches/np2kai/audio86/patch-set.json")
+    set(NP2CORE_AUDIO_PREPARED_ROOT
+        "${CMAKE_CURRENT_BINARY_DIR}/audio86-prepared")
+    foreach(NP2CORE_AUDIO_REQUIRED_INPUT IN ITEMS
+            NP2CORE_AUDIO_SOURCE_LIST NP2CORE_AUDIO_PATCH_SET)
+        if(NOT EXISTS "${${NP2CORE_AUDIO_REQUIRED_INPUT}}")
+            message(FATAL_ERROR
+                    "np2core: required audio86 input is missing: "
+                    "${${NP2CORE_AUDIO_REQUIRED_INPUT}}")
+        endif()
+    endforeach()
+endif()
+
 foreach(NP2CORE_REQUIRED_INPUT IN ITEMS
         NP2CORE_SOURCE_LIST
         NP2CORE_PREPARER
@@ -173,6 +193,76 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              ${NP2CORE_VENDOR_INPUTS}
              ${NP2CORE_PATCH_FILES})
 
+if(NP2_ASYNC_AUDIO86 STREQUAL "1")
+    file(STRINGS "${NP2CORE_AUDIO_SOURCE_LIST}" NP2CORE_AUDIO_SOURCE_LINES)
+    set(NP2CORE_AUDIO_LOGICAL_SOURCES)
+    foreach(NP2CORE_AUDIO_SOURCE_LINE IN LISTS NP2CORE_AUDIO_SOURCE_LINES)
+        string(STRIP "${NP2CORE_AUDIO_SOURCE_LINE}" NP2CORE_AUDIO_LOGICAL_SOURCE)
+        if(NP2CORE_AUDIO_LOGICAL_SOURCE STREQUAL "" OR
+           NP2CORE_AUDIO_LOGICAL_SOURCE MATCHES "^#")
+            continue()
+        endif()
+        string(REGEX REPLACE "#.*$" "" NP2CORE_AUDIO_LOGICAL_SOURCE
+                             "${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+        string(STRIP "${NP2CORE_AUDIO_LOGICAL_SOURCE}" NP2CORE_AUDIO_LOGICAL_SOURCE)
+        if(NP2CORE_AUDIO_LOGICAL_SOURCE STREQUAL "" OR
+           NP2CORE_AUDIO_LOGICAL_SOURCE MATCHES "[ \t]")
+            message(FATAL_ERROR
+                    "np2core: invalid audio86 source-list entry: "
+                    "${NP2CORE_AUDIO_SOURCE_LINE}")
+        endif()
+        list(FIND NP2CORE_AUDIO_LOGICAL_SOURCES
+             "${NP2CORE_AUDIO_LOGICAL_SOURCE}" NP2CORE_AUDIO_DUPLICATE_INDEX)
+        if(NP2CORE_AUDIO_DUPLICATE_INDEX GREATER -1)
+            message(FATAL_ERROR
+                    "np2core: duplicate audio86 source-list entry: "
+                    "${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+        endif()
+        if(NOT EXISTS "${NP2CORE_VENDOR_SRC}/${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+            message(FATAL_ERROR
+                    "np2core: audio86 source-list file is missing: "
+                    "${NP2CORE_VENDOR_SRC}/${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+        endif()
+        list(APPEND NP2CORE_AUDIO_LOGICAL_SOURCES
+             "${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+    endforeach()
+    list(LENGTH NP2CORE_AUDIO_LOGICAL_SOURCES NP2CORE_AUDIO_SOURCE_COUNT)
+    if(NOT NP2CORE_AUDIO_SOURCE_COUNT EQUAL 2)
+        message(FATAL_ERROR
+                "np2core: expected exactly 2 audio86 sources, got "
+                "${NP2CORE_AUDIO_SOURCE_COUNT}")
+    endif()
+    set(NP2CORE_AUDIO_VENDOR_INPUTS)
+    foreach(NP2CORE_AUDIO_LOGICAL_SOURCE IN LISTS NP2CORE_AUDIO_LOGICAL_SOURCES)
+        list(APPEND NP2CORE_AUDIO_VENDOR_INPUTS
+             "${NP2CORE_VENDOR_SRC}/${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+    endforeach()
+    set(NP2CORE_AUDIO_PATCH_FILES
+        "${NP2CORE_REPO_ROOT}/host/patches/np2kai/audio86/0001-board86-guest-adapter.patch"
+        "${NP2CORE_REPO_ROOT}/host/patches/np2kai/audio86/0002-pcm86io-guest-adapter.patch")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 "${NP2CORE_AUDIO_SOURCE_LIST}"
+                 "${NP2CORE_AUDIO_PATCH_SET}"
+                 ${NP2CORE_AUDIO_VENDOR_INPUTS}
+                 ${NP2CORE_AUDIO_PATCH_FILES})
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${NP2CORE_PREPARER}"
+                --vendor-root "${NP2CORE_VENDOR_ROOT}"
+                --import-manifest "${NP2CORE_IMPORT_MANIFEST}"
+                --patch-set "${NP2CORE_AUDIO_PATCH_SET}"
+                --output-root "${NP2CORE_AUDIO_PREPARED_ROOT}"
+        RESULT_VARIABLE NP2CORE_AUDIO_PREPARE_RESULT
+        OUTPUT_VARIABLE NP2CORE_AUDIO_PREPARE_OUTPUT
+        ERROR_VARIABLE NP2CORE_AUDIO_PREPARE_ERROR)
+    if(NOT NP2CORE_AUDIO_PREPARE_RESULT EQUAL 0)
+        message(FATAL_ERROR
+                "np2core: audio86 source preparation failed (result "
+                "${NP2CORE_AUDIO_PREPARE_RESULT})\n"
+                "${NP2CORE_AUDIO_PREPARE_OUTPUT}\n"
+                "${NP2CORE_AUDIO_PREPARE_ERROR}")
+    endif()
+endif()
+
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" "${NP2CORE_VENDOR_VERIFY}"
             --vendor-root "${NP2CORE_VENDOR_ROOT}"
@@ -241,6 +331,20 @@ foreach(NP2CORE_LOGICAL_SOURCE IN LISTS NP2CORE_LOGICAL_SOURCES)
     endif()
     list(APPEND NP2CORE_SOURCES "${NP2CORE_SOURCE}")
 endforeach()
+
+if(NP2_ASYNC_AUDIO86 STREQUAL "1")
+    foreach(NP2CORE_AUDIO_LOGICAL_SOURCE IN LISTS NP2CORE_AUDIO_LOGICAL_SOURCES)
+        set(NP2CORE_AUDIO_SOURCE
+            "${NP2CORE_AUDIO_PREPARED_ROOT}/patched-src/${NP2CORE_AUDIO_LOGICAL_SOURCE}")
+        if(NOT EXISTS "${NP2CORE_AUDIO_SOURCE}" OR
+           IS_DIRECTORY "${NP2CORE_AUDIO_SOURCE}")
+            message(FATAL_ERROR
+                    "np2core: prepared audio86 source is missing: "
+                    "${NP2CORE_AUDIO_SOURCE}")
+        endif()
+        list(APPEND NP2CORE_SOURCES "${NP2CORE_AUDIO_SOURCE}")
+    endforeach()
+endif()
 
 idf_component_register(
     SRCS ${NP2CORE_SOURCES} "np2_pccore_profiler.c"

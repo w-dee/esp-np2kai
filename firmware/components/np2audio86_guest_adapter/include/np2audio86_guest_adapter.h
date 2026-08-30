@@ -85,6 +85,9 @@ typedef struct {
     np2audio86_guest_io_trace_t *io;
     size_t io_capacity;
     size_t io_count;
+    /* Host-only consumer cursor: accumulated PCM runs may be drained from
+     * the attached producer trace without changing their global offsets. */
+    size_t pcm_offset_base;
 } np2audio86_guest_trace_t;
 
 typedef struct {
