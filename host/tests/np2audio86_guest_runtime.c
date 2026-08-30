@@ -12,6 +12,7 @@
 #include <mem/memtram.h>
 #include <pccore.h>
 #include <np2audio86_guest_adapter.h>
+#include "np2audio86_guest_runtime_capture.h"
 #include <np2_crc32.h>
 #include <np2_sha256.h>
 
@@ -1270,6 +1271,63 @@ static void run_86r2c_evidence_tests(void)
     printf("A46A_REQIRQ_RESCHEDULE=PASS\n");
 }
 
+int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
+                                     np2audio86_guest_state_snapshot_t *state)
+{
+    size_t program_size;
+
+    if (trace == NULL || state == NULL) {
+        return -1;
+    }
+    trace->event_count = 0;
+    trace->data_run_count = 0;
+    trace->pcm_count = 0;
+    trace->timer_count = 0;
+    trace->io_count = 0;
+    trace->pcm_offset_base = 0;
+    memset(mem, 0, sizeof(mem));
+    memset(irq_levels, 0, sizeof(irq_levels));
+    pic_set_transitions = 0;
+    pic_reset_transitions = 0;
+    memset(&np2cfg, 0, sizeof(np2cfg));
+    np2cfg.snd86opt = 0xd1;
+    pccore.baseclock = 2457600u;
+    pccore.multiple = 20u;
+    pccore.realclock = 49152000u;
+    pccore.sound = SOUNDID_PC_9801_86;
+    pccore.cpumode = CPUMODE_8MHZ;
+    np2audio86_guest_host_set_clock(pccore.baseclock, pccore.multiple);
+    np2audio86_guest_host_set_cpumode(pccore.cpumode);
+    np2audio86_guest_host_set_cpu_position_fn(production_cpu_position);
+    np2audio86_guest_host_set_timer_hooks(guest_event_schedule,
+                                          guest_event_cancel,
+                                          guest_event_iswork, irq_hook);
+    np2audio86_guest_host_trace_attach(trace);
+    iocore_create();
+    if (iocore_build() != SUCCESS) {
+        np2audio86_guest_host_trace_detach();
+        return -1;
+    }
+    nevent_allreset();
+    pic_reset(&np2cfg);
+    board86_reset(&np2cfg, FALSE);
+    board86_bind();
+    program_size = build_guest_program();
+    if (program_size >= 0x90000u || !run_program(program_size)) {
+        board86_unbind();
+        np2audio86_guest_host_trace_detach();
+        return -1;
+    }
+    board86_reset(&np2cfg, FALSE);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_host_flush_data_run();
+    np2audio86_guest_host_snapshot(state);
+    board86_unbind();
+    np2audio86_guest_host_trace_detach();
+    return np2audio86_guest_host_failed() ? -1 : 0;
+}
+
+#ifndef NP2AUDIO86_GUEST_RUNTIME_NO_MAIN
 int main(void)
 {
     static np2audio86_guest_event_t events[4096];
@@ -1507,3 +1565,4 @@ int main(void)
     printf("AUDIO86_GUEST_RUNTIME_RESULT=PASS\n");
     return 0;
 }
+#endif

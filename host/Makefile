@@ -269,6 +269,12 @@ NP2_AUDIO86_RUNTIME_RUNNER := $(CURDIR)/tests/run_np2audio86_guest_runtime.py
 NP2_AUDIO86_RUNTIME_GOLDEN := $(CURDIR)/probe/audio86_guest_runtime_golden.json
 NP2_AUDIO86_RUNTIME_EXTRA_CFLAGS ?=
 NP2_AUDIO86_RUNTIME_EXTRA_LDFLAGS ?=
+NP2_AUDIO86_SYNC_PCM_SOURCE := $(CURDIR)/tests/np2audio86_guest_sync_pcm.c
+NP2_AUDIO86_SYNC_PCM_OUTPUT := $(BUILD_DIR)/tests/np2audio86_guest_sync_pcm
+NP2_AUDIO86_SYNC_PCM_GOLDEN := $(CURDIR)/probe/audio86_guest_sync_pcm_golden.json
+NP2_AUDIO86_SYNC_PCM_RUNNER := $(CURDIR)/tests/run_np2audio86_guest_sync_pcm.py
+NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS ?=
+NP2_AUDIO86_SYNC_PCM_EXTRA_LDFLAGS ?=
 AUDIO86_RUNTIME_CPU_SOURCES := \
 	$(VENDOR_SRC)/i286c/i286c.c \
 	$(VENDOR_SRC)/i286c/i286c_0f.c \
@@ -353,7 +359,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 
 .PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-audio86-guest-contract headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-np2audio86-fixture build-np2audio86-async test-np2audio86-async test-np2audio86-async-formal build-np2audio86-hardening test-np2audio86-hardening build-np2audio86-hardening-asan test-np2audio86-hardening-asan build-np2audio86-hardening-ubsan test-np2audio86-hardening-ubsan test-np2audio86-hardening-soak test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-board test-p4-nano-board-static test-p4-nano-audio-tone test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
-.PHONY: build-audio86-guest-runtime test-audio86-guest-runtime build-audio86-guest-runtime-asan test-audio86-guest-runtime-asan build-audio86-guest-runtime-ubsan test-audio86-guest-runtime-ubsan
+.PHONY: build-audio86-guest-runtime test-audio86-guest-runtime build-audio86-guest-runtime-asan test-audio86-guest-runtime-asan build-audio86-guest-runtime-ubsan test-audio86-guest-runtime-ubsan build-audio86-guest-sync-pcm test-audio86-guest-sync-pcm build-audio86-guest-sync-pcm-asan test-audio86-guest-sync-pcm-asan build-audio86-guest-sync-pcm-ubsan test-audio86-guest-sync-pcm-ubsan
 .PHONY: test-p4-nano-ppa-rotation-reference
 .PHONY: test-p4-nano-board-static
 .PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
@@ -416,6 +422,67 @@ build-audio86-guest-runtime-ubsan:
 test-audio86-guest-runtime-ubsan: build-audio86-guest-runtime-ubsan
 	@"$(BUILD_DIR)/tests/np2audio86_guest_runtime_ubsan" >/dev/null
 	@printf '%s\n' 'AUDIO86_GUEST_RUNTIME_UBSAN=PASS'
+
+build-audio86-guest-sync-pcm:
+	@mkdir -p "$(dir $(NP2_AUDIO86_SYNC_PCM_OUTPUT))"
+	@$(PYTHON) "$(PREPARER)" \
+		--vendor-root "$(VENDOR_ROOT)" \
+		--import-manifest "$(IMPORT_MANIFEST)" \
+		--patch-set "$(AUDIO86_PATCH_SET)" \
+		--output-root "$(BUILD_DIR)/audio86-sync-pcm-prepared"
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration \
+		-DDISABLE_SOUND=1 -DNP2_ASYNC_AUDIO86=1 -DNP2AUDIO86_GUEST_TEST=1 \
+		-DNP2AUDIO86_GUEST_RUNTIME_NO_MAIN=1 -DBYTESEX_LITTLE \
+		-DOSLANG_UTF8 -DSUPPORT_UTF8 -DMEMOPTIMIZE=2 \
+		-ffunction-sections -fdata-sections -fcommon $(NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS) \
+		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
+		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
+		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
+		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
+		"$(NP2_AUDIO86_ADAPTER_SOURCE)" \
+		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/board86.c" \
+		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/pcm86io.c" \
+		"$(VENDOR_SRC)/cbus/cbuscore.c" "$(VENDOR_SRC)/io/iocore.c" \
+		"$(VENDOR_SRC)/io/pic.c" "$(VENDOR_SRC)/nevent.c" \
+		"$(VENDOR_SRC)/common/lstarray.c" $(AUDIO86_RUNTIME_CPU_SOURCES) \
+		"$(NP2_AUDIO86_FIXTURE_SOURCE)" \
+		"$(VENDOR_SRC)/sound/opngenc.c" "$(VENDOR_SRC)/sound/opngeng.c" \
+		"$(VENDOR_SRC)/sound/psggenc.c" "$(VENDOR_SRC)/sound/psggeng.c" \
+		"$(VENDOR_SRC)/sound/pcmmix.c" "$(VENDOR_SRC)/sound/pcm86g.c" \
+		"$(OPNGEN_PCM_SOURCE)" "$(NP2_CRC32_SOURCE)" "$(NP2_SHA256_SOURCE)" \
+		"$(NP2_AUDIO86_RUNTIME_SOURCE)" "$(NP2_AUDIO86_SYNC_PCM_SOURCE)" \
+		-Wl,--gc-sections -lm $(NP2_AUDIO86_SYNC_PCM_EXTRA_LDFLAGS) \
+		-o "$(NP2_AUDIO86_SYNC_PCM_OUTPUT)"
+
+test-audio86-guest-sync-pcm: build-audio86-guest-sync-pcm
+	@$(PYTHON) "$(NP2_AUDIO86_SYNC_PCM_RUNNER)" \
+		--binary "$(NP2_AUDIO86_SYNC_PCM_OUTPUT)" \
+		--golden "$(NP2_AUDIO86_SYNC_PCM_GOLDEN)" --repetitions 3
+	@$(MAKE) --no-print-directory test-audio86-guest-sync-pcm-asan
+	@$(MAKE) --no-print-directory test-audio86-guest-sync-pcm-ubsan
+
+build-audio86-guest-sync-pcm-asan:
+	@$(MAKE) --no-print-directory \
+		NP2_AUDIO86_SYNC_PCM_OUTPUT="$(BUILD_DIR)/tests/np2audio86_guest_sync_pcm_asan" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_LDFLAGS="-fsanitize=address" \
+		build-audio86-guest-sync-pcm
+
+test-audio86-guest-sync-pcm-asan: build-audio86-guest-sync-pcm-asan
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+		"$(BUILD_DIR)/tests/np2audio86_guest_sync_pcm_asan" >/dev/null
+	@printf '%s\n' 'AUDIO86_GUEST_SYNC_PCM_ASAN=PASS'
+
+build-audio86-guest-sync-pcm-ubsan:
+	@$(MAKE) --no-print-directory \
+		NP2_AUDIO86_SYNC_PCM_OUTPUT="$(BUILD_DIR)/tests/np2audio86_guest_sync_pcm_ubsan" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_LDFLAGS="-fsanitize=undefined -fno-sanitize=signed-integer-overflow,shift" \
+		build-audio86-guest-sync-pcm
+
+test-audio86-guest-sync-pcm-ubsan: build-audio86-guest-sync-pcm-ubsan
+	@"$(BUILD_DIR)/tests/np2audio86_guest_sync_pcm_ubsan" >/dev/null
+	@printf '%s\n' 'AUDIO86_GUEST_SYNC_PCM_UBSAN=PASS'
 
 phase1-probe:
 	@mkdir -p "$(PROBE_OUTPUT)"

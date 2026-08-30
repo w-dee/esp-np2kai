@@ -216,6 +216,16 @@ void np2audio86_render_set_profile_clock(
     uint64_t (*now_us)(void *opaque), void *opaque);
 int np2audio86_render_apply_event(struct np2audio86_render_state *state,
                                   const struct np2audio86_event *event);
+/* Narrow synchronous Domain-A façade for the authentic 86R guest replay.
+ * These operations reuse the same OPNGEN/PSG/rhythm/PCM state and render
+ * paths as the established 86H fixture; no guest-domain state crosses here. */
+int np2audio86_render_apply_opna_register(
+    struct np2audio86_render_state *state, uint16_t address, uint8_t value);
+int np2audio86_render_apply_opna_csm(struct np2audio86_render_state *state);
+int np2audio86_render_apply_pcm86_control(
+    struct np2audio86_render_state *state, uint8_t register_index,
+    uint8_t value);
+int np2audio86_render_reset(struct np2audio86_render_state *state);
 int np2audio86_render_pcm86_push(struct np2audio86_render_state *state,
                                  const uint8_t *bytes, size_t count);
 int np2audio86_render_span(struct np2audio86_render_state *state,
