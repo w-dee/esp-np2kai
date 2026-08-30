@@ -44,6 +44,13 @@ void np2audio86_guest_soundrom_load(uint32_t address, const char *name) {
     (void)name;
 }
 void np2audio86_guest_audio_sync(void) {}
+void np2audio86_guest_host_record_io(uint16_t port, uint8_t direction,
+                                     uint8_t value, uint8_t result) {
+    (void)port;
+    (void)direction;
+    (void)value;
+    (void)result;
+}
 
 void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value) {
     (void)register_index;

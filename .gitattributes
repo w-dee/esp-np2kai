@@ -5,3 +5,7 @@
 
 # Preserve Step 4 source patches byte-for-byte for exact application.
 /host/patches/np2kai/step4/*.patch -text -whitespace
+
+# The audio86 patch payload is regenerated from CRLF vendor sources; ignore
+# upstream trailing whitespace while still checking repository files.
+/host/patches/np2kai/audio86/*.patch whitespace=-trailing-space

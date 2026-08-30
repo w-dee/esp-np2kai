@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "clock_hz": 49152000,
+  "state_size_max": 2048,
+  "traces": {
+    "GUEST_IO": {
+      "count": 984,
+      "crc32": "dab35aaa",
+      "sha256": "7d539de70bca46f920045d3141247eb8a841dea4739c2f2321331eba856d1b15"
+    },
+    "AUDIO_EVENTS": {
+      "count": 240,
+      "crc32": "6604b3f5",
+      "sha256": "b3c4eb7e2434bf627ad5c367b218762fe09994db27abf7d7d33bdf21e952f581"
+    },
+    "PCM86_BYTES": {
+      "count": 8,
+      "crc32": "cbf0b66e",
+      "sha256": "a51f32551aae346ed4948a0dba69cf406bdcfd3db57f30c2c9bf0f5d2945f2c4"
+    },
+    "PCM86_DATA_RUNS": {
+      "count": 32,
+      "crc32": "99c71781",
+      "sha256": "5c012855cb2e344f81820d87e69b69ec623dda427ba27a67659e8dc68c5b71f8"
+    },
+    "TIMER_PIC": {
+      "count": 48,
+      "crc32": "239efa5a",
+      "sha256": "88d6490beb72f244cb4d686880a47acd8fae6f2da264c1e6199062a956073e6d"
+    },
+    "FINAL_G_STATE": {
+      "count": 70,
+      "crc32": "41e60aef",
+      "sha256": "4f9a6f693df2d3daa3b97b121855cf7bbb688c4f2e28e6563c4dc81e3a575bb6"
+    }
+  }
+}

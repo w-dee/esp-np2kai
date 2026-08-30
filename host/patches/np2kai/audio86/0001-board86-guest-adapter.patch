@@ -1,150 +1,393 @@
 --- a/cbus/board86.c
 +++ b/cbus/board86.c
-@@ -8,45 +8,64 @@
- #include <io/iocore.h>
- #include <cbus/cbuscore.h>
- #include <cbus/pcm86io.h>
+@@ -1,189 +1,279 @@
+-/**
+- * @file	board86.c
+- * @brief	Implementation of PC-9801-86
+- */
+-
+-#include <compiler.h>
+-#include <cbus/board86.h>
+-#include <io/iocore.h>
+-#include <cbus/cbuscore.h>
+-#include <cbus/pcm86io.h>
+-#include <sound/fmboard.h>
+-#include <sound/sound.h>
+-#include <sound/soundrom.h>
+-
+-static void IOOUTCALL opna_o188(UINT port, REG8 dat)
+-{
+-	g_opna[0].s.addrl = dat;
+-	g_opna[0].s.data = dat;
+-	(void)port;
+-}
+-
+-static void IOOUTCALL opna_o18a(UINT port, REG8 dat)
+-{
+-
+-	g_opna[0].s.data = dat;
+-
+-	opna_writeRegister(&g_opna[0], g_opna[0].s.addrl, dat);
+-
+-	(void)port;
+-}
+-
+-static void IOOUTCALL opna_o18c(UINT port, REG8 dat)
+-{
+-	if (g_opna[0].s.extend)
+-	{
+-		g_opna[0].s.addrh = dat;
+-		g_opna[0].s.data = dat;
+-	}
+-
+-	(void)port;
+-}
+-
+-static void IOOUTCALL opna_o18e(UINT port, REG8 dat)
+-{
+-	if (g_opna[0].s.extend)
+-	{
+-		g_opna[0].s.data = dat;
+-		opna_writeExtendedRegister(&g_opna[0], g_opna[0].s.addrh, dat);
+-	}
+-
+-	(void)port;
+-}
+-
+-static REG8 IOINPCALL opna_i188(UINT port)
+-{
+-	(void)port;
+-	return g_opna[0].s.status;
+-}
+-
+-static REG8 IOINPCALL opna_i18a(UINT port)
+-{
+-	UINT nAddress;
+-
+-	nAddress = g_opna[0].s.addrl;
+-	if (nAddress == 0x0e)
+-	{
+-		return fmboard_getjoy(&g_opna[0]);
+-	}
+-	else if (nAddress < 0x10)
+-	{
+-		return opna_readRegister(&g_opna[0], nAddress);
+-	}
+-	else if (nAddress == 0xff)
+-	{
+-		return 1;
+-	}
+-
+-	(void)port;
+-	return g_opna[0].s.data;
+-}
+-
+-static REG8 IOINPCALL opna_i18c(UINT port)
+-{
+-	if (g_opna[0].s.extend)
+-	{
+-		return opna_readExtendedStatus(&g_opna[0]);
+-	}
+-
+-	(void)port;
+-	return 0xff;
+-}
+-
+-static REG8 IOINPCALL opna_i18e(UINT port)
+-{
+-	UINT nAddress;
+-
+-	if (g_opna[0].s.extend)
+-	{
+-		nAddress = g_opna[0].s.addrh;
+-		if ((nAddress == 0x08) || (nAddress == 0x0f))
+-		{
+-			return opna_readExtendedRegister(&g_opna[0], nAddress);
+-		}
+-		return g_opna[0].s.data;
+-	}
+-
+-	(void)port;
+-	return 0xff;
+-}
+-
+-static void extendchannel(REG8 enable)
+-{
+-	g_opna[0].s.extend = enable;
+-	if (enable)
+-	{
+-		opngen_setcfg(&g_opna[0].opngen, 6, OPN_STEREO | 0x07);
+-	}
+-	else
+-	{
+-		opngen_setcfg(&g_opna[0].opngen, 3, OPN_MONORAL | 0x07);
+-		rhythm_setreg(&g_opna[0].rhythm, 0x10, 0xff);
+-	}
+-}
+-
+-
+-// ----
+-
+-static const IOOUT opna_o[4] = {
+-			opna_o188,	opna_o18a,	opna_o18c,	opna_o18e};
+-
+-static const IOINP opna_i[4] = {
+-			opna_i188,	opna_i18a,	opna_i18c,	opna_i18e};
+-
+-
+-/**
+- * Reset
+- * @param[in] pConfig A pointer to a configure structure
+- * @param[in] adpcm Enable ADPCM
+- */
+-void board86_reset(const NP2CFG *pConfig, BOOL adpcm)
+-{
+-	REG8 cCaps;
+-	UINT nIrq;
+-
+-	cCaps = OPNA_MODE_2608 | OPNA_HAS_TIMER | OPNA_S98;
+-	if (adpcm)
+-	{
+-		cCaps |= OPNA_HAS_ADPCM;
+-	}
+-	nIrq = (pConfig->snd86opt & 0x10) | ((pConfig->snd86opt & 0x4) << 5) | ((pConfig->snd86opt & 0x8) << 3);
+-	if(g_nSoundID==SOUNDID_WAVESTAR){
+-		nIrq |= (0x3 << 6) | 0x10; // IRQ12固定
+-	}
+-
+-	opna_reset(&g_opna[0], cCaps);
+-	opna_timer(&g_opna[0], nIrq, NEVENT_FMTIMERA, NEVENT_FMTIMERB);
+-
+-	opngen_setcfg(&g_opna[0].opngen, 3, OPN_STEREO | 0x38);
+-	if (pConfig->snd86opt & 2)
+-	{
+-		soundrom_load(0xcc000, OEMTEXT("86"));
+-	}
+-	if(g_nSoundID==SOUNDID_WAVESTAR){
+-		g_opna[0].s.base = 0x000; // 0x188固定
+-	}else{
+-		g_opna[0].s.base = (pConfig->snd86opt & 0x01) ? 0x000 : 0x100;
+-	}
+-	fmboard_extreg(extendchannel);
+-	if(g_nSoundID==SOUNDID_WAVESTAR){
+-		pcm86io_setopt(pConfig->snd86opt | (0x7 << 2)); // IRQ12固定
+-	}else{
+-		pcm86io_setopt(pConfig->snd86opt);
+-	}
+-}
+-
+-/**
+- * Bind
+- */
+-void board86_bind(void)
+-{
+-	opna_bind(&g_opna[0]);
+-	pcm86io_bind();
+-	cbuscore_attachsndex(0x188 + g_opna[0].s.base, opna_o, opna_i);
+-}
+-void board86_unbind(void)
+-{
+-	pcm86io_unbind();
+-	cbuscore_detachsndex(0x188 + g_opna[0].s.base);
+-}
++/**
++ * @file	board86.c
++ * @brief	Implementation of PC-9801-86
++ */
++
++#include <compiler.h>
++#include <cbus/board86.h>
++#include <io/iocore.h>
++#include <cbus/cbuscore.h>
++#include <cbus/pcm86io.h>
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +#include <np2audio86_guest_adapter.h>
 +#else
- #include <sound/fmboard.h>
- #include <sound/sound.h>
- #include <sound/soundrom.h>
++#include <sound/fmboard.h>
++#include <sound/sound.h>
++#include <sound/soundrom.h>
 +#endif
- 
- static void IOOUTCALL opna_o188(UINT port, REG8 dat)
- {
++
++static void IOOUTCALL opna_o188(UINT port, REG8 dat)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_write_address_low(dat);
++	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)dat, 0);
 +#else
- 	g_opna[0].s.addrl = dat;
- 	g_opna[0].s.data = dat;
++	g_opna[0].s.addrl = dat;
++	g_opna[0].s.data = dat;
 +#endif
- 	(void)port;
- }
- 
- static void IOOUTCALL opna_o18a(UINT port, REG8 dat)
- {
--
++	(void)port;
++}
++
++static void IOOUTCALL opna_o18a(UINT port, REG8 dat)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_write_data_low(dat);
++	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)dat, 0);
 +#else
- 	g_opna[0].s.data = dat;
- 
- 	opna_writeRegister(&g_opna[0], g_opna[0].s.addrl, dat);
++	g_opna[0].s.data = dat;
++
++	opna_writeRegister(&g_opna[0], g_opna[0].s.addrl, dat);
 +#endif
- 
- 	(void)port;
- }
- 
- static void IOOUTCALL opna_o18c(UINT port, REG8 dat)
- {
++
++	(void)port;
++}
++
++static void IOOUTCALL opna_o18c(UINT port, REG8 dat)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_write_address_extended(dat);
++	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)dat, 0);
 +#else
- 	if (g_opna[0].s.extend)
- 	{
- 		g_opna[0].s.addrh = dat;
- 		g_opna[0].s.data = dat;
- 	}
++	if (g_opna[0].s.extend)
++	{
++		g_opna[0].s.addrh = dat;
++		g_opna[0].s.data = dat;
++	}
 +#endif
- 
- 	(void)port;
- }
- 
- static void IOOUTCALL opna_o18e(UINT port, REG8 dat)
- {
++
++	(void)port;
++}
++
++static void IOOUTCALL opna_o18e(UINT port, REG8 dat)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_write_data_extended(dat);
++	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)dat, 0);
 +#else
- 	if (g_opna[0].s.extend)
- 	{
- 		g_opna[0].s.data = dat;
- 		opna_writeExtendedRegister(&g_opna[0], g_opna[0].s.addrh, dat);
- 	}
++	if (g_opna[0].s.extend)
++	{
++		g_opna[0].s.data = dat;
++		opna_writeExtendedRegister(&g_opna[0], g_opna[0].s.addrh, dat);
++	}
 +#endif
- 
- 	(void)port;
- }
-@@ -54,11 +73,19 @@
- static REG8 IOINPCALL opna_i188(UINT port)
- {
- 	(void)port;
++
++	(void)port;
++}
++
++static REG8 IOINPCALL opna_i188(UINT port)
++{
++	(void)port;
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
-+	return np2audio86_guest_opna_read_status();
++	REG8 value = np2audio86_guest_opna_read_status();
++	np2audio86_guest_host_record_io((UINT16)port, 0, 0, value);
++	return value;
 +#else
- 	return g_opna[0].s.status;
++	return g_opna[0].s.status;
 +#endif
- }
- 
- static REG8 IOINPCALL opna_i18a(UINT port)
- {
++}
++
++static REG8 IOINPCALL opna_i18a(UINT port)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	(void)port;
-+	return np2audio86_guest_opna_read_data();
++	REG8 value = np2audio86_guest_opna_read_data();
++	np2audio86_guest_host_record_io((UINT16)port, 0, 0, value);
++	return value;
 +#else
- 	UINT nAddress;
- 
- 	nAddress = g_opna[0].s.addrl;
-@@ -77,10 +104,15 @@
- 
- 	(void)port;
- 	return g_opna[0].s.data;
++	UINT nAddress;
++
++	nAddress = g_opna[0].s.addrl;
++	if (nAddress == 0x0e)
++	{
++		return fmboard_getjoy(&g_opna[0]);
++	}
++	else if (nAddress < 0x10)
++	{
++		return opna_readRegister(&g_opna[0], nAddress);
++	}
++	else if (nAddress == 0xff)
++	{
++		return 1;
++	}
++
++	(void)port;
++	return g_opna[0].s.data;
 +#endif
- }
- 
- static REG8 IOINPCALL opna_i18c(UINT port)
- {
++}
++
++static REG8 IOINPCALL opna_i18c(UINT port)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	(void)port;
-+	return np2audio86_guest_opna_read_extended_status();
++	REG8 value = np2audio86_guest_opna_read_extended_status();
++	np2audio86_guest_host_record_io((UINT16)port, 0, 0, value);
++	return value;
 +#else
- 	if (g_opna[0].s.extend)
- 	{
- 		return opna_readExtendedStatus(&g_opna[0]);
-@@ -88,10 +120,15 @@
- 
- 	(void)port;
- 	return 0xff;
++	if (g_opna[0].s.extend)
++	{
++		return opna_readExtendedStatus(&g_opna[0]);
++	}
++
++	(void)port;
++	return 0xff;
 +#endif
- }
- 
- static REG8 IOINPCALL opna_i18e(UINT port)
- {
++}
++
++static REG8 IOINPCALL opna_i18e(UINT port)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	(void)port;
-+	return np2audio86_guest_opna_read_extended_data();
++	REG8 value = np2audio86_guest_opna_read_extended_data();
++	np2audio86_guest_host_record_io((UINT16)port, 0, 0, value);
++	return value;
 +#else
- 	UINT nAddress;
- 
- 	if (g_opna[0].s.extend)
-@@ -106,10 +143,14 @@
- 
- 	(void)port;
- 	return 0xff;
++	UINT nAddress;
++
++	if (g_opna[0].s.extend)
++	{
++		nAddress = g_opna[0].s.addrh;
++		if ((nAddress == 0x08) || (nAddress == 0x0f))
++		{
++			return opna_readExtendedRegister(&g_opna[0], nAddress);
++		}
++		return g_opna[0].s.data;
++	}
++
++	(void)port;
++	return 0xff;
 +#endif
- }
- 
- static void extendchannel(REG8 enable)
- {
++}
++
++static void extendchannel(REG8 enable)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_set_extension(enable);
 +#else
- 	g_opna[0].s.extend = enable;
- 	if (enable)
- 	{
-@@ -120,6 +161,7 @@
- 		opngen_setcfg(&g_opna[0].opngen, 3, OPN_MONORAL | 0x07);
- 		rhythm_setreg(&g_opna[0].rhythm, 0x10, 0xff);
- 	}
++	g_opna[0].s.extend = enable;
++	if (enable)
++	{
++		opngen_setcfg(&g_opna[0].opngen, 6, OPN_STEREO | 0x07);
++	}
++	else
++	{
++		opngen_setcfg(&g_opna[0].opngen, 3, OPN_MONORAL | 0x07);
++		rhythm_setreg(&g_opna[0].rhythm, 0x10, 0xff);
++	}
 +#endif
- }
- 
- 
-@@ -142,6 +184,29 @@
- 	REG8 cCaps;
- 	UINT nIrq;
- 
++}
++
++
++// ----
++
++static const IOOUT opna_o[4] = {
++			opna_o188,	opna_o18a,	opna_o18c,	opna_o18e};
++
++static const IOINP opna_i[4] = {
++			opna_i188,	opna_i18a,	opna_i18c,	opna_i18e};
++
++
++/**
++ * Reset
++ * @param[in] pConfig A pointer to a configure structure
++ * @param[in] adpcm Enable ADPCM
++ */
++void board86_reset(const NP2CFG *pConfig, BOOL adpcm)
++{
++	REG8 cCaps;
++	UINT nIrq;
++
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	cCaps = NP2AUDIO86_OPNA_CAPS_2608 | NP2AUDIO86_OPNA_CAPS_TIMER |
 +			NP2AUDIO86_OPNA_CAPS_S98;
@@ -168,39 +411,62 @@
 +	pcm86io_setopt(pConfig->snd86opt);
 +	return;
 +#else
- 	cCaps = OPNA_MODE_2608 | OPNA_HAS_TIMER | OPNA_S98;
- 	if (adpcm)
- 	{
-@@ -171,6 +236,7 @@
- 	}else{
- 		pcm86io_setopt(pConfig->snd86opt);
- 	}
++	cCaps = OPNA_MODE_2608 | OPNA_HAS_TIMER | OPNA_S98;
++	if (adpcm)
++	{
++		cCaps |= OPNA_HAS_ADPCM;
++	}
++	nIrq = (pConfig->snd86opt & 0x10) | ((pConfig->snd86opt & 0x4) << 5) | ((pConfig->snd86opt & 0x8) << 3);
++	if(g_nSoundID==SOUNDID_WAVESTAR){
++		nIrq |= (0x3 << 6) | 0x10; // IRQ12固定
++	}
++
++	opna_reset(&g_opna[0], cCaps);
++	opna_timer(&g_opna[0], nIrq, NEVENT_FMTIMERA, NEVENT_FMTIMERB);
++
++	opngen_setcfg(&g_opna[0].opngen, 3, OPN_STEREO | 0x38);
++	if (pConfig->snd86opt & 2)
++	{
++		soundrom_load(0xcc000, OEMTEXT("86"));
++	}
++	if(g_nSoundID==SOUNDID_WAVESTAR){
++		g_opna[0].s.base = 0x000; // 0x188固定
++	}else{
++		g_opna[0].s.base = (pConfig->snd86opt & 0x01) ? 0x000 : 0x100;
++	}
++	fmboard_extreg(extendchannel);
++	if(g_nSoundID==SOUNDID_WAVESTAR){
++		pcm86io_setopt(pConfig->snd86opt | (0x7 << 2)); // IRQ12固定
++	}else{
++		pcm86io_setopt(pConfig->snd86opt);
++	}
 +#endif
- }
- 
- /**
-@@ -178,12 +244,24 @@
-  */
- void board86_bind(void)
- {
++}
++
++/**
++ * Bind
++ */
++void board86_bind(void)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	np2audio86_guest_opna_bind();
 +	pcm86io_bind();
 +	cbuscore_attachsndex(0x188 + np2audio86_guest_opna_base(), opna_o, opna_i);
 +#else
- 	opna_bind(&g_opna[0]);
- 	pcm86io_bind();
- 	cbuscore_attachsndex(0x188 + g_opna[0].s.base, opna_o, opna_i);
++	opna_bind(&g_opna[0]);
++	pcm86io_bind();
++	cbuscore_attachsndex(0x188 + g_opna[0].s.base, opna_o, opna_i);
 +#endif
- }
- void board86_unbind(void)
- {
++}
++void board86_unbind(void)
++{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +	pcm86io_unbind();
 +	cbuscore_detachsndex(0x188 + np2audio86_guest_opna_base());
 +	np2audio86_guest_opna_unbind();
 +#else
- 	pcm86io_unbind();
- 	cbuscore_detachsndex(0x188 + g_opna[0].s.base);
++	pcm86io_unbind();
++	cbuscore_detachsndex(0x188 + g_opna[0].s.base);
 +#endif
- }
++}
+
