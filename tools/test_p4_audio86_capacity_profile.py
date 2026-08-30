@@ -92,6 +92,51 @@ def main() -> int:
           "kProducerPriority = tskIDLE_PRIORITY + 3" in COMP_CPP and
           "kWorkerPriority = tskIDLE_PRIORITY + 4" in COMP_CPP,
           "task topology changed")
+
+    # LIFE.1 task ownership and terminal-park contracts.
+    check("std::atomic<bool> producer_reap_ready{false};" in COMP_CPP and
+          "std::atomic<bool> worker_reap_ready{false};" in COMP_CPP,
+          "reap-ready state missing")
+    producer = COMP_CPP[COMP_CPP.index("static void producer_task"):
+                        COMP_CPP.index("static void worker_task")]
+    worker = COMP_CPP[COMP_CPP.index("static void worker_task"):
+                      COMP_CPP.index("static void timer_callback")]
+    wait = COMP_CPP[COMP_CPP.index("static void wait_for_tasks"):
+                    COMP_CPP.index("static void cleanup")]
+    for task_name, body, ready_name, hwm_name in (
+        ("producer", producer, "producer_reap_ready", "producer_hwm"),
+        ("worker", worker, "worker_reap_ready", "worker_hwm"),
+    ):
+        tail_start = body.index(f"ctx->{ready_name}.store(true")
+        tail = body[tail_start:]
+        check(re.search(r"store\(true, std::memory_order_release\);\s*"
+                        r"vTaskSuspend\(nullptr\);\s*}\s*$", tail),
+              f"{task_name} terminal park is not an immediate suspend")
+        check("ctx->" not in tail.split("vTaskSuspend(nullptr);", 1)[0].split(
+            ");", 1)[1],
+              f"{task_name} accesses Context after reap-ready publication")
+        check(body.index(f"ctx->{hwm_name}.store") < tail_start,
+              f"{task_name} HWM is not stored before reap-ready")
+        check("ulTaskNotifyTake(pdTRUE, portMAX_DELAY);" not in tail,
+              f"{task_name} terminal park still uses notifications")
+    check("ctx->worker_reap_ready.load(std::memory_order_acquire)" in wait and
+          "ctx->producer_reap_ready.load(std::memory_order_acquire)" in wait,
+          "wait_for_tasks does not require reap-ready")
+    check("ctx->worker_done.load(std::memory_order_acquire)" not in wait and
+          "ctx->producer_done.load(std::memory_order_acquire)" not in wait,
+          "logical done still authorizes deletion")
+    check(wait.index("stop_timer(ctx);") < wait.index("vTaskDelete(ctx->worker_task);"),
+          "worker timer is not stopped before reap")
+    check("ctx->worker_task = nullptr;" in wait and
+          "ctx->producer_task = nullptr;" in wait,
+          "reaped task handles are not cleared")
+    check("sizeof(struct np2audio86_event_ring)" in COMP_CPP,
+          "event ring omitted from direct ownership accounting")
+    lifecycle_states = ("RUNNING", "LOGICAL_DONE", "REAP_READY", "DELETED")
+    check(lifecycle_states[1] != lifecycle_states[2],
+          "logical done and reap-ready states collapsed")
+    check(lifecycle_states.index("REAP_READY") < lifecycle_states.index("DELETED"),
+          "lifecycle deletion ordering invalid")
     check(VALIDATOR_TEST.exists(), "focused validator test path missing")
     # Nearest-rank indices are part of the frozen 12,000-sample contract.
     check(int(0.99 * 12000 + 0.999999999) - 1 == 11879, "p99 index changed")

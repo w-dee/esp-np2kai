@@ -71,6 +71,8 @@ struct Context {
     std::atomic<uint32_t> pace_tick_count{0U};
     std::atomic<bool> producer_done{false};
     std::atomic<bool> worker_done{false};
+    std::atomic<bool> producer_reap_ready{false};
+    std::atomic<bool> worker_reap_ready{false};
     std::atomic<bool> producer_waiting{false};
     std::atomic<bool> worker_waiting{false};
     TaskHandle_t producer_task = nullptr;
@@ -452,7 +454,8 @@ static void producer_task(void *opaque)
     xSemaphoreGive(ctx->terminal);
     ctx->producer_hwm.store(uxTaskGetStackHighWaterMark(nullptr),
                              std::memory_order_release);
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    ctx->producer_reap_ready.store(true, std::memory_order_release);
+    vTaskSuspend(nullptr);
 }
 
 static void worker_task(void *opaque)
@@ -517,7 +520,8 @@ static void worker_task(void *opaque)
     xSemaphoreGive(ctx->terminal);
     ctx->worker_hwm.store(uxTaskGetStackHighWaterMark(nullptr),
                           std::memory_order_release);
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    ctx->worker_reap_ready.store(true, std::memory_order_release);
+    vTaskSuspend(nullptr);
 }
 
 static void timer_callback(void *arg)
@@ -688,6 +692,7 @@ static size_t direct_owned_bytes()
 {
     return sizeof(struct np2audio86_render_state) +
            sizeof(struct np2audio86_byte_ring) +
+           sizeof(struct np2audio86_event_ring) +
            NP2_AUDIO86_QUANTA * sizeof(uint32_t) +
            NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES +
            NP2_AUDIO86_ASYNC_MAX_DATA_RUN +
@@ -742,13 +747,13 @@ static void wait_for_tasks(Context *ctx)
 {
     while (ctx->worker_task != nullptr || ctx->producer_task != nullptr) {
         if (ctx->worker_task != nullptr &&
-            ctx->worker_done.load(std::memory_order_acquire)) {
+            ctx->worker_reap_ready.load(std::memory_order_acquire)) {
             stop_timer(ctx);
             vTaskDelete(ctx->worker_task);
             ctx->worker_task = nullptr;
         }
         if (ctx->producer_task != nullptr &&
-            ctx->producer_done.load(std::memory_order_acquire)) {
+            ctx->producer_reap_ready.load(std::memory_order_acquire)) {
             vTaskDelete(ctx->producer_task);
             ctx->producer_task = nullptr;
         }
