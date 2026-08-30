@@ -1,0 +1,3 @@
+# Narrow PC-9801-86 guest-side source closure (86R.1 / MODEL S3).
+cbus/board86.c
+cbus/pcm86io.c

@@ -929,6 +929,20 @@
       }
     },
     {
+      "upstream_path": "cbus/board86.c",
+      "destination_path": "src/cbus/board86.c",
+      "role": "source",
+      "build_group": "deferred-not-built",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
       "upstream_path": "cbus/board86.h",
       "destination_path": "src/cbus/board86.h",
       "role": "header",
@@ -1171,6 +1185,20 @@
       "destination_path": "src/cbus/pc9861k.h",
       "role": "header",
       "build_group": "shared-core",
+      "license_evidence": {
+        "upstream_mapping": "np2-default",
+        "documents": [
+          "LICENSES/LICENSE.TXT"
+        ],
+        "source_notice": "preserved-unmodified",
+        "review_status": "reviewed"
+      }
+    },
+    {
+      "upstream_path": "cbus/pcm86io.c",
+      "destination_path": "src/cbus/pcm86io.c",
+      "role": "source",
+      "build_group": "deferred-not-built",
       "license_evidence": {
         "upstream_mapping": "np2-default",
         "documents": [

@@ -67,6 +67,7 @@ not an independent license classification or legal opinion.
 | src/cbus/board118.h | cbus/board118.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/board14.h | cbus/board14.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/board26k.h | cbus/board26k.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/cbus/board86.c | cbus/board86.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/board86.h | cbus/board86.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/boardlol.h | cbus/boardlol.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/boardmo.h | cbus/boardmo.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
@@ -85,6 +86,7 @@ not an independent license classification or legal opinion.
 | src/cbus/mpu98ii.c | cbus/mpu98ii.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/mpu98ii.h | cbus/mpu98ii.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/pc9861k.h | cbus/pc9861k.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
+| src/cbus/pcm86io.c | cbus/pcm86io.c | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/pcm86io.h | cbus/pcm86io.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/sasiio.h | cbus/sasiio.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |
 | src/cbus/scsicmd.h | cbus/scsicmd.h | np2-default | LICENSES/LICENSE.TXT | none-observed; preserved byte-for-byte | reviewed |

@@ -1,0 +1,139 @@
+--- a/cbus/pcm86io.c
++++ b/cbus/pcm86io.c
+@@ -3,9 +3,130 @@
+ #include	<pccore.h>
+ #include	<io/iocore.h>
+ #include	<cbus/pcm86io.h>
++#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
++#include	<np2audio86_guest_adapter.h>
++#else
+ #include	<sound/sound.h>
+ #include	<sound/fmboard.h>
+ #include	<cbus/cs4231io.h>
++#endif
++
++#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
++
++/*
++ * S3 source boundary: retain the authoritative PC-9801-86 register map and
++ * I/O attachment points, while forwarding all worker-owned state through the
++ * opaque project-owned adapter.  Runtime behavior is intentionally deferred.
++ */
++static void IOOUTCALL pcm86_oa460(UINT port, REG8 val)
++{
++	np2audio86_guest_pcm86_write(0x00, val);
++	(void)port;
++}
++
++static void IOOUTCALL pcm86_oa466(UINT port, REG8 val)
++{
++	np2audio86_guest_audio_sync();
++	if ((val & 0xe0) == 0xa0)
++	{
++		np2audio86_guest_pcm86_set_mixer_volume((REG8)((~val) & 15));
++	}
++	np2audio86_guest_pcm86_write(0x06, val);
++	(void)port;
++}
++
++static void IOOUTCALL pcm86_oa468(UINT port, REG8 val)
++{
++	np2audio86_guest_audio_sync();
++	np2audio86_guest_pcm86_write(0x08, val);
++	(void)port;
++}
++
++static void IOOUTCALL pcm86_oa46a(UINT port, REG8 val)
++{
++	np2audio86_guest_audio_sync();
++	np2audio86_guest_pcm86_write(0x0a, val);
++	(void)port;
++}
++
++static void IOOUTCALL pcm86_oa46c(UINT port, REG8 val)
++{
++	np2audio86_guest_pcm86_write_data(val);
++	(void)port;
++}
++
++static REG8 IOINPCALL pcm86_ia460(UINT port)
++{
++	(void)port;
++	return np2audio86_guest_pcm86_read(0x00);
++}
++
++static REG8 IOINPCALL pcm86_ia466(UINT port)
++{
++	(void)port;
++	return np2audio86_guest_pcm86_read(0x06);
++}
++
++static REG8 IOINPCALL pcm86_ia468(UINT port)
++{
++	(void)port;
++	return np2audio86_guest_pcm86_read(0x08);
++}
++
++static REG8 IOINPCALL pcm86_ia46a(UINT port)
++{
++	(void)port;
++	return np2audio86_guest_pcm86_read(0x0a);
++}
++
++static REG8 IOINPCALL pcm86_inpdummy(UINT port)
++{
++	(void)port;
++	return 0;
++}
++
++void pcm86io_setopt(REG8 cDipSw)
++{
++	np2audio86_guest_pcm86_set_options(cDipSw);
++}
++
++void pcm86io_bind(void)
++{
++	np2audio86_guest_pcm86_stream_bind();
++	iocore_attachout(0xa460, pcm86_oa460);
++	iocore_attachout(0xa466, pcm86_oa466);
++	iocore_attachout(0xa468, pcm86_oa468);
++	iocore_attachout(0xa46a, pcm86_oa46a);
++	iocore_attachout(0xa46c, pcm86_oa46c);
++	iocore_attachinp(0xa460, pcm86_ia460);
++	iocore_attachinp(0xa462, pcm86_inpdummy);
++	iocore_attachinp(0xa464, pcm86_inpdummy);
++	iocore_attachinp(0xa466, pcm86_ia466);
++	iocore_attachinp(0xa468, pcm86_ia468);
++	iocore_attachinp(0xa46a, pcm86_ia46a);
++	iocore_attachinp(0xa46c, pcm86_inpdummy);
++	iocore_attachinp(0xa46e, pcm86_inpdummy);
++}
++
++void pcm86io_unbind(void)
++{
++	iocore_detachout(0xa460);
++	iocore_detachout(0xa466);
++	iocore_detachout(0xa468);
++	iocore_detachout(0xa46a);
++	iocore_detachout(0xa46c);
++	iocore_detachinp(0xa460);
++	iocore_detachinp(0xa462);
++	iocore_detachinp(0xa464);
++	iocore_detachinp(0xa466);
++	iocore_detachinp(0xa468);
++	iocore_detachinp(0xa46a);
++	iocore_detachinp(0xa46c);
++	iocore_detachinp(0xa46e);
++	np2audio86_guest_pcm86_stream_unbind();
++}
++
++#else
+ 
+ #if 0
+ #undef	TRACEOUT
+@@ -514,4 +635,5 @@
+ 	iocore_detachinp(0xa46c);
+ 	iocore_detachinp(0xa46e);
+ }
++#endif /* NP2_ASYNC_AUDIO86 */
+ 

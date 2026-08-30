@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "e2dc9046aa5c786fcfbfb87e883457e421026e31",
+  "entries": [
+    {
+      "logical_source": "cbus/board86.c",
+      "pristine_path": "cbus/board86.c",
+      "pristine_sha256": "c2db5b7f724ac3c4042830b06179a77839d46d74e3ba51f5fd7a3ad5f751b842",
+      "patch_path": "0001-board86-guest-adapter.patch",
+      "patch_sha256": "ef440e4b639e26d1c349957c8651a1b6a20beb70ebef61c82c6a8b71855183a9",
+      "patched_sha256": "be6bf412975c1028417678d32f755b528b6f1f112ebb5b5ebfb9f6d9cdef4637"
+    },
+    {
+      "logical_source": "cbus/pcm86io.c",
+      "pristine_path": "cbus/pcm86io.c",
+      "pristine_sha256": "e81275514f7814c3698983d867bf8d5bcc991d4d50085900feec8b04dab653f5",
+      "patch_path": "0002-pcm86io-guest-adapter.patch",
+      "patch_sha256": "dd50a23671f7d000bff4377eb36090b162e91885eec4cd9845ae9191397353a3",
+      "patched_sha256": "9a2bc6ef3d559c649a3545356d3b0acfedda0e9252d8a9a1f72b2cec8ab4c60b"
+    }
+  ]
+}

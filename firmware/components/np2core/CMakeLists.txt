@@ -9,6 +9,18 @@ if(NOT NP2_I286C_INLINE_MEM_FASTPATH STREQUAL "0" AND
             "np2core: NP2_I286C_INLINE_MEM_FASTPATH must be exactly 0 or 1")
 endif()
 
+# 86R.1 owns a deliberately narrow, opt-in PC-9801-86 guest/audio source
+# boundary.  The current production target remains sound-disabled; the
+# feature flag is exported as a compile contract for later source slices.
+if(NOT DEFINED NP2_ASYNC_AUDIO86)
+    set(NP2_ASYNC_AUDIO86 "0")
+endif()
+if(NOT NP2_ASYNC_AUDIO86 STREQUAL "0" AND
+   NOT NP2_ASYNC_AUDIO86 STREQUAL "1")
+    message(FATAL_ERROR
+            "np2core: NP2_ASYNC_AUDIO86 must be exactly 0 or 1")
+endif()
+
 set(NP2_PCCORE_PHASE_PROFILER_ACTIVE FALSE)
 if(NP2VIDEO_BENCHMARK_PROFILE OR
    "$ENV{NP2VIDEO_BENCHMARK_PROFILE}" STREQUAL "1")
@@ -233,7 +245,7 @@ endforeach()
 idf_component_register(
     SRCS ${NP2CORE_SOURCES} "np2_pccore_profiler.c"
     LDFRAGMENTS linker.lf
-    REQUIRES esp_timer
+    REQUIRES esp_timer np2audio86_guest_adapter
     INCLUDE_DIRS
         "include"
         "${NP2CORE_HOST_COMPAT}"
@@ -250,6 +262,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     OSLANG_UTF8
     SUPPORT_UTF8
     NP2_FIRMWARE_DOSIO
+    "NP2_ASYNC_AUDIO86=${NP2_ASYNC_AUDIO86}"
     "NP2_I286C_INLINE_MEM_FASTPATH=${NP2_I286C_INLINE_MEM_FASTPATH}"
     "NP2KAI_GIT_TAG=\"0.86.0.22\""
     "NP2KAI_GIT_HASH=\"e2dc9046aa5c786fcfbfb87e883457e421026e31\"")
