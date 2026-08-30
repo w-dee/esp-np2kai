@@ -316,9 +316,17 @@ static void guest_event_callback(NEVENTITEM item)
     np2audio86_guest_host_timer_dispatch((uint8_t)item->userData);
 }
 
+static unsigned guest_schedule_count[4];
+static uint8_t a46a_invalid_format_pass;
+static uint8_t a46a_invalid_nevent_pass;
+static uint8_t a46a_invalid_audio_event_pass;
+static uint8_t a46a_guest_time_sync_pass;
+
 static void guest_event_schedule(uint8_t timer, uint64_t clock, uint8_t absolute)
 {
     assert(clock <= INT32_MAX);
+    assert(timer < 4u);
+    ++guest_schedule_count[timer];
     nevent_set(event_id(timer), (SINT32)clock, guest_event_callback,
                absolute ? NEVENT_ABSOLUTE : NEVENT_RELATIVE);
     g_nevent.item[event_id(timer)].userData = timer;
@@ -1160,6 +1168,88 @@ static void run_86r2c_evidence_tests(void)
                nevent_iswork(NEVENT_86PCM));
     }
 
+    /* Focused pre-fix reproduction: an invalid DAC/format write must retain
+     * the active NEVENT deadline, avoid a second schedule operation, avoid a
+     * Domain-T control event, and leave an open DATA_RUN unpublished. */
+    {
+        static np2audio86_guest_event_t invalid_events[8];
+        static np2audio86_guest_data_run_t invalid_runs[8];
+        static uint8_t invalid_pcm[8];
+        np2audio86_guest_trace_t invalid_trace = {
+            invalid_events, 8, 0, invalid_runs, 8, 0,
+            invalid_pcm, sizeof(invalid_pcm), 0, NULL, 0, 0, NULL, 0, 0, 0
+        };
+        uint64_t before_clock;
+        unsigned before_schedules;
+        size_t before_events, before_runs, before_pcm;
+
+        memset(invalid_events, 0, sizeof(invalid_events));
+        memset(invalid_runs, 0, sizeof(invalid_runs));
+        memset(invalid_pcm, 0, sizeof(invalid_pcm));
+        np2audio86_guest_host_trace_detach();
+        np2audio86_guest_host_test_seed(0u, 0u);
+        np2audio86_guest_host_set_cpu_position(0u);
+        np2audio86_guest_test_set_pcm_state(4u, 7u, 128u, 0x81u,
+                                            2u, 1u, 0u, 0u);
+        np2audio86_guest_audio_sync();
+        np2audio86_guest_host_trace_attach(&invalid_trace);
+        np2audio86_guest_pcm86_write_data(0x5au);
+        np2audio86_guest_test_set_pcm_state(4u, 7u, 128u, 0x81u,
+                                            2u, 1u, 0u, 0u);
+        np2audio86_guest_host_set_cpu_position(0u);
+        np2audio86_guest_audio_sync();
+        nevent_allreset();
+        guest_schedule_count[NP2AUDIO86_TRACE_PCM] = 0u;
+        np2audio86_guest_test_schedule_pcm();
+        np2audio86_guest_host_snapshot(&before);
+        before_clock = (uint64_t)g_nevent.item[NEVENT_86PCM].clock;
+        before_schedules = guest_schedule_count[NP2AUDIO86_TRACE_PCM];
+        before_events = invalid_trace.event_count;
+        before_runs = invalid_trace.data_run_count;
+        before_pcm = invalid_trace.pcm_count;
+        np2audio86_guest_host_set_cpu_position(1024u);
+        np2audio86_guest_pcm86_write(0x0au, 0x3fu);
+        np2audio86_guest_host_snapshot(&after);
+        assert(after.guest_cycles == before.guest_cycles + 1024u);
+        assert(after.frame_timestamp == before.frame_timestamp + 1u);
+        assert(after.cpu_remainder == before.cpu_remainder);
+        a46a_guest_time_sync_pass = 1u;
+        assert(after.pcm_dactrl == before.pcm_dactrl &&
+               after.pcm_soundflags == before.pcm_soundflags &&
+               after.pcm_volume == before.pcm_volume &&
+               after.pcm_rate == before.pcm_rate &&
+               after.pcm_stepbit == before.pcm_stepbit &&
+               after.pcm_stepmask == before.pcm_stepmask &&
+               after.pcm_fifo_level == before.pcm_fifo_level &&
+               after.pcm_rescue == before.pcm_rescue &&
+               after.pcm_reqirq == before.pcm_reqirq &&
+               after.pcm_irq == before.pcm_irq &&
+               after.pcm_irq_line == before.pcm_irq_line &&
+               after.pcm_fifo == before.pcm_fifo &&
+               after.pcm_fifo_size == before.pcm_fifo_size &&
+               after.pcm_virtual_buffer == before.pcm_virtual_buffer &&
+               after.pcm_real_buffer == before.pcm_real_buffer &&
+               after.pcm_write_position == before.pcm_write_position &&
+               after.pcm_read_position == before.pcm_read_position &&
+               after.pcm_rateval == before.pcm_rateval &&
+               after.pcm_stepclock == before.pcm_stepclock &&
+               after.pcm_lastclock == before.pcm_lastclock &&
+               after.pcm_lastclockforwait == before.pcm_lastclockforwait);
+        assert(after.pcm_step_remainder ==
+               (uint32_t)(((uint64_t)1024u << 6) % before.pcm_stepclock));
+        assert(after.sequence == before.sequence);
+        assert(invalid_trace.event_count == before_events);
+        assert(invalid_trace.data_run_count == before_runs);
+        assert(invalid_trace.pcm_count == before_pcm);
+        assert(nevent_iswork(NEVENT_86PCM));
+        assert((uint64_t)g_nevent.item[NEVENT_86PCM].clock == before_clock);
+        assert(guest_schedule_count[NP2AUDIO86_TRACE_PCM] == before_schedules);
+        a46a_invalid_format_pass = 1u;
+        a46a_invalid_nevent_pass = 1u;
+        a46a_invalid_audio_event_pass = 1u;
+        np2audio86_guest_host_trace_detach();
+    }
+
     printf("AUDIO86_GUEST_A46C_LOGICAL_FULL_WAIT=PASS\n");
     printf("AUDIO86_GUEST_PCM86_SETNEXTINTR_SELECTION=PASS\n");
     printf("AUDIO86_GUEST_PCM86_NEVENT_IMMEDIATE=PASS\n");
@@ -1168,7 +1258,16 @@ static void run_86r2c_evidence_tests(void)
     printf("AUDIO86_GUEST_TIMER_B_ACTUAL_PIC=PASS\n");
     printf("A466_END_TO_END=PASS\nA468_IRQ_CLEAR_BRANCH=PASS\nA468_FORCED_IRQ_BRANCH=PASS\n");
     printf("A468_RESCUE=PASS\nA468_NEVENT_CONTROL=PASS\nA46A_RESCUE=PASS\n");
-    printf("A46A_INVALID_FORMAT_PRESERVATION=PASS\nA46A_REQIRQ_RESCHEDULE=PASS\n");
+    printf("A46A_INVALID_FORMAT_PRESERVATION=%s\n",
+           a46a_invalid_format_pass ? "PASS" : "FAIL");
+    printf("A46A_INVALID_NEVENT_PRESERVATION=%s\n",
+           a46a_invalid_nevent_pass ? "PASS" : "FAIL");
+    printf("INVALID_A46A_AUDIO_EVENT_EMITTED=%s\n",
+           a46a_invalid_audio_event_pass ? "NO" : "YES");
+    printf("A46A_GUEST_TIME_SYNC=%s\n",
+           a46a_guest_time_sync_pass ? "PASS" : "FAIL");
+    printf("A46A_VALID_REQIRQ_RESCHEDULE=PASS\n");
+    printf("A46A_REQIRQ_RESCHEDULE=PASS\n");
 }
 
 int main(void)
@@ -1381,6 +1480,13 @@ int main(void)
     printf("FINAL_G_STATE_SEMANTIC_COUNT=1\nFINAL_G_STATE_SERIALIZED_BYTES=%zu\n", length);
     run_boundary_tests();
     run_86r2c_evidence_tests();
+    if (!a46a_invalid_format_pass || !a46a_invalid_nevent_pass ||
+        !a46a_invalid_audio_event_pass || !a46a_guest_time_sync_pass) {
+        printf("AUDIO86_GUEST_PCM86_ACCOUNTING=FAIL\n");
+        printf("AUDIO86_GUEST_BOUNDARY_TESTS=FAIL\n");
+        printf("AUDIO86_GUEST_RUNTIME_RESULT=FAIL\n");
+        return 1;
+    }
     printf("ACTUAL_PIC_AUTHORITY=PASS\n");
     printf("SHARED_IRQ_SEMANTICS=PASS\n");
     printf("A46C_GUEST_COUNTER_SEMANTICS=PASS\n");

@@ -587,6 +587,15 @@ void np2audio86_guest_soundrom_load(uint32_t address, const char *name)
 void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
 {
     uint8_t old; uint64_t cur; static const uint8_t bits[8] = {1,1,1,2,0,0,0,1};
+    /* Pinned pcm86_oa46a() synchronizes guest time before rejecting an
+     * invalid DAC format.  The rejected write is a true no-op at the
+     * publication boundary: do not flush a pending data run, append a
+     * control event, or reach the reqirq reschedule below. */
+    if (register_index == 0x0au && !(g_state.pcm_fifo & 0x20u) &&
+        ((value & 15u) == 15u)) {
+        np2audio86_guest_audio_sync();
+        return;
+    }
     flush_pending_run(); np2audio86_guest_audio_sync();
     append_event(NP2AUDIO86_TRACE_PCM_CONTROL, ((uint32_t)register_index << 8) | value);
     switch (register_index) {

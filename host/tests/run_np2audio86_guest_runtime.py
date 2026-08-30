@@ -26,6 +26,9 @@ FIXTURE_MARKERS = (
     "A466_SEMANTICS",
     "A468_SEMANTICS",
     "A46A_SEMANTICS",
+    "A46A_INVALID_NEVENT_PRESERVATION",
+    "A46A_GUEST_TIME_SYNC",
+    "A46A_VALID_REQIRQ_RESCHEDULE",
     "DOMAIN_G_CONSUMER_INDEPENDENCE",
     "AUDIO86_GUEST_A46C_LOGICAL_FULL_WAIT",
     "AUDIO86_GUEST_PCM86_SETNEXTINTR_SELECTION",
@@ -109,6 +112,10 @@ def main() -> int:
                 )
         if values.get("AUDIO86_GUEST_RUNTIME_RESULT") != "PASS":
             raise RuntimeError("runtime fixture did not report PASS")
+        if values.get("INVALID_A46A_AUDIO_EVENT_EMITTED") != "NO":
+            raise RuntimeError(
+                "runtime fixture reported an invalid A46A audio event"
+            )
         for marker in FIXTURE_MARKERS:
             if values.get(marker) != "PASS":
                 raise RuntimeError(f"runtime fixture did not report {marker}=PASS")
