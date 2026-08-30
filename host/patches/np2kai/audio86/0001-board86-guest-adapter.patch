@@ -1,6 +1,6 @@
 --- a/cbus/board86.c
 +++ b/cbus/board86.c
-@@ -1,189 +1,279 @@
+@@ -1,189 +1,331 @@
 -/**
 - * @file	board86.c
 - * @brief	Implementation of PC-9801-86
@@ -202,6 +202,10 @@
 +#include <cbus/pcm86io.h>
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
 +#include <np2audio86_guest_adapter.h>
++#include <cpucore.h>
++#include <nevent.h>
++#include <pccore.h>
++#include <limits.h>
 +#else
 +#include <sound/fmboard.h>
 +#include <sound/sound.h>
@@ -277,7 +281,6 @@
 +	return g_opna[0].s.status;
 +#endif
 +}
-+
 +static REG8 IOINPCALL opna_i18a(UINT port)
 +{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
@@ -353,7 +356,8 @@
 +static void extendchannel(REG8 enable)
 +{
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
-+	np2audio86_guest_opna_set_extension(enable);
++	/* Adapter invokes the registered callback; keep this boundary one-way. */
++	(void)enable;
 +#else
 +	g_opna[0].s.extend = enable;
 +	if (enable)
@@ -377,6 +381,49 @@
 +static const IOINP opna_i[4] = {
 +			opna_i188,	opna_i18a,	opna_i18c,	opna_i18e};
 +
++#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
++static NEVENTID audio86_event_id(REG8 timer)
++{
++	return timer == NP2AUDIO86_TRACE_TIMER_A ? NEVENT_FMTIMERA :
++		   timer == NP2AUDIO86_TRACE_TIMER_B ? NEVENT_FMTIMERB : NEVENT_86PCM;
++}
++
++static void audio86_event_callback(NEVENTITEM item)
++{
++	np2audio86_guest_host_timer_dispatch((REG8)item->userData);
++}
++
++static void audio86_event_schedule(REG8 timer, UINT64 clock, REG8 absolute)
++{
++	NEVENTID id = audio86_event_id(timer);
++	if (clock > INT_MAX) return;
++	nevent_set(id, (SINT32)clock, audio86_event_callback,
++			   absolute ? NEVENT_ABSOLUTE : NEVENT_RELATIVE);
++	g_nevent.item[id].userData = (INTPTR)timer;
++}
++
++static void audio86_event_cancel(REG8 timer)
++{
++	nevent_reset(audio86_event_id(timer));
++}
++
++static REG8 audio86_event_iswork(REG8 timer)
++{
++	return nevent_iswork(audio86_event_id(timer)) ? 1 : 0;
++}
++
++static UINT32 audio86_cpu_position(void)
++{
++	return (UINT32)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK);
++}
++
++static void audio86_pic_irq(UINT32 irq, REG8 level)
++{
++	if (level) pic_setirq((REG8)irq);
++	else pic_resetirq((REG8)irq);
++}
++#endif
++
 +
 +/**
 + * Reset
@@ -389,6 +436,11 @@
 +	UINT nIrq;
 +
 +#if defined(NP2_ASYNC_AUDIO86) && NP2_ASYNC_AUDIO86
++	np2audio86_guest_host_set_cpu_position_fn(audio86_cpu_position);
++	np2audio86_guest_host_set_cpumode(pccore.cpumode);
++	np2audio86_guest_host_set_timer_hooks(audio86_event_schedule,
++							 audio86_event_cancel, audio86_event_iswork,
++							 audio86_pic_irq);
 +	cCaps = NP2AUDIO86_OPNA_CAPS_2608 | NP2AUDIO86_OPNA_CAPS_TIMER |
 +			NP2AUDIO86_OPNA_CAPS_S98;
 +	if (adpcm)
@@ -469,4 +521,3 @@
 +	cbuscore_detachsndex(0x188 + g_opna[0].s.base);
 +#endif
 +}
-

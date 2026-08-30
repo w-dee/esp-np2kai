@@ -7,6 +7,7 @@
 #include <compiler.h>
 #include <cbus/board86.h>
 #include <io/iocore.h>
+#include <nevent.h>
 #include <i286c/cpucore.h>
 #include <mem/memtram.h>
 #include <pccore.h>
@@ -56,7 +57,6 @@ RESET_STUB(gdc_reset) BIND_STUB(gdc_bind)
 RESET_STUB(fdc_reset) BIND_STUB(fdc_bind)
 RESET_STUB(keyboard_reset) BIND_STUB(keyboard_bind)
 RESET_STUB(nmiio_reset) BIND_STUB(nmiio_bind)
-RESET_STUB(pic_reset) BIND_STUB(pic_bind)
 RESET_STUB(printif_reset) BIND_STUB(printif_bind)
 RESET_STUB(rs232c_reset) BIND_STUB(rs232c_bind)
 RESET_STUB(systemport_reset) BIND_STUB(systemport_bind)
@@ -116,6 +116,17 @@ static size_t build_guest_program(void)
     mov_dx_out(&at, 0x188, 0xa0); mov_dx_out(&at, 0x18a, 0x34);
     mov_dx_out(&at, 0x188, 0x28); mov_dx_out(&at, 0x18a, 0xf0);
     mov_dx_out(&at, 0x188, 0x10); mov_dx_out(&at, 0x18a, 0x7f);
+    /* A460 controls the extension gate.  Extended ports are 0xff while
+     * disabled, become register-backed while enabled, then close again. */
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18c, 0x8009);
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800a);
+    mov_dx_out(&at, 0xa460, 0x01);
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_out(&at, 0x18e, 0x5a);
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800b);
+    mov_dx_out(&at, 0xa460, 0x00);
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_out(&at, 0x18e, 0xa5);
+    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800c);
+    mov_dx_in_store(&at, 0x18c, 0x800d);
     /* Plain PCM86 setup, controls, eight byte OUTs, and every read boundary. */
     mov_dx_out(&at, 0xa460, 0x01);
     mov_dx_out(&at, 0xa46a, 0x00);
@@ -132,9 +143,15 @@ static size_t build_guest_program(void)
     mov_dx_in_store(&at, 0xa46a, 0x8005);
     mov_dx_in_store(&at, 0xa46c, 0x8006);
     mov_dx_in_store(&at, 0xa46e, 0x8007);
-    /* Advance enough real 8086 instructions for Timer A to overflow. */
-    for (unsigned i = 0; i < 400; ++i) put8(&at, 0x90u);
-    mov_dx_out(&at, 0x188, 0x00); mov_dx_in_store(&at, 0x18a, 0x8008);
+    /* Advance enough real 8086 instructions for repeated Timer-A and
+     * Timer-B expiries while their status latches remain set. */
+    for (unsigned i = 0; i < 4500; ++i) put8(&at, 0x90u);
+    mov_dx_in_store(&at, 0x188, 0x800e);
+    mov_dx_out(&at, 0x188, 0x27); mov_dx_out(&at, 0x18a, 0x30);
+    mov_dx_in_store(&at, 0x188, 0x800f);
+    /* A stopped timer must not leave a future ready NEVENT callback. */
+    for (unsigned i = 0; i < 100; ++i) put8(&at, 0x90u);
+    mov_dx_in_store(&at, 0x188, 0x8010);
     put8(&at, 0xf4u); /* HLT sentinel */
     return at;
 }
@@ -199,7 +216,9 @@ static size_t serialize_timers(const np2audio86_guest_trace_t *trace,
         le64(out + at, t->frame_timestamp); le64(out + at + 8, t->guest_cycles);
         le32(out + at + 16, t->timer);
         out[at + 20] = t->status; out[at + 21] = t->irq; out[at + 22] = t->level;
-        out[at + 23] = 0; at += 24;
+        out[at + 23] = t->cause; out[at + 24] = t->pic_transition;
+        out[at + 25] = t->pcm_irqflag; out[at + 26] = t->pcm_reqirq;
+        out[at + 27] = 0; at += 28;
     }
     return at;
 }
@@ -241,22 +260,103 @@ static size_t serialize_state(const np2audio86_guest_state_snapshot_t *s,
     le32(out + at, s->pcm_read_position); at += 4;
     out[at++] = s->pcm_irq; out[at++] = s->pcm_reqirq;
     le32(out + at, s->pcm_rescue); at += 4;
+    out[at++] = s->pcm_irq_line; out[at++] = s->pcm_stepbit;
+    le16(out + at, s->pcm_stepmask); at += 2;
+    le32(out + at, s->pcm_rateval); at += 4;
+    le64(out + at, s->pcm_stepclock); at += 8;
+    le64(out + at, s->pcm_lastclock); at += 8;
+    le64(out + at, s->pcm_lastclockforwait); at += 8;
+    le32(out + at, s->pcm_real_buffer); at += 4;
+    le32(out + at, s->pcm_write_position); at += 4;
+    le32(out + at, s->pcm_step_remainder); at += 4;
     out[at++] = s->soundrom_rejected; out[at++] = s->bound;
     out[at++] = 0; out[at++] = 0;
     return at;
 }
 
 static uint8_t irq_levels[256];
+static unsigned pic_set_transitions;
+static unsigned pic_reset_transitions;
 
 static void irq_hook(uint32_t irq, uint8_t level)
 {
     assert(irq < sizeof(irq_levels));
+    if (irq_levels[irq] == level) return;
     irq_levels[irq] = level;
+    if (level) {
+        ++pic_set_transitions;
+        pic_setirq((REG8)irq);
+    } else {
+        ++pic_reset_transitions;
+        pic_resetirq((REG8)irq);
+    }
+}
+
+static NEVENTID event_id(uint8_t timer)
+{
+    return timer == NP2AUDIO86_TRACE_TIMER_A ? NEVENT_FMTIMERA :
+           timer == NP2AUDIO86_TRACE_TIMER_B ? NEVENT_FMTIMERB : NEVENT_86PCM;
+}
+
+static void guest_event_callback(NEVENTITEM item)
+{
+    np2audio86_guest_host_timer_dispatch((uint8_t)item->userData);
+}
+
+static void guest_event_schedule(uint8_t timer, uint64_t clock, uint8_t absolute)
+{
+    assert(clock <= INT32_MAX);
+    nevent_set(event_id(timer), (SINT32)clock, guest_event_callback,
+               absolute ? NEVENT_ABSOLUTE : NEVENT_RELATIVE);
+    g_nevent.item[event_id(timer)].userData = timer;
+}
+
+static void guest_event_cancel(uint8_t timer)
+{
+    nevent_reset(event_id(timer));
+}
+
+static uint8_t guest_event_iswork(uint8_t timer)
+{
+    return nevent_iswork(event_id(timer)) ? 1u : 0u;
+}
+
+static uint64_t arithmetic_schedule_clock[4];
+static uint8_t arithmetic_schedule_absolute[4];
+static unsigned arithmetic_schedule_count;
+
+static void arithmetic_schedule(uint8_t timer, uint64_t clock,
+                                uint8_t absolute)
+{
+    assert(timer < 4u);
+    arithmetic_schedule_clock[timer] = clock;
+    arithmetic_schedule_absolute[timer] = absolute;
+    ++arithmetic_schedule_count;
+}
+
+static void arithmetic_cancel(uint8_t timer) { (void)timer; }
+static uint8_t arithmetic_iswork(uint8_t timer) { (void)timer; return 0; }
+
+static uint64_t expected_timer_period(uint8_t timer, uint8_t reg24,
+                                      uint8_t reg25, uint8_t reg26,
+                                      uint32_t cpumode, uint32_t multiple)
+{
+    uint32_t l = timer == NP2AUDIO86_TRACE_TIMER_A
+        ? 18u * (1024u - (((uint32_t)reg24 << 2) | (reg25 & 3u)))
+        : 288u * (256u - reg26);
+    l = (cpumode & CPUMODE_8MHZ) ? (l * 1248u) / 625u
+                                 : (l * 1536u) / 625u;
+    return (uint64_t)l * multiple;
+}
+
+static uint32_t production_cpu_position(void)
+{
+    /* Production-equivalent position: CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK. */
+    return (uint32_t)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK);
 }
 
 static uint8_t run_program(size_t program_size)
 {
-    uint64_t previous;
     (void)program_size;
     i286c_initialize();
     i286c_reset();
@@ -265,15 +365,16 @@ static uint8_t run_program(size_t program_size)
     i286core.s.r.w.ss = 0; i286core.s.ss_base = 0;
     i286core.s.r.w.ip = 0; i286core.s.r.w.flag = I_FLAG;
     i286core.s.adrsmask = 0xfffffu;
+    nevent_get1stevent();
     for (;;) {
         if (mem[i286core.s.r.w.ip] == 0xf4u) return 1;
-        previous = host_cycles;
-        np2audio86_guest_host_set_cpu_position((uint32_t)host_cycles);
-        i286core.s.remainclock = 100000;
-        i286core.s.baseclock = 100000;
+        if (i286core.s.remainclock <= 0) {
+            nevent_progress();
+            host_cycles = CPU_CLOCK;
+            continue;
+        }
         i286c_step();
-        host_cycles += (uint64_t)(100000 - i286core.s.remainclock);
-        if (host_cycles - previous > 1000000u) return 0;
+        if (CPU_CLOCK > 100000000u) return 0;
     }
 }
 
@@ -293,9 +394,215 @@ static void run_boundary_tests(void)
     uint64_t expected_total;
     uint64_t before_wrap;
     np2audio86_guest_host_trace_detach();
+    np2audio86_guest_host_set_cpu_position_fn(NULL);
     np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
                                 NP2AUDIO86_OPNA_CAPS_TIMER,
                                 3u, 5u, 6u);
+
+    /* Exhaustive representative Timer-A/B arithmetic over both pinned CPU
+     * scale paths.  The fake callback records requests only; it is not a
+     * scheduler and is used solely for this isolated arithmetic proof. */
+    np2audio86_guest_host_set_timer_hooks(arithmetic_schedule,
+                                          arithmetic_cancel,
+                                          arithmetic_iswork, irq_hook);
+    {
+        static const uint32_t modes[] = {CPUMODE_8MHZ, 0u};
+        static const uint8_t highs[] = {0u, 1u, 0x80u, 0xffu};
+        static const uint8_t lows[] = {0u, 1u, 3u};
+        static const uint8_t timer_b_values[] = {0u, 1u, 0x80u, 0xffu};
+        for (size_t m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+            np2audio86_guest_host_set_cpumode(modes[m]);
+            for (size_t h = 0; h < sizeof(highs) / sizeof(highs[0]); ++h) {
+                for (size_t l = 0; l < sizeof(lows) / sizeof(lows[0]); ++l) {
+                    arithmetic_schedule_count = 0;
+                    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_TIMER,
+                                                0u, 1u, 2u);
+                    np2audio86_guest_opna_write_address_low(0x24u);
+                    np2audio86_guest_opna_write_data_low(highs[h]);
+                    np2audio86_guest_opna_write_address_low(0x25u);
+                    np2audio86_guest_opna_write_data_low(lows[l]);
+                    np2audio86_guest_opna_write_address_low(0x27u);
+                    np2audio86_guest_opna_write_data_low(0x05u);
+                    assert(arithmetic_schedule_count == 1u);
+                    assert(arithmetic_schedule_clock[1] ==
+                           expected_timer_period(1u, highs[h], lows[l], 0u,
+                                                 modes[m], 20u));
+                    assert(arithmetic_schedule_absolute[1] == 1u);
+                }
+            }
+            for (size_t b = 0; b < sizeof(timer_b_values) / sizeof(timer_b_values[0]); ++b) {
+                arithmetic_schedule_count = 0;
+                np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_TIMER,
+                                            0u, 1u, 2u);
+                np2audio86_guest_opna_write_address_low(0x26u);
+                np2audio86_guest_opna_write_data_low(timer_b_values[b]);
+                np2audio86_guest_opna_write_address_low(0x27u);
+                np2audio86_guest_opna_write_data_low(0x0au);
+                assert(arithmetic_schedule_count == 1u);
+                assert(arithmetic_schedule_clock[2] ==
+                       expected_timer_period(2u, 0u, 0u,
+                                             timer_b_values[b], modes[m], 20u));
+                assert(arithmetic_schedule_absolute[2] == 1u);
+            }
+        }
+    }
+
+    /* All eight authoritative PCM rates and the format/step mapping are
+     * checked through the counter-only snapshot, with no sample storage. */
+    np2audio86_guest_host_set_clock(2457600u, 20u);
+    np2audio86_guest_host_set_cpumode(CPUMODE_8MHZ);
+    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
+                                NP2AUDIO86_OPNA_CAPS_TIMER,
+                                0u, 1u, 2u);
+    {
+        static const uint32_t rates[] = {352800u, 264600u, 176400u, 132300u,
+                                         88200u, 66150u, 44010u, 33075u};
+        for (uint8_t index = 0; index < 8u; ++index) {
+            np2audio86_guest_pcm86_write(0x08u, (uint8_t)(0x80u | index));
+            np2audio86_guest_host_snapshot(&state);
+            assert(state.pcm_rateval == rates[index]);
+            assert(state.pcm_stepclock ==
+                   (((uint64_t)2457600u << 6) / rates[index]) * (20u << 3));
+        }
+    }
+    np2audio86_guest_pcm86_write(0x08u, 0x80u);
+    {
+        static const uint8_t formats[] = {0x10u, 0x20u, 0x30u, 0x50u,
+                                          0x60u, 0x70u};
+        static const uint8_t steps[] = {1u, 1u, 2u, 0u, 0u, 1u};
+        for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i) {
+            np2audio86_guest_pcm86_write(0x0au, formats[i]);
+            np2audio86_guest_host_snapshot(&state);
+            assert(state.pcm_stepbit == steps[i]);
+            assert(state.pcm_stepmask == ((1u << steps[i]) - 1u));
+        }
+    }
+    np2audio86_guest_host_snapshot(&baseline);
+    np2audio86_guest_pcm86_write(0x0au, 0x1fu);
+    np2audio86_guest_host_snapshot(&state);
+    assert(state.pcm_dactrl == baseline.pcm_dactrl);
+    np2audio86_guest_pcm86_write(0x08u, 0xa0u);
+    np2audio86_guest_pcm86_write(0x0au, 2u);
+    np2audio86_guest_host_snapshot(&state);
+    assert(state.pcm_fifo_size == 384u);
+
+    /* A460 changes only soundflags bit 0 and invokes the extension chain. */
+    np2audio86_guest_pcm86_set_options(0xd1u);
+    np2audio86_guest_host_snapshot(&baseline);
+    np2audio86_guest_pcm86_write(0x00u, 1u);
+    np2audio86_guest_host_snapshot(&state);
+    assert((state.pcm_soundflags & 0xfeu) == (baseline.pcm_soundflags & 0xfeu));
+    assert((state.pcm_soundflags & 1u) == 1u && state.opna_extension == 1u);
+    np2audio86_guest_pcm86_write(0x00u, 0u);
+    np2audio86_guest_host_snapshot(&state);
+    assert((state.pcm_soundflags & 0xfeu) == (baseline.pcm_soundflags & 0xfeu));
+    assert((state.pcm_soundflags & 1u) == 0u && state.opna_extension == 0u);
+
+    /* A product-preserving clock tuple is accepted before bind, while a
+     * bound device rejects changing 2.4576 MHz x20 to 1.2288 MHz x40. */
+    np2audio86_guest_opna_unbind();
+    np2audio86_guest_host_set_clock(1228800u, 40u);
+    assert(!np2audio86_guest_host_failed());
+    np2audio86_guest_host_set_clock(2457600u, 20u);
+    assert(!np2audio86_guest_host_failed());
+    np2audio86_guest_opna_bind();
+    np2audio86_guest_host_set_clock(1228800u, 40u);
+    assert(np2audio86_guest_host_failed());
+    assert(strstr(np2audio86_guest_host_failure_reason(), "dynamic clock") != NULL);
+    np2audio86_guest_host_test_seed(0u, 0u);
+
+    /* Restore the production bridges for the remaining focused semantic
+     * checks. */
+    np2audio86_guest_host_set_timer_hooks(guest_event_schedule,
+                                          guest_event_cancel,
+                                          guest_event_iswork, irq_hook);
+    np2audio86_guest_host_set_cpumode(CPUMODE_8MHZ);
+
+    /* Shared OPNA/PCM86 IRQ ownership: clearing one cause must retain the
+     * actual PIC level until the final cause is gone, in either order. */
+    pic_reset(&np2cfg);
+    memset(irq_levels, 0, sizeof(irq_levels));
+    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
+                                NP2AUDIO86_OPNA_CAPS_TIMER,
+                                0x10u, 1u, 2u);
+    np2audio86_guest_pcm86_set_options(0xd1u);
+    np2audio86_guest_host_set_cpu_position(0u);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_pcm86_write(0x08u, 0xb0u);
+    np2audio86_guest_pcm86_write(0x0au, 0u);
+    for (unsigned i = 0; i < 256u; ++i) np2audio86_guest_pcm86_write_data(0x55u);
+    np2audio86_guest_opna_write_address_low(0x24u);
+    np2audio86_guest_opna_write_data_low(0xffu);
+    np2audio86_guest_opna_write_address_low(0x25u);
+    np2audio86_guest_opna_write_data_low(3u);
+    np2audio86_guest_opna_write_address_low(0x27u);
+    np2audio86_guest_opna_write_data_low(0x05u);
+    np2audio86_guest_host_timer_tick(NP2AUDIO86_TRACE_TIMER_A);
+    assert(irq_levels[3u] == 1u);
+    {
+        unsigned set_count = pic_set_transitions;
+        np2audio86_guest_host_timer_tick(NP2AUDIO86_TRACE_TIMER_A);
+        assert(pic_set_transitions == set_count);
+    }
+    /* Timer status clears, but PCM86 remains pending on the shared line. */
+    np2audio86_guest_opna_write_address_low(0x27u);
+    np2audio86_guest_opna_write_data_low(0x10u);
+    assert(irq_levels[3u] == 1u);
+    /* Once PCM is cleared too, the actual PIC bridge observes RESET. */
+    np2audio86_guest_pcm86_write(0x08u, 0x80u);
+    assert(irq_levels[3u] == 0u);
+    assert(pic_reset_transitions > 0u);
+
+    /* Inverse ordering: PCM clears first while the timer latch remains. */
+    pic_reset(&np2cfg);
+    memset(irq_levels, 0, sizeof(irq_levels));
+    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
+                                NP2AUDIO86_OPNA_CAPS_TIMER,
+                                0x10u, 1u, 2u);
+    np2audio86_guest_pcm86_set_options(0xd1u);
+    np2audio86_guest_host_set_cpu_position(0u);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_opna_write_address_low(0x24u);
+    np2audio86_guest_opna_write_data_low(0xffu);
+    np2audio86_guest_opna_write_address_low(0x25u);
+    np2audio86_guest_opna_write_data_low(3u);
+    np2audio86_guest_opna_write_address_low(0x27u);
+    np2audio86_guest_opna_write_data_low(0x05u);
+    np2audio86_guest_host_timer_tick(NP2AUDIO86_TRACE_TIMER_A);
+    assert(irq_levels[3u] == 1u);
+    np2audio86_guest_pcm86_write(0x08u, 0xb0u);
+    np2audio86_guest_pcm86_write(0x0au, 0u);
+    for (unsigned i = 0; i < 256u; ++i) np2audio86_guest_pcm86_write_data(0x66u);
+    np2audio86_guest_host_timer_tick(NP2AUDIO86_TRACE_TIMER_A);
+    np2audio86_guest_pcm86_write(0x08u, 0x80u);
+    assert(irq_levels[3u] == 1u);
+    np2audio86_guest_opna_write_address_low(0x27u);
+    np2audio86_guest_opna_write_data_low(0x10u);
+    assert(irq_levels[3u] == 0u);
+
+    /* PCM86-only IRQ ownership uses its configured line when it differs from
+     * OPNA; clearing the PCM cause must reset that line, not OPNA's line. */
+    pic_reset(&np2cfg);
+    memset(irq_levels, 0, sizeof(irq_levels));
+    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
+                                NP2AUDIO86_OPNA_CAPS_TIMER,
+                                0x10u, 1u, 2u);
+    np2audio86_guest_pcm86_set_options(0xd5u); /* PCM86 IRQ10, OPNA IRQ3. */
+    np2audio86_guest_host_set_cpu_position(0u);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_pcm86_write(0x08u, 0xb0u);
+    np2audio86_guest_pcm86_write(0x0au, 1u); /* fifo threshold = 256. */
+    for (unsigned i = 0; i < 256u; ++i) np2audio86_guest_pcm86_write_data(0x77u);
+    np2audio86_guest_host_timer_dispatch(NP2AUDIO86_TRACE_PCM);
+    assert(irq_levels[10u] == 1u);
+    assert(irq_levels[3u] == 0u);
+    /* Move above the threshold before clearing; the pinned A468 forced-
+     * interrupt rule otherwise immediately re-latches an empty FIFO. */
+    np2audio86_guest_pcm86_write_data(0x88u);
+    np2audio86_guest_pcm86_write(0x08u, 0x80u);
+    assert(irq_levels[10u] == 0u);
+    assert(irq_levels[3u] == 0u);
+
     np2audio86_guest_host_set_cpu_position(0u);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_snapshot(&baseline);
@@ -314,15 +621,14 @@ static void run_boundary_tests(void)
            baseline.frame_timestamp + expected_total / 1024u);
     assert(state.cpu_remainder == expected_total % 1024u);
 
-    /* Counter-only PCM accounting is driven by guest cycles, not by an
-     * event consumer.  One 48 kHz sample is consumed after exactly 1024
-     * guest cycles at the fixed 49.152 MHz clock. */
+    /* Counter-only PCM accounting is driven by the exact stepclock and the
+     * playback bit (fifo&0x80), not by an event consumer. */
     np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
                                 NP2AUDIO86_OPNA_CAPS_TIMER,
                                 3u, 5u, 6u);
     np2audio86_guest_pcm86_set_options(0xd1u);
     np2audio86_guest_pcm86_write(0x0au, 0x01u);
-    np2audio86_guest_pcm86_write(0x08u, 0x16u);
+    np2audio86_guest_pcm86_write(0x08u, 0x96u);
     np2audio86_guest_host_set_cpu_position(0u);
     np2audio86_guest_audio_sync();
     np2audio86_guest_pcm86_write_data(0x11u);
@@ -330,7 +636,7 @@ static void run_boundary_tests(void)
     np2audio86_guest_host_set_cpu_position(1024u);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_snapshot(&state);
-    assert(state.pcm_fifo_level == 1u);
+    assert(state.pcm_fifo_level == 2u);
 
     before_wrap = state.guest_cycles;
     np2audio86_guest_host_set_cpu_position(0xffffff00u);
@@ -410,6 +716,50 @@ static void run_boundary_tests(void)
     assert(trace.data_runs[0].count == 1u && trace.data_runs[1].count == 1u);
     np2audio86_guest_host_trace_detach();
 
+    /* Reset with an unpublished DATA_RUN publishes the run before the reset
+     * barrier, preserves the time/sequence epoch, and cancels all NEVENTs. */
+    trace.event_capacity = 8;
+    trace.pcm_capacity = sizeof(pcm_bytes);
+    np2audio86_guest_host_trace_attach(&trace);
+    np2audio86_guest_host_test_seed(7u, 20u);
+    np2audio86_guest_host_set_cpu_position(0u);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_pcm86_write_data(0xc3u);
+    np2audio86_guest_host_snapshot(&baseline);
+    np2audio86_guest_opna_reset(NP2AUDIO86_OPNA_CAPS_2608 |
+                                NP2AUDIO86_OPNA_CAPS_TIMER,
+                                0x10u, 1u, 2u);
+    np2audio86_guest_host_snapshot(&state);
+    assert(trace.data_run_count == 1u && trace.event_count == 1u);
+    assert(trace.events[0].opcode == NP2AUDIO86_TRACE_RESET_BARRIER);
+    assert(trace.data_runs[0].sequence < trace.events[0].sequence);
+    assert(state.frame_timestamp >= baseline.frame_timestamp);
+    assert(state.sequence > baseline.sequence);
+    assert(!nevent_iswork(NEVENT_FMTIMERA));
+    assert(!nevent_iswork(NEVENT_FMTIMERB));
+    assert(!nevent_iswork(NEVENT_86PCM));
+    np2audio86_guest_host_trace_detach();
+
+    /* A control mutation is an ordering boundary even without a timestamp
+     * change: DATA_RUN A, control event, then DATA_RUN B. */
+    trace.event_capacity = 2;
+    trace.pcm_capacity = sizeof(pcm_bytes);
+    np2audio86_guest_host_trace_attach(&trace);
+    np2audio86_guest_host_test_seed(0u, 0u);
+    np2audio86_guest_host_set_cpu_position(0u);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_pcm86_write_data(0xa1u);
+    np2audio86_guest_pcm86_write(0x08u, 0x80u);
+    np2audio86_guest_pcm86_write_data(0xb2u);
+    np2audio86_guest_host_flush_data_run();
+    assert(trace.data_run_count == 2u && trace.event_count == 1u);
+    assert(trace.data_runs[0].sequence < trace.events[0].sequence);
+    assert(trace.events[0].sequence < trace.data_runs[1].sequence);
+    assert(trace.data_runs[0].byte_offset == 0u &&
+           trace.data_runs[1].byte_offset == 1u);
+    assert(trace.data_runs[0].count == 1u && trace.data_runs[1].count == 1u);
+    np2audio86_guest_host_trace_detach();
+
     /* CSM is a guest-timer boundary only: record the future trigger without
      * mutating a waveform generator. */
     trace.event_capacity = 8;
@@ -428,6 +778,14 @@ static void run_boundary_tests(void)
     assert(trace.event_count >= 4u);
     assert(trace.events[trace.event_count - 1u].opcode ==
            NP2AUDIO86_TRACE_OPNA_CSM);
+    {
+        size_t before = trace.event_count;
+        np2audio86_guest_opna_write_address_low(0x27u);
+        np2audio86_guest_opna_write_data_low(0xc5u);
+        np2audio86_guest_host_timer_tick(NP2AUDIO86_TRACE_TIMER_A);
+        for (size_t i = before; i < trace.event_count; ++i)
+            assert(trace.events[i].opcode != NP2AUDIO86_TRACE_OPNA_CSM);
+    }
     np2audio86_guest_host_trace_detach();
 
     /* Plain-board boundaries: no ADPCM, neutral joystick, ROM rejection,
@@ -480,25 +838,42 @@ int main(void)
     static uint8_t pcm_bytes[65536];
     static np2audio86_guest_timer_trace_t timers[4096];
     static np2audio86_guest_io_trace_t io[16384];
+    static np2audio86_guest_event_t events2[4096];
+    static np2audio86_guest_data_run_t runs2[4096];
+    static uint8_t pcm_bytes2[65536];
+    static np2audio86_guest_timer_trace_t timers2[4096];
+    static np2audio86_guest_io_trace_t io2[16384];
     static uint8_t serialized[200000];
     np2audio86_guest_trace_t trace = {
         events, 4096, 0, runs, 4096, 0, pcm_bytes, sizeof(pcm_bytes), 0,
         timers, 4096, 0, io, 16384, 0
     };
     np2audio86_guest_state_snapshot_t snapshot;
+    np2audio86_guest_state_snapshot_t snapshot2;
+    np2audio86_guest_trace_t trace2;
     size_t program_size;
     size_t length;
 
     memset(mem, 0, sizeof(mem));
+    memset(irq_levels, 0, sizeof(irq_levels));
+    pic_set_transitions = 0;
+    pic_reset_transitions = 0;
     memset(&np2cfg, 0, sizeof(np2cfg));
     np2cfg.snd86opt = 0xd1;
     pccore.baseclock = 2457600u; pccore.multiple = 20u;
     pccore.realclock = 49152000u; pccore.sound = SOUNDID_PC_9801_86;
+    pccore.cpumode = CPUMODE_8MHZ;
     np2audio86_guest_host_set_clock(pccore.baseclock, pccore.multiple);
-    np2audio86_guest_host_set_timer_hooks(NULL, NULL, irq_hook);
+    np2audio86_guest_host_set_cpumode(pccore.cpumode);
+    np2audio86_guest_host_set_cpu_position_fn(production_cpu_position);
+    np2audio86_guest_host_set_timer_hooks(guest_event_schedule,
+                                          guest_event_cancel,
+                                          guest_event_iswork, irq_hook);
     np2audio86_guest_host_trace_attach(&trace);
     iocore_create();
     assert(iocore_build() == SUCCESS);
+    nevent_allreset();
+    pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
     program_size = build_guest_program();
@@ -512,6 +887,11 @@ int main(void)
     np2audio86_guest_host_snapshot(&snapshot);
     assert(mem[0x8000] == 0x55u);
     assert(mem[0x8001] == 0 && mem[0x8002] == 0);
+    assert(mem[0x8009] == 0xffu && mem[0x800a] == 0xffu);
+    assert(mem[0x800b] == 0x5au && mem[0x800c] == 0xffu &&
+           mem[0x800d] == 0xffu);
+    assert((mem[0x800e] & 0x03u) != 0u);
+    assert(mem[0x800f] == 0u && mem[0x8010] == 0u);
     assert(mem[0x8006] == 0 && mem[0x8007] == 0);
     assert(trace.pcm_count == 8u);
     assert(trace.data_run_count >= 1u);
@@ -536,17 +916,64 @@ int main(void)
     assert(np2audio86_guest_host_state_size() < 2048u);
     assert(!np2audio86_guest_host_failed());
 
+    /* Consumer-independence pair: the first run's records are available to
+     * an observing consumer as each mutation publishes them; the second run
+     * accumulates its records until completion.  Domain-G state and every
+     * canonical publication must compare exactly. */
+    np2audio86_guest_host_trace_detach();
+    board86_unbind();
+    np2audio86_guest_host_test_seed(0u, 0u);
+    memset(mem, 0, sizeof(mem));
+    memset(irq_levels, 0, sizeof(irq_levels));
+    nevent_allreset();
+    pic_reset(&np2cfg);
+    board86_reset(&np2cfg, FALSE);
+    board86_bind();
+    trace2 = (np2audio86_guest_trace_t){
+        events2, 4096, 0, runs2, 4096, 0, pcm_bytes2, sizeof(pcm_bytes2), 0,
+        timers2, 4096, 0, io2, 16384, 0
+    };
+    np2audio86_guest_host_trace_attach(&trace2);
+    assert(run_program(build_guest_program()));
+    board86_reset(&np2cfg, FALSE);
+    np2audio86_guest_audio_sync();
+    np2audio86_guest_host_flush_data_run();
+    np2audio86_guest_host_snapshot(&snapshot2);
+    assert(trace.io_count == trace2.io_count &&
+           trace.event_count == trace2.event_count &&
+           trace.pcm_count == trace2.pcm_count &&
+           trace.data_run_count == trace2.data_run_count &&
+           trace.timer_count == trace2.timer_count);
+    assert(memcmp(trace.io, trace2.io,
+                  trace.io_count * sizeof(trace.io[0])) == 0);
+    assert(memcmp(trace.events, trace2.events,
+                  trace.event_count * sizeof(trace.events[0])) == 0);
+    assert(memcmp(trace.pcm_bytes, trace2.pcm_bytes, trace.pcm_count) == 0);
+    assert(memcmp(trace.data_runs, trace2.data_runs,
+                  trace.data_run_count * sizeof(trace.data_runs[0])) == 0);
+    assert(memcmp(trace.timers, trace2.timers,
+                  trace.timer_count * sizeof(trace.timers[0])) == 0);
+    assert(memcmp(&snapshot, &snapshot2, sizeof(snapshot)) == 0);
+    np2audio86_guest_host_trace_detach();
+    printf("AUDIO86_GUEST_CONSUMER_INDEPENDENCE=PASS\n");
+
     length = serialize_io(&trace, serialized);
     print_digest("GUEST_IO", serialized, length);
+    printf("GUEST_IO_SEMANTIC_COUNT=%zu\nGUEST_IO_SERIALIZED_BYTES=%zu\n", trace.io_count, length);
     length = serialize_events(&trace, serialized);
     print_digest("AUDIO_EVENTS", serialized, length);
+    printf("AUDIO_EVENTS_SEMANTIC_COUNT=%zu\nAUDIO_EVENTS_SERIALIZED_BYTES=%zu\n", trace.event_count, length);
     print_digest("PCM86_BYTES", trace.pcm_bytes, trace.pcm_count);
+    printf("PCM86_BYTES_PAYLOAD_BYTES=%zu\nPCM86_BYTES_SERIALIZED_BYTES=%zu\n", trace.pcm_count, trace.pcm_count);
     length = serialize_runs(&trace, serialized);
     print_digest("PCM86_DATA_RUNS", serialized, length);
+    printf("PCM86_DATA_RUNS_SEMANTIC_COUNT=%zu\nPCM86_DATA_RUNS_PAYLOAD_BYTES=%zu\nPCM86_DATA_RUNS_SERIALIZED_BYTES=%zu\n", trace.data_run_count, trace.pcm_count, length);
     length = serialize_timers(&trace, serialized);
     print_digest("TIMER_PIC", serialized, length);
+    printf("TIMER_PIC_SEMANTIC_COUNT=%zu\nTIMER_PIC_SERIALIZED_BYTES=%zu\n", trace.timer_count, length);
     length = serialize_state(&snapshot, serialized);
     print_digest("FINAL_G_STATE", serialized, length);
+    printf("FINAL_G_STATE_SEMANTIC_COUNT=1\nFINAL_G_STATE_SERIALIZED_BYTES=%zu\n", length);
     run_boundary_tests();
     printf("NP2AUDIO86_GUEST_STATE_SIZE=%zu\n", np2audio86_guest_host_state_size());
     printf("AUDIO86_GUEST_REAL_IO_PATH=PASS\n");

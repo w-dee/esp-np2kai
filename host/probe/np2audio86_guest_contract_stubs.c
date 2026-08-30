@@ -7,9 +7,21 @@
  */
 #include <compiler.h>
 #include <pccore.h>
+#include <cpucore.h>
 #include <io/iocore.h>
 #include <cbus/cbuscore.h>
 #include <np2audio86_guest_adapter.h>
+
+_NEVENT g_nevent;
+I286CORE i286core;
+PCCORE pccore;
+void nevent_set(NEVENTID id, SINT32 clock, NEVENTCB proc, NEVENTPOSITION absolute) {
+    (void)id; (void)clock; (void)proc; (void)absolute;
+}
+void nevent_reset(NEVENTID id) { (void)id; }
+BOOL nevent_iswork(NEVENTID id) { (void)id; return FALSE; }
+void pic_setirq(REG8 irq) { (void)irq; }
+void pic_resetirq(REG8 irq) { (void)irq; }
 
 void np2audio86_guest_opna_write_address_low(uint8_t value) { (void)value; }
 void np2audio86_guest_opna_write_data_low(uint8_t value) { (void)value; }
@@ -44,6 +56,18 @@ void np2audio86_guest_soundrom_load(uint32_t address, const char *name) {
     (void)name;
 }
 void np2audio86_guest_audio_sync(void) {}
+void np2audio86_guest_host_set_cpu_position_fn(np2audio86_guest_cpu_position_fn fn) {
+    (void)fn;
+}
+void np2audio86_guest_host_set_cpumode(uint32_t cpumode) { (void)cpumode; }
+void np2audio86_guest_host_set_timer_hooks(
+    np2audio86_guest_timer_schedule_fn schedule,
+    np2audio86_guest_timer_cancel_fn cancel,
+    np2audio86_guest_timer_iswork_fn iswork,
+    np2audio86_guest_irq_fn irq) {
+    (void)schedule; (void)cancel; (void)iswork; (void)irq;
+}
+void np2audio86_guest_host_timer_dispatch(uint8_t timer) { (void)timer; }
 void np2audio86_guest_host_record_io(uint16_t port, uint8_t direction,
                                      uint8_t value, uint8_t result) {
     (void)port;

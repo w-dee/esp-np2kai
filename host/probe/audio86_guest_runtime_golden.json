@@ -1,37 +1,50 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "clock_hz": 49152000,
   "state_size_max": 2048,
   "traces": {
     "GUEST_IO": {
-      "count": 984,
-      "crc32": "dab35aaa",
-      "sha256": "7d539de70bca46f920045d3141247eb8a841dea4739c2f2321331eba856d1b15"
+      "count": 1416,
+      "crc32": "6be759ce",
+      "sha256": "070c5b5aaed07e325fc79393b0f8eec6063ec58d5f576af8b83370ed64f09ffa",
+      "semantic_count": 59,
+      "serialized_bytes": 1416
     },
     "AUDIO_EVENTS": {
-      "count": 240,
-      "crc32": "6604b3f5",
-      "sha256": "b3c4eb7e2434bf627ad5c367b218762fe09994db27abf7d7d33bdf21e952f581"
+      "count": 432,
+      "crc32": "3b57b261",
+      "sha256": "b703aca526bed52f75ffce46e1370209bd74e2f09f6bc9fc0f37b9f4406a119c",
+      "semantic_count": 18,
+      "serialized_bytes": 432
     },
     "PCM86_BYTES": {
       "count": 8,
       "crc32": "cbf0b66e",
-      "sha256": "a51f32551aae346ed4948a0dba69cf406bdcfd3db57f30c2c9bf0f5d2945f2c4"
+      "sha256": "a51f32551aae346ed4948a0dba69cf406bdcfd3db57f30c2c9bf0f5d2945f2c4",
+      "payload_bytes": 8,
+      "serialized_bytes": 8
     },
     "PCM86_DATA_RUNS": {
       "count": 32,
-      "crc32": "99c71781",
-      "sha256": "5c012855cb2e344f81820d87e69b69ec623dda427ba27a67659e8dc68c5b71f8"
+      "crc32": "b5843125",
+      "sha256": "e0f01b24e16944090c6297afe48183c06116004df104f6f4ffeb81832809f3b9",
+      "semantic_count": 1,
+      "payload_bytes": 8,
+      "serialized_bytes": 32
     },
     "TIMER_PIC": {
-      "count": 48,
-      "crc32": "239efa5a",
-      "sha256": "88d6490beb72f244cb4d686880a47acd8fae6f2da264c1e6199062a956073e6d"
+      "count": 560,
+      "crc32": "540799b1",
+      "sha256": "d605283cabea5fdc2d86643a7ff669bb56c6404435245a2ba8b5e93a26e30488",
+      "semantic_count": 20,
+      "serialized_bytes": 560
     },
     "FINAL_G_STATE": {
-      "count": 70,
-      "crc32": "41e60aef",
-      "sha256": "4f9a6f693df2d3daa3b97b121855cf7bbb688c4f2e28e6563c4dc81e3a575bb6"
+      "count": 114,
+      "crc32": "8baa6a57",
+      "sha256": "b9f134cc6cf9bb1b84faefa601ba330ca3495fbba2857b6029888e05b52eb91a",
+      "semantic_count": 1,
+      "serialized_bytes": 114
     }
   }
 }

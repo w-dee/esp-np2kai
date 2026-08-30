@@ -25,9 +25,11 @@ enum {
 enum {
     NP2AUDIO86_TRACE_OPNA_REGISTER = 1,
     NP2AUDIO86_TRACE_OPNA_CSM = 2,
+    NP2AUDIO86_TRACE_PCM_CONTROL = 3,
     NP2AUDIO86_TRACE_RESET_BARRIER = 0x80000000u,
     NP2AUDIO86_TRACE_TIMER_A = 1,
     NP2AUDIO86_TRACE_TIMER_B = 2,
+    NP2AUDIO86_TRACE_PCM = 3,
 };
 
 typedef struct {
@@ -51,7 +53,10 @@ typedef struct {
     uint8_t status;
     uint8_t irq;
     uint8_t level;
-    uint8_t reserved;
+    uint8_t cause;
+    uint8_t pic_transition;
+    uint8_t pcm_irqflag;
+    uint8_t pcm_reqirq;
 } np2audio86_guest_timer_trace_t;
 
 typedef struct {
@@ -110,6 +115,16 @@ typedef struct {
     uint8_t pcm_irq;
     uint8_t pcm_reqirq;
     uint32_t pcm_rescue;
+    uint8_t pcm_irq_line;
+    uint8_t pcm_stepbit;
+    uint16_t pcm_stepmask;
+    uint32_t pcm_rateval;
+    uint64_t pcm_stepclock;
+    uint64_t pcm_lastclock;
+    uint64_t pcm_lastclockforwait;
+    uint32_t pcm_real_buffer;
+    uint32_t pcm_write_position;
+    uint32_t pcm_step_remainder;
     uint8_t soundrom_rejected;
     uint8_t bound;
     uint8_t reserved[2];
@@ -117,8 +132,10 @@ typedef struct {
 
 typedef uint32_t (*np2audio86_guest_cpu_position_fn)(void);
 typedef void (*np2audio86_guest_timer_schedule_fn)(uint8_t timer,
-                                                    uint64_t guest_cycle);
+                                                    uint64_t clock,
+                                                    uint8_t absolute);
 typedef void (*np2audio86_guest_timer_cancel_fn)(uint8_t timer);
+typedef uint8_t (*np2audio86_guest_timer_iswork_fn)(uint8_t timer);
 typedef void (*np2audio86_guest_irq_fn)(uint32_t irq, uint8_t level);
 
 void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace);
@@ -127,10 +144,13 @@ void np2audio86_guest_host_set_cpu_position_fn(
     np2audio86_guest_cpu_position_fn position);
 void np2audio86_guest_host_set_cpu_position(uint32_t position);
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple);
+void np2audio86_guest_host_set_cpumode(uint32_t cpumode);
 void np2audio86_guest_host_set_timer_hooks(
     np2audio86_guest_timer_schedule_fn schedule,
     np2audio86_guest_timer_cancel_fn cancel,
+    np2audio86_guest_timer_iswork_fn iswork,
     np2audio86_guest_irq_fn irq);
+void np2audio86_guest_host_timer_dispatch(uint8_t timer);
 void np2audio86_guest_host_timer_tick(uint8_t timer);
 void np2audio86_guest_host_flush_data_run(void);
 void np2audio86_guest_host_test_seed(uint64_t frame_timestamp,

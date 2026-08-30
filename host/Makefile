@@ -379,7 +379,8 @@ build-audio86-guest-runtime:
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
 		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_RUNTIME_BOARD)" \
 		"$(NP2_AUDIO86_RUNTIME_PCM)" "$(VENDOR_SRC)/cbus/cbuscore.c" \
-		"$(VENDOR_SRC)/io/iocore.c" "$(VENDOR_SRC)/common/lstarray.c" \
+		"$(VENDOR_SRC)/io/iocore.c" "$(VENDOR_SRC)/io/pic.c" \
+		"$(VENDOR_SRC)/nevent.c" "$(VENDOR_SRC)/common/lstarray.c" \
 		$(AUDIO86_RUNTIME_CPU_SOURCES) \
 		"$(NP2_CRC32_SOURCE)" "$(NP2_SHA256_SOURCE)" \
 		"$(NP2_AUDIO86_RUNTIME_SOURCE)" -Wl,--gc-sections -lm \

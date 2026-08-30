@@ -24,6 +24,7 @@ FIXTURE_MARKERS = (
     "AUDIO86_GUEST_PCM86_ACCOUNTING",
     "AUDIO86_GUEST_TIMESTAMPING",
     "AUDIO86_GUEST_EVENT_ORACLE",
+    "AUDIO86_GUEST_BOUNDARY_TESTS",
 )
 
 
@@ -41,13 +42,25 @@ def parse(output: str) -> dict[str, str]:
 
 def expected(golden: Path) -> dict[str, str]:
     document = json.loads(golden.read_text(encoding="utf-8"))
+    if document.get("schema_version") != 2:
+        raise RuntimeError("unsupported audio86 golden schema")
     traces = document.get("traces", {})
     result: dict[str, str] = {}
     for name in TRACE_NAMES:
         item = traces.get(name)
         if not isinstance(item, dict):
             raise RuntimeError(f"golden missing {name}")
-        result[f"{name}_COUNT"] = str(item["count"])
+        if name == "PCM86_BYTES":
+            result[f"{name}_PAYLOAD_BYTES"] = str(item["payload_bytes"])
+            result[f"{name}_SERIALIZED_BYTES"] = str(item["serialized_bytes"])
+        elif name == "PCM86_DATA_RUNS":
+            result[f"{name}_SEMANTIC_COUNT"] = str(item["semantic_count"])
+            result[f"{name}_PAYLOAD_BYTES"] = str(item["payload_bytes"])
+            result[f"{name}_SERIALIZED_BYTES"] = str(item["serialized_bytes"])
+        else:
+            result[f"{name}_SEMANTIC_COUNT"] = str(item["semantic_count"])
+            result[f"{name}_SERIALIZED_BYTES"] = str(item["serialized_bytes"])
+        result[f"{name}_COUNT"] = str(item.get("count", item["serialized_bytes"]))
         result[f"{name}_CRC32"] = str(item["crc32"])
         result[f"{name}_SHA256"] = str(item["sha256"])
     return result

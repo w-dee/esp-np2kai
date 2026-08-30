@@ -7,8 +7,8 @@
       "pristine_path": "cbus/board86.c",
       "pristine_sha256": "c2db5b7f724ac3c4042830b06179a77839d46d74e3ba51f5fd7a3ad5f751b842",
       "patch_path": "0001-board86-guest-adapter.patch",
-      "patch_sha256": "45cf0e98a2d6514e7989036a9fce19954d9fac8736766f490f8b61edfdbdb17e",
-      "patched_sha256": "0866b49525989d5adc0e1fbc94239b4f7f5faf9a398b8db1d3a88e0601f3df75"
+      "patch_sha256": "0476bae4b898ede20b508c0637ac3cd710bbe966010dd9d07b763f0dc9faa6d9",
+      "patched_sha256": "a5e45d4c9b590cf1619675588df78244beb27f69790504f7f854148ec0265ada"
     },
     {
       "logical_source": "cbus/pcm86io.c",
