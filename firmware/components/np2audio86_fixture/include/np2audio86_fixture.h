@@ -80,10 +80,25 @@ struct np2audio86_fixture_result {
 /* 86H.3 input-side asynchronous transport.  These types are deliberately
  * independent from the E1B SynthEvent ABI: PCM86 data runs need a bounded
  * byte transport and a 128-record event queue. */
+#ifndef NP2_AUDIO86_ASYNC_EVENT_CAPACITY
 #define NP2_AUDIO86_ASYNC_EVENT_CAPACITY 128U
+#endif
+#ifndef NP2_AUDIO86_ASYNC_BYTE_CAPACITY
 #define NP2_AUDIO86_ASYNC_BYTE_CAPACITY 65536U
+#endif
+#ifndef NP2_AUDIO86_ASYNC_MAX_DATA_RUN
 #define NP2_AUDIO86_ASYNC_MAX_DATA_RUN 32768U
+#endif
 #define NP2_AUDIO86_ASYNC_MAX_EVENTS 333U
+
+#if (NP2_AUDIO86_ASYNC_EVENT_CAPACITY == 0U) || \
+    ((NP2_AUDIO86_ASYNC_EVENT_CAPACITY & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)) != 0U)
+#error "NP2_AUDIO86_ASYNC_EVENT_CAPACITY must be a non-zero power of two"
+#endif
+#if (NP2_AUDIO86_ASYNC_BYTE_CAPACITY == 0U) || \
+    ((NP2_AUDIO86_ASYNC_BYTE_CAPACITY & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)) != 0U)
+#error "NP2_AUDIO86_ASYNC_BYTE_CAPACITY must be a non-zero power of two"
+#endif
 
 enum np2audio86_event_opcode {
     NP2_AUDIO86_EVENT_FM_KEY = 1U,
@@ -165,9 +180,11 @@ struct np2audio86_event_ring {
     NP2_AUDIO86_ASYNC_ATOMIC(uint32_t) tail;
 };
 
+#if NP2_AUDIO86_ASYNC_EVENT_CAPACITY == 128U
 NP2_AUDIO86_STATIC_ASSERT(
     sizeof(((struct np2audio86_event_ring *)0)->slots) == 3072U,
     "86H.3 event payload storage must remain 3072 bytes");
+#endif
 
 struct np2audio86_byte_ring {
     uint8_t bytes[NP2_AUDIO86_ASYNC_BYTE_CAPACITY];
@@ -175,9 +192,11 @@ struct np2audio86_byte_ring {
     NP2_AUDIO86_ASYNC_ATOMIC(uint32_t) tail;
 };
 
+#if NP2_AUDIO86_ASYNC_BYTE_CAPACITY == 65536U
 NP2_AUDIO86_STATIC_ASSERT(
     sizeof(((struct np2audio86_byte_ring *)0)->bytes) == 65536U,
     "86H.3 byte payload storage must remain 65536 bytes");
+#endif
 
 void np2audio86_event_ring_init(struct np2audio86_event_ring *ring);
 int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,

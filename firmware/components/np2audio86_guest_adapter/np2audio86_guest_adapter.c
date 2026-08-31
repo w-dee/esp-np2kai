@@ -461,6 +461,12 @@ void np2audio86_guest_host_set_cpu_position_fn(np2audio86_guest_cpu_position_fn 
 { g_cpu_position = fn; }
 void np2audio86_guest_host_set_cpu_position(uint32_t position)
 { g_manual_cpu_position = position; }
+#if defined(NP2AUDIO86_GUEST_TEST)
+uint32_t np2audio86_guest_host_current_cpu_position(void)
+{ return current_cpu_position(); }
+int np2audio86_guest_host_sink_is_bound(void)
+{ return g_sink != NULL; }
+#endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple)
 {
     if ((uint64_t)baseclock * multiple != 49152000u) {

@@ -161,6 +161,12 @@ void np2audio86_guest_sink_unbind(void);
 void np2audio86_guest_host_set_cpu_position_fn(
     np2audio86_guest_cpu_position_fn position);
 void np2audio86_guest_host_set_cpu_position(uint32_t position);
+#if defined(NP2AUDIO86_GUEST_TEST)
+/* Host-only observation seam for transport-blocking proofs.  Production
+ * callers neither build nor expose this test instrumentation. */
+uint32_t np2audio86_guest_host_current_cpu_position(void);
+int np2audio86_guest_host_sink_is_bound(void);
+#endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple);
 void np2audio86_guest_host_set_cpumode(uint32_t cpumode);
 void np2audio86_guest_host_set_timer_hooks(

@@ -99,6 +99,164 @@ struct async_context {
     uint64_t resets_acknowledged;
 };
 
+static void fail(struct async_context *context, enum async_error error);
+
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+/* The 86R.4B driver includes this host-only source and controls these gates
+ * from an outer coordinator thread.  They deliberately pause only scheduling:
+ * all guest semantics and the production transport implementation stay the
+ * same. */
+struct async_hardening_live_control {
+    _Atomic bool enabled;
+    _Atomic bool hold_worker;
+    _Atomic bool worker_gate_reached;
+    _Atomic bool event_full_claimed;
+    _Atomic bool event_full_reached;
+    _Atomic bool release_worker;
+    _Atomic bool hold_reset;
+    _Atomic bool reset_gate_reached;
+    _Atomic bool release_reset;
+    _Atomic bool inject_fatal;
+    _Atomic bool abort;
+    _Atomic bool pause_after_event_full_claim;
+    _Atomic bool event_full_claim_pause_reached;
+    _Atomic bool release_event_full_metadata;
+    _Atomic bool position_changed;
+    _Atomic uint32_t event_occupancy;
+    _Atomic uint32_t event_tail;
+    _Atomic uint64_t blocked_sequence;
+    _Atomic uint32_t position_before;
+    _Atomic uint32_t position_during;
+    _Atomic uint32_t byte_wrap_count;
+    uint32_t byte_empty_offset;
+};
+
+static struct async_hardening_live_control g_async_hardening_live;
+
+static int hardening_enabled(void)
+{
+    return atomic_load_explicit(&g_async_hardening_live.enabled,
+                                memory_order_acquire);
+}
+
+static int hardening_abort_requested(const struct async_context *context)
+{
+    (void)context;
+    return atomic_load_explicit(&g_async_hardening_live.abort,
+                                memory_order_acquire) ||
+           atomic_load_explicit(&g_async_hardening_live.inject_fatal,
+                                memory_order_acquire);
+}
+
+static int hardening_wait_worker(struct async_context *context)
+{
+    if (!hardening_enabled() ||
+        !atomic_load_explicit(&g_async_hardening_live.hold_worker,
+                              memory_order_acquire)) {
+        return 0;
+    }
+    atomic_store_explicit(&g_async_hardening_live.worker_gate_reached, true,
+                          memory_order_release);
+    for (;;) {
+        if (hardening_abort_requested(context)) {
+            fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=worker\n");
+            fail(context, ASYNC_ERROR_STOP);
+            return -1;
+        }
+        if (atomic_load_explicit(&g_async_hardening_live.release_worker,
+                                 memory_order_acquire)) return 0;
+        sched_yield();
+    }
+}
+
+static int hardening_hold_event_full(struct async_context *context,
+                                     const struct np2audio86_event *event)
+{
+    bool expected = false;
+    uint32_t before;
+    if (!hardening_enabled() || event == NULL ||
+        !atomic_load_explicit(&g_async_hardening_live.hold_worker,
+                              memory_order_acquire) ||
+        !atomic_compare_exchange_strong_explicit(
+            &g_async_hardening_live.event_full_claimed, &expected, true,
+            memory_order_acq_rel, memory_order_acquire)) {
+        return 0;
+    }
+    if (atomic_load_explicit(&g_async_hardening_live.pause_after_event_full_claim,
+                             memory_order_acquire)) {
+        atomic_store_explicit(
+            &g_async_hardening_live.event_full_claim_pause_reached, true,
+            memory_order_release);
+        for (;;) {
+            if (hardening_abort_requested(context)) {
+                fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=claim\n");
+                fail(context, ASYNC_ERROR_STOP);
+                return -1;
+            }
+            if (atomic_load_explicit(
+                &g_async_hardening_live.release_event_full_metadata,
+                memory_order_acquire)) break;
+            sched_yield();
+        }
+    }
+    before = np2audio86_guest_host_current_cpu_position();
+    atomic_store_explicit(&g_async_hardening_live.event_occupancy,
+                          np2audio86_event_ring_occupancy(&context->events),
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.event_tail,
+                          atomic_load_explicit(&context->events.tail,
+                                               memory_order_acquire),
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.blocked_sequence,
+                          event->sequence, memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.position_before, before,
+                          memory_order_release);
+    /* This final release publication authorizes the coordinator to consume
+     * the complete snapshot above.  Claimed means only that this producer
+     * owns the one-shot gate; it never authorizes a metadata read. */
+    atomic_store_explicit(&g_async_hardening_live.event_full_reached, true,
+                          memory_order_release);
+    for (;;) {
+        const uint32_t now = np2audio86_guest_host_current_cpu_position();
+        atomic_store_explicit(&g_async_hardening_live.position_during, now,
+                              memory_order_release);
+        if (now != before) {
+            atomic_store_explicit(&g_async_hardening_live.position_changed,
+                                  true, memory_order_release);
+        }
+        if (hardening_abort_requested(context)) {
+            fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=event-full\n");
+            fail(context, ASYNC_ERROR_STOP);
+            return -1;
+        }
+        if (atomic_load_explicit(&g_async_hardening_live.release_worker,
+                                 memory_order_acquire)) return 0;
+        sched_yield();
+    }
+}
+
+static int hardening_wait_reset(struct async_context *context)
+{
+    if (!hardening_enabled() ||
+        !atomic_load_explicit(&g_async_hardening_live.hold_reset,
+                              memory_order_acquire)) {
+        return 0;
+    }
+    atomic_store_explicit(&g_async_hardening_live.reset_gate_reached, true,
+                          memory_order_release);
+    for (;;) {
+        if (hardening_abort_requested(context)) {
+            fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=reset\n");
+            fail(context, ASYNC_ERROR_STOP);
+            return -1;
+        }
+        if (atomic_load_explicit(&g_async_hardening_live.release_reset,
+                                 memory_order_acquire)) return 0;
+        sched_yield();
+    }
+}
+#endif
+
 static void fail(struct async_context *context, enum async_error error)
 {
     int expected = ASYNC_ERROR_NONE;
@@ -139,6 +297,11 @@ static int enqueue_event(struct async_context *context,
             fail(context, ASYNC_ERROR_TRANSPORT);
             return -1;
         }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_hold_event_full(context, event) != 0) {
+            return -1;
+        }
+#endif
         if (wait_retry(context) != 0) {
             return -1;
         }
@@ -148,8 +311,23 @@ static int enqueue_event(struct async_context *context,
 static int enqueue_byte(struct async_context *context, uint8_t value)
 {
     for (;;) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        uint32_t head_before;
+        if (hardening_enabled()) {
+            head_before = atomic_load_explicit(&context->bytes.head,
+                                               memory_order_relaxed);
+        }
+#endif
         const int status = np2audio86_byte_ring_push(&context->bytes, &value, 1U);
         if (status == NP2_AUDIO86_TRANSPORT_OK) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+            if (hardening_enabled() &&
+                (head_before & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)) ==
+                    NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U) {
+                atomic_fetch_add_explicit(&g_async_hardening_live.byte_wrap_count,
+                                          1U, memory_order_relaxed);
+            }
+#endif
             return 0;
         }
         if (status != NP2_AUDIO86_TRANSPORT_FULL) {
@@ -512,6 +690,11 @@ static void *worker_thread(void *opaque)
         return NULL;
     }
     atomic_store_explicit(&context->worker_started, true, memory_order_release);
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_wait_worker(context) != 0) {
+        return NULL;
+    }
+#endif
     for (;;) {
         const struct np2audio86_event *event = NULL;
         uint64_t event_frame;
@@ -599,6 +782,13 @@ static int wait_for(const _Atomic bool *value)
 {
     unsigned i;
     for (i = 0U; i < 1000000U; ++i) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_enabled() &&
+            atomic_load_explicit(&g_async_hardening_live.abort,
+                                 memory_order_acquire)) {
+            return -1;
+        }
+#endif
         if (atomic_load_explicit(value, memory_order_acquire)) {
             return 0;
         }
@@ -653,6 +843,14 @@ int main(void)
     memset(&context, 0, sizeof(context));
     np2audio86_event_ring_init(&context.events);
     np2audio86_byte_ring_init(&context.bytes);
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_enabled() &&
+        g_async_hardening_live.byte_empty_offset != 0U) {
+        const uint32_t offset = g_async_hardening_live.byte_empty_offset;
+        atomic_store_explicit(&context.bytes.head, offset, memory_order_relaxed);
+        atomic_store_explicit(&context.bytes.tail, offset, memory_order_relaxed);
+    }
+#endif
     atomic_init(&context.first_error, ASYNC_ERROR_NONE);
     atomic_init(&context.stop, false);
     atomic_init(&context.producer_started, false);
@@ -685,6 +883,11 @@ int main(void)
         goto done;
     }
     reset_blocked = 1;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_wait_reset(&context) != 0) {
+        goto done;
+    }
+#endif
     atomic_store_explicit(&context.reset_gate_release, true, memory_order_release);
 
 done:
@@ -728,6 +931,7 @@ done:
                               memory_order_acquire)) {
         return 1;
     }
+#if !defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
     printf("AUDIO86_GUEST_ASYNC_LIVE_I286_PRODUCER=PASS\n");
     printf("AUDIO86_GUEST_ASYNC_EVENT_TRANSPORT=PASS\n");
     printf("AUDIO86_GUEST_ASYNC_PCM_BYTES=PASS\n");
@@ -797,5 +1001,6 @@ done:
     printf("FM_COVERAGE=EXERCISED\nPSG_COVERAGE=EXERCISED\n"
            "RHYTHM_COVERAGE=EXERCISED\nPCM86_COVERAGE=NOT_EXERCISED\n");
     printf("AUDIO86_GUEST_ASYNC_RESULT=PASS\n");
+#endif
     return 0;
 }
