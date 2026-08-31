@@ -1019,6 +1019,18 @@ int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,
         return NP2_AUDIO86_TRANSPORT_FULL;
     }
     ring->slots[head & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)] = *event;
+#if defined(NP2AUDIO86_GUEST_TEST) && \
+    defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (np2audio86_guest_async_hardening_cutpoint(
+            NP2_AUDIO86_ASYNC_CP_EVENT_SLOT_BEFORE_HEAD, head, tail,
+            0U, 0U, event->sequence) != 0) {
+        return NP2_AUDIO86_TRANSPORT_INVARIANT;
+    }
+    if ((head & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)) ==
+        NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U) {
+        np2audio86_guest_async_hardening_event_wrap(head);
+    }
+#endif
     atomic_store_explicit(&ring->head, head + 1U, memory_order_release);
     return NP2_AUDIO86_TRANSPORT_OK;
 }
@@ -1147,6 +1159,14 @@ int np2audio86_byte_ring_push(struct np2audio86_byte_ring *ring,
     if (count > first) {
         memcpy(ring->bytes, bytes + first, count - first);
     }
+#if defined(NP2AUDIO86_GUEST_TEST) && \
+    defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (np2audio86_guest_async_hardening_cutpoint(
+            NP2_AUDIO86_ASYNC_CP_BYTE_COPY_BEFORE_HEAD, 0U, 0U, head, tail,
+            (uint64_t)count) != 0) {
+        return NP2_AUDIO86_TRANSPORT_INVARIANT;
+    }
+#endif
     atomic_store_explicit(&ring->head, head + (uint32_t)count,
                           memory_order_release);
     return NP2_AUDIO86_TRANSPORT_OK;

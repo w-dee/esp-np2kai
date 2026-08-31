@@ -100,6 +100,8 @@ struct async_context {
 };
 
 static void fail(struct async_context *context, enum async_error error);
+static int failed(const struct async_context *context);
+static int stopped(const struct async_context *context);
 
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
 /* The 86R.4B driver includes this host-only source and controls these gates
@@ -112,12 +114,19 @@ struct async_hardening_live_control {
     _Atomic bool worker_gate_reached;
     _Atomic bool event_full_claimed;
     _Atomic bool event_full_reached;
+    _Atomic bool event_full_sample_ready;
     _Atomic bool release_worker;
     _Atomic bool hold_reset;
     _Atomic bool reset_gate_reached;
     _Atomic bool release_reset;
     _Atomic bool inject_fatal;
     _Atomic bool abort;
+    _Atomic bool worker_fatal_requested;
+    _Atomic bool producer_fatal_requested;
+    _Atomic bool hold_producer;
+    _Atomic bool producer_gate_reached;
+    _Atomic bool release_producer;
+    _Atomic bool worker_waiting_for_action;
     _Atomic bool pause_after_event_full_claim;
     _Atomic bool event_full_claim_pause_reached;
     _Atomic bool release_event_full_metadata;
@@ -128,6 +137,25 @@ struct async_hardening_live_control {
     _Atomic uint32_t position_before;
     _Atomic uint32_t position_during;
     _Atomic uint32_t byte_wrap_count;
+    _Atomic uint32_t event_wrap_count;
+    _Atomic uint32_t cutpoint_target;
+    _Atomic bool cutpoint_release;
+    _Atomic bool cutpoint_fatal;
+    _Atomic uint32_t cutpoint_entered[NP2_AUDIO86_ASYNC_CP_COUNT];
+    _Atomic uint32_t cutpoint_event_head;
+    _Atomic uint32_t cutpoint_event_tail;
+    _Atomic uint32_t cutpoint_byte_head;
+    _Atomic uint32_t cutpoint_byte_tail;
+    _Atomic uint64_t cutpoint_auxiliary;
+    _Atomic uint32_t schedule_mode;
+    _Atomic uint32_t schedule_turn;
+    _Atomic uint32_t schedule_handoffs;
+    _Atomic int first_error_seen;
+    _Atomic bool oracle_ready;
+    uint8_t oracle_worker_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t oracle_pre_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t oracle_full_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t oracle_byte_sha[NP2_SHA256_DIGEST_SIZE];
     uint32_t byte_empty_offset;
 };
 
@@ -144,8 +172,156 @@ static int hardening_abort_requested(const struct async_context *context)
     (void)context;
     return atomic_load_explicit(&g_async_hardening_live.abort,
                                 memory_order_acquire) ||
-           atomic_load_explicit(&g_async_hardening_live.inject_fatal,
+           atomic_load_explicit(&g_async_hardening_live.cutpoint_fatal,
                                 memory_order_acquire);
+}
+
+static int hardening_worker_fatal_requested(void)
+{
+    return hardening_enabled() &&
+           atomic_load_explicit(&g_async_hardening_live.worker_fatal_requested,
+                                memory_order_acquire);
+}
+
+static int hardening_producer_fatal_requested(void)
+{
+    return hardening_enabled() &&
+           (atomic_load_explicit(&g_async_hardening_live.producer_fatal_requested,
+                                 memory_order_acquire) ||
+            atomic_load_explicit(&g_async_hardening_live.inject_fatal,
+                                 memory_order_acquire));
+}
+
+static int hardening_cutpoint(struct async_context *context,
+                              enum np2audio86_async_hardening_cutpoint point,
+                              uint64_t auxiliary)
+{
+    uint32_t event_head;
+    uint32_t event_tail;
+    uint32_t byte_head;
+    uint32_t byte_tail;
+    if (!hardening_enabled()) {
+        return 0;
+    }
+    event_head = atomic_load_explicit(&context->events.head, memory_order_acquire);
+    event_tail = atomic_load_explicit(&context->events.tail, memory_order_acquire);
+    byte_head = atomic_load_explicit(&context->bytes.head, memory_order_acquire);
+    byte_tail = atomic_load_explicit(&context->bytes.tail, memory_order_acquire);
+    if (np2audio86_guest_async_hardening_cutpoint(
+            point, event_head, event_tail, byte_head, byte_tail, auxiliary) != 0) {
+        fail(context, ASYNC_ERROR_STOP);
+        return -1;
+    }
+    return 0;
+}
+
+int np2audio86_guest_async_hardening_cutpoint(
+    enum np2audio86_async_hardening_cutpoint point,
+    uint32_t event_head, uint32_t event_tail,
+    uint32_t byte_head, uint32_t byte_tail, uint64_t auxiliary)
+{
+    if (!hardening_enabled() ||
+        atomic_load_explicit(&g_async_hardening_live.cutpoint_target,
+                             memory_order_acquire) != (uint32_t)point) {
+        return 0;
+    }
+    atomic_fetch_add_explicit(&g_async_hardening_live.cutpoint_entered[point], 1U,
+                              memory_order_acq_rel);
+    atomic_store_explicit(&g_async_hardening_live.cutpoint_event_head, event_head,
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.cutpoint_event_tail, event_tail,
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.cutpoint_byte_head, byte_head,
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.cutpoint_byte_tail, byte_tail,
+                          memory_order_release);
+    atomic_store_explicit(&g_async_hardening_live.cutpoint_auxiliary, auxiliary,
+                          memory_order_release);
+    for (;;) {
+        if (hardening_abort_requested(NULL) ||
+            atomic_load_explicit(&g_async_hardening_live.cutpoint_fatal,
+                                 memory_order_acquire)) {
+            return -1;
+        }
+        if (atomic_load_explicit(&g_async_hardening_live.cutpoint_release,
+                                 memory_order_acquire)) {
+            return 0;
+        }
+        sched_yield();
+    }
+}
+
+void np2audio86_guest_async_hardening_event_wrap(uint32_t head_before)
+{
+    (void)head_before;
+    if (hardening_enabled()) {
+        atomic_fetch_add_explicit(&g_async_hardening_live.event_wrap_count, 1U,
+                                  memory_order_relaxed);
+    }
+}
+
+static int hardening_schedule_producer(struct async_context *context)
+{
+    const uint32_t mode = atomic_load_explicit(&g_async_hardening_live.schedule_mode,
+                                               memory_order_acquire);
+    unsigned i;
+    if (!hardening_enabled() || mode == 0U) {
+        return 0;
+    }
+    if (mode == 2U) {
+        for (i = 0U; i < 16U; ++i) sched_yield();
+    }
+    if (mode != 3U) {
+        return 0;
+    }
+    for (i = 0U; i < 64U; ++i) {
+        if (atomic_load_explicit(&g_async_hardening_live.schedule_turn,
+                                 memory_order_acquire) == 0U) {
+            return 0;
+        }
+        if (failed(context) || stopped(context) || hardening_abort_requested(context) ||
+            hardening_producer_fatal_requested()) {
+            fail(context, ASYNC_ERROR_DISPATCH);
+            return -1;
+        }
+        sched_yield();
+    }
+    /* Keep the mode deterministic and yield-heavy without allowing a test
+     * perturbation baton to become a liveness dependency.  Real handoffs are
+     * separately counted by the worker and required by the outer test. */
+    return 0;
+}
+
+static void hardening_schedule_producer_published(void)
+{
+    if (hardening_enabled() &&
+        atomic_load_explicit(&g_async_hardening_live.schedule_mode,
+                             memory_order_acquire) == 3U) {
+        atomic_store_explicit(&g_async_hardening_live.schedule_turn, 1U,
+                              memory_order_release);
+    }
+}
+
+static void hardening_schedule_worker_before_poll(void)
+{
+    unsigned i;
+    if (hardening_enabled() &&
+        atomic_load_explicit(&g_async_hardening_live.schedule_mode,
+                             memory_order_acquire) == 1U) {
+        for (i = 0U; i < 16U; ++i) sched_yield();
+    }
+}
+
+static void hardening_schedule_worker_consumed(void)
+{
+    if (hardening_enabled() &&
+        atomic_load_explicit(&g_async_hardening_live.schedule_mode,
+                             memory_order_acquire) == 3U) {
+        atomic_store_explicit(&g_async_hardening_live.schedule_turn, 0U,
+                              memory_order_release);
+        atomic_fetch_add_explicit(&g_async_hardening_live.schedule_handoffs, 1U,
+                                  memory_order_relaxed);
+    }
 }
 
 static int hardening_wait_worker(struct async_context *context)
@@ -158,6 +334,13 @@ static int hardening_wait_worker(struct async_context *context)
     atomic_store_explicit(&g_async_hardening_live.worker_gate_reached, true,
                           memory_order_release);
     for (;;) {
+        if (failed(context)) {
+            return -1;
+        }
+        if (hardening_worker_fatal_requested()) {
+            fail(context, ASYNC_ERROR_RENDER);
+            return -1;
+        }
         if (hardening_abort_requested(context)) {
             fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=worker\n");
             fail(context, ASYNC_ERROR_STOP);
@@ -224,6 +407,15 @@ static int hardening_hold_event_full(struct async_context *context,
             atomic_store_explicit(&g_async_hardening_live.position_changed,
                                   true, memory_order_release);
         }
+        /* This separate release makes the blocked-state resample observable.
+         * The coordinator must not read position_during before this point. */
+        atomic_store_explicit(&g_async_hardening_live.event_full_sample_ready,
+                              true, memory_order_release);
+        if (hardening_producer_fatal_requested()) {
+            fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_FATAL=event-full\n");
+            fail(context, ASYNC_ERROR_DISPATCH);
+            return -1;
+        }
         if (hardening_abort_requested(context)) {
             fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=event-full\n");
             fail(context, ASYNC_ERROR_STOP);
@@ -245,6 +437,17 @@ static int hardening_wait_reset(struct async_context *context)
     atomic_store_explicit(&g_async_hardening_live.reset_gate_reached, true,
                           memory_order_release);
     for (;;) {
+        if (hardening_worker_fatal_requested()) {
+            /* Keep the coordinator at this gate until the worker's own
+             * wait_reset_gate() records RENDER.  Releasing the reset gate
+             * first would race the worker into an ordinary ACK path. */
+            while (atomic_load_explicit(&g_async_hardening_live.first_error_seen,
+                                        memory_order_acquire) ==
+                   ASYNC_ERROR_NONE) {
+                sched_yield();
+            }
+            return -1;
+        }
         if (hardening_abort_requested(context)) {
             fprintf(stderr, "AUDIO86_GUEST_ASYNC_HARDENING_GATE_ABORT=reset\n");
             fail(context, ASYNC_ERROR_STOP);
@@ -255,14 +458,47 @@ static int hardening_wait_reset(struct async_context *context)
         sched_yield();
     }
 }
+
+static int hardening_wait_producer(struct async_context *context)
+{
+    if (!hardening_enabled() ||
+        !atomic_load_explicit(&g_async_hardening_live.hold_producer,
+                              memory_order_acquire)) {
+        return 0;
+    }
+    atomic_store_explicit(&g_async_hardening_live.producer_gate_reached, true,
+                          memory_order_release);
+    for (;;) {
+        if (hardening_producer_fatal_requested()) {
+            fail(context, ASYNC_ERROR_DISPATCH);
+            return -1;
+        }
+        if (hardening_abort_requested(context)) {
+            fail(context, ASYNC_ERROR_STOP);
+            return -1;
+        }
+        if (atomic_load_explicit(&g_async_hardening_live.release_producer,
+                                 memory_order_acquire)) {
+            return 0;
+        }
+        sched_yield();
+    }
+}
 #endif
 
 static void fail(struct async_context *context, enum async_error error)
 {
     int expected = ASYNC_ERROR_NONE;
-    (void)atomic_compare_exchange_strong_explicit(
-        &context->first_error, &expected, error, memory_order_acq_rel,
-        memory_order_acquire);
+    if (atomic_compare_exchange_strong_explicit(
+            &context->first_error, &expected, error, memory_order_acq_rel,
+            memory_order_acquire)) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_enabled()) {
+            atomic_store_explicit(&g_async_hardening_live.first_error_seen, error,
+                                  memory_order_release);
+        }
+#endif
+    }
 }
 
 static int failed(const struct async_context *context)
@@ -379,9 +615,20 @@ static int publish_data_run(void *opaque, const np2audio86_guest_data_run_t *run
     event.sequence = run->sequence;
     event.opcode = NP2_AUDIO86_GUEST_TRANSPORT_DATA_RUN;
     event.payload = run->count;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_schedule_producer(context) != 0 ||
+        hardening_cutpoint(context,
+                           NP2_AUDIO86_ASYNC_CP_BYTE_HEAD_BEFORE_DATA_RUN,
+                           run->count) != 0) {
+        return -1;
+    }
+#endif
     if (enqueue_event(context, &event) != 0) {
         return -1;
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    hardening_schedule_producer_published();
+#endif
     ++context->producer_next_sequence;
     ++context->actions_published;
     ++context->data_runs_published;
@@ -408,9 +655,21 @@ static int publish_event(void *opaque, const np2audio86_guest_event_t *guest)
         atomic_store_explicit(&context->producer_observed_worker, true,
                               memory_order_release);
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_producer_fatal_requested()) {
+        fail(context, ASYNC_ERROR_DISPATCH);
+        return -1;
+    }
+    if (hardening_schedule_producer(context) != 0) {
+        return -1;
+    }
+#endif
     if (enqueue_event(context, &event) != 0) {
         return -1;
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    hardening_schedule_producer_published();
+#endif
     ++context->producer_next_sequence;
     ++context->actions_published;
     if (kind != NP2_AUDIO86_GUEST_ACTION_RESET) {
@@ -422,6 +681,15 @@ static int publish_event(void *opaque, const np2audio86_guest_event_t *guest)
     for (;;) {
         if (atomic_load_explicit(&context->reset_ack_plus_one,
                                  memory_order_acquire) == guest->sequence + 1U) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+            if (hardening_cutpoint(context,
+                                   NP2_AUDIO86_ASYNC_CP_ACK_BEFORE_PRODUCER_RESUME,
+                                   guest->sequence) != 0) {
+                atomic_store_explicit(&context->producer_reset_waiting, false,
+                                      memory_order_release);
+                return -1;
+            }
+#endif
             atomic_store_explicit(&context->producer_reset_waiting, false,
                                   memory_order_release);
             return 0;
@@ -514,6 +782,17 @@ static void print_digest(const char *name, const uint8_t *bytes, size_t count)
     putchar('\n');
 }
 
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+static void hardening_store_digest(uint8_t digest[NP2_SHA256_DIGEST_SIZE],
+                                   const uint8_t *bytes, size_t count)
+{
+    np2_sha256_context sha;
+    np2_sha256_init(&sha);
+    np2_sha256_update(&sha, bytes, count);
+    np2_sha256_final(&sha, digest);
+}
+#endif
+
 static int render_chunk(struct async_context *context, uint64_t frame,
                         size_t frames, uint8_t pre_reset)
 {
@@ -591,6 +870,12 @@ static int wait_reset_gate(struct async_context *context)
                           memory_order_release);
     while (!atomic_load_explicit(&context->reset_gate_release,
                                  memory_order_acquire)) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_worker_fatal_requested()) {
+            fail(context, ASYNC_ERROR_RENDER);
+            return -1;
+        }
+#endif
         if (wait_retry(context) != 0) {
             return -1;
         }
@@ -617,6 +902,11 @@ static int worker_apply_one(struct async_context *context,
     action.payload = event->payload;
     if (event->opcode == NP2_AUDIO86_GUEST_TRANSPORT_DATA_RUN) {
         if (event->payload == 0U || event->payload > NP2_AUDIO86_ASYNC_MAX_DATA_RUN ||
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+            hardening_cutpoint(context,
+                               NP2_AUDIO86_ASYNC_CP_DATA_RUN_BEFORE_BYTE_COPY,
+                               event->payload) != 0 ||
+#endif
             np2audio86_byte_ring_copy(&context->bytes, context->worker_run,
                                       event->payload) != NP2_AUDIO86_TRANSPORT_OK) {
             return -1;
@@ -641,6 +931,13 @@ static int worker_apply_one(struct async_context *context,
             if (*reset_seen || wait_reset_gate(context) != 0) {
                 return -1;
             }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+            if (hardening_cutpoint(context,
+                                   NP2_AUDIO86_ASYNC_CP_RESET_BEFORE_APPLY,
+                                   event->sequence) != 0) {
+                return -1;
+            }
+#endif
         }
     }
     context->result.apply[context->result.apply_count++] =
@@ -654,6 +951,13 @@ static int worker_apply_one(struct async_context *context,
         return -1;
     }
     if (action.kind == NP2_AUDIO86_GUEST_ACTION_DATA_RUN) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_cutpoint(context,
+                               NP2_AUDIO86_ASYNC_CP_BYTE_COPY_BEFORE_TAIL,
+                               data_count) != 0) {
+            return -1;
+        }
+#endif
         if (np2audio86_byte_ring_consume(&context->bytes, data_count) !=
             NP2_AUDIO86_TRANSPORT_OK) {
             return -1;
@@ -665,16 +969,32 @@ static int worker_apply_one(struct async_context *context,
     if (action.kind == NP2_AUDIO86_GUEST_ACTION_RESET) {
         *reset_seen = 1U;
         context->result.pre_reset_frame = action.frame_timestamp;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        if (hardening_cutpoint(context,
+                               NP2_AUDIO86_ASYNC_CP_RESET_AFTER_APPLY,
+                               action.sequence) != 0) {
+            return -1;
+        }
+#endif
         atomic_store_explicit(&context->reset_ack_plus_one,
                               action.sequence + 1U, memory_order_release);
         ++context->resets_acknowledged;
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_cutpoint(context, NP2_AUDIO86_ASYNC_CP_EVENT_BEFORE_TAIL,
+                           event->sequence) != 0) {
+        return -1;
+    }
+#endif
     if (np2audio86_event_ring_consume(&context->events) !=
         NP2_AUDIO86_TRANSPORT_OK) {
         return -1;
     }
     ++context->worker_next_sequence;
     ++context->actions_consumed;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    hardening_schedule_worker_consumed();
+#endif
     return 0;
 }
 
@@ -707,12 +1027,29 @@ static void *worker_thread(void *opaque)
         if (failed(context) || stopped(context)) {
             return NULL;
         }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+        hardening_schedule_worker_before_poll();
+#endif
         status = np2audio86_event_ring_peek(&context->events, &event);
         if (status == NP2_AUDIO86_TRANSPORT_EMPTY) {
             if (atomic_load_explicit(&context->producer_done,
                                      memory_order_acquire)) {
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+                if (hardening_cutpoint(
+                        context,
+                        NP2_AUDIO86_ASYNC_CP_PRODUCER_DONE_BEFORE_TAIL_RENDER,
+                        context->worker_next_sequence) != 0) {
+                    return NULL;
+                }
+#endif
                 break;
             }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+            if (hardening_enabled()) {
+                atomic_store_explicit(&g_async_hardening_live.worker_waiting_for_action,
+                                      true, memory_order_release);
+            }
+#endif
             sched_yield();
             continue;
         }
@@ -766,6 +1103,22 @@ static void *producer_thread(void *opaque)
     };
     atomic_store_explicit(&producer->transport->producer_started, true,
                           memory_order_release);
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_wait_producer(producer->transport) != 0) {
+        atomic_store_explicit(&producer->transport->producer_done, true,
+                              memory_order_release);
+        return NULL;
+    }
+#endif
+    /* A worker can fail while the coordinator is still creating the guest
+     * producer.  Do not enter guest execution after its authoritative first
+     * error; publishing a RESET in that state would otherwise wait for an ACK
+     * from a worker that has already terminated. */
+    if (failed(producer->transport) || stopped(producer->transport)) {
+        atomic_store_explicit(&producer->transport->producer_done, true,
+                              memory_order_release);
+        return NULL;
+    }
     if (np2audio86_guest_runtime_live(producer->trace, producer->state, &sink) ==
         0 && !failed(producer->transport) && !stopped(producer->transport)) {
         atomic_store_explicit(&producer->transport->producer_success, true,
@@ -773,6 +1126,15 @@ static void *producer_thread(void *opaque)
     } else {
         fail(producer->transport, ASYNC_ERROR_DISPATCH);
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_cutpoint(producer->transport,
+                           NP2_AUDIO86_ASYNC_CP_PRODUCER_DONE_BEFORE_RELEASE,
+                           producer->transport->producer_next_sequence) != 0) {
+        atomic_store_explicit(&producer->transport->producer_done, true,
+                              memory_order_release);
+        return NULL;
+    }
+#endif
     atomic_store_explicit(&producer->transport->producer_done, true,
                           memory_order_release);
     return NULL;
@@ -784,8 +1146,10 @@ static int wait_for(const _Atomic bool *value)
     for (i = 0U; i < 1000000U; ++i) {
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
         if (hardening_enabled() &&
-            atomic_load_explicit(&g_async_hardening_live.abort,
-                                 memory_order_acquire)) {
+            (atomic_load_explicit(&g_async_hardening_live.abort,
+                                  memory_order_acquire) ||
+             atomic_load_explicit(&g_async_hardening_live.first_error_seen,
+                                  memory_order_acquire) != ASYNC_ERROR_NONE)) {
             return -1;
         }
 #endif
@@ -931,6 +1295,25 @@ done:
                               memory_order_acquire)) {
         return 1;
     }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_enabled()) {
+        /* The outer runner consumes these byte digests and compares them to
+         * the existing 86R.3 JSON oracle.  The release is after all four
+         * arrays have been completely written. */
+        hardening_store_digest(g_async_hardening_live.oracle_worker_sha,
+                               apply, apply_bytes);
+        hardening_store_digest(g_async_hardening_live.oracle_pre_sha,
+                               context.result.pre_pcm,
+                               context.result.pre_bytes);
+        hardening_store_digest(g_async_hardening_live.oracle_full_sha,
+                               context.result.full_pcm,
+                               context.result.full_bytes);
+        hardening_store_digest(g_async_hardening_live.oracle_byte_sha,
+                               pcm_copy, trace.pcm_count);
+        atomic_store_explicit(&g_async_hardening_live.oracle_ready, true,
+                              memory_order_release);
+    }
+#endif
 #if !defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
     printf("AUDIO86_GUEST_ASYNC_LIVE_I286_PRODUCER=PASS\n");
     printf("AUDIO86_GUEST_ASYNC_EVENT_TRANSPORT=PASS\n");

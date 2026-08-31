@@ -595,7 +595,8 @@ build-audio86-guest-async-hardening:
 
 test-audio86-guest-async-hardening: build-audio86-guest-async-hardening
 	@$(PYTHON) "$(NP2_AUDIO86_GUEST_ASYNC_HARDENING_RUNNER)" \
-		--binary "$(NP2_AUDIO86_GUEST_ASYNC_HARDENING_OUTPUT)" --repetitions 25
+		--binary "$(NP2_AUDIO86_GUEST_ASYNC_HARDENING_OUTPUT)" \
+		--golden "$(NP2_AUDIO86_SYNC_PCM_GOLDEN)" --repetitions 25
 
 build-audio86-guest-async-hardening-asan:
 	@$(MAKE) --no-print-directory \
@@ -607,7 +608,8 @@ build-audio86-guest-async-hardening-asan:
 test-audio86-guest-async-hardening-asan: build-audio86-guest-async-hardening-asan
 	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 $(PYTHON) \
 		"$(NP2_AUDIO86_GUEST_ASYNC_HARDENING_RUNNER)" \
-		--binary "$(BUILD_DIR)/tests/np2audio86_guest_async_hardening_asan" --repetitions 25
+		--binary "$(BUILD_DIR)/tests/np2audio86_guest_async_hardening_asan" \
+		--golden "$(NP2_AUDIO86_SYNC_PCM_GOLDEN)" --repetitions 25
 	@printf '%s\n' 'AUDIO86_GUEST_ASYNC_HARDENING_ASAN=PASS'
 
 build-audio86-guest-async-hardening-ubsan:
@@ -619,7 +621,8 @@ build-audio86-guest-async-hardening-ubsan:
 
 test-audio86-guest-async-hardening-ubsan: build-audio86-guest-async-hardening-ubsan
 	@$(PYTHON) "$(NP2_AUDIO86_GUEST_ASYNC_HARDENING_RUNNER)" \
-		--binary "$(BUILD_DIR)/tests/np2audio86_guest_async_hardening_ubsan" --repetitions 25
+		--binary "$(BUILD_DIR)/tests/np2audio86_guest_async_hardening_ubsan" \
+		--golden "$(NP2_AUDIO86_SYNC_PCM_GOLDEN)" --repetitions 25
 	@printf '%s\n' 'AUDIO86_GUEST_ASYNC_HARDENING_UBSAN=PASS'
 
 phase1-probe:

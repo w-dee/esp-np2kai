@@ -174,6 +174,33 @@ enum np2audio86_transport_status {
     NP2_AUDIO86_TRANSPORT_INVARIANT,
 };
 
+#if defined(NP2AUDIO86_GUEST_TEST) && \
+    defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+/* These hooks exist only in the dedicated host hardening binary.  The ring
+ * implementation still performs its ordinary publication operations; a hook
+ * can merely pause the executing host thread at a named publication boundary. */
+enum np2audio86_async_hardening_cutpoint {
+    NP2_AUDIO86_ASYNC_CP_BYTE_COPY_BEFORE_HEAD = 1,
+    NP2_AUDIO86_ASYNC_CP_BYTE_HEAD_BEFORE_DATA_RUN,
+    NP2_AUDIO86_ASYNC_CP_EVENT_SLOT_BEFORE_HEAD,
+    NP2_AUDIO86_ASYNC_CP_DATA_RUN_BEFORE_BYTE_COPY,
+    NP2_AUDIO86_ASYNC_CP_BYTE_COPY_BEFORE_TAIL,
+    NP2_AUDIO86_ASYNC_CP_EVENT_BEFORE_TAIL,
+    NP2_AUDIO86_ASYNC_CP_RESET_BEFORE_APPLY,
+    NP2_AUDIO86_ASYNC_CP_RESET_AFTER_APPLY,
+    NP2_AUDIO86_ASYNC_CP_ACK_BEFORE_PRODUCER_RESUME,
+    NP2_AUDIO86_ASYNC_CP_PRODUCER_DONE_BEFORE_RELEASE,
+    NP2_AUDIO86_ASYNC_CP_PRODUCER_DONE_BEFORE_TAIL_RENDER,
+    NP2_AUDIO86_ASYNC_CP_COUNT,
+};
+
+int np2audio86_guest_async_hardening_cutpoint(
+    enum np2audio86_async_hardening_cutpoint point,
+    uint32_t event_head, uint32_t event_tail,
+    uint32_t byte_head, uint32_t byte_tail, uint64_t auxiliary);
+void np2audio86_guest_async_hardening_event_wrap(uint32_t head_before);
+#endif
+
 struct np2audio86_event_ring {
     struct np2audio86_event slots[NP2_AUDIO86_ASYNC_EVENT_CAPACITY];
     NP2_AUDIO86_ASYNC_ATOMIC(uint32_t) head;
