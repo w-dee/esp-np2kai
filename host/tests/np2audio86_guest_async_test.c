@@ -486,12 +486,16 @@ static int hardening_wait_producer(struct async_context *context)
 }
 #endif
 
-static void fail(struct async_context *context, enum async_error error)
+static int first_error_publish(_Atomic int *first_error, enum async_error error)
 {
     int expected = ASYNC_ERROR_NONE;
-    if (atomic_compare_exchange_strong_explicit(
-            &context->first_error, &expected, error, memory_order_acq_rel,
-            memory_order_acquire)) {
+    return atomic_compare_exchange_strong_explicit(
+        first_error, &expected, error, memory_order_acq_rel, memory_order_acquire);
+}
+
+static void fail(struct async_context *context, enum async_error error)
+{
+    if (first_error_publish(&context->first_error, error)) {
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
         if (hardening_enabled()) {
             atomic_store_explicit(&g_async_hardening_live.first_error_seen, error,

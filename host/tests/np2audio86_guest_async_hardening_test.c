@@ -525,12 +525,17 @@ static int supplemental_failed(const struct supplemental_context *context)
            ASYNC_ERROR_NONE;
 }
 
+static int supplemental_fail(struct supplemental_context *context,
+                             enum async_error error)
+{
+    return first_error_publish(&context->first_error, error);
+}
+
 static int supplemental_join_abort(struct supplemental_context *context,
                                    pthread_t *thread, int *created)
 {
     if (!*created) return 0;
-    atomic_store_explicit(&context->first_error, ASYNC_ERROR_STOP,
-                          memory_order_release);
+    (void)supplemental_fail(context, ASYNC_ERROR_STOP);
     if (pthread_join(*thread, NULL) != 0) return -1;
     *created = 0;
     return 0;
@@ -633,7 +638,7 @@ static int run_byte_full_cases(void)
     if (pthread_create(&thread, NULL, supplemental_run_thread, &request) != 0) goto done;
     created = 1;
     if (wait_bool(&context.byte_full) != 0) goto done;
-    atomic_store_explicit(&context.first_error, ASYNC_ERROR_STOP, memory_order_release);
+    (void)supplemental_fail(&context, ASYNC_ERROR_STOP);
     if (pthread_join(thread, NULL) != 0) goto done;
     created = 0;
     result = request.result != 0 ? 0 : -1;
@@ -681,7 +686,7 @@ static int run_split_pressure(void)
     created = 1;
     if (wait_bool(&context.event_full) != 0 ||
         np2audio86_byte_ring_occupancy(&context.bytes) != sizeof(payload)) goto done;
-    atomic_store_explicit(&context.first_error, ASYNC_ERROR_STOP, memory_order_release);
+    (void)supplemental_fail(&context, ASYNC_ERROR_STOP);
     if (pthread_join(thread, NULL) != 0) goto done;
     created = 0;
     result = request.result != 0 &&
@@ -751,8 +756,8 @@ static int run_split_pressure_fatal_lifecycle(void)
         np2audio86_byte_ring_occupancy(&context.bytes) != sizeof(payload) ||
         np2audio86_event_ring_occupancy(&context.events) !=
             NP2_AUDIO86_ASYNC_EVENT_CAPACITY) goto done;
-    atomic_store_explicit(&context.first_error, ASYNC_ERROR_DISPATCH,
-                          memory_order_release);
+    if (!supplemental_fail(&context, ASYNC_ERROR_DISPATCH)) goto done;
+    if (supplemental_fail(&context, ASYNC_ERROR_STOP)) goto done;
     if (pthread_join(producer, NULL) != 0) goto done;
     producer_created = 0;
     if (pthread_join(worker, NULL) != 0) goto done;
@@ -764,15 +769,67 @@ static int run_split_pressure_fatal_lifecycle(void)
              atomic_load_explicit(&context.worker_terminal, memory_order_acquire) &&
              atomic_load_explicit(&context.coordinator_terminal,
                                   memory_order_acquire) &&
+             atomic_load_explicit(&context.first_error, memory_order_acquire) ==
+                 ASYNC_ERROR_DISPATCH &&
              np2audio86_event_ring_occupancy(&context.events) ==
                  NP2_AUDIO86_ASYNC_EVENT_CAPACITY &&
              np2audio86_byte_ring_occupancy(&context.bytes) == sizeof(payload) ? 0 : -1;
 done:
-    atomic_store_explicit(&context.first_error, ASYNC_ERROR_STOP,
-                          memory_order_release);
+    (void)supplemental_fail(&context, ASYNC_ERROR_STOP);
     if (producer_created && pthread_join(producer, NULL) != 0) result = -1;
     if (worker_created && pthread_join(worker, NULL) != 0) result = -1;
     if (coordinator_created && pthread_join(coordinator, NULL) != 0) result = -1;
+    return result;
+}
+
+struct first_error_competitor {
+    _Atomic int *first_error;
+    _Atomic bool ready;
+    _Atomic bool release;
+    _Atomic bool published;
+};
+
+static void *first_error_competitor_thread(void *opaque)
+{
+    struct first_error_competitor *competitor = opaque;
+    atomic_store_explicit(&competitor->ready, true, memory_order_release);
+    while (!atomic_load_explicit(&competitor->release, memory_order_acquire)) {
+        sched_yield();
+    }
+    atomic_store_explicit(&competitor->published,
+                          first_error_publish(competitor->first_error,
+                                              ASYNC_ERROR_STOP),
+                          memory_order_release);
+    return NULL;
+}
+
+static int run_first_error_immutability(void)
+{
+    struct supplemental_context context;
+    struct first_error_competitor competitor;
+    pthread_t thread;
+    int created = 0;
+    int result = -1;
+    supplemental_init(&context);
+    competitor.first_error = &context.first_error;
+    atomic_init(&competitor.ready, false);
+    atomic_init(&competitor.release, false);
+    atomic_init(&competitor.published, false);
+    if (pthread_create(&thread, NULL, first_error_competitor_thread, &competitor) != 0)
+        goto done;
+    created = 1;
+    if (wait_bool(&competitor.ready) != 0 ||
+        !supplemental_fail(&context, ASYNC_ERROR_DISPATCH)) goto done;
+    atomic_store_explicit(&competitor.release, true, memory_order_release);
+    if (pthread_join(thread, NULL) != 0) goto done;
+    created = 0;
+    result = !atomic_load_explicit(&competitor.published, memory_order_acquire) &&
+             atomic_load_explicit(&context.first_error, memory_order_acquire) ==
+                 ASYNC_ERROR_DISPATCH ? 0 : -1;
+done:
+    atomic_store_explicit(&competitor.release, true, memory_order_release);
+    if (created && pthread_join(thread, NULL) != 0) result = -1;
+    (void)supplemental_fail(&context, ASYNC_ERROR_STOP);
     return result;
 }
 
@@ -1084,6 +1141,7 @@ static int run_case(const char *name)
     } else if (strcmp(name, "split-pressure-fatal") == 0) {
         if (run_split_pressure_fatal_lifecycle() != 0) return -1;
         printf("DATA_RUN_SPLIT_PRESSURE_FATAL=PASS\n");
+        printf("AUDIO86_GUEST_ASYNC_SPLIT_FATAL_FIRST_ERROR=PASS\n");
     } else if (strcmp(name, "byte-full") == 0) {
         if (run_byte_full_cases() != 0) return -1;
         printf("AUDIO86_GUEST_ASYNC_BYTE_FULL=PASS\n");
@@ -1095,12 +1153,14 @@ static int run_case(const char *name)
         printf("AUDIO86_GUEST_ASYNC_POST_RESET_CONTINUATION=PASS\n");
     } else if (strcmp(name, "supplemental") == 0) {
         if (run_byte_full_cases() != 0 || run_split_pressure() != 0 ||
-            run_reset_continuation() != 0) return -1;
+            run_reset_continuation() != 0 || run_first_error_immutability() != 0)
+            return -1;
         printf("AUDIO86_GUEST_ASYNC_BYTE_FULL=PASS\n");
         printf("DATA_RUN_RESERVATION_ORDER=PASS\n");
         printf("AUDIO86_GUEST_ASYNC_DATA_RUN_SPLIT_PRESSURE=PASS\n");
         printf("AUDIO86_GUEST_ASYNC_POST_RESET_CONTINUATION=PASS\n");
         printf("POST_RESET_STATE=PASS\n");
+        printf("AUDIO86_GUEST_ASYNC_FIRST_ERROR_IMMUTABLE=PASS\n");
     } else if (strcmp(name, "schedule-a") == 0 ||
                strcmp(name, "schedule-b") == 0 ||
                strcmp(name, "schedule-c") == 0 ||
