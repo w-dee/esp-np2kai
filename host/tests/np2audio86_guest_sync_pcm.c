@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "np2audio86_fixture.h"
+#include "np2audio86_guest_async.h"
 #include "np2audio86_guest_runtime_capture.h"
 #include "np2_crc32.h"
 #include "np2_sha256.h"
@@ -23,11 +24,11 @@ _Static_assert(sizeof(np2audio86_guest_event_t) == 24U,
                "86R.3 must retain the 24-byte guest event ABI");
 
 enum sync_action_kind {
-    SYNC_ACTION_OPNA_REGISTER = 1U,
-    SYNC_ACTION_OPNA_CSM = 2U,
-    SYNC_ACTION_PCM_CONTROL = 3U,
-    SYNC_ACTION_RESET = 4U,
-    SYNC_ACTION_DATA_RUN = 5U,
+    SYNC_ACTION_OPNA_REGISTER = NP2_AUDIO86_GUEST_ACTION_OPNA_REGISTER,
+    SYNC_ACTION_OPNA_CSM = NP2_AUDIO86_GUEST_ACTION_OPNA_CSM,
+    SYNC_ACTION_PCM_CONTROL = NP2_AUDIO86_GUEST_ACTION_PCM_CONTROL,
+    SYNC_ACTION_RESET = NP2_AUDIO86_GUEST_ACTION_RESET,
+    SYNC_ACTION_DATA_RUN = NP2_AUDIO86_GUEST_ACTION_DATA_RUN,
 };
 
 struct sync_action {
@@ -477,12 +478,7 @@ static int render_chunk(struct np2audio86_render_state *worker,
 static int prime_worker(struct np2audio86_render_state *worker)
 {
     uint8_t source[SYNC_SOURCE_BYTES];
-    if (np2audio86_render_reset(worker) != 0 ||
-        np2audio86_fixture_generate_source(source) != 0 ||
-        np2audio86_render_pcm86_push(worker, source, sizeof(source)) != 0) {
-        return -1;
-    }
-    return 0;
+    return np2audio86_guest_action_prime_worker(worker, source, sizeof(source));
 }
 
 static int apply_action(struct np2audio86_render_state *worker,
@@ -491,38 +487,43 @@ static int apply_action(struct np2audio86_render_state *worker,
                         const uint8_t *pcm_bytes, size_t pcm_count,
                         uint8_t *reset_seen)
 {
+    struct np2audio86_guest_action guest_action;
+    uint8_t source[SYNC_SOURCE_BYTES];
+    const uint8_t *data = NULL;
+    size_t data_count = 0U;
+    int status;
     if (result->apply_count >= SYNC_MAX_ACTIONS || action == NULL) {
         return -1;
     }
-    record_apply(result, action);
-    switch (action->kind) {
-    case SYNC_ACTION_OPNA_REGISTER:
-        return np2audio86_render_apply_opna_register(
-            worker, (uint16_t)(action->payload >> 8U),
-            (uint8_t)action->payload);
-    case SYNC_ACTION_OPNA_CSM:
-        return np2audio86_render_apply_opna_csm(worker);
-    case SYNC_ACTION_PCM_CONTROL:
-        return np2audio86_render_apply_pcm86_control(
-            worker, (uint8_t)(action->payload >> 8U),
-            (uint8_t)action->payload);
-    case SYNC_ACTION_RESET:
-        if (*reset_seen || prime_worker(worker) != 0) {
-            return -1;
-        }
-        *reset_seen = 1U;
-        result->pre_reset_frame = action->frame;
-        return 0;
-    case SYNC_ACTION_DATA_RUN:
+    if (action->kind == SYNC_ACTION_DATA_RUN) {
         if (action->byte_offset > pcm_count ||
             action->byte_count > pcm_count - (size_t)action->byte_offset) {
             return -1;
         }
-        return np2audio86_render_pcm86_push(
-            worker, pcm_bytes + action->byte_offset, action->byte_count);
-    default:
+        data = pcm_bytes + action->byte_offset;
+        data_count = action->byte_count;
+    }
+    guest_action.frame_timestamp = action->frame;
+    guest_action.sequence = action->sequence;
+    guest_action.opcode = action->opcode;
+    guest_action.payload = action->payload;
+    guest_action.byte_offset = action->byte_offset;
+    guest_action.byte_count = action->byte_count;
+    guest_action.kind = action->kind;
+    record_apply(result, action);
+    if (action->kind == SYNC_ACTION_RESET && *reset_seen) {
         return -1;
     }
+    status = np2audio86_guest_action_apply(worker, &guest_action, data,
+                                            data_count, source, sizeof(source));
+    if (status != 0) {
+        return -1;
+    }
+    if (action->kind == SYNC_ACTION_RESET) {
+        *reset_seen = 1U;
+        result->pre_reset_frame = action->frame;
+    }
+    return 0;
 }
 
 static int replay_actions(const struct sync_action *actions, size_t action_count,

@@ -4,6 +4,7 @@ set(NP2_AUDIO86_HOST_COMPAT_DIR "${CMAKE_SOURCE_DIR}/../host/compat")
 idf_component_register(
     SRCS
         "np2audio86_fixture.c"
+        "np2audio86_guest_async.c"
         "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c"
         "${NP2_AUDIO86_VENDOR_DIR}/sound/opngenc.c"
         "${NP2_AUDIO86_VENDOR_DIR}/sound/opngeng.c"
@@ -18,7 +19,8 @@ idf_component_register(
         "${NP2_AUDIO86_HOST_COMPAT_DIR}"
         "${NP2_AUDIO86_VENDOR_DIR}"
         "${NP2_AUDIO86_VENDOR_DIR}/i286c"
-        "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/include")
+        "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/include"
+    REQUIRES np2audio86_guest_adapter)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     DISABLE_SOUND=1

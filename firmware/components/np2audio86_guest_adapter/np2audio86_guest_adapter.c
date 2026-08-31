@@ -30,6 +30,7 @@ typedef struct {
 
 static np2audio86_guest_state_t g_state;
 static np2audio86_guest_trace_t *g_trace;
+static const np2audio86_guest_sink_t *g_sink;
 static np2audio86_guest_cpu_position_fn g_cpu_position;
 static uint32_t g_manual_cpu_position;
 static uint32_t g_baseclock = 2457600u, g_multiple = 20u;
@@ -41,6 +42,11 @@ static np2audio86_guest_irq_fn g_irq;
 static void (*g_extension_callback)(uint8_t enabled);
 static uint8_t g_failed;
 static char g_failure_reason[96];
+static uint8_t g_run_pending;
+static uint64_t g_run_timestamp, g_run_sequence;
+static size_t g_run_offset, g_run_count;
+
+static void flush_pending_run(void);
 
 /* These are the pinned pcm86.c fixed-point delays.  The first MVP keeps the
  * waveform-owned underflow history out of Domain G, so the supported boundary
@@ -83,43 +89,70 @@ static void append_io(uint16_t port, uint8_t direction, uint8_t value,
 
 static void append_event(uint32_t opcode, uint32_t payload)
 {
-    np2audio86_guest_event_t *item;
+    np2audio86_guest_event_t item;
     if (g_failed) return;
-    if (!g_trace) {
+    /* A live sink needs the earlier reserved DATA_RUN action published before
+     * any later action.  The legacy capture-only path retains its established
+     * coalescing behavior. */
+    if (g_sink && g_run_pending) {
+        flush_pending_run();
+        if (g_failed) return;
+    }
+    if (!g_trace && !g_sink) {
         if (g_state.sequence == UINT64_MAX) { fail("sequence overflow"); return; }
         ++g_state.sequence; return;
     }
-    if (g_state.sequence == UINT64_MAX ||
-        g_trace->event_count >= g_trace->event_capacity) {
-        fail("event trace capacity or sequence overflow"); return;
+    if (g_state.sequence == UINT64_MAX) {
+        fail("event sequence overflow"); return;
     }
-    item = &g_trace->events[g_trace->event_count++];
-    item->frame_timestamp = g_state.frame_timestamp;
-    item->sequence = g_state.sequence++;
-    item->opcode = opcode; item->payload = payload;
+    item.frame_timestamp = g_state.frame_timestamp;
+    item.sequence = g_state.sequence;
+    item.opcode = opcode;
+    item.payload = payload;
+    if (g_trace) {
+        if (g_trace->event_count >= g_trace->event_capacity) {
+            fail("event trace capacity"); return;
+        }
+        g_trace->events[g_trace->event_count++] = item;
+    }
+    if (g_sink &&
+        g_sink->publish_event(g_sink->opaque, &item) != 0) {
+        fail("event sink publication"); return;
+    }
+    ++g_state.sequence;
 }
-
-static uint8_t g_run_pending;
-static uint64_t g_run_timestamp, g_run_sequence;
-static size_t g_run_offset, g_run_count;
 
 static void flush_pending_run(void)
 {
-    np2audio86_guest_data_run_t *run;
+    np2audio86_guest_data_run_t run;
     if (!g_run_pending) return;
-    if (!g_trace || g_trace->data_run_count >= g_trace->data_run_capacity) {
-        fail("PCM DATA_RUN trace capacity"); return;
+    if (!g_trace && !g_sink) {
+        g_run_pending = 0; g_run_count = 0;
+        return;
     }
-    run = &g_trace->data_runs[g_trace->data_run_count++];
-    run->frame_timestamp = g_run_timestamp; run->sequence = g_run_sequence;
-    run->byte_offset = g_run_offset; run->count = (uint32_t)g_run_count;
+    if (g_run_count == 0U || g_run_count > 32768U) {
+        fail("PCM DATA_RUN length"); return;
+    }
+    run.frame_timestamp = g_run_timestamp;
+    run.sequence = g_run_sequence;
+    run.byte_offset = g_run_offset;
+    run.count = (uint32_t)g_run_count;
+    if (g_trace) {
+        if (g_trace->data_run_count >= g_trace->data_run_capacity) {
+            fail("PCM DATA_RUN trace capacity"); return;
+        }
+        g_trace->data_runs[g_trace->data_run_count++] = run;
+    }
+    if (g_sink && g_sink->publish_data_run(g_sink->opaque, &run) != 0) {
+        fail("PCM DATA_RUN sink publication"); return;
+    }
     g_run_pending = 0; g_run_count = 0;
 }
 
 static void start_or_append_byte(uint8_t value)
 {
-    if (!g_trace || g_failed) return;
-    if (g_trace->pcm_count >= g_trace->pcm_capacity) {
+    if ((!g_trace && !g_sink) || g_failed) return;
+    if (g_trace && g_trace->pcm_count >= g_trace->pcm_capacity) {
         fail("PCM byte trace capacity"); return;
     }
     if (!g_run_pending || g_run_timestamp != g_state.frame_timestamp ||
@@ -128,10 +161,19 @@ static void start_or_append_byte(uint8_t value)
         if (g_state.sequence == UINT64_MAX) { fail("sequence overflow"); return; }
         g_run_pending = 1; g_run_timestamp = g_state.frame_timestamp;
         g_run_sequence = g_state.sequence++;
-        g_run_offset = g_trace->pcm_offset_base + g_trace->pcm_count;
+        g_run_offset = g_trace ? g_trace->pcm_offset_base + g_trace->pcm_count
+                               : 0U;
         g_run_count = 0;
     }
-    g_trace->pcm_bytes[g_trace->pcm_count++] = value; ++g_run_count;
+    if (g_trace) {
+        g_trace->pcm_bytes[g_trace->pcm_count++] = value;
+    }
+    if (g_sink &&
+        g_sink->publish_pcm_byte(g_sink->opaque, g_run_timestamp,
+                                  g_run_sequence, value) != 0) {
+        fail("PCM byte sink publication"); return;
+    }
+    ++g_run_count;
 }
 
 static void timer_trace(uint8_t timer, uint8_t cause, uint8_t level,
@@ -412,6 +454,9 @@ void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace)
         g_trace->pcm_count = 0; g_trace->timer_count = 0; g_trace->io_count = 0; }
 }
 void np2audio86_guest_host_trace_detach(void) { flush_pending_run(); g_trace = NULL; }
+void np2audio86_guest_sink_bind(const np2audio86_guest_sink_t *sink)
+{ g_sink = sink; }
+void np2audio86_guest_sink_unbind(void) { g_sink = NULL; }
 void np2audio86_guest_host_set_cpu_position_fn(np2audio86_guest_cpu_position_fn fn)
 { g_cpu_position = fn; }
 void np2audio86_guest_host_set_cpu_position(uint32_t position)

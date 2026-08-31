@@ -1271,8 +1271,9 @@ static void run_86r2c_evidence_tests(void)
     printf("A46A_REQIRQ_RESCHEDULE=PASS\n");
 }
 
-int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
-                                     np2audio86_guest_state_snapshot_t *state)
+static int np2audio86_guest_runtime_run(
+    np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
+    const np2audio86_guest_sink_t *sink)
 {
     size_t program_size;
 
@@ -1303,8 +1304,10 @@ int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
                                           guest_event_cancel,
                                           guest_event_iswork, irq_hook);
     np2audio86_guest_host_trace_attach(trace);
+    np2audio86_guest_sink_bind(sink);
     iocore_create();
     if (iocore_build() != SUCCESS) {
+        np2audio86_guest_sink_unbind();
         np2audio86_guest_host_trace_detach();
         return -1;
     }
@@ -1315,6 +1318,7 @@ int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
     program_size = build_guest_program();
     if (program_size >= 0x90000u || !run_program(program_size)) {
         board86_unbind();
+        np2audio86_guest_sink_unbind();
         np2audio86_guest_host_trace_detach();
         return -1;
     }
@@ -1323,8 +1327,25 @@ int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
     np2audio86_guest_host_flush_data_run();
     np2audio86_guest_host_snapshot(state);
     board86_unbind();
+    np2audio86_guest_sink_unbind();
     np2audio86_guest_host_trace_detach();
     return np2audio86_guest_host_failed() ? -1 : 0;
+}
+
+int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
+                                     np2audio86_guest_state_snapshot_t *state)
+{
+    return np2audio86_guest_runtime_run(trace, state, NULL);
+}
+
+int np2audio86_guest_runtime_live(
+    np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
+    const np2audio86_guest_sink_t *sink)
+{
+    if (sink == NULL) {
+        return -1;
+    }
+    return np2audio86_guest_runtime_run(trace, state, sink);
 }
 
 #ifndef NP2AUDIO86_GUEST_RUNTIME_NO_MAIN

@@ -46,6 +46,19 @@ typedef struct {
     uint32_t count;
 } np2audio86_guest_data_run_t;
 
+/* A narrow semantic publication seam.  The guest remains the sole owner of
+ * sequence, timestamp, pending-run, timer, and PCM accounting state.  A sink
+ * may synchronously block a semantic handler, which is the required boundary
+ * for a lossless live producer; it never owns or mutates guest state. */
+typedef struct {
+    void *opaque;
+    int (*publish_event)(void *opaque, const np2audio86_guest_event_t *event);
+    int (*publish_pcm_byte)(void *opaque, uint64_t frame_timestamp,
+                            uint64_t sequence, uint8_t value);
+    int (*publish_data_run)(void *opaque,
+                            const np2audio86_guest_data_run_t *run);
+} np2audio86_guest_sink_t;
+
 typedef struct {
     uint64_t frame_timestamp;
     uint64_t guest_cycles;
@@ -143,6 +156,8 @@ typedef void (*np2audio86_guest_irq_fn)(uint32_t irq, uint8_t level);
 
 void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace);
 void np2audio86_guest_host_trace_detach(void);
+void np2audio86_guest_sink_bind(const np2audio86_guest_sink_t *sink);
+void np2audio86_guest_sink_unbind(void);
 void np2audio86_guest_host_set_cpu_position_fn(
     np2audio86_guest_cpu_position_fn position);
 void np2audio86_guest_host_set_cpu_position(uint32_t position);
