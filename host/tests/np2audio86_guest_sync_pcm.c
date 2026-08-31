@@ -784,6 +784,7 @@ static int run_domain_a_pcm_split_test(void)
 {
     struct np2audio86_render_state state;
     PCM86 pcm;
+    unsigned volume_code;
     SINT32 virbuf;
     UINT8 irqflag;
     UINT8 reqirq;
@@ -791,6 +792,8 @@ static int run_domain_a_pcm_split_test(void)
     UINT64 lastclock;
     UINT8 soundflags;
     SINT32 fifosize;
+    UINT stepbit;
+    UINT stepmask;
     if (np2audio86_render_init(&state) != 0) return -1;
     pcm = &state.pcm86.pcm;
     pcm->virbuf = 123;
@@ -811,17 +814,35 @@ static int run_domain_a_pcm_split_test(void)
     lastclock = pcm->lastclock;
     soundflags = pcm->soundflags;
     fifosize = pcm->fifosize;
+    stepbit = pcm->stepbit;
+    stepmask = pcm->stepmask;
     if (np2audio86_render_apply_pcm86_control(&state, 0x08U, 0x08U) != 0 ||
         pcm->readpos != 0U || pcm->wrtpos != 0U || pcm->realbuf != 0 ||
         pcm->fifo != 0x08U || pcm->virbuf != virbuf ||
         pcm->irqflag != irqflag || pcm->reqirq != reqirq ||
         pcm->lastclockforwait != lastclockforwait ||
-        pcm->lastclock != lastclock || pcm->fifosize != fifosize) {
+        pcm->lastclock != lastclock || pcm->fifosize != fifosize ||
+        pcm->stepbit != stepbit || pcm->stepmask != stepmask) {
         return -1;
     }
     if (np2audio86_render_apply_pcm86_control(&state, 0x00U, 0x01U) != 0 ||
         pcm->soundflags != soundflags) {
         return -1;
+    }
+    for (volume_code = 0U; volume_code < 32U; ++volume_code) {
+        const uint8_t value = (uint8_t)(0xa0U | volume_code);
+        const SINT32 expected_volume = 64 * (SINT32)((~value) & 15U);
+        pcm->vol5 = 11;
+        pcm->volume = -1;
+        if (np2audio86_render_apply_pcm86_control(&state, 0x06U, value) != 0 ||
+            pcm->vol5 != 11 || pcm->volume != expected_volume ||
+            pcm->virbuf != virbuf || pcm->irqflag != irqflag ||
+            pcm->reqirq != reqirq || pcm->lastclock != lastclock ||
+            pcm->lastclockforwait != lastclockforwait ||
+            pcm->soundflags != soundflags || pcm->fifosize != fifosize ||
+            pcm->stepbit != stepbit || pcm->stepmask != stepmask) {
+            return -1;
+        }
     }
     return 0;
 }
@@ -1040,6 +1061,7 @@ int main(void)
     printf("AUDIO86_GUEST_REPLAY_PCM_BYTES_IMMUTABLE=PASS\n");
     printf("AUDIO86_GUEST_REPLAY_INPUT_IMMUTABLE=PASS\n");
     printf("AUDIO86_GUEST_SYNC_DOMAIN_A_PCM_SPLIT=PASS\n");
+    printf("AUDIO86_GUEST_SYNC_PCM_VOL5_PRESERVED=PASS\n");
     printf("AUDIO86_GUEST_SYNC_WORKER_APPLY=PASS\n");
     printf("AUDIO86_GUEST_SYNC_FAIL_CLOSED=PASS\n");
     printf("AUDIO86_GUEST_SYNC_PCM=PASS\n");

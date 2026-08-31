@@ -546,8 +546,8 @@ int np2audio86_render_apply_pcm86_control(
         break;
     case 0x06U:
         if ((value & 0xe0U) == 0xa0U) {
-            pcm->vol5 = (~value) & 15U;
-            pcm->volume = 64 * pcm->vol5;
+            const uint8_t vol5 = (~value) & 15U;
+            pcm->volume = 64 * vol5;
         }
         break;
     case 0x08U:
