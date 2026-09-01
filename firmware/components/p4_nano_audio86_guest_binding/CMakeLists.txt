@@ -11,6 +11,7 @@ idf_component_register(
                  "${P4_NANO_AUDIO86_VENDOR_SRC}/i286c"
                  "${P4_NANO_AUDIO86_BINDING_ROOT}/host/compat"
     REQUIRES np2core np2host np2runtime np2audio86_fixture np2audio86_guest_adapter np2opngen_fixture
+             np2pcm_output
              p4_nano_audio86_notifications freertos esp_system heap)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

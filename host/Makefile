@@ -243,6 +243,13 @@ OPNGEN_PCM_RING_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test
 OPNGEN_PCM_RING_ASAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_asan
 OPNGEN_PCM_RING_UBSAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_ubsan
 OPNGEN_PCM_RING_TSAN_OUTPUT := $(BUILD_DIR)/tests/opngen_pcm_ring_test_tsan
+NP2_PCM_OUTPUT_SOURCE := $(HOST_ROOT)/firmware/components/np2pcm_output/np2pcm_output.c
+NP2_PCM_OUTPUT_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2pcm_output/include
+NP2_PCM_OUTPUT_TEST_SOURCE := $(CURDIR)/tests/np2pcm_output_test.c
+NP2_PCM_OUTPUT_TEST_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test
+NP2_PCM_OUTPUT_ASAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_asan
+NP2_PCM_OUTPUT_UBSAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_ubsan
+NP2_PCM_OUTPUT_TSAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_tsan
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
 OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
@@ -381,6 +388,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 .PHONY: test-p4-nano-ppa-rotation-reference
 .PHONY: test-p4-nano-board-static
 .PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
+.PHONY: build-np2pcm-output test-np2pcm-output test-np2pcm-output-stress build-np2pcm-output-asan test-np2pcm-output-asan build-np2pcm-output-ubsan test-np2pcm-output-ubsan build-np2pcm-output-tsan test-np2pcm-output-tsan
 
 test-audio86-guest-contract:
 	@$(PYTHON) "$(AUDIO86_GUEST_CONTRACT_SCRIPT)" \
@@ -1345,6 +1353,59 @@ build-opngen-pcm-ring-tsan:
 
 test-opngen-pcm-ring-tsan: build-opngen-pcm-ring-tsan
 	@"$(OPNGEN_PCM_RING_TSAN_OUTPUT)"
+
+build-np2pcm-output:
+	@mkdir -p "$(dir $(NP2_PCM_OUTPUT_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -pthread \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" -I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(NP2_PCM_OUTPUT_SOURCE)" \
+		"$(NP2_PCM_OUTPUT_TEST_SOURCE)" -o "$(NP2_PCM_OUTPUT_TEST_OUTPUT)"
+
+test-np2pcm-output: build-np2pcm-output
+	@"$(NP2_PCM_OUTPUT_TEST_OUTPUT)"
+
+test-np2pcm-output-stress: build-np2pcm-output
+	@set -e; i=1; while [ $$i -le 20 ]; do \
+		NP2_PCM_STRESS_ONLY=1 "$(NP2_PCM_OUTPUT_TEST_OUTPUT)" >/dev/null; \
+		i=$$((i + 1)); \
+	done; printf '%s\n' 'PCM_RING_SPSC_STRESS=20/20_PASS'
+
+build-np2pcm-output-asan:
+	@mkdir -p "$(dir $(NP2_PCM_OUTPUT_ASAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -pthread -O1 -g \
+		-fsanitize=address,undefined -fno-omit-frame-pointer \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" -I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(NP2_PCM_OUTPUT_SOURCE)" \
+		"$(NP2_PCM_OUTPUT_TEST_SOURCE)" -fsanitize=address,undefined \
+		-o "$(NP2_PCM_OUTPUT_ASAN_OUTPUT)"
+
+test-np2pcm-output-asan: build-np2pcm-output-asan
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+		"$(NP2_PCM_OUTPUT_ASAN_OUTPUT)"
+
+build-np2pcm-output-ubsan:
+	@mkdir -p "$(dir $(NP2_PCM_OUTPUT_UBSAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -pthread -O1 -g \
+		-fsanitize=undefined -fno-omit-frame-pointer \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" -I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(NP2_PCM_OUTPUT_SOURCE)" \
+		"$(NP2_PCM_OUTPUT_TEST_SOURCE)" -fsanitize=undefined \
+		-o "$(NP2_PCM_OUTPUT_UBSAN_OUTPUT)"
+
+test-np2pcm-output-ubsan: build-np2pcm-output-ubsan
+	@"$(NP2_PCM_OUTPUT_UBSAN_OUTPUT)"
+
+build-np2pcm-output-tsan:
+	@mkdir -p "$(dir $(NP2_PCM_OUTPUT_TSAN_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -pthread -O1 -g \
+		-fsanitize=thread -fno-omit-frame-pointer \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" -I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(NP2_PCM_OUTPUT_SOURCE)" \
+		"$(NP2_PCM_OUTPUT_TEST_SOURCE)" -fsanitize=thread \
+		-o "$(NP2_PCM_OUTPUT_TSAN_OUTPUT)"
+
+test-np2pcm-output-tsan: build-np2pcm-output-tsan
+	@NP2_PCM_STRESS_ONLY=1 "$(NP2_PCM_OUTPUT_TSAN_OUTPUT)"
 
 test-opngen-e1b-formal: build-opngen-e1b
 	@$(PYTHON) "$(OPNGEN_E1B_FORMAL_RUNNER)" \
