@@ -130,6 +130,9 @@ public:
     Result run() noexcept;
     Result run(OwnerIterationObserver observer, void *observer_context) noexcept;
     bool request_stop() noexcept;
+    /* Profile-owned asynchronous producers use this only to publish an
+     * already-detected fatal condition into the sole Runtime lifecycle. */
+    bool mark_failure() noexcept;
 
     State state() const noexcept { return lifecycle_.state(); }
     StopReason stop_reason() const noexcept { return lifecycle_.stop_reason(); }

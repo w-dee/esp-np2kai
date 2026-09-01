@@ -41,6 +41,9 @@ extern "C" {
 #include "np2_keyboard_validation/validation_controller.hpp"
 #endif
 #include "np2runtime/np2runtime.hpp"
+#if defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+#include "p4_nano_audio86_guest_binding/p4_nano_audio86_guest_binding.hpp"
+#endif
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
     defined(P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
 #include "p4_nano_usb_keyboard/producer.hpp"
@@ -147,6 +150,7 @@ struct Composition final {
     }
 
     bool validation;
+    bool audio86_real_guest = false;
     ValidationKind kind;
     bool emu;
     p4_nano_pc98_runtime::MediaConfig media;
@@ -1073,6 +1077,31 @@ void owner_task(void *context)
         return;
     }
 
+#if defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+    if (composition->audio86_real_guest) {
+        /* This is intentionally the existing p4_nano_pc98 task body.  The
+         * profile changes its bounded guest workload, not producer ownership,
+         * affinity, priority, stack, or terminal-index-0 protocol. */
+        const np2runtime::Result runtime_init =
+            composition->runtime.initialize(
+                p4_nano_pc98_runtime::kFdd0OnlyEquipment);
+        if (runtime_init != np2runtime::Result::Ok) {
+            emit("P4_AUDIO86_REAL_GUEST_RESULT=FAIL reason=RUNTIME_INIT_FAILED\n");
+            signal_ready(composition, ESP_FAIL);
+            composition->owner_result = ESP_FAIL;
+        } else {
+            signal_ready(composition, ESP_OK);
+            composition->owner_result =
+                p4_nano_audio86_guest_binding::run_on_pc98_task(
+                    composition->owner_task, &composition->runtime);
+            /* Runtime owns the sole production lifecycle and therefore also
+             * serializes pccore_term after the worker has quiesced. */
+            (void)composition->runtime.request_stop();
+            (void)composition->runtime.run();
+        }
+    } else {
+#endif
+
     const bool keyboard_initialized = composition->keyboard.initialize();
     const np2runtime::Result runtime_init =
         keyboard_initialized
@@ -1172,6 +1201,9 @@ void owner_task(void *context)
         composition->owner_result = ESP_OK;
     }
 
+#if defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+    }
+#endif
 done:
     composition->keyboard.set_core_active(false);
 #if defined(P4_NANO_REAL_RUNTIME_PROFILE) || \
@@ -1500,6 +1532,45 @@ esp_err_t run_keyboard_validation() noexcept
 esp_err_t run_usb_keyboard_validation() noexcept
 {
     return run_composition(ValidationKind::Keyboard, false);
+}
+
+esp_err_t run_audio86_real_guest() noexcept
+{
+#if !defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+    return ESP_ERR_NOT_SUPPORTED;
+#else
+    /* Keep the substantial composition off the main-task stack.  This path
+     * intentionally bypasses media/display setup: it is a headless canonical
+     * i286 guest profile, not the normal PC-98 runtime composition. */
+    static Composition composition(ValidationKind::None, false);
+    composition.audio86_real_guest = true;
+    composition.ready_semaphore = xSemaphoreCreateBinary();
+    composition.stopped_semaphore = xSemaphoreCreateBinary();
+    if (composition.ready_semaphore == nullptr || composition.stopped_semaphore == nullptr) {
+        destroy_sync(&composition);
+        return ESP_ERR_NO_MEM;
+    }
+    const BaseType_t task_result = xTaskCreatePinnedToCore(
+        owner_task, "p4_nano_pc98", kRuntimeStackBytes, &composition,
+        kRuntimePriority, &composition.owner_task, kRuntimeCore);
+    if (task_result != pdPASS) {
+        destroy_sync(&composition);
+        return ESP_ERR_NO_MEM;
+    }
+    if (xSemaphoreTake(composition.ready_semaphore, kStartupTimeoutTicks) != pdTRUE) {
+        composition.stop_requested.store(true, std::memory_order_release);
+    }
+    if (composition.stopped_semaphore != nullptr) {
+        (void)xSemaphoreTake(composition.stopped_semaphore, kStartupTimeoutTicks);
+    }
+    if (composition.owner_task != nullptr) {
+        vTaskDelete(composition.owner_task);
+        composition.owner_task = nullptr;
+    }
+    const esp_err_t result = composition.owner_result;
+    destroy_sync(&composition);
+    return result;
+#endif
 }
 
 } // namespace p4_nano_pc98_runtime

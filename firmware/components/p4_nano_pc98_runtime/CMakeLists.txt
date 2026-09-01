@@ -20,7 +20,11 @@ if(P4_NANO_KEYBOARD_VALIDATION_PROFILE OR
 endif()
 set(P4_NANO_PC98_RUNTIME_REQUIRES
     np2runtime np2host p4_nano_live_display_session np2_keyboard_input_bridge
-    storage_sdmmc storage_fatfs freertos esp_timer)
+    storage_sdmmc storage_fatfs freertos esp_timer
+    # This component has no profile-off call site into the binding.  Keeping
+    # the dependency declaration unconditional gives ESP-IDF a stable static
+    # archive order when the opt-in profile enables that call site.
+    p4_nano_audio86_guest_binding)
 if(P4_NANO_REAL_RUNTIME_PROFILE OR
    P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     list(APPEND P4_NANO_PC98_RUNTIME_REQUIRES p4_nano_usb_keyboard)
@@ -40,6 +44,13 @@ if(P4_NANO_REAL_RUNTIME_PROFILE OR
    P4_NANO_USB_KEYBOARD_VALIDATION_PROFILE)
     list(APPEND P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
          "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/p4_nano_usb_keyboard/include")
+endif()
+if(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+    # ESP-IDF resolves this profile-owned component from main first.  Make the
+    # binding's public interface explicit for this pre-existing runtime
+    # component as well, rather than relying on recursive discovery order.
+    list(APPEND P4_NANO_PC98_RUNTIME_INCLUDE_DIRS
+         "${P4_NANO_PC98_RUNTIME_REPO_ROOT}/firmware/components/p4_nano_audio86_guest_binding/include")
 endif()
 idf_component_register(
     SRCS ${P4_NANO_PC98_RUNTIME_SRCS}
@@ -84,4 +95,8 @@ endif()
 if(P4_NANO_RUNTIME_EMU_BACKEND)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_RUNTIME_EMU_BACKEND=1)
+endif()
+if(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_REAL_GUEST_PROFILE=1 NP2_ASYNC_AUDIO86=1)
 endif()

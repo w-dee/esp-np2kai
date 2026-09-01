@@ -100,6 +100,11 @@ bool Runtime::request_stop() noexcept
     return lifecycle_.request_stop();
 }
 
+bool Runtime::mark_failure() noexcept
+{
+    return lifecycle_.mark_failure();
+}
+
 Result Runtime::cleanup(const OwnerIterationObserver observer,
                         void *const observer_context) noexcept
 {
