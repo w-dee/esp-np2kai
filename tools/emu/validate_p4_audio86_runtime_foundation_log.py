@@ -28,6 +28,14 @@ SCENARIOS = {
     "producer_only_partial_create",
     "producer_ready_timeout",
     "worker_ready_timeout",
+    "completion_recheck_event_only",
+    "completion_recheck_horizon_only",
+    "completion_recheck_combined",
+    "completion_recheck_empty",
+    "completion_recheck_stop",
+    "completion_recheck_producer_fatal",
+    "completion_recheck_worker_fatal",
+    "completion_recheck_reset",
 }
 EXPECTED_SHA = "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
 FATAL_PATTERNS = (
@@ -99,7 +107,21 @@ def validate(text: str) -> None:
         "TERMINAL_PATHS_UNIFIED=PASS",
         "TERMINAL_TIMEOUT_NO_REUSE=PASS",
         "STATIC_STORAGE_REUSE_SAFE=PASS",
+        "P4_POST_DONE_EVENT_RECHECK=PASS",
+        "P4_POST_DONE_HORIZON_ONLY=PASS",
+        "P4_POST_DONE_COMBINED_RECHECK=PASS",
+        "P4_POST_DONE_EMPTY_FINISH=PASS",
+        "FINAL_COMPLETION_LEVEL_PREDICATE=PASS",
+        "TERMINAL_ERROR_PRECEDENCE=PASS",
+        "RESET_FINALIZE_NONREGRESSION=PASS",
+        "POST_DONE_HORIZON_RECHECK=PASS",
+        "P4_POST_DONE_C11_PROOF=PASS",
+        "SINGLE_P4_COMPLETION_RULE=PASS",
+        "BYTE_POST_DONE_RECHECK_NOT_REQUIRED_BY_PROTOCOL=PASS",
+        "SUCCESSFUL_FINAL_RESIDUALS_ZERO=PASS",
+        "P4_POST_DONE_COMPLETION_STRESS=PASS repetitions=1000",
         "AUDIO86_86R5A_FINAL residual_events=0 residual_bytes=0 "
+        "horizon_pending=0 reset_ack=1 first_error=0 "
         "result=PASS timing=NOT_VALIDATED",
         "AUDIO86_86R5A_RESULT=PASS",
         "P4_NANO_AUDIO86_RUNTIME_FOUNDATION_STATUS=PASS",

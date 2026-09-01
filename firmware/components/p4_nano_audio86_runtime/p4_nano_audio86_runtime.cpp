@@ -62,6 +62,14 @@ enum class Scenario : uint32_t {
     ProducerOnlyPartialCreate,
     ProducerReadyTimeout,
     WorkerReadyTimeout,
+    CompletionRecheckEventOnly,
+    CompletionRecheckHorizonOnly,
+    CompletionRecheckCombined,
+    CompletionRecheckEmpty,
+    CompletionRecheckStop,
+    CompletionRecheckProducerFatal,
+    CompletionRecheckWorkerFatal,
+    CompletionRecheckReset,
 };
 
 struct Runtime {
@@ -105,6 +113,7 @@ struct Runtime {
     uint32_t action_count = 0U;
     uint32_t data_bytes = 0U;
     uint32_t reset_count = 0U;
+    uint32_t last_reset_ordinal = 0U;
     uint32_t producer_wakes = 0U;
     uint32_t worker_wakes = 0U;
     uint8_t data_sha[NP2_SHA256_DIGEST_SIZE]{};
@@ -408,6 +417,67 @@ void publish_event_pressure(Runtime *runtime)
     }
 }
 
+bool is_completion_recheck_scenario(Scenario scenario)
+{
+    return scenario == Scenario::CompletionRecheckEventOnly ||
+           scenario == Scenario::CompletionRecheckHorizonOnly ||
+           scenario == Scenario::CompletionRecheckCombined ||
+           scenario == Scenario::CompletionRecheckEmpty ||
+           scenario == Scenario::CompletionRecheckStop ||
+           scenario == Scenario::CompletionRecheckProducerFatal ||
+           scenario == Scenario::CompletionRecheckWorkerFatal ||
+           scenario == Scenario::CompletionRecheckReset;
+}
+
+bool completion_publish_direct(Runtime *runtime, bool event, bool horizon,
+                               bool reset)
+{
+    const uint64_t frame = (reset || !horizon) ? 0U : 8U;
+    if (event) {
+        const struct np2audio86_event final_event{
+            frame, runtime->next_sequence,
+            reset ? NP2_AUDIO86_EVENT_RESET_BARRIER
+                  : NP2_AUDIO86_EVENT_PSG_REGISTER,
+            reset ? 1U : 7U};
+        if (np2audio86_event_ring_enqueue(&runtime->events, &final_event) !=
+            NP2_AUDIO86_TRANSPORT_OK) {
+            return false;
+        }
+        ++runtime->next_sequence;
+    }
+    if (horizon && np2audio86_runtime_horizon_publish(
+                       &runtime->control, &runtime->producer_clock, frame) !=
+                       NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        return false;
+    }
+    return true;
+}
+
+void producer_completion_recheck(Runtime *runtime)
+{
+    xSemaphoreTake(runtime->injection, portMAX_DELAY);
+    const bool event =
+        runtime->scenario != Scenario::CompletionRecheckHorizonOnly &&
+        runtime->scenario != Scenario::CompletionRecheckEmpty;
+    const bool horizon =
+        runtime->scenario != Scenario::CompletionRecheckEventOnly &&
+        runtime->scenario != Scenario::CompletionRecheckEmpty;
+    const bool reset = runtime->scenario == Scenario::CompletionRecheckReset;
+    if (!completion_publish_direct(runtime, event, horizon, reset)) {
+        publish_error(runtime, kErrorProducer);
+    }
+    /* No task notification follows this release.  The test-only semaphore
+     * rendezvous resumes the worker, which must converge from level state. */
+    np2audio86_runtime_producer_done_publish(&runtime->control);
+    if (runtime->scenario == Scenario::CompletionRecheckStop) {
+        publish_stop(runtime);
+    } else if (runtime->scenario ==
+               Scenario::CompletionRecheckProducerFatal) {
+        publish_error(runtime, kErrorProducer);
+    }
+    xSemaphoreGive(runtime->resume);
+}
+
 void producer_task(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
@@ -490,6 +560,16 @@ void producer_task(void *opaque)
             }
         }
         break;
+    case Scenario::CompletionRecheckEventOnly:
+    case Scenario::CompletionRecheckHorizonOnly:
+    case Scenario::CompletionRecheckCombined:
+    case Scenario::CompletionRecheckEmpty:
+    case Scenario::CompletionRecheckStop:
+    case Scenario::CompletionRecheckProducerFatal:
+    case Scenario::CompletionRecheckWorkerFatal:
+    case Scenario::CompletionRecheckReset:
+        producer_completion_recheck(runtime);
+        break;
     case Scenario::WorkerOnlyPartialCreate:
     case Scenario::ProducerOnlyPartialCreate:
     case Scenario::ProducerReadyTimeout:
@@ -501,11 +581,71 @@ void producer_task(void *opaque)
 
 enum class WorkerDecision { Work, Wait, Finish, Abort };
 
+WorkerDecision worker_after_done(Runtime *runtime,
+                                 const struct np2audio86_event **event)
+{
+    /* producer_done was acquire-observed by the caller.  Do not reuse any
+     * publication state sampled before that acquire. */
+    if (abort_requested(runtime)) {
+        return WorkerDecision::Abort;
+    }
+
+    const int peek = np2audio86_event_ring_peek(&runtime->events, event);
+    const int horizon = np2audio86_runtime_horizon_try_observe(
+        &runtime->control, &runtime->consumer_clock);
+    if (horizon != NP2_AUDIO86_RUNTIME_HORIZON_OK &&
+        horizon != NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
+        publish_error(runtime, kErrorHorizon);
+        return WorkerDecision::Abort;
+    }
+    if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        runtime->consumer_has_horizon = true;
+        notify(runtime->producer_task);
+    }
+    if (peek == NP2_AUDIO86_TRANSPORT_OK) {
+        if ((*event)->frame_timestamp <=
+            runtime->consumer_clock.committed_frame_reconstructed) {
+            return WorkerDecision::Work;
+        }
+        /* done orders all horizon publication before this fresh acquire, so
+         * a still-uncommitted event is a terminal protocol violation. */
+        publish_error(runtime, kErrorWorker);
+        return WorkerDecision::Abort;
+    }
+    if (peek != NP2_AUDIO86_TRANSPORT_EMPTY) {
+        publish_error(runtime, kErrorWorker);
+        return WorkerDecision::Abort;
+    }
+    if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK ||
+        runtime->rendered_frame <
+            runtime->consumer_clock.committed_frame_reconstructed) {
+        runtime->rendered_frame =
+            runtime->consumer_clock.committed_frame_reconstructed;
+        return WorkerDecision::Wait;
+    }
+
+    const bool reset_ack_complete =
+        runtime->reset_count == 0U ||
+        np2audio86_runtime_reset_ack(&runtime->control) ==
+            runtime->last_reset_ordinal;
+    if (abort_requested(runtime) ||
+        np2audio86_byte_ring_occupancy(&runtime->bytes) != 0U ||
+        np2audio86_runtime_horizon_pending(&runtime->control) ||
+        !reset_ack_complete) {
+        publish_error(runtime, kErrorWorker);
+        return WorkerDecision::Abort;
+    }
+    return WorkerDecision::Finish;
+}
+
 WorkerDecision worker_decision(Runtime *runtime,
                                const struct np2audio86_event **event)
 {
     if (abort_requested(runtime)) {
         return WorkerDecision::Abort;
+    }
+    if (np2audio86_runtime_producer_done(&runtime->control)) {
+        return worker_after_done(runtime, event);
     }
     const int horizon = np2audio86_runtime_horizon_try_observe(
         &runtime->control, &runtime->consumer_clock);
@@ -527,8 +667,7 @@ WorkerDecision worker_decision(Runtime *runtime,
             return WorkerDecision::Work;
         }
         if (np2audio86_runtime_producer_done(&runtime->control)) {
-            publish_error(runtime, kErrorWorker);
-            return WorkerDecision::Abort;
+            return worker_after_done(runtime, event);
         }
         return WorkerDecision::Wait;
     }
@@ -536,10 +675,8 @@ WorkerDecision worker_decision(Runtime *runtime,
         publish_error(runtime, kErrorWorker);
         return WorkerDecision::Abort;
     }
-    if (np2audio86_runtime_producer_done(&runtime->control) &&
-        runtime->rendered_frame >=
-            runtime->consumer_clock.committed_frame_reconstructed) {
-        return WorkerDecision::Finish;
+    if (np2audio86_runtime_producer_done(&runtime->control)) {
+        return worker_after_done(runtime, event);
     }
     return WorkerDecision::Wait;
 }
@@ -584,6 +721,7 @@ bool apply_event(Runtime *runtime, const struct np2audio86_event *event)
     ++runtime->action_count;
     notify(runtime->producer_task);
     if (reset) {
+        runtime->last_reset_ordinal = reset_ordinal;
         np2audio86_runtime_reset_ack_publish(&runtime->control,
                                              reset_ordinal);
         notify(runtime->producer_task);
@@ -725,6 +863,25 @@ void worker_task(void *opaque)
         }
         xSemaphoreGive(runtime->resume);
         worker_normal(runtime);
+    } else if (is_completion_recheck_scenario(runtime->scenario)) {
+        const struct np2audio86_event *stale_event = nullptr;
+        const int stale_peek =
+            np2audio86_event_ring_peek(&runtime->events, &stale_event);
+        const int stale_horizon = np2audio86_runtime_horizon_try_observe(
+            &runtime->control, &runtime->consumer_clock);
+        if (stale_peek != NP2_AUDIO86_TRANSPORT_EMPTY ||
+            stale_horizon != NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
+            publish_error(runtime, kErrorWorker);
+        } else {
+            runtime->transport_pause_verified.store(
+                1U, std::memory_order_release);
+        }
+        xSemaphoreGive(runtime->injection);
+        xSemaphoreTake(runtime->resume, portMAX_DELAY);
+        if (runtime->scenario == Scenario::CompletionRecheckWorkerFatal) {
+            publish_error(runtime, kErrorWorker);
+        }
+        worker_normal(runtime);
     } else {
         worker_normal(runtime);
     }
@@ -757,6 +914,7 @@ void reset_runtime(Scenario scenario)
     s_runtime.action_count = 0U;
     s_runtime.data_bytes = 0U;
     s_runtime.reset_count = 0U;
+    s_runtime.last_reset_ordinal = 0U;
     s_runtime.producer_wakes = 0U;
     s_runtime.worker_wakes = 0U;
     std::memset(s_runtime.data_sha, 0, sizeof(s_runtime.data_sha));
@@ -770,6 +928,49 @@ void reset_runtime(Scenario scenario)
     s_runtime.injection = xSemaphoreCreateBinaryStatic(
         &s_runtime.injection_storage);
     s_runtime.resume = xSemaphoreCreateBinaryStatic(&s_runtime.resume_storage);
+}
+
+bool run_completion_recheck_stability()
+{
+    constexpr uint32_t kRepetitions = 1000U;
+    for (uint32_t iteration = 0U; iteration < kRepetitions; ++iteration) {
+        np2audio86_event_ring_init(&s_runtime.events);
+        np2audio86_byte_ring_init(&s_runtime.bytes);
+        np2audio86_runtime_control_init(&s_runtime.control);
+        s_runtime.producer_clock = {};
+        s_runtime.consumer_clock = {};
+        s_runtime.producer_task = nullptr;
+        s_runtime.worker_task = nullptr;
+        s_runtime.consumer_has_horizon = false;
+        s_runtime.rendered_frame = 0U;
+        s_runtime.next_sequence = 0U;
+        s_runtime.action_count = 0U;
+        s_runtime.reset_count = 0U;
+        s_runtime.last_reset_ordinal = 0U;
+
+        const struct np2audio86_event *event = nullptr;
+        if (np2audio86_event_ring_peek(&s_runtime.events, &event) !=
+                NP2_AUDIO86_TRANSPORT_EMPTY ||
+            np2audio86_runtime_horizon_try_observe(
+                &s_runtime.control, &s_runtime.consumer_clock) !=
+                NP2_AUDIO86_RUNTIME_HORIZON_RETRY ||
+            !completion_publish_direct(&s_runtime, true, true, false)) {
+            return false;
+        }
+        np2audio86_runtime_producer_done_publish(&s_runtime.control);
+        if (!np2audio86_runtime_producer_done(&s_runtime.control) ||
+            worker_after_done(&s_runtime, &event) != WorkerDecision::Work ||
+            !apply_event(&s_runtime, event) ||
+            worker_after_done(&s_runtime, &event) != WorkerDecision::Finish ||
+            s_runtime.action_count != 1U || s_runtime.rendered_frame != 8U ||
+            s_runtime.consumer_clock.committed_frame_reconstructed != 8U ||
+            np2audio86_event_ring_occupancy(&s_runtime.events) != 0U ||
+            np2audio86_byte_ring_occupancy(&s_runtime.bytes) != 0U ||
+            np2audio86_runtime_horizon_pending(&s_runtime.control)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool wait_task_suspended(TaskHandle_t task)
@@ -934,6 +1135,8 @@ bool run_scenario(Scenario scenario, const char *name)
                  np2audio86_runtime_reset_ack(&s_runtime.control) == 1U &&
                  np2audio86_event_ring_occupancy(&s_runtime.events) == 0U &&
                  np2audio86_byte_ring_occupancy(&s_runtime.bytes) == 0U &&
+                 !np2audio86_runtime_horizon_pending(&s_runtime.control) &&
+                 s_runtime.last_reset_ordinal == 1U &&
                  std::memcmp(s_runtime.data_sha, kDataRunSha256,
                              sizeof(kDataRunSha256)) == 0;
         std::printf("AUDIO86_86R5A_HEADLESS actions=%" PRIu32
@@ -1044,6 +1247,59 @@ bool run_scenario(Scenario scenario, const char *name)
                      std::memory_order_acquire) == 1U &&
                  s_runtime.action_count == 1U &&
                  np2audio86_event_ring_occupancy(&s_runtime.events) == 0U;
+    } else if (scenario == Scenario::CompletionRecheckEventOnly ||
+               scenario == Scenario::CompletionRecheckHorizonOnly ||
+               scenario == Scenario::CompletionRecheckCombined ||
+               scenario == Scenario::CompletionRecheckEmpty ||
+               scenario == Scenario::CompletionRecheckReset) {
+        const uint64_t expected_frame =
+            (scenario == Scenario::CompletionRecheckHorizonOnly ||
+             scenario == Scenario::CompletionRecheckCombined)
+                ? 8U : 0U;
+        const uint32_t expected_actions =
+            (scenario == Scenario::CompletionRecheckEventOnly ||
+             scenario == Scenario::CompletionRecheckCombined ||
+             scenario == Scenario::CompletionRecheckReset)
+                ? 1U : 0U;
+        const bool reset_ok =
+            scenario != Scenario::CompletionRecheckReset ||
+            (s_runtime.reset_count == 1U &&
+             s_runtime.last_reset_ordinal == 1U &&
+             np2audio86_runtime_reset_ack(&s_runtime.control) == 1U);
+        result = result &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 np2audio86_runtime_producer_done(&s_runtime.control) &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 !np2audio86_runtime_stop_requested(&s_runtime.control) &&
+                 s_runtime.action_count == expected_actions &&
+                 s_runtime.rendered_frame == expected_frame &&
+                 s_runtime.consumer_clock.committed_frame_reconstructed ==
+                     expected_frame &&
+                 np2audio86_event_ring_occupancy(&s_runtime.events) == 0U &&
+                 np2audio86_byte_ring_occupancy(&s_runtime.bytes) == 0U &&
+                 !np2audio86_runtime_horizon_pending(&s_runtime.control) &&
+                 reset_ok;
+    } else if (scenario == Scenario::CompletionRecheckStop) {
+        result = result &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 np2audio86_runtime_producer_done(&s_runtime.control) &&
+                 np2audio86_runtime_stop_requested(&s_runtime.control);
+    } else if (scenario == Scenario::CompletionRecheckProducerFatal) {
+        result = result &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 np2audio86_runtime_producer_done(&s_runtime.control) &&
+                 np2audio86_runtime_first_error(&s_runtime.control) ==
+                     kErrorProducer;
+    } else if (scenario == Scenario::CompletionRecheckWorkerFatal) {
+        result = result &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 np2audio86_runtime_producer_done(&s_runtime.control) &&
+                 np2audio86_runtime_first_error(&s_runtime.control) ==
+                     kErrorWorker;
     }
     std::printf("AUDIO86_86R5A_SCENARIO name=%s result=%s first_error=%" PRIu32
                 " stop=%u producer_wakes=%" PRIu32 " worker_wakes=%" PRIu32
@@ -1103,6 +1359,7 @@ esp_err_t run()
                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 
     bool ok = memory_is_internal();
+    ok = ok && run_completion_recheck_stability();
     ok = ok && run_scenario(Scenario::WorkerOnlyPartialCreate,
                             "worker_only_partial_create");
     ok = ok && run_scenario(Scenario::ProducerOnlyPartialCreate,
@@ -1132,6 +1389,22 @@ esp_err_t run()
     ok = ok && run_scenario(Scenario::HorizonWaitFatal, "horizon_wait_fatal");
     ok = ok && run_scenario(Scenario::TransportBeforeHorizon,
                             "transport_before_horizon");
+    ok = ok && run_scenario(Scenario::CompletionRecheckEventOnly,
+                            "completion_recheck_event_only");
+    ok = ok && run_scenario(Scenario::CompletionRecheckHorizonOnly,
+                            "completion_recheck_horizon_only");
+    ok = ok && run_scenario(Scenario::CompletionRecheckCombined,
+                            "completion_recheck_combined");
+    ok = ok && run_scenario(Scenario::CompletionRecheckEmpty,
+                            "completion_recheck_empty");
+    ok = ok && run_scenario(Scenario::CompletionRecheckStop,
+                            "completion_recheck_stop");
+    ok = ok && run_scenario(Scenario::CompletionRecheckProducerFatal,
+                            "completion_recheck_producer_fatal");
+    ok = ok && run_scenario(Scenario::CompletionRecheckWorkerFatal,
+                            "completion_recheck_worker_fatal");
+    ok = ok && run_scenario(Scenario::CompletionRecheckReset,
+                            "completion_recheck_reset");
     /* Finish on the canonical successful stream so final residual evidence
      * describes successful finalize rather than an injected abort. */
     ok = ok && run_scenario(Scenario::Normal, "normal");
@@ -1178,10 +1451,35 @@ esp_err_t run()
                         s_last_deleted_generation == s_next_generation
                     ? "PASS" : "FAIL",
                 s_last_deleted_generation);
+    std::printf("P4_POST_DONE_EVENT_RECHECK=%s\n"
+                "P4_POST_DONE_HORIZON_ONLY=%s\n"
+                "P4_POST_DONE_COMBINED_RECHECK=%s\n"
+                "P4_POST_DONE_EMPTY_FINISH=%s\n"
+                "FINAL_COMPLETION_LEVEL_PREDICATE=%s\n"
+                "TERMINAL_ERROR_PRECEDENCE=%s\n"
+                "RESET_FINALIZE_NONREGRESSION=%s\n"
+                "POST_DONE_HORIZON_RECHECK=%s\n"
+                "P4_POST_DONE_C11_PROOF=%s\n"
+                "SINGLE_P4_COMPLETION_RULE=%s\n"
+                "BYTE_POST_DONE_RECHECK_NOT_REQUIRED_BY_PROTOCOL=%s\n"
+                "SUCCESSFUL_FINAL_RESIDUALS_ZERO=%s\n"
+                "P4_POST_DONE_COMPLETION_STRESS=%s repetitions=1000\n",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL");
     std::printf("AUDIO86_86R5A_FINAL residual_events=%" PRIu32
-                " residual_bytes=%" PRIu32 " result=%s timing=NOT_VALIDATED\n",
+                " residual_bytes=%" PRIu32 " horizon_pending=%u"
+                " reset_ack=%" PRIu32 " first_error=%" PRIu32
+                " result=%s timing=NOT_VALIDATED\n",
                 np2audio86_event_ring_occupancy(&s_runtime.events),
                 np2audio86_byte_ring_occupancy(&s_runtime.bytes),
+                np2audio86_runtime_horizon_pending(&s_runtime.control) ? 1U : 0U,
+                np2audio86_runtime_reset_ack(&s_runtime.control),
+                np2audio86_runtime_first_error(&s_runtime.control),
                 ok ? "PASS" : "FAIL");
     std::printf("AUDIO86_86R5A_RESULT=%s\n", ok ? "PASS" : "FAIL");
     std::fflush(stdout);
