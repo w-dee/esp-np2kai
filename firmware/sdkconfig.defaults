@@ -6,6 +6,11 @@ CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 
+# Audio86 reserves notification index 1 on its long-lived producer task.
+# Index 0 remains available for existing task-local protocols, including the
+# PC98 runtime terminal park.  This is global FreeRTOS TCB configuration.
+CONFIG_FREERTOS_TASK_NOTIFICATION_ARRAY_ENTRIES=2
+
 # Phase 3: enable the pinned ESP-IDF PSRAM heap and external BSS support.
 # Keep the P4 mode/speed defaults from ESP-IDF 5.5.4.
 CONFIG_SPIRAM=y

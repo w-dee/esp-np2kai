@@ -15,6 +15,7 @@
 #include "np2_sha256.h"
 #include "np2audio86_fixture.h"
 #include "np2audio86_runtime_transport.h"
+#include "p4_nano_audio86_notifications/task_notification.hpp"
 
 namespace p4_nano_audio86_runtime {
 namespace {
@@ -49,6 +50,7 @@ enum class Scenario : uint32_t {
     StopResetWait,
     FatalResetWait,
     StopWorkerWait,
+    CrossIndexIsolation,
     ByteWakeBeforeRecheck,
     ByteSpuriousThenNormal,
     ByteWaitStop,
@@ -130,22 +132,34 @@ static_assert(sizeof(((Runtime *)nullptr)->producer_stack) ==
               kProducerStackBytes);
 static_assert(sizeof(((Runtime *)nullptr)->worker_stack) == kWorkerStackBytes);
 DRAM_ATTR Runtime s_runtime{};
-static_assert(sizeof(Runtime) == 117144U);
+static_assert(sizeof(StaticTask_t) == 344U);
+static_assert(sizeof(Runtime) == 117152U);
 uint32_t s_next_generation = 0U;
 uint32_t s_last_deleted_generation = 0U;
 bool s_storage_reusable = true;
+bool s_stale_audio_index1_seeded = false;
+bool s_recreated_audio_notification_clean = true;
 
-void notify(TaskHandle_t task)
+void notify_producer(Runtime *runtime)
 {
-    if (task != nullptr) {
-        xTaskNotifyGive(task);
+    if (runtime->producer_task != nullptr) {
+        (void)p4_nano_audio86_notifications::notify_producer(
+            runtime->producer_task);
+    }
+}
+
+void notify_worker(Runtime *runtime)
+{
+    if (runtime->worker_task != nullptr) {
+        (void)p4_nano_audio86_notifications::notify_worker(
+            runtime->worker_task);
     }
 }
 
 void wake_all(Runtime *runtime)
 {
-    notify(runtime->producer_task);
-    notify(runtime->worker_task);
+    notify_producer(runtime);
+    notify_worker(runtime);
 }
 
 bool publish_error(Runtime *runtime, uint32_t error)
@@ -190,7 +204,7 @@ bool publish_horizon_wait(Runtime *runtime, uint64_t frame)
         const int result = np2audio86_runtime_horizon_publish(
             &runtime->control, &runtime->producer_clock, frame);
         if (result == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
-            notify(runtime->worker_task);
+            notify_worker(runtime);
             return true;
         }
         if (result != NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
@@ -222,7 +236,7 @@ bool publish_horizon_wait(Runtime *runtime, uint64_t frame)
             runtime->producer_waiting.store(0U, std::memory_order_release);
             return false;
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        p4_nano_audio86_notifications::wait_producer();
         ++runtime->producer_wakes;
         runtime->producer_waiting.store(0U, std::memory_order_release);
     }
@@ -238,7 +252,7 @@ bool enqueue_event_wait(Runtime *runtime,
         const int result = np2audio86_event_ring_enqueue(&runtime->events,
                                                          event);
         if (result == NP2_AUDIO86_TRANSPORT_OK) {
-            notify(runtime->worker_task);
+            notify_worker(runtime);
             return true;
         }
         if (result != NP2_AUDIO86_TRANSPORT_FULL) {
@@ -256,7 +270,7 @@ bool enqueue_event_wait(Runtime *runtime,
             runtime->scenario == Scenario::EventWaitNormal) {
             xSemaphoreGive(runtime->injection);
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        p4_nano_audio86_notifications::wait_producer();
         ++runtime->producer_wakes;
         runtime->producer_waiting.store(0U, std::memory_order_release);
     }
@@ -322,7 +336,7 @@ bool enqueue_bytes_wait(Runtime *runtime, const uint8_t *bytes, size_t count)
             runtime->producer_waiting.store(0U, std::memory_order_release);
             return false;
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        p4_nano_audio86_notifications::wait_producer();
         ++runtime->producer_wakes;
         runtime->producer_waiting.store(0U, std::memory_order_release);
     }
@@ -350,7 +364,7 @@ bool wait_reset_ack(Runtime *runtime, uint32_t ordinal)
             runtime->scenario == Scenario::FatalResetWait) {
             xSemaphoreGive(runtime->injection);
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        p4_nano_audio86_notifications::wait_producer();
         ++runtime->producer_wakes;
         runtime->producer_waiting.store(0U, std::memory_order_release);
     }
@@ -495,9 +509,15 @@ void producer_task(void *opaque)
 
     switch (runtime->scenario) {
     case Scenario::Normal:
+        if (s_stale_audio_index1_seeded &&
+            p4_nano_audio86_notifications::wait_producer(0U) != 0U) {
+            s_recreated_audio_notification_clean = false;
+            publish_error(runtime, kErrorProducer);
+            break;
+        }
         (void)publish_normal_stream(runtime);
         np2audio86_runtime_producer_done_publish(&runtime->control);
-        notify(runtime->worker_task);
+        notify_worker(runtime);
         break;
     case Scenario::FatalWorkerWait:
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
@@ -524,6 +544,17 @@ void producer_task(void *opaque)
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_stop(runtime);
         break;
+    case Scenario::CrossIndexIsolation:
+        runtime->producer_waiting.store(1U, std::memory_order_release);
+        xSemaphoreGive(runtime->injection);
+        xSemaphoreTake(runtime->resume, portMAX_DELAY);
+        (void)p4_nano_audio86_notifications::wait_producer();
+        ++runtime->producer_wakes;
+        runtime->producer_waiting.store(0U, std::memory_order_release);
+        xSemaphoreGive(runtime->injection);
+        np2audio86_runtime_producer_done_publish(&runtime->control);
+        notify_worker(runtime);
+        break;
     case Scenario::ByteWakeBeforeRecheck:
     case Scenario::ByteSpuriousThenNormal:
     case Scenario::ByteWaitStop:
@@ -547,7 +578,7 @@ void producer_task(void *opaque)
             }
         } else {
             np2audio86_runtime_producer_done_publish(&runtime->control);
-            notify(runtime->worker_task);
+            notify_worker(runtime);
         }
         break;
     case Scenario::TransportBeforeHorizon:
@@ -556,7 +587,7 @@ void producer_task(void *opaque)
             xSemaphoreTake(runtime->resume, portMAX_DELAY);
             if (publish_horizon_wait(runtime, 0U)) {
                 np2audio86_runtime_producer_done_publish(&runtime->control);
-                notify(runtime->worker_task);
+                notify_worker(runtime);
             }
         }
         break;
@@ -600,7 +631,7 @@ WorkerDecision worker_after_done(Runtime *runtime,
     }
     if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
         runtime->consumer_has_horizon = true;
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     }
     if (peek == NP2_AUDIO86_TRANSPORT_OK) {
         if ((*event)->frame_timestamp <=
@@ -658,7 +689,7 @@ WorkerDecision worker_decision(Runtime *runtime,
         return WorkerDecision::Abort;
     } else {
         runtime->consumer_has_horizon = true;
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     }
     const int peek = np2audio86_event_ring_peek(&runtime->events, event);
     if (peek == NP2_AUDIO86_TRANSPORT_OK) {
@@ -703,7 +734,7 @@ bool apply_event(Runtime *runtime, const struct np2audio86_event *event)
         np2_sha256_update(&runtime->data_sha_context, runtime->worker_run,
                           event->payload);
         runtime->data_bytes += event->payload;
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     } else if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
         ++runtime->reset_count;
     } else if (event->opcode != NP2_AUDIO86_EVENT_FM_KEY &&
@@ -719,12 +750,12 @@ bool apply_event(Runtime *runtime, const struct np2audio86_event *event)
         return false;
     }
     ++runtime->action_count;
-    notify(runtime->producer_task);
+    notify_producer(runtime);
     if (reset) {
         runtime->last_reset_ordinal = reset_ordinal;
         np2audio86_runtime_reset_ack_publish(&runtime->control,
                                              reset_ordinal);
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     }
     return true;
 }
@@ -754,7 +785,7 @@ void worker_normal(Runtime *runtime)
             runtime->scenario == Scenario::StopWorkerWait) {
             xSemaphoreGive(runtime->injection);
         }
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        p4_nano_audio86_notifications::wait_worker();
         ++runtime->worker_wakes;
         runtime->worker_waiting.store(0U, std::memory_order_release);
     }
@@ -790,7 +821,7 @@ void worker_task(void *opaque)
             NP2_AUDIO86_TRANSPORT_OK) {
             publish_error(runtime, kErrorWorker);
         }
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     } else if (runtime->scenario == Scenario::StopResetWait) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_stop(runtime);
@@ -804,11 +835,11 @@ void worker_task(void *opaque)
             NP2_AUDIO86_TRANSPORT_OK) {
             publish_error(runtime, kErrorWorker);
         }
-        notify(runtime->producer_task);
+        notify_producer(runtime);
         xSemaphoreGive(runtime->resume);
     } else if (runtime->scenario == Scenario::ByteSpuriousThenNormal) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
-        notify(runtime->producer_task);
+        notify_producer(runtime);
         xSemaphoreGive(runtime->resume);
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         if (np2audio86_byte_ring_pop(&runtime->bytes, runtime->worker_run,
@@ -816,7 +847,7 @@ void worker_task(void *opaque)
             NP2_AUDIO86_TRANSPORT_OK) {
             publish_error(runtime, kErrorWorker);
         }
-        notify(runtime->producer_task);
+        notify_producer(runtime);
     } else if (runtime->scenario == Scenario::ByteWaitStop) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_stop(runtime);
@@ -830,12 +861,12 @@ void worker_task(void *opaque)
             NP2_AUDIO86_RUNTIME_HORIZON_OK) {
             publish_error(runtime, kErrorHorizon);
         }
-        notify(runtime->producer_task);
+        notify_producer(runtime);
         xSemaphoreGive(runtime->resume);
         worker_normal(runtime);
     } else if (runtime->scenario == Scenario::HorizonSpuriousThenNormal) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
-        notify(runtime->producer_task);
+        notify_producer(runtime);
         xSemaphoreGive(runtime->resume);
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         if (np2audio86_runtime_horizon_try_observe(
@@ -843,7 +874,7 @@ void worker_task(void *opaque)
             NP2_AUDIO86_RUNTIME_HORIZON_OK) {
             publish_error(runtime, kErrorHorizon);
         }
-        notify(runtime->producer_task);
+        notify_producer(runtime);
         worker_normal(runtime);
     } else if (runtime->scenario == Scenario::HorizonWaitStop) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
@@ -851,6 +882,30 @@ void worker_task(void *opaque)
     } else if (runtime->scenario == Scenario::HorizonWaitFatal) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_error(runtime, kErrorWorker);
+    } else if (runtime->scenario == Scenario::CrossIndexIsolation) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        /* Test-only: index 0 must not release the producer's index-1 wait. */
+        (void)xTaskNotifyGiveIndexed(
+            runtime->producer_task,
+            p4_nano_audio86_notifications::kAudio86WorkerNotificationIndex);
+        xSemaphoreGive(runtime->resume);
+        const bool index0_did_not_wake =
+            xSemaphoreTake(runtime->injection, pdMS_TO_TICKS(1U)) != pdTRUE;
+        if (!index0_did_not_wake) {
+            publish_error(runtime, kErrorWorker);
+        } else {
+            runtime->transport_pause_verified.store(
+                1U, std::memory_order_release);
+        }
+        notify_producer(runtime);
+        if (xSemaphoreTake(runtime->injection, kTimeout) != pdTRUE) {
+            publish_error(runtime, kErrorWorker);
+        } else {
+            /* Leave a pending index-1 count for the delete/recreate proof. */
+            notify_producer(runtime);
+            s_stale_audio_index1_seeded = true;
+        }
+        worker_normal(runtime);
     } else if (runtime->scenario == Scenario::TransportBeforeHorizon) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         const struct np2audio86_event *event = nullptr;
@@ -1190,6 +1245,13 @@ bool run_scenario(Scenario scenario, const char *name)
         result = result &&
                  np2audio86_runtime_stop_requested(&s_runtime.control) &&
                  s_runtime.worker_wakes > 0U;
+    } else if (scenario == Scenario::CrossIndexIsolation) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 s_runtime.producer_wakes == 1U &&
+                 s_stale_audio_index1_seeded;
     } else if (scenario == Scenario::ByteWakeBeforeRecheck) {
         result = result &&
                  np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
@@ -1405,6 +1467,8 @@ esp_err_t run()
                             "completion_recheck_worker_fatal");
     ok = ok && run_scenario(Scenario::CompletionRecheckReset,
                             "completion_recheck_reset");
+    ok = ok && run_scenario(Scenario::CrossIndexIsolation,
+                            "cross_index_isolation");
     /* Finish on the canonical successful stream so final residual evidence
      * describes successful finalize rather than an injected abort. */
     ok = ok && run_scenario(Scenario::Normal, "normal");
@@ -1413,21 +1477,53 @@ esp_err_t run()
                 " worker_priority=6 worker_stack=8192\n",
                 ok ? "PASS" : "FAIL");
     std::printf("AUDIO86_INTERNAL_MEMORY_ONLY=%s\n", ok ? "PASS" : "FAIL");
-    std::printf("TASK_NOTIFICATION_OWNERSHIP=%s slot=0 owner=TRANSPORT_ONLY\n",
+    std::printf("AUDIO86_NOTIFICATION_CONFIG=%s notification_entries=%u"
+                " producer_notification_index=%u worker_notification_index=%u"
+                " static_task_size=%zu worker_context=%zu\n",
+                ok ? "PASS" : "FAIL",
+                static_cast<unsigned>(configTASK_NOTIFICATION_ARRAY_ENTRIES),
+                static_cast<unsigned>(
+                    p4_nano_audio86_notifications::kAudio86ProducerNotificationIndex),
+                static_cast<unsigned>(
+                    p4_nano_audio86_notifications::kAudio86WorkerNotificationIndex),
+                sizeof(StaticTask_t), sizeof(s_runtime));
+    std::printf("TASK_NOTIFICATION_OWNERSHIP=%s producer_slot=1"
+                " owner=AUDIO_TRANSPORT worker_slot=0 owner=AUDIO_TRANSPORT\n",
                 ok ? "PASS" : "FAIL");
-    std::printf("P4_STOP_WAKE_ALL=%s\nP4_FATAL_WAKE_ALL=%s\n",
+    std::printf("AUDIO_NOTIFICATION_INDEX_COMPILE_GUARD=%s\n"
+                "AUDIO_NOTIFICATION_ISR_PATH=NONE\n"
+                "CROSS_INDEX_WAKE_STEALING=%s\n"
+                "CROSS_INDEX_STALE_VALUE_INTERFERENCE=%s\n"
+                "RECREATED_TASK_AUDIO_NOTIFICATION_CLEAN=%s\n",
+                ok ? "PASS" : "FAIL", ok ? "NONE" : "DETECTED",
+                ok ? "NONE" : "DETECTED",
+                ok && s_recreated_audio_notification_clean ? "PASS" : "FAIL");
+    std::printf("P4_STOP_WAKE_ALL=%s\nP4_FATAL_WAKE_ALL=%s\n"
+                "AUDIO_STOP_WAKE_FANOUT=%s\nAUDIO_FATAL_WAKE_FANOUT=%s\n",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::printf("BYTE_CAPACITY_WAIT_RETRY=%s\nBYTE_RETIRE_WAKE=%s\n"
                 "BYTE_WAIT_LOST_WAKEUP_PROOF=%s\n"
                 "BYTE_WAIT_STOP_WAKE=%s\nBYTE_WAIT_FATAL_WAKE=%s\n"
                 "EVENT_WAIT_STOP_WAKE=%s\nEVENT_WAIT_FATAL_WAKE=%s\n"
                 "FREERTOS_WAIT_PROTOCOL=%s\nLOST_WAKEUP_PROOF=%s\n"
-                "P4_WAKE_MATRIX=%s\n",
+                "P4_WAKE_MATRIX=%s\n"
+                "EVENT_WAIT_INDEX1=%s\nBYTE_WAIT_INDEX1=%s\n"
+                "HORIZON_WAIT_INDEX1=%s\nRESET_ACK_WAIT_INDEX1=%s\n"
+                "WORKER_WAIT_INDEX0=%s\n"
+                "PARTIAL_CREATE_INDEXED_NOTIFICATION=%s\n"
+                "READY_TIMEOUT_INDEXED_NOTIFICATION=%s\n"
+                "TASK_REUSE_ENTRIES2=%s\nTASK_QUIESCENCE_ENTRIES2=%s\n",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
-                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL");
     const bool terminal_timeout_policy =
         !storage_reuse_permitted(false, false, false);
     std::printf("HORIZON_MAILBOX_C11_PROOF=%s\n"

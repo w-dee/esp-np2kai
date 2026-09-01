@@ -27,9 +27,20 @@ def valid_log() -> str:
         "P4_AUDIO86_AFFINITY=PASS producer_core=1 worker_core=0 "
         "worker_priority=6 worker_stack=8192",
         "AUDIO86_INTERNAL_MEMORY_ONLY=PASS",
-        "TASK_NOTIFICATION_OWNERSHIP=PASS slot=0 owner=TRANSPORT_ONLY",
+        "AUDIO86_NOTIFICATION_CONFIG=PASS notification_entries=2 "
+        "producer_notification_index=1 worker_notification_index=0 "
+        "static_task_size=344 worker_context=117152",
+        "TASK_NOTIFICATION_OWNERSHIP=PASS producer_slot=1 "
+        "owner=AUDIO_TRANSPORT worker_slot=0 owner=AUDIO_TRANSPORT",
+        "AUDIO_NOTIFICATION_INDEX_COMPILE_GUARD=PASS",
+        "AUDIO_NOTIFICATION_ISR_PATH=NONE",
+        "CROSS_INDEX_WAKE_STEALING=NONE",
+        "CROSS_INDEX_STALE_VALUE_INTERFERENCE=NONE",
+        "RECREATED_TASK_AUDIO_NOTIFICATION_CLEAN=PASS",
         "P4_STOP_WAKE_ALL=PASS",
         "P4_FATAL_WAKE_ALL=PASS",
+        "AUDIO_STOP_WAKE_FANOUT=PASS",
+        "AUDIO_FATAL_WAKE_FANOUT=PASS",
         "BYTE_CAPACITY_WAIT_RETRY=PASS",
         "BYTE_RETIRE_WAKE=PASS",
         "BYTE_WAIT_LOST_WAKEUP_PROOF=PASS",
@@ -40,6 +51,15 @@ def valid_log() -> str:
         "FREERTOS_WAIT_PROTOCOL=PASS",
         "LOST_WAKEUP_PROOF=PASS",
         "P4_WAKE_MATRIX=PASS",
+        "EVENT_WAIT_INDEX1=PASS",
+        "BYTE_WAIT_INDEX1=PASS",
+        "HORIZON_WAIT_INDEX1=PASS",
+        "RESET_ACK_WAIT_INDEX1=PASS",
+        "WORKER_WAIT_INDEX0=PASS",
+        "PARTIAL_CREATE_INDEXED_NOTIFICATION=PASS",
+        "READY_TIMEOUT_INDEXED_NOTIFICATION=PASS",
+        "TASK_REUSE_ENTRIES2=PASS",
+        "TASK_QUIESCENCE_ENTRIES2=PASS",
         "HORIZON_MAILBOX_C11_PROOF=PASS",
         "HORIZON_INDEFINITE_PUBLICATION=PASS",
         "HORIZON_FULL_WAIT_RETRY=PASS",
@@ -50,7 +70,7 @@ def valid_log() -> str:
         "READY_TIMEOUT_QUIESCENCE=PASS",
         "TERMINAL_PATHS_UNIFIED=PASS",
         "TERMINAL_TIMEOUT_NO_REUSE=PASS",
-        "STATIC_STORAGE_REUSE_SAFE=PASS generation=29",
+        "STATIC_STORAGE_REUSE_SAFE=PASS generation=30",
         "P4_POST_DONE_EVENT_RECHECK=PASS",
         "P4_POST_DONE_HORIZON_ONLY=PASS",
         "P4_POST_DONE_COMBINED_RECHECK=PASS",
@@ -104,10 +124,25 @@ def main() -> None:
                    complete + "Unhandled fatal exception\n")
     expect_failure("missing_marker",
                    complete.replace("P4_WAKE_MATRIX=PASS\n", ""))
+    expect_failure("notification_entries_1", complete.replace(
+        "notification_entries=2", "notification_entries=1"))
+    expect_failure("producer_index_0", complete.replace(
+        "producer_notification_index=1", "producer_notification_index=0"))
+    expect_failure("producer_index_out_of_range", complete.replace(
+        "producer_notification_index=1", "producer_notification_index=2"))
+    expect_failure("worker_index_1", complete.replace(
+        "worker_notification_index=0", "worker_notification_index=1"))
+    expect_failure("static_task_size_340", complete.replace(
+        "static_task_size=344", "static_task_size=340"))
+    expect_failure("runtime_size_117144", complete.replace(
+        "worker_context=117152", "worker_context=117144"))
+    expect_failure("missing_ownership", complete.replace(
+        "TASK_NOTIFICATION_OWNERSHIP=PASS producer_slot=1 "
+        "owner=AUDIO_TRANSPORT worker_slot=0 owner=AUDIO_TRANSPORT\n", ""))
     expect_failure("truncated_boot", "ESP-ROM:esp32p4-eco5-20250430\n")
     expect_failure("scenario_plus_panic",
                    complete + "Guru Meditation Error after scenario PASS\n")
-    print("VALIDATOR_MATRIX=16/16_PASS")
+    print("VALIDATOR_MATRIX=23/23_PASS")
     print("BARE_PANIC_REJECTED=PASS")
     print("HARMLESS_PANIC_PROSE_ACCEPTED=PASS")
     print("ESP_EMU_VALIDATOR_FAIL_CLOSED=PASS")
