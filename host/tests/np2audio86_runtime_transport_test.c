@@ -19,50 +19,73 @@ static void test_horizon(void)
 {
     struct np2audio86_runtime_control control;
     struct np2audio86_runtime_producer_clock producer = {0U};
-    struct np2audio86_runtime_consumer_clock consumer = {0U, 0U};
+    struct np2audio86_runtime_consumer_clock consumer = {0U};
     np2audio86_runtime_control_init(&control);
 
+    observe_ok(&control, &consumer, 0U);
     assert(np2audio86_runtime_horizon_publish(&control, &producer, 16U) ==
            NP2_AUDIO86_RUNTIME_HORIZON_OK);
     observe_ok(&control, &consumer, 16U);
     observe_ok(&control, &consumer, 16U);
 
-    producer.committed_frame_owner = UINT64_C(0xfffffff0);
-    consumer.committed_frame_reconstructed = UINT64_C(0xfffffff0);
-    consumer.previous_low32 = UINT32_C(0xfffffff0);
     assert(np2audio86_runtime_horizon_publish(
-               &control, &producer, UINT64_C(0x100000010)) ==
+               &control, &producer, UINT64_C(0xffffffff)) ==
            NP2_AUDIO86_RUNTIME_HORIZON_OK);
-    observe_ok(&control, &consumer, UINT64_C(0x100000010));
-
-    np2audio86_runtime_control_init(&control);
-    producer.committed_frame_owner = 0U;
-    consumer.committed_frame_reconstructed = 0U;
-    consumer.previous_low32 = 0U;
+    observe_ok(&control, &consumer, UINT64_C(0xffffffff));
     assert(np2audio86_runtime_horizon_publish(
-               &control, &producer, UINT32_C(0x7fffffff)) ==
+               &control, &producer, UINT64_C(0x100000000)) ==
            NP2_AUDIO86_RUNTIME_HORIZON_OK);
-    observe_ok(&control, &consumer, UINT32_C(0x7fffffff));
+    observe_ok(&control, &consumer, UINT64_C(0x100000000));
 
+    assert(np2audio86_runtime_horizon_publish(
+               &control, &producer, UINT64_C(0x300000020)) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_OK);
+    observe_ok(&control, &consumer, UINT64_C(0x300000020));
+    assert(np2audio86_runtime_horizon_publish(
+               &control, &producer, UINT64_C(0x800000030)) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_OK);
+    observe_ok(&control, &consumer, UINT64_C(0x800000030));
+    assert(np2audio86_runtime_horizon_publish(
+               &control, &producer, UINT64_MAX) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_OK);
+    observe_ok(&control, &consumer, UINT64_MAX);
+    assert(np2audio86_runtime_horizon_publish(
+               &control, &producer, UINT64_MAX - 1U) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_NONMONOTONIC);
+}
+
+static void test_snapshot_cutpoints(void)
+{
+    struct np2audio86_runtime_control control;
+    struct np2audio86_runtime_consumer_clock consumer = {UINT64_C(0x1122334455667788)};
     np2audio86_runtime_control_init(&control);
-    producer.committed_frame_owner = 0U;
-    consumer.committed_frame_reconstructed = 0U;
-    consumer.previous_low32 = 0U;
-    atomic_store_explicit(&control.committed_frame_low32,
-                          UINT32_C(0x80000000), memory_order_release);
-    assert(np2audio86_runtime_horizon_observe(&control, &consumer) ==
-           NP2_AUDIO86_RUNTIME_HORIZON_AMBIGUOUS);
-    atomic_store_explicit(&control.committed_frame_low32,
-                          UINT32_C(0x80000001), memory_order_release);
-    assert(np2audio86_runtime_horizon_observe(&control, &consumer) ==
-           NP2_AUDIO86_RUNTIME_HORIZON_AMBIGUOUS);
+    atomic_store_explicit(&control.committed_frame_lo, UINT32_C(0x55667788),
+                          memory_order_seq_cst);
+    atomic_store_explicit(&control.committed_frame_hi, UINT32_C(0x11223344),
+                          memory_order_seq_cst);
+    atomic_store_explicit(&control.committed_seq, 2U, memory_order_seq_cst);
+    observe_ok(&control, &consumer, UINT64_C(0x1122334455667788));
+
+    atomic_store_explicit(&control.committed_seq, 3U, memory_order_seq_cst);
+    assert(np2audio86_runtime_horizon_try_observe(&control, &consumer) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_RETRY);
+    atomic_store_explicit(&control.committed_frame_lo, UINT32_C(0xddeeff00),
+                          memory_order_seq_cst);
+    assert(np2audio86_runtime_horizon_try_observe(&control, &consumer) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_RETRY);
+    atomic_store_explicit(&control.committed_frame_hi, UINT32_C(0x99aabbcc),
+                          memory_order_seq_cst);
+    assert(np2audio86_runtime_horizon_try_observe(&control, &consumer) ==
+           NP2_AUDIO86_RUNTIME_HORIZON_RETRY);
+    atomic_store_explicit(&control.committed_seq, 4U, memory_order_seq_cst);
+    observe_ok(&control, &consumer, UINT64_C(0x99aabbccddeeff00));
 }
 
 static void test_transport_before_horizon(void)
 {
     struct np2audio86_runtime_control control;
     struct np2audio86_runtime_producer_clock producer = {0U};
-    struct np2audio86_runtime_consumer_clock consumer = {0U, 0U};
+    struct np2audio86_runtime_consumer_clock consumer = {0U};
     struct np2audio86_event_ring ring;
     struct np2audio86_event event = {16U, 0U, NP2_AUDIO86_EVENT_FM_KEY, 1U};
     const struct np2audio86_event *observed = NULL;
@@ -71,6 +94,8 @@ static void test_transport_before_horizon(void)
 
     assert(np2audio86_event_ring_enqueue(&ring, &event) ==
            NP2_AUDIO86_TRANSPORT_OK);
+    observe_ok(&control, &consumer, 0U);
+    assert(event.frame_timestamp > consumer.committed_frame_reconstructed);
     assert(np2audio86_runtime_horizon_publish(&control, &producer, 16U) ==
            NP2_AUDIO86_RUNTIME_HORIZON_OK);
     observe_ok(&control, &consumer, 16U);
@@ -106,6 +131,7 @@ static void test_reset_and_control(void)
 int main(void)
 {
     test_horizon();
+    test_snapshot_cutpoints();
     test_transport_before_horizon();
     test_reset_and_control();
     printf("AUDIO86_RUNTIME_TRANSPORT abi=%zu event_ring=%zu byte_ring=%zu control=%zu control_align=%zu producer_clock=%zu consumer_clock=%zu\n",
@@ -117,6 +143,8 @@ int main(void)
            sizeof(struct np2audio86_runtime_producer_clock),
            sizeof(struct np2audio86_runtime_consumer_clock));
     printf("AUDIO86_RUNTIME_HORIZON_TESTS=PASS\n"
+           "COMMITTED_HORIZON_COHERENT_SNAPSHOT=PASS\n"
+           "HORIZON_ALIAS_ELIMINATED=PASS\n"
            "COMMITTED_HORIZON_AFTER_TRANSPORT_PUBLICATION=PASS\n"
            "RESET_ACK_U32_PROTOCOL=PASS\n"
            "P4_FIRST_ERROR_IMMUTABLE=PASS\n");

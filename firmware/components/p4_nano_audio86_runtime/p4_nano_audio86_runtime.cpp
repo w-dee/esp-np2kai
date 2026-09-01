@@ -44,10 +44,15 @@ enum class Scenario : uint32_t {
     Normal,
     FatalWorkerWait,
     FatalProducerWait,
+    StopEventWait,
+    EventWaitNormal,
     StopResetWait,
     FatalResetWait,
     StopWorkerWait,
-    InvalidHorizon,
+    ByteWakeBeforeRecheck,
+    ByteSpuriousThenNormal,
+    ByteWaitStop,
+    ByteWaitFatal,
 };
 
 struct Runtime {
@@ -65,10 +70,12 @@ struct Runtime {
     StaticSemaphore_t start_storage{};
     StaticSemaphore_t terminal_storage{};
     StaticSemaphore_t injection_storage{};
+    StaticSemaphore_t resume_storage{};
     SemaphoreHandle_t ready = nullptr;
     SemaphoreHandle_t start = nullptr;
     SemaphoreHandle_t terminal = nullptr;
     SemaphoreHandle_t injection = nullptr;
+    SemaphoreHandle_t resume = nullptr;
     TaskHandle_t producer_task = nullptr;
     TaskHandle_t worker_task = nullptr;
     std::atomic<uint32_t> producer_waiting{0U};
@@ -76,6 +83,7 @@ struct Runtime {
     std::atomic<uint32_t> producer_core{UINT32_MAX};
     std::atomic<uint32_t> worker_core{UINT32_MAX};
     std::atomic<uint32_t> worker_priority{0U};
+    std::atomic<uint32_t> byte_wait_attempts{0U};
     Scenario scenario = Scenario::Normal;
     uint64_t rendered_frame = 0U;
     uint64_t next_sequence = 0U;
@@ -91,11 +99,12 @@ struct Runtime {
 static_assert(sizeof(struct np2audio86_event) == 24U);
 static_assert(sizeof(struct np2audio86_event_ring) == 3080U);
 static_assert(sizeof(struct np2audio86_byte_ring) == 65544U);
-static_assert(sizeof(struct np2audio86_runtime_control) == 20U);
+static_assert(sizeof(struct np2audio86_runtime_control) == 28U);
 static_assert(alignof(struct np2audio86_runtime_control) >= 4U);
 static_assert(sizeof(((Runtime *)nullptr)->producer_stack) ==
               kProducerStackBytes);
 static_assert(sizeof(((Runtime *)nullptr)->worker_stack) == kWorkerStackBytes);
+static_assert(sizeof(Runtime) == 117120U);
 
 DRAM_ATTR Runtime s_runtime{};
 
@@ -157,8 +166,76 @@ bool enqueue_event_wait(Runtime *runtime,
             runtime->producer_waiting.store(0U, std::memory_order_release);
             continue;
         }
-        if (runtime->scenario == Scenario::FatalProducerWait) {
+        if (runtime->scenario == Scenario::FatalProducerWait ||
+            runtime->scenario == Scenario::StopEventWait ||
+            runtime->scenario == Scenario::EventWaitNormal) {
             xSemaphoreGive(runtime->injection);
+        }
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ++runtime->producer_wakes;
+        runtime->producer_waiting.store(0U, std::memory_order_release);
+    }
+}
+
+bool byte_capacity_available(Runtime *runtime, size_t count, bool *available)
+{
+    const uint32_t occupancy =
+        np2audio86_byte_ring_occupancy(&runtime->bytes);
+    if (available == nullptr || count > NP2_AUDIO86_ASYNC_BYTE_CAPACITY ||
+        occupancy > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
+        publish_error(runtime, kErrorProducer);
+        return false;
+    }
+    *available = count <= NP2_AUDIO86_ASYNC_BYTE_CAPACITY - occupancy;
+    return true;
+}
+
+bool enqueue_bytes_wait(Runtime *runtime, const uint8_t *bytes, size_t count)
+{
+    uint32_t attempt = 0U;
+    for (;;) {
+        bool available = false;
+        if (abort_requested(runtime)) {
+            return false;
+        }
+        const int result = np2audio86_byte_ring_push(&runtime->bytes, bytes,
+                                                     count);
+        if (result == NP2_AUDIO86_TRANSPORT_OK) {
+            return true;
+        }
+        if (result != NP2_AUDIO86_TRANSPORT_FULL) {
+            publish_error(runtime, kErrorProducer);
+            return false;
+        }
+        ++attempt;
+        runtime->byte_wait_attempts.store(attempt, std::memory_order_release);
+        runtime->producer_waiting.store(1U, std::memory_order_release);
+
+        if ((runtime->scenario == Scenario::ByteWakeBeforeRecheck ||
+             runtime->scenario == Scenario::ByteSpuriousThenNormal) &&
+            attempt == 1U) {
+            xSemaphoreGive(runtime->injection);
+            xSemaphoreTake(runtime->resume, portMAX_DELAY);
+        } else if (runtime->scenario == Scenario::ByteSpuriousThenNormal &&
+                   attempt == 2U) {
+            xSemaphoreGive(runtime->injection);
+        } else if ((runtime->scenario == Scenario::ByteWaitStop ||
+                    runtime->scenario == Scenario::ByteWaitFatal) &&
+                   attempt == 1U) {
+            xSemaphoreGive(runtime->injection);
+        }
+
+        if (!byte_capacity_available(runtime, count, &available)) {
+            runtime->producer_waiting.store(0U, std::memory_order_release);
+            return false;
+        }
+        if (available) {
+            runtime->producer_waiting.store(0U, std::memory_order_release);
+            continue;
+        }
+        if (abort_requested(runtime)) {
+            runtime->producer_waiting.store(0U, std::memory_order_release);
+            return false;
         }
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         ++runtime->producer_wakes;
@@ -211,10 +288,7 @@ bool publish_normal_stream(Runtime *runtime)
     if (!publish_event(runtime, 0U, NP2_AUDIO86_EVENT_FM_KEY, 0x28U)) {
         return false;
     }
-    if (np2audio86_byte_ring_push(&runtime->bytes, kDataRun,
-                                  sizeof(kDataRun)) !=
-        NP2_AUDIO86_TRANSPORT_OK) {
-        publish_error(runtime, kErrorProducer);
+    if (!enqueue_bytes_wait(runtime, kDataRun, sizeof(kDataRun))) {
         return false;
     }
     if (!publish_event(runtime, 8U, NP2_AUDIO86_EVENT_PCM86_DATA_RUN,
@@ -244,6 +318,27 @@ bool publish_normal_stream(Runtime *runtime)
     return true;
 }
 
+bool fill_byte_ring(Runtime *runtime)
+{
+    std::memset(runtime->worker_run, 0xa5, sizeof(runtime->worker_run));
+    return np2audio86_byte_ring_push(&runtime->bytes, runtime->worker_run,
+                                     sizeof(runtime->worker_run)) ==
+               NP2_AUDIO86_TRANSPORT_OK &&
+           np2audio86_byte_ring_push(&runtime->bytes, runtime->worker_run,
+                                     sizeof(runtime->worker_run)) ==
+               NP2_AUDIO86_TRANSPORT_OK;
+}
+
+void publish_event_pressure(Runtime *runtime)
+{
+    for (uint32_t index = 0U;
+         index < NP2_AUDIO86_ASYNC_EVENT_CAPACITY + 1U; ++index) {
+        if (!publish_event(runtime, 0U, NP2_AUDIO86_EVENT_FM_KEY, index)) {
+            break;
+        }
+    }
+}
+
 void producer_task(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
@@ -263,16 +358,15 @@ void producer_task(void *opaque)
         publish_error(runtime, kErrorProducer);
         break;
     case Scenario::FatalProducerWait: {
-        for (uint32_t index = 0U;
-             index < NP2_AUDIO86_ASYNC_EVENT_CAPACITY + 1U; ++index) {
-            if (!publish_event(runtime, 0U, NP2_AUDIO86_EVENT_FM_KEY, index)) {
-                break;
-            }
-        }
+        publish_event_pressure(runtime);
         /* Exercise first-wins after the worker's injected fatal publication. */
         (void)publish_error(runtime, kErrorProducer);
         break;
     }
+    case Scenario::StopEventWait:
+    case Scenario::EventWaitNormal:
+        publish_event_pressure(runtime);
+        break;
     case Scenario::StopResetWait:
     case Scenario::FatalResetWait:
         if (publish_event(runtime, 0U, NP2_AUDIO86_EVENT_RESET_BARRIER, 1U) &&
@@ -287,10 +381,15 @@ void producer_task(void *opaque)
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_stop(runtime);
         break;
-    case Scenario::InvalidHorizon:
-        runtime->control.committed_frame_low32.store(
-            UINT32_C(0x80000000), std::memory_order_release);
-        notify(runtime->worker_task);
+    case Scenario::ByteWakeBeforeRecheck:
+    case Scenario::ByteSpuriousThenNormal:
+    case Scenario::ByteWaitStop:
+    case Scenario::ByteWaitFatal:
+        if (!fill_byte_ring(runtime)) {
+            publish_error(runtime, kErrorProducer);
+        } else {
+            (void)enqueue_bytes_wait(runtime, kDataRun, sizeof(kDataRun));
+        }
         break;
     }
     xSemaphoreGive(runtime->terminal);
@@ -302,8 +401,11 @@ enum class WorkerDecision { Work, Wait, Finish, Abort };
 WorkerDecision worker_decision(Runtime *runtime,
                                const struct np2audio86_event **event)
 {
-    const int horizon = np2audio86_runtime_horizon_observe(
+    const int horizon = np2audio86_runtime_horizon_try_observe(
         &runtime->control, &runtime->consumer_clock);
+    if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
+        return WorkerDecision::Wait;
+    }
     if (horizon != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
         publish_error(runtime, kErrorHorizon);
         return WorkerDecision::Abort;
@@ -427,10 +529,46 @@ void worker_task(void *opaque)
     if (runtime->scenario == Scenario::FatalProducerWait) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_error(runtime, kErrorWorker);
+    } else if (runtime->scenario == Scenario::StopEventWait) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        publish_stop(runtime);
+    } else if (runtime->scenario == Scenario::EventWaitNormal) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        if (np2audio86_event_ring_consume(&runtime->events) !=
+            NP2_AUDIO86_TRANSPORT_OK) {
+            publish_error(runtime, kErrorWorker);
+        }
+        notify(runtime->producer_task);
     } else if (runtime->scenario == Scenario::StopResetWait) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_stop(runtime);
     } else if (runtime->scenario == Scenario::FatalResetWait) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        publish_error(runtime, kErrorWorker);
+    } else if (runtime->scenario == Scenario::ByteWakeBeforeRecheck) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        if (np2audio86_byte_ring_pop(&runtime->bytes, runtime->worker_run,
+                                     sizeof(kDataRun)) !=
+            NP2_AUDIO86_TRANSPORT_OK) {
+            publish_error(runtime, kErrorWorker);
+        }
+        notify(runtime->producer_task);
+        xSemaphoreGive(runtime->resume);
+    } else if (runtime->scenario == Scenario::ByteSpuriousThenNormal) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        notify(runtime->producer_task);
+        xSemaphoreGive(runtime->resume);
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        if (np2audio86_byte_ring_pop(&runtime->bytes, runtime->worker_run,
+                                     sizeof(kDataRun)) !=
+            NP2_AUDIO86_TRANSPORT_OK) {
+            publish_error(runtime, kErrorWorker);
+        }
+        notify(runtime->producer_task);
+    } else if (runtime->scenario == Scenario::ByteWaitStop) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        publish_stop(runtime);
+    } else if (runtime->scenario == Scenario::ByteWaitFatal) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_error(runtime, kErrorWorker);
     } else {
@@ -452,6 +590,7 @@ void reset_runtime(Scenario scenario)
     s_runtime.producer_core.store(UINT32_MAX, std::memory_order_relaxed);
     s_runtime.worker_core.store(UINT32_MAX, std::memory_order_relaxed);
     s_runtime.worker_priority.store(0U, std::memory_order_relaxed);
+    s_runtime.byte_wait_attempts.store(0U, std::memory_order_relaxed);
     s_runtime.scenario = scenario;
     s_runtime.rendered_frame = 0U;
     s_runtime.next_sequence = 0U;
@@ -470,13 +609,27 @@ void reset_runtime(Scenario scenario)
         2U, 0U, &s_runtime.terminal_storage);
     s_runtime.injection = xSemaphoreCreateBinaryStatic(
         &s_runtime.injection_storage);
+    s_runtime.resume = xSemaphoreCreateBinaryStatic(&s_runtime.resume_storage);
+}
+
+bool wait_task_suspended(TaskHandle_t task)
+{
+    const TickType_t start = xTaskGetTickCount();
+    while (eTaskGetState(task) != eSuspended) {
+        if (xTaskGetTickCount() - start >= kTimeout) {
+            return false;
+        }
+        taskYIELD();
+    }
+    return true;
 }
 
 bool run_scenario(Scenario scenario, const char *name)
 {
     reset_runtime(scenario);
     if (s_runtime.ready == nullptr || s_runtime.start == nullptr ||
-        s_runtime.terminal == nullptr || s_runtime.injection == nullptr) {
+        s_runtime.terminal == nullptr || s_runtime.injection == nullptr ||
+        s_runtime.resume == nullptr) {
         return false;
     }
     s_runtime.worker_task = xTaskCreateStaticPinnedToCore(
@@ -514,6 +667,12 @@ bool run_scenario(Scenario scenario, const char *name)
     const bool terminal =
         xSemaphoreTake(s_runtime.terminal, kTimeout) == pdTRUE &&
         xSemaphoreTake(s_runtime.terminal, kTimeout) == pdTRUE;
+    /* A terminal give precedes self-suspend.  Do not recycle any task or
+     * semaphore backing storage until both cores have completed that final
+     * transition. */
+    const bool quiescent = terminal &&
+                           wait_task_suspended(s_runtime.producer_task) &&
+                           wait_task_suspended(s_runtime.worker_task);
     vTaskDelete(s_runtime.producer_task);
     vTaskDelete(s_runtime.worker_task);
     s_runtime.producer_task = nullptr;
@@ -526,7 +685,7 @@ bool run_scenario(Scenario scenario, const char *name)
             static_cast<uint32_t>(kWorkerCore) &&
         s_runtime.worker_priority.load(std::memory_order_acquire) ==
             kWorkerPriority;
-    bool result = terminal && affinity;
+    bool result = terminal && quiescent && affinity;
     if (scenario == Scenario::Normal) {
         np2_sha256_final(&s_runtime.data_sha_context, s_runtime.data_sha);
         result = result &&
@@ -567,6 +726,18 @@ bool run_scenario(Scenario scenario, const char *name)
                  np2audio86_runtime_first_error(&s_runtime.control) ==
                      kErrorWorker &&
                  s_runtime.producer_wakes > 0U;
+    } else if (scenario == Scenario::StopEventWait) {
+        result = result &&
+                 np2audio86_runtime_stop_requested(&s_runtime.control) &&
+                 s_runtime.producer_wakes > 0U &&
+                 s_runtime.next_sequence == NP2_AUDIO86_ASYNC_EVENT_CAPACITY;
+    } else if (scenario == Scenario::EventWaitNormal) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 !np2audio86_runtime_stop_requested(&s_runtime.control) &&
+                 s_runtime.producer_wakes > 0U &&
+                 s_runtime.next_sequence ==
+                     NP2_AUDIO86_ASYNC_EVENT_CAPACITY + 1U;
     } else if (scenario == Scenario::StopResetWait) {
         result = result &&
                  np2audio86_runtime_stop_requested(&s_runtime.control) &&
@@ -581,10 +752,31 @@ bool run_scenario(Scenario scenario, const char *name)
         result = result &&
                  np2audio86_runtime_stop_requested(&s_runtime.control) &&
                  s_runtime.worker_wakes > 0U;
-    } else if (scenario == Scenario::InvalidHorizon) {
+    } else if (scenario == Scenario::ByteWakeBeforeRecheck) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.byte_wait_attempts.load(std::memory_order_acquire) ==
+                     1U &&
+                 s_runtime.producer_wakes == 0U;
+    } else if (scenario == Scenario::ByteSpuriousThenNormal) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.byte_wait_attempts.load(std::memory_order_acquire) >=
+                     2U &&
+                 s_runtime.producer_wakes >= 2U;
+    } else if (scenario == Scenario::ByteWaitStop) {
+        result = result &&
+                 np2audio86_runtime_stop_requested(&s_runtime.control) &&
+                 s_runtime.producer_wakes > 0U &&
+                 np2audio86_byte_ring_occupancy(&s_runtime.bytes) ==
+                     NP2_AUDIO86_ASYNC_BYTE_CAPACITY;
+    } else if (scenario == Scenario::ByteWaitFatal) {
         result = result &&
                  np2audio86_runtime_first_error(&s_runtime.control) ==
-                     kErrorHorizon;
+                     kErrorWorker &&
+                 s_runtime.producer_wakes > 0U &&
+                 np2audio86_byte_ring_occupancy(&s_runtime.bytes) ==
+                     NP2_AUDIO86_ASYNC_BYTE_CAPACITY;
     }
     std::printf("AUDIO86_86R5A_SCENARIO name=%s result=%s first_error=%" PRIu32
                 " stop=%u producer_wakes=%" PRIu32 " worker_wakes=%" PRIu32
@@ -636,13 +828,22 @@ esp_err_t run()
                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 
     bool ok = memory_is_internal();
-    ok = run_scenario(Scenario::Normal, "normal") && ok;
     ok = run_scenario(Scenario::FatalWorkerWait, "fatal_worker_wait") && ok;
     ok = run_scenario(Scenario::FatalProducerWait, "fatal_producer_wait") && ok;
+    ok = run_scenario(Scenario::StopEventWait, "stop_event_wait") && ok;
+    ok = run_scenario(Scenario::EventWaitNormal, "event_wait_normal") && ok;
     ok = run_scenario(Scenario::StopResetWait, "stop_reset_wait") && ok;
     ok = run_scenario(Scenario::FatalResetWait, "fatal_reset_wait") && ok;
     ok = run_scenario(Scenario::StopWorkerWait, "stop_worker_wait") && ok;
-    ok = run_scenario(Scenario::InvalidHorizon, "invalid_horizon") && ok;
+    ok = run_scenario(Scenario::ByteWakeBeforeRecheck,
+                      "byte_wake_before_recheck") && ok;
+    ok = run_scenario(Scenario::ByteSpuriousThenNormal,
+                      "byte_spurious_then_normal") && ok;
+    ok = run_scenario(Scenario::ByteWaitStop, "byte_wait_stop") && ok;
+    ok = run_scenario(Scenario::ByteWaitFatal, "byte_wait_fatal") && ok;
+    /* Finish on the canonical successful stream so final residual evidence
+     * describes successful finalize rather than an injected abort. */
+    ok = run_scenario(Scenario::Normal, "normal") && ok;
 
     std::printf("P4_AUDIO86_AFFINITY=%s producer_core=1 worker_core=0"
                 " worker_priority=6 worker_stack=8192\n",
@@ -651,6 +852,17 @@ esp_err_t run()
     std::printf("TASK_NOTIFICATION_OWNERSHIP=%s slot=0 owner=TRANSPORT_ONLY\n",
                 ok ? "PASS" : "FAIL");
     std::printf("P4_STOP_WAKE_ALL=%s\nP4_FATAL_WAKE_ALL=%s\n",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
+    std::printf("BYTE_CAPACITY_WAIT_RETRY=%s\nBYTE_RETIRE_WAKE=%s\n"
+                "BYTE_WAIT_LOST_WAKEUP_PROOF=%s\n"
+                "BYTE_WAIT_STOP_WAKE=%s\nBYTE_WAIT_FATAL_WAKE=%s\n"
+                "EVENT_WAIT_STOP_WAKE=%s\nEVENT_WAIT_FATAL_WAKE=%s\n"
+                "FREERTOS_WAIT_PROTOCOL=%s\nLOST_WAKEUP_PROOF=%s\n"
+                "P4_WAKE_MATRIX=%s\n",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
     std::printf("AUDIO86_86R5A_FINAL residual_events=%" PRIu32
                 " residual_bytes=%" PRIu32 " result=%s timing=NOT_VALIDATED\n",

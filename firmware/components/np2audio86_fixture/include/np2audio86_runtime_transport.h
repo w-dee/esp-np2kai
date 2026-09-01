@@ -25,7 +25,9 @@ struct np2audio86_runtime_control {
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) stop;
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) producer_done;
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) reset_ack_ordinal;
-    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_frame_low32;
+    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_seq;
+    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_frame_lo;
+    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_frame_hi;
 };
 
 struct np2audio86_runtime_producer_clock {
@@ -34,20 +36,18 @@ struct np2audio86_runtime_producer_clock {
 
 struct np2audio86_runtime_consumer_clock {
     uint64_t committed_frame_reconstructed;
-    uint32_t previous_low32;
 };
 
 enum np2audio86_runtime_horizon_status {
     NP2_AUDIO86_RUNTIME_HORIZON_OK = 0,
     NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT,
     NP2_AUDIO86_RUNTIME_HORIZON_NONMONOTONIC,
-    NP2_AUDIO86_RUNTIME_HORIZON_AMBIGUOUS,
-    NP2_AUDIO86_RUNTIME_HORIZON_OVERFLOW,
+    NP2_AUDIO86_RUNTIME_HORIZON_RETRY,
 };
 
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
-    sizeof(struct np2audio86_runtime_control) == 20U,
-    "86R.5 control state must remain five 32-bit atomics");
+    sizeof(struct np2audio86_runtime_control) == 28U,
+    "86R.5 control state must remain seven 32-bit atomics");
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
     NP2_AUDIO86_RUNTIME_ALIGNOF(struct np2audio86_runtime_control) >= 4U,
     "86R.5 control state must be naturally aligned");
@@ -56,7 +56,9 @@ NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
         offsetof(struct np2audio86_runtime_control, stop) % 4U == 0U &&
         offsetof(struct np2audio86_runtime_control, producer_done) % 4U == 0U &&
         offsetof(struct np2audio86_runtime_control, reset_ack_ordinal) % 4U == 0U &&
-        offsetof(struct np2audio86_runtime_control, committed_frame_low32) % 4U == 0U,
+        offsetof(struct np2audio86_runtime_control, committed_seq) % 4U == 0U &&
+        offsetof(struct np2audio86_runtime_control, committed_frame_lo) % 4U == 0U &&
+        offsetof(struct np2audio86_runtime_control, committed_frame_hi) % 4U == 0U,
     "86R.5 atomic fields must be 4-byte aligned");
 
 void np2audio86_runtime_control_init(
@@ -81,6 +83,9 @@ int np2audio86_runtime_horizon_publish(
     struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_producer_clock *producer, uint64_t frame);
 int np2audio86_runtime_horizon_observe(
+    const struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_consumer_clock *consumer);
+int np2audio86_runtime_horizon_try_observe(
     const struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_consumer_clock *consumer);
 

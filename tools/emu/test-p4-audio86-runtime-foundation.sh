@@ -15,6 +15,7 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [[ "$("${ESP_EMU}" --version 2>&1 | sed -n '/^esp-emu /{p;q;}')" == \
    'esp-emu 0.39.0' ]] || fail 'esp-emu 0.39.0 is required'
 
+python3 "${SCRIPT_DIR}/test_p4_audio86_runtime_foundation_validator.py"
 source "${SCRIPT_DIR}/activate-idf.sh"
 bash "${SCRIPT_DIR}/build-production.sh" \
     --variant p4-v3x --board generic --audio86-runtime-foundation \
@@ -28,7 +29,7 @@ python3 "${IDF_PATH}/components/esptool_py/esptool/esptool.py" \
 
 set +e
 timeout --foreground 30s "${ESP_EMU}" --chip esp32p4 \
-    --firmware "${MERGED_IMAGE}" --exit-on 'AUDIO86_86R5A_RESULT=PASS' \
+    --firmware "${MERGED_IMAGE}" --exit-on 'Returned from app_main()' \
     --timeout 25s --log-color never 2>&1 | tee "${LOG}"
 status="${PIPESTATUS[0]}"
 set -e
