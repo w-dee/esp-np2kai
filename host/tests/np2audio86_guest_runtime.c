@@ -12,6 +12,8 @@
 #include <mem/memtram.h>
 #include <pccore.h>
 #include <np2audio86_guest_adapter.h>
+#include <np2audio86_guest_evidence.h>
+#include <np2audio86_guest_program.h>
 #include "np2audio86_guest_runtime_capture.h"
 #include <np2_crc32.h>
 #include <np2_sha256.h>
@@ -76,87 +78,6 @@ RESET_STUB(emsio_reset) BIND_STUB(emsio_bind)
 
 UINT32 np2_host_gettick(void) { return (UINT32)host_cycles; }
 
-static void put8(size_t *at, uint8_t value)
-{
-    mem[*at] = value;
-    ++*at;
-}
-
-static void put16(size_t *at, uint16_t value)
-{
-    put8(at, (uint8_t)value);
-    put8(at, (uint8_t)(value >> 8));
-}
-
-static void mov_dx_out(size_t *at, uint16_t port, uint8_t value)
-{
-    put8(at, 0xbau); put16(at, port);
-    put8(at, 0xb0u); put8(at, value);
-    put8(at, 0xeeu); /* OUT DX,AL */
-}
-
-static void mov_dx_in_store(size_t *at, uint16_t port, uint16_t address)
-{
-    put8(at, 0xbau); put16(at, port);
-    put8(at, 0xecu); /* IN AL,DX */
-    put8(at, 0xa2u); put16(at, address);
-}
-
-static size_t build_guest_program(void)
-{
-    size_t at = 0;
-    /* OPNA timer A: smallest period, enable and IRQ, then read it back. */
-    mov_dx_out(&at, 0x188, 0x24); mov_dx_out(&at, 0x18a, 0xff);
-    mov_dx_out(&at, 0x188, 0x0f); mov_dx_out(&at, 0x18a, 0x55);
-    mov_dx_out(&at, 0x188, 0x25); mov_dx_out(&at, 0x18a, 0x03);
-    mov_dx_out(&at, 0x188, 0x27); mov_dx_out(&at, 0x18a, 0x05);
-    mov_dx_out(&at, 0x188, 0x0f); mov_dx_in_store(&at, 0x18a, 0x8000);
-    mov_dx_out(&at, 0x188, 0x26); mov_dx_out(&at, 0x18a, 0xff);
-    mov_dx_out(&at, 0x188, 0x27); mov_dx_out(&at, 0x18a, 0x0f);
-    /* OPNA PSG/FM/rhythm writes are ordered register events. */
-    mov_dx_out(&at, 0x188, 0xa0); mov_dx_out(&at, 0x18a, 0x34);
-    mov_dx_out(&at, 0x188, 0x28); mov_dx_out(&at, 0x18a, 0xf0);
-    mov_dx_out(&at, 0x188, 0x10); mov_dx_out(&at, 0x18a, 0x7f);
-    /* A460 controls the extension gate.  Extended ports are 0xff while
-     * disabled, become register-backed while enabled, then close again. */
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18c, 0x8009);
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800a);
-    mov_dx_out(&at, 0xa460, 0x01);
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_out(&at, 0x18e, 0x5a);
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800b);
-    mov_dx_out(&at, 0xa460, 0x00);
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_out(&at, 0x18e, 0xa5);
-    mov_dx_out(&at, 0x18c, 0x0f); mov_dx_in_store(&at, 0x18e, 0x800c);
-    mov_dx_in_store(&at, 0x18c, 0x800d);
-    /* Plain PCM86 setup, controls, eight byte OUTs, and every read boundary. */
-    mov_dx_out(&at, 0xa460, 0x01);
-    mov_dx_out(&at, 0xa46a, 0x00);
-    mov_dx_out(&at, 0xa468, 0x11);
-    mov_dx_out(&at, 0xa466, 0xa5);
-    mov_dx_out(&at, 0xa46c, 0x10); mov_dx_out(&at, 0xa46c, 0x20);
-    mov_dx_out(&at, 0xa46c, 0x30); mov_dx_out(&at, 0xa46c, 0x40);
-    mov_dx_out(&at, 0xa46c, 0x50); mov_dx_out(&at, 0xa46c, 0x60);
-    mov_dx_out(&at, 0xa46c, 0x70); mov_dx_out(&at, 0xa46c, 0x80);
-    mov_dx_in_store(&at, 0xa462, 0x8001);
-    mov_dx_in_store(&at, 0xa464, 0x8002);
-    mov_dx_in_store(&at, 0xa466, 0x8003);
-    mov_dx_in_store(&at, 0xa468, 0x8004);
-    mov_dx_in_store(&at, 0xa46a, 0x8005);
-    mov_dx_in_store(&at, 0xa46c, 0x8006);
-    mov_dx_in_store(&at, 0xa46e, 0x8007);
-    /* Advance enough real 8086 instructions for repeated Timer-A and
-     * Timer-B expiries while their status latches remain set. */
-    for (unsigned i = 0; i < 4500; ++i) put8(&at, 0x90u);
-    mov_dx_in_store(&at, 0x188, 0x800e);
-    mov_dx_out(&at, 0x188, 0x27); mov_dx_out(&at, 0x18a, 0x30);
-    mov_dx_in_store(&at, 0x188, 0x800f);
-    /* A stopped timer must not leave a future ready NEVENT callback. */
-    for (unsigned i = 0; i < 100; ++i) put8(&at, 0x90u);
-    mov_dx_in_store(&at, 0x188, 0x8010);
-    put8(&at, 0xf4u); /* HLT sentinel */
-    return at;
-}
-
 static uint32_t trace_crc(const uint8_t *bytes, size_t length)
 {
     return np2_crc32_iso_hdlc(bytes, length);
@@ -174,105 +95,6 @@ static void print_digest(const char *name, const uint8_t *bytes, size_t length)
     printf("%s_SHA256=", name);
     for (size_t i = 0; i < sizeof(digest); ++i) printf("%02x", digest[i]);
     putchar('\n');
-}
-
-static void le16(uint8_t *out, uint16_t value)
-{ out[0] = (uint8_t)value; out[1] = (uint8_t)(value >> 8); }
-static void le32(uint8_t *out, uint32_t value)
-{ le16(out, (uint16_t)value); le16(out + 2, (uint16_t)(value >> 16)); }
-static void le64(uint8_t *out, uint64_t value)
-{ le32(out, (uint32_t)value); le32(out + 4, (uint32_t)(value >> 32)); }
-
-static size_t serialize_events(const np2audio86_guest_trace_t *trace,
-                               uint8_t *out)
-{
-    size_t at = 0;
-    for (size_t i = 0; i < trace->event_count; ++i) {
-        const np2audio86_guest_event_t *e = &trace->events[i];
-        le64(out + at, e->frame_timestamp); le64(out + at + 8, e->sequence);
-        le32(out + at + 16, e->opcode); le32(out + at + 20, e->payload); at += 24;
-    }
-    return at;
-}
-
-static size_t serialize_runs(const np2audio86_guest_trace_t *trace,
-                             uint8_t *out)
-{
-    size_t at = 0;
-    for (size_t i = 0; i < trace->data_run_count; ++i) {
-        const np2audio86_guest_data_run_t *r = &trace->data_runs[i];
-        le64(out + at, r->frame_timestamp); le64(out + at + 8, r->sequence);
-        le64(out + at + 16, r->byte_offset); le32(out + at + 24, r->count);
-        le32(out + at + 28, 0); at += 32;
-    }
-    return at;
-}
-
-static size_t serialize_timers(const np2audio86_guest_trace_t *trace,
-                               uint8_t *out)
-{
-    size_t at = 0;
-    for (size_t i = 0; i < trace->timer_count; ++i) {
-        const np2audio86_guest_timer_trace_t *t = &trace->timers[i];
-        le64(out + at, t->frame_timestamp); le64(out + at + 8, t->guest_cycles);
-        le32(out + at + 16, t->timer);
-        out[at + 20] = t->status; out[at + 21] = t->irq; out[at + 22] = t->level;
-        out[at + 23] = t->cause; out[at + 24] = t->pic_transition;
-        out[at + 25] = t->pcm_irqflag; out[at + 26] = t->pcm_reqirq;
-        out[at + 27] = 0; at += 28;
-    }
-    return at;
-}
-
-static size_t serialize_io(const np2audio86_guest_trace_t *trace,
-                           uint8_t *out)
-{
-    size_t at = 0;
-    for (size_t i = 0; i < trace->io_count; ++i) {
-        const np2audio86_guest_io_trace_t *io = &trace->io[i];
-        le64(out + at, io->frame_timestamp); le64(out + at + 8, io->sequence);
-        le16(out + at + 16, io->port); out[at + 18] = io->direction;
-        out[at + 19] = io->value; out[at + 20] = io->result;
-        memset(out + at + 21, 0, 3); at += 24;
-    }
-    return at;
-}
-
-static size_t serialize_state(const np2audio86_guest_state_snapshot_t *s,
-                              uint8_t *out)
-{
-    size_t at = 0;
-    le64(out + at, s->frame_timestamp); at += 8;
-    le64(out + at, s->guest_cycles); at += 8;
-    le64(out + at, s->sequence); at += 8;
-    le32(out + at, s->cpu_remainder); at += 4;
-    le32(out + at, s->opna_base); at += 4;
-    out[at++] = s->opna_address_low; out[at++] = s->opna_address_extended;
-    out[at++] = s->opna_data; out[at++] = s->opna_extension;
-    out[at++] = s->opna_capabilities; out[at++] = s->opna_status;
-    out[at++] = s->timer_control;
-    le16(out + at, s->timer_a_value); at += 2;
-    out[at++] = s->timer_b_value;
-    out[at++] = s->timer_irq; out[at++] = s->pcm_soundflags;
-    out[at++] = s->pcm_fifo;
-    out[at++] = s->pcm_dactrl; out[at++] = s->pcm_volume; out[at++] = s->pcm_rate;
-    le16(out + at, s->pcm_fifo_size); at += 2; le16(out + at, s->pcm_fifo_level); at += 2;
-    le32(out + at, s->pcm_virtual_buffer); at += 4;
-    le32(out + at, s->pcm_read_position); at += 4;
-    out[at++] = s->pcm_irq; out[at++] = s->pcm_reqirq;
-    le32(out + at, s->pcm_rescue); at += 4;
-    out[at++] = s->pcm_irq_line; out[at++] = s->pcm_stepbit;
-    le16(out + at, s->pcm_stepmask); at += 2;
-    le32(out + at, s->pcm_rateval); at += 4;
-    le64(out + at, s->pcm_stepclock); at += 8;
-    le64(out + at, s->pcm_lastclock); at += 8;
-    le64(out + at, s->pcm_lastclockforwait); at += 8;
-    le32(out + at, s->pcm_real_buffer); at += 4;
-    le32(out + at, s->pcm_write_position); at += 4;
-    le32(out + at, s->pcm_step_remainder); at += 4;
-    out[at++] = s->soundrom_rejected; out[at++] = s->bound;
-    out[at++] = 0; out[at++] = 0;
-    return at;
 }
 
 static uint8_t irq_levels[256];
@@ -1315,7 +1137,7 @@ static int np2audio86_guest_runtime_run(
     pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
-    program_size = build_guest_program();
+    program_size = np2audio86_guest_program_build(mem, sizeof(mem));
     if (program_size >= 0x90000u || !run_program(program_size)) {
         board86_unbind();
         np2audio86_guest_sink_unbind();
@@ -1407,7 +1229,7 @@ int main(void)
     pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
-    program_size = build_guest_program();
+    program_size = np2audio86_guest_program_build(mem, sizeof(mem));
     assert(program_size < 0x90000u);
     assert(run_program(program_size));
     /* The reset is deliberately after guest execution: it proves the
@@ -1463,7 +1285,7 @@ int main(void)
         timers2, 4096, 0, io2, 16384, 0, 0
     };
     np2audio86_guest_host_trace_attach(&trace2);
-    assert(run_program(build_guest_program()));
+    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem))));
     board86_reset(&np2cfg, FALSE);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
@@ -1510,7 +1332,7 @@ int main(void)
     np2audio86_guest_host_trace_attach(&trace3);
     drain_queue = &trace3;
     drain_sink = &trace3_sink;
-    assert(run_program(build_guest_program()));
+    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem))));
     board86_reset(&np2cfg, FALSE);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
@@ -1540,21 +1362,21 @@ int main(void)
     np2audio86_guest_host_trace_detach();
     printf("AUDIO86_GUEST_REAL_CONSUMER_DRAIN=PASS\n");
 
-    length = serialize_io(&trace, serialized);
+    length = np2audio86_guest_evidence_serialize_io(&trace, serialized);
     print_digest("GUEST_IO", serialized, length);
     printf("GUEST_IO_SEMANTIC_COUNT=%zu\nGUEST_IO_SERIALIZED_BYTES=%zu\n", trace.io_count, length);
-    length = serialize_events(&trace, serialized);
+    length = np2audio86_guest_evidence_serialize_events(&trace, serialized);
     print_digest("AUDIO_EVENTS", serialized, length);
     printf("AUDIO_EVENTS_SEMANTIC_COUNT=%zu\nAUDIO_EVENTS_SERIALIZED_BYTES=%zu\n", trace.event_count, length);
     print_digest("PCM86_BYTES", trace.pcm_bytes, trace.pcm_count);
     printf("PCM86_BYTES_PAYLOAD_BYTES=%zu\nPCM86_BYTES_SERIALIZED_BYTES=%zu\n", trace.pcm_count, trace.pcm_count);
-    length = serialize_runs(&trace, serialized);
+    length = np2audio86_guest_evidence_serialize_runs(&trace, serialized);
     print_digest("PCM86_DATA_RUNS", serialized, length);
     printf("PCM86_DATA_RUNS_SEMANTIC_COUNT=%zu\nPCM86_DATA_RUNS_PAYLOAD_BYTES=%zu\nPCM86_DATA_RUNS_SERIALIZED_BYTES=%zu\n", trace.data_run_count, trace.pcm_count, length);
-    length = serialize_timers(&trace, serialized);
+    length = np2audio86_guest_evidence_serialize_timers(&trace, serialized);
     print_digest("TIMER_PIC", serialized, length);
     printf("TIMER_PIC_SEMANTIC_COUNT=%zu\nTIMER_PIC_SERIALIZED_BYTES=%zu\n", trace.timer_count, length);
-    length = serialize_state(&snapshot, serialized);
+    length = np2audio86_guest_evidence_serialize_state(&snapshot, serialized);
     print_digest("FINAL_G_STATE", serialized, length);
     printf("FINAL_G_STATE_SEMANTIC_COUNT=1\nFINAL_G_STATE_SERIALIZED_BYTES=%zu\n", length);
     run_boundary_tests();

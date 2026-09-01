@@ -252,6 +252,10 @@ OPNGEN_E1C_DESCRIPTOR := $(HOST_ROOT)/tools/emu/opngen_sustained_workload_golden
 OPNGEN_E1C_VALIDATOR := $(HOST_ROOT)/tools/emu/validate_opngen_sustained_log.py
 OPNGEN_E1C_VALIDATOR_TEST := $(HOST_ROOT)/tools/emu/test_opngen_sustained_validator.py
 NP2_AUDIO86_FIXTURE_SOURCE := $(HOST_ROOT)/firmware/components/np2audio86_fixture/np2audio86_fixture.c
+NP2_AUDIO86_GUEST_PROGRAM_SOURCE := $(HOST_ROOT)/firmware/components/np2audio86_fixture/np2audio86_guest_program.c
+NP2_AUDIO86_GUEST_EVIDENCE_SOURCE := $(HOST_ROOT)/firmware/components/np2audio86_fixture/np2audio86_guest_evidence.c
+NP2_AUDIO86_TRANSACTION_TEST_SOURCE := $(CURDIR)/tests/np2audio86_guest_transaction_test.c
+NP2_AUDIO86_TRANSACTION_TEST_OUTPUT := $(BUILD_DIR)/tests/np2audio86_guest_transaction
 NP2_AUDIO86_FIXTURE_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2audio86_fixture/include
 NP2_AUDIO86_FIXTURE_GOLDEN_HEADER_DIR := $(HOST_ROOT)/firmware/components/np2audio86_fixture
 NP2_AUDIO86_FIXTURE_MAIN_SOURCE := $(CURDIR)/tests/np2audio86_fixture_main.c
@@ -373,7 +377,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 
 .PHONY: phase1-probe phase1-config phase1-prepare-sources phase1-probe-mapped phase1-link-probe-mapped test-audio86-guest-contract headless-runner test-headless-runner-np2test test-headless-runner-attach test-headless-runner-lifecycle video-runner test-video-runner-reference test-video-runner-reference-bmp test-video-runner-gfx-vram-reference test-video-runner-gfx-vram-reference-bmp test-video-gdc-reference test-video-gdc-reference-bmp test-video-runner-live-reference test-video-runner-live-reference-bmp test-video-runner-cli test-video-runner-golden test-video-gfx-vram-golden test-video-gdc-golden test-video-golden-checker test-video-golden-header test-video-golden-log test-video-control-v1 test-sha256 test-crc32 test-opngen-fixture test-np2audio86-fixture test-np2audio86-runtime-transport build-np2audio86-async test-np2audio86-async test-np2audio86-async-formal build-np2audio86-hardening test-np2audio86-hardening build-np2audio86-hardening-asan test-np2audio86-hardening-asan build-np2audio86-hardening-ubsan test-np2audio86-hardening-ubsan test-np2audio86-hardening-soak test-opngen-synth-event test-opngen-s98-s3 build-opngen-retrofm-s98 test-opngen-retrofm-s98 test-opngen-retrofm-s98-formal test-opngen-retrofm-s98-validator test-retrofm-provenance build-opngen-s98-s3 test-opngen-s98-s3-formal test-opngen-s98-s3-validator test-opngen-s98-accepted build-opngen-e1b test-opngen-e1b test-opngen-e1b-formal build-opngen-e1b-tsan test-opngen-e1b-tsan build-opngen-e1c test-opngen-e1c test-opngen-e1c-validator test-opngen-e1c-formal test-result-v1-parser test-np2kbd-control-v1 test-np2kbd-result-v1 test-np2kbd test-execution-controller test-headless-mouse test-headless-sound test-headless-timing test-headless-timemng test-headless-sysmng test-headless-taskmng test-headless-dosio test-headless-fontmng test-headless-scrnmng test-headless-scrnmng-snapshot test-presentation-publisher test-headless-scrnmng-presentation test-presentation-contract test-p4-nano-board test-p4-nano-board-static test-p4-nano-audio-tone test-p4-nano-display-pattern test-p4-nano-display-transform test-p4-nano-display-transform-diagnostic test-p4-nano-psram-bandwidth test-p4-nano-psram-read-control test-p4-nano-live-display-contract test-p4-nano-overlap-trace test-p4-nano-pc98-runtime-contract test-p4-nano-usb-keyboard-teardown-contract test-np2video-motion-oracle test-headless-scrnmng-bmp test-headless-commng test-np2runtime test-np2runtime-lifecycle test-np2runtime-machine-config test-np2runtime-runtime test-np2-keyboard-input test-np2-keyboard-ownership test-keyboard-input test-np2-keyboard-validation test-usb-hid-keyboard-adapter
 
-.PHONY: build-audio86-guest-runtime test-audio86-guest-runtime build-audio86-guest-runtime-asan test-audio86-guest-runtime-asan build-audio86-guest-runtime-ubsan test-audio86-guest-runtime-ubsan build-audio86-guest-sync-pcm test-audio86-guest-sync-pcm build-audio86-guest-sync-pcm-asan test-audio86-guest-sync-pcm-asan build-audio86-guest-sync-pcm-ubsan test-audio86-guest-sync-pcm-ubsan build-audio86-guest-async-runtime test-audio86-guest-async-runtime build-audio86-guest-async-runtime-asan test-audio86-guest-async-runtime-asan build-audio86-guest-async-runtime-ubsan test-audio86-guest-async-runtime-ubsan build-audio86-guest-async-hardening test-audio86-guest-async-hardening build-audio86-guest-async-hardening-asan test-audio86-guest-async-hardening-asan build-audio86-guest-async-hardening-ubsan test-audio86-guest-async-hardening-ubsan
+.PHONY: build-audio86-guest-runtime test-audio86-guest-runtime build-audio86-guest-runtime-asan test-audio86-guest-runtime-asan build-audio86-guest-runtime-ubsan test-audio86-guest-runtime-ubsan build-audio86-guest-sync-pcm test-audio86-guest-sync-pcm build-audio86-guest-sync-pcm-asan test-audio86-guest-sync-pcm-asan build-audio86-guest-sync-pcm-ubsan test-audio86-guest-sync-pcm-ubsan build-audio86-guest-async-runtime test-audio86-guest-async-runtime build-audio86-guest-async-runtime-asan test-audio86-guest-async-runtime-asan build-audio86-guest-async-runtime-ubsan test-audio86-guest-async-runtime-ubsan build-audio86-guest-async-hardening test-audio86-guest-async-hardening build-audio86-guest-async-hardening-asan test-audio86-guest-async-hardening-asan build-audio86-guest-async-hardening-ubsan test-audio86-guest-async-hardening-ubsan build-audio86-guest-transaction test-audio86-guest-transaction build-audio86-guest-transaction-asan test-audio86-guest-transaction-asan build-audio86-guest-transaction-ubsan test-audio86-guest-transaction-ubsan
 .PHONY: test-p4-nano-ppa-rotation-reference
 .PHONY: test-p4-nano-board-static
 .PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
@@ -397,7 +401,8 @@ build-audio86-guest-runtime:
 		-ffunction-sections -fdata-sections -fcommon $(NP2_AUDIO86_RUNTIME_EXTRA_CFLAGS) \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
-		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_RUNTIME_BOARD)" \
+		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
+		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" "$(NP2_AUDIO86_RUNTIME_BOARD)" \
 		"$(NP2_AUDIO86_RUNTIME_PCM)" "$(VENDOR_SRC)/cbus/cbuscore.c" \
 		"$(VENDOR_SRC)/io/iocore.c" "$(VENDOR_SRC)/io/pic.c" \
 		"$(VENDOR_SRC)/nevent.c" "$(VENDOR_SRC)/common/lstarray.c" \
@@ -437,6 +442,42 @@ test-audio86-guest-runtime-ubsan: build-audio86-guest-runtime-ubsan
 	@"$(BUILD_DIR)/tests/np2audio86_guest_runtime_ubsan" >/dev/null
 	@printf '%s\n' 'AUDIO86_GUEST_RUNTIME_UBSAN=PASS'
 
+build-audio86-guest-transaction:
+	@mkdir -p "$(dir $(NP2_AUDIO86_TRANSACTION_TEST_OUTPUT))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror $(NP2_AUDIO86_TRANSACTION_TEST_EXTRA_CFLAGS) \
+		-I"$(CURDIR)/compat" \
+		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
+		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
+		-DNP2AUDIO86_GUEST_TEST=1 \
+		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" \
+		"$(NP2_CRC32_SOURCE)" "$(NP2_AUDIO86_TRANSACTION_TEST_SOURCE)" \
+		$(NP2_AUDIO86_TRANSACTION_TEST_EXTRA_LDFLAGS) -o "$(NP2_AUDIO86_TRANSACTION_TEST_OUTPUT)"
+
+test-audio86-guest-transaction: build-audio86-guest-transaction
+	@"$(NP2_AUDIO86_TRANSACTION_TEST_OUTPUT)"
+
+build-audio86-guest-transaction-asan:
+	@$(MAKE) --no-print-directory \
+		NP2_AUDIO86_TRANSACTION_TEST_OUTPUT="$(BUILD_DIR)/tests/np2audio86_guest_transaction_asan" \
+		NP2_AUDIO86_TRANSACTION_TEST_EXTRA_CFLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+		NP2_AUDIO86_TRANSACTION_TEST_EXTRA_LDFLAGS="-fsanitize=address" \
+		build-audio86-guest-transaction
+
+test-audio86-guest-transaction-asan: build-audio86-guest-transaction-asan
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 "$(BUILD_DIR)/tests/np2audio86_guest_transaction_asan" >/dev/null
+	@printf '%s\n' 'AUDIO86_GUEST_TRANSACTION_ASAN=PASS'
+
+build-audio86-guest-transaction-ubsan:
+	@$(MAKE) --no-print-directory \
+		NP2_AUDIO86_TRANSACTION_TEST_OUTPUT="$(BUILD_DIR)/tests/np2audio86_guest_transaction_ubsan" \
+		NP2_AUDIO86_TRANSACTION_TEST_EXTRA_CFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" \
+		NP2_AUDIO86_TRANSACTION_TEST_EXTRA_LDFLAGS="-fsanitize=undefined" \
+		build-audio86-guest-transaction
+
+test-audio86-guest-transaction-ubsan: build-audio86-guest-transaction-ubsan
+	@"$(BUILD_DIR)/tests/np2audio86_guest_transaction_ubsan" >/dev/null
+	@printf '%s\n' 'AUDIO86_GUEST_TRANSACTION_UBSAN=PASS'
+
 build-audio86-guest-sync-pcm:
 	@mkdir -p "$(dir $(NP2_AUDIO86_SYNC_PCM_OUTPUT))"
 	@$(PYTHON) "$(PREPARER)" \
@@ -453,7 +494,7 @@ build-audio86-guest-sync-pcm:
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
-	"$(NP2_AUDIO86_ADAPTER_SOURCE)" \
+	"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/board86.c" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/pcm86io.c" \
 		"$(VENDOR_SRC)/cbus/cbuscore.c" "$(VENDOR_SRC)/io/iocore.c" \
@@ -514,7 +555,7 @@ build-audio86-guest-async-runtime:
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
-		"$(NP2_AUDIO86_ADAPTER_SOURCE)" \
+		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" \
 		"$(BUILD_DIR)/audio86-guest-async-prepared/patched-src/cbus/board86.c" \
 		"$(BUILD_DIR)/audio86-guest-async-prepared/patched-src/cbus/pcm86io.c" \
 		"$(VENDOR_SRC)/cbus/cbuscore.c" "$(VENDOR_SRC)/io/iocore.c" \
@@ -581,7 +622,7 @@ build-audio86-guest-async-hardening:
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
-		"$(NP2_AUDIO86_ADAPTER_SOURCE)" \
+		"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" \
 		"$(BUILD_DIR)/audio86-guest-async-hardening-prepared/patched-src/cbus/board86.c" \
 		"$(BUILD_DIR)/audio86-guest-async-hardening-prepared/patched-src/cbus/pcm86io.c" \
 		"$(VENDOR_SRC)/cbus/cbuscore.c" "$(VENDOR_SRC)/io/iocore.c" \

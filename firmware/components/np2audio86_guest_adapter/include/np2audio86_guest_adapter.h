@@ -46,12 +46,55 @@ typedef struct {
     uint32_t count;
 } np2audio86_guest_data_run_t;
 
+/* A token is allocated by the caller and filled only by the bound sink.  Its
+ * representation is intentionally opaque to the adapter: it conveys one
+ * exclusive, single-producer reservation rather than transport addresses or
+ * FreeRTOS state. */
+typedef struct {
+    uintptr_t opaque[4];
+} np2audio86_guest_transaction_t;
+
+enum {
+    NP2AUDIO86_GUEST_TRANSACTION_EVENT = 1,
+    NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN = 2,
+    NP2AUDIO86_GUEST_TRANSACTION_RESET = 3,
+};
+
 /* A narrow semantic publication seam.  The guest remains the sole owner of
  * sequence, timestamp, pending-run, timer, and PCM accounting state.  A sink
  * may synchronously block a semantic handler, which is the required boundary
- * for a lossless live producer; it never owns or mutates guest state. */
+ * for a lossless live producer; it never owns or mutates guest state.
+ *
+ * reserve/extend are the only recoverable operations.  Once reserve succeeds
+ * and the adapter performs the guest effect, every commit callback is void:
+ * the sink has already guaranteed the event/byte/horizon capacity.  cancel is
+ * valid only before that guest effect.  The legacy callbacks are retained
+ * temporarily for pre-transaction host consumers; new sinks must implement
+ * the transaction callbacks. */
 typedef struct {
     void *opaque;
+    int (*reserve)(void *opaque, uint32_t kind, size_t initial_bytes,
+                   np2audio86_guest_transaction_t *transaction);
+    int (*extend)(void *opaque, np2audio86_guest_transaction_t *transaction,
+                  size_t additional_bytes);
+    int (*recheck)(void *opaque,
+                   const np2audio86_guest_transaction_t *transaction);
+    void (*cancel)(void *opaque, np2audio86_guest_transaction_t *transaction);
+    void (*commit_event)(void *opaque, np2audio86_guest_transaction_t *transaction,
+                         const np2audio86_guest_event_t *event);
+    void (*commit_pcm_byte)(void *opaque,
+                            np2audio86_guest_transaction_t *transaction,
+                            uint64_t frame_timestamp, uint64_t sequence,
+                            uint8_t value);
+    void (*commit_data_run)(void *opaque,
+                            np2audio86_guest_transaction_t *transaction,
+                            const np2audio86_guest_data_run_t *run);
+    void (*commit_horizon)(void *opaque,
+                           np2audio86_guest_transaction_t *transaction,
+                           uint64_t frame_timestamp);
+    /* Compatibility-only callbacks.  They are used only by sinks which have
+     * not opted into reserve; production Slice 2 must bind the transaction
+     * half above. */
     int (*publish_event)(void *opaque, const np2audio86_guest_event_t *event);
     int (*publish_pcm_byte)(void *opaque, uint64_t frame_timestamp,
                             uint64_t sequence, uint8_t value);

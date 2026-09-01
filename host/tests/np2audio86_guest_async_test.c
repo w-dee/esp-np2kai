@@ -1114,10 +1114,10 @@ static void *producer_thread(void *opaque)
 {
     struct producer_context *producer = opaque;
     const np2audio86_guest_sink_t sink = {
-        producer->transport,
-        publish_event,
-        publish_pcm_byte,
-        publish_data_run,
+        .opaque = producer->transport,
+        .publish_event = publish_event,
+        .publish_pcm_byte = publish_pcm_byte,
+        .publish_data_run = publish_data_run,
     };
     atomic_store_explicit(&producer->transport->producer_started, true,
                           memory_order_release);
