@@ -2153,11 +2153,24 @@ static void *async_worker_thread(void *opaque)
             }
             if (context->worker_state.rendered_frames >= watermark) {
                 if (atomic_load_explicit(&context->producer_done,
-                                         memory_order_acquire) &&
-                    watermark < NP2_AUDIO86_DURATION_FRAMES) {
-                    async_fail(context,
-                               NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION);
-                    return NULL;
+                                         memory_order_acquire)) {
+                    /* producer_done follows the final watermark release.
+                     * Re-acquire that authoritative value before deciding
+                     * completion; watermark above predates the done acquire. */
+                    watermark = atomic_load_explicit(
+                        &context->committed_through_frame,
+                        memory_order_acquire);
+                    if (async_validate_watermark(context, watermark) != 0) {
+                        return NULL;
+                    }
+                    if (context->worker_state.rendered_frames < watermark) {
+                        continue;
+                    }
+                    if (watermark < NP2_AUDIO86_DURATION_FRAMES) {
+                        async_fail(context,
+                                   NP2_AUDIO86_ASYNC_ERROR_PREMATURE_COMPLETION);
+                        return NULL;
+                    }
                 }
                 if (async_worker_wait(context) != 0) {
                     return NULL;

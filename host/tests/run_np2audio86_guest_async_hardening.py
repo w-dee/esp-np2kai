@@ -47,6 +47,9 @@ FORCED_CASE_MARKERS = {
         "POST_RESET_STATE",
         "AUDIO86_GUEST_ASYNC_FIRST_ERROR_IMMUTABLE",
     ),
+    "completion-recheck": (
+        "AUDIO86_GUEST_ASYNC_COMPLETION_RECHECK",
+    ),
 }
 
 CUTPOINT_SUCCESS = tuple(f"cutpoint-success-{point}" for point in range(1, 12))

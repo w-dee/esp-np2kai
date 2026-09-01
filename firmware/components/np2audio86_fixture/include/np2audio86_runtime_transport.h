@@ -20,14 +20,23 @@ extern "C" {
 
 /* Cross-core publication is deliberately limited to naturally aligned
  * 32-bit atomics.  Owner-local frame counters remain 64-bit ordinary data. */
+struct np2audio86_runtime_horizon_mailbox {
+    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) horizon_state;
+    uint32_t horizon_frame_lo;
+    uint32_t horizon_frame_hi;
+};
+
 struct np2audio86_runtime_control {
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) first_error;
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) stop;
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) producer_done;
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) reset_ack_ordinal;
-    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_seq;
-    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_frame_lo;
-    NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) committed_frame_hi;
+    struct np2audio86_runtime_horizon_mailbox horizon;
+};
+
+enum np2audio86_runtime_horizon_state {
+    NP2_AUDIO86_RUNTIME_HORIZON_EMPTY = 0U,
+    NP2_AUDIO86_RUNTIME_HORIZON_FULL = 1U,
 };
 
 struct np2audio86_runtime_producer_clock {
@@ -46,8 +55,13 @@ enum np2audio86_runtime_horizon_status {
 };
 
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
+    sizeof(struct np2audio86_runtime_horizon_mailbox) == 12U &&
+        NP2_AUDIO86_RUNTIME_ALIGNOF(
+            struct np2audio86_runtime_horizon_mailbox) == 4U,
+    "86R.5 horizon mailbox must be three aligned 32-bit fields");
+NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
     sizeof(struct np2audio86_runtime_control) == 28U,
-    "86R.5 control state must remain seven 32-bit atomics");
+    "86R.5 control state must remain seven 32-bit fields");
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
     NP2_AUDIO86_RUNTIME_ALIGNOF(struct np2audio86_runtime_control) >= 4U,
     "86R.5 control state must be naturally aligned");
@@ -56,10 +70,8 @@ NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
         offsetof(struct np2audio86_runtime_control, stop) % 4U == 0U &&
         offsetof(struct np2audio86_runtime_control, producer_done) % 4U == 0U &&
         offsetof(struct np2audio86_runtime_control, reset_ack_ordinal) % 4U == 0U &&
-        offsetof(struct np2audio86_runtime_control, committed_seq) % 4U == 0U &&
-        offsetof(struct np2audio86_runtime_control, committed_frame_lo) % 4U == 0U &&
-        offsetof(struct np2audio86_runtime_control, committed_frame_hi) % 4U == 0U,
-    "86R.5 atomic fields must be 4-byte aligned");
+        offsetof(struct np2audio86_runtime_control, horizon) % 4U == 0U,
+    "86R.5 mailbox fields must be 4-byte aligned");
 
 void np2audio86_runtime_control_init(
     struct np2audio86_runtime_control *control);
@@ -83,11 +95,13 @@ int np2audio86_runtime_horizon_publish(
     struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_producer_clock *producer, uint64_t frame);
 int np2audio86_runtime_horizon_observe(
-    const struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_consumer_clock *consumer);
 int np2audio86_runtime_horizon_try_observe(
-    const struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_consumer_clock *consumer);
+bool np2audio86_runtime_horizon_pending(
+    const struct np2audio86_runtime_control *control);
 
 #ifdef __cplusplus
 }

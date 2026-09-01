@@ -225,18 +225,20 @@ int np2audio86_guest_async_hardening_cutpoint(
                              memory_order_acquire) != (uint32_t)point) {
         return 0;
     }
-    atomic_fetch_add_explicit(&g_async_hardening_live.cutpoint_entered[point], 1U,
-                              memory_order_acq_rel);
+    /* Publish every snapshot field before the entered release.  The outer
+     * coordinator acquires entered before reading this metadata. */
     atomic_store_explicit(&g_async_hardening_live.cutpoint_event_head, event_head,
-                          memory_order_release);
+                          memory_order_relaxed);
     atomic_store_explicit(&g_async_hardening_live.cutpoint_event_tail, event_tail,
-                          memory_order_release);
+                          memory_order_relaxed);
     atomic_store_explicit(&g_async_hardening_live.cutpoint_byte_head, byte_head,
-                          memory_order_release);
+                          memory_order_relaxed);
     atomic_store_explicit(&g_async_hardening_live.cutpoint_byte_tail, byte_tail,
-                          memory_order_release);
+                          memory_order_relaxed);
     atomic_store_explicit(&g_async_hardening_live.cutpoint_auxiliary, auxiliary,
-                          memory_order_release);
+                          memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_async_hardening_live.cutpoint_entered[point], 1U,
+                              memory_order_release);
     for (;;) {
         if (hardening_abort_requested(NULL) ||
             atomic_load_explicit(&g_async_hardening_live.cutpoint_fatal,
@@ -1038,6 +1040,18 @@ static void *worker_thread(void *opaque)
         if (status == NP2_AUDIO86_TRANSPORT_EMPTY) {
             if (atomic_load_explicit(&context->producer_done,
                                      memory_order_acquire)) {
+                /* producer_done synchronizes with every preceding producer
+                 * publication.  Re-read the authoritative head after that
+                 * acquire; the earlier EMPTY observation cannot be used to
+                 * decide completion. */
+                status = np2audio86_event_ring_peek(&context->events, &event);
+                if (status == NP2_AUDIO86_TRANSPORT_OK) {
+                    continue;
+                }
+                if (status != NP2_AUDIO86_TRANSPORT_EMPTY) {
+                    fail(context, ASYNC_ERROR_TRANSPORT);
+                    return NULL;
+                }
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
                 if (hardening_cutpoint(
                         context,

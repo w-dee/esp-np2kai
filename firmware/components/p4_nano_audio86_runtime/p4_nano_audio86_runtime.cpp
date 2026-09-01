@@ -53,6 +53,15 @@ enum class Scenario : uint32_t {
     ByteSpuriousThenNormal,
     ByteWaitStop,
     ByteWaitFatal,
+    HorizonWakeBeforeRecheck,
+    HorizonSpuriousThenNormal,
+    HorizonWaitStop,
+    HorizonWaitFatal,
+    TransportBeforeHorizon,
+    WorkerOnlyPartialCreate,
+    ProducerOnlyPartialCreate,
+    ProducerReadyTimeout,
+    WorkerReadyTimeout,
 };
 
 struct Runtime {
@@ -84,7 +93,13 @@ struct Runtime {
     std::atomic<uint32_t> worker_core{UINT32_MAX};
     std::atomic<uint32_t> worker_priority{0U};
     std::atomic<uint32_t> byte_wait_attempts{0U};
+    std::atomic<uint32_t> horizon_wait_attempts{0U};
+    std::atomic<uint32_t> producer_quiescent{0U};
+    std::atomic<uint32_t> worker_quiescent{0U};
+    std::atomic<uint32_t> transport_pause_verified{0U};
+    uint32_t generation = 0U;
     Scenario scenario = Scenario::Normal;
+    bool consumer_has_horizon = false;
     uint64_t rendered_frame = 0U;
     uint64_t next_sequence = 0U;
     uint32_t action_count = 0U;
@@ -100,13 +115,16 @@ static_assert(sizeof(struct np2audio86_event) == 24U);
 static_assert(sizeof(struct np2audio86_event_ring) == 3080U);
 static_assert(sizeof(struct np2audio86_byte_ring) == 65544U);
 static_assert(sizeof(struct np2audio86_runtime_control) == 28U);
+static_assert(sizeof(struct np2audio86_runtime_horizon_mailbox) == 12U);
 static_assert(alignof(struct np2audio86_runtime_control) >= 4U);
 static_assert(sizeof(((Runtime *)nullptr)->producer_stack) ==
               kProducerStackBytes);
 static_assert(sizeof(((Runtime *)nullptr)->worker_stack) == kWorkerStackBytes);
-static_assert(sizeof(Runtime) == 117120U);
-
 DRAM_ATTR Runtime s_runtime{};
+static_assert(sizeof(Runtime) == 117144U);
+uint32_t s_next_generation = 0U;
+uint32_t s_last_deleted_generation = 0U;
+bool s_storage_reusable = true;
 
 void notify(TaskHandle_t task)
 {
@@ -141,6 +159,64 @@ bool abort_requested(Runtime *runtime)
 {
     return np2audio86_runtime_stop_requested(&runtime->control) ||
            np2audio86_runtime_first_error(&runtime->control) != 0U;
+}
+
+void task_quiescent_epilogue(Runtime *runtime,
+                             std::atomic<uint32_t> *quiescent)
+{
+    /* After this release the task touches only its terminal semaphore and
+     * scheduler state, then self-suspends. */
+    quiescent->store(runtime->generation, std::memory_order_release);
+    xSemaphoreGive(runtime->terminal);
+    vTaskSuspend(nullptr);
+}
+
+bool publish_horizon_wait(Runtime *runtime, uint64_t frame)
+{
+    uint32_t attempt = 0U;
+    for (;;) {
+        if (abort_requested(runtime)) {
+            return false;
+        }
+        const int result = np2audio86_runtime_horizon_publish(
+            &runtime->control, &runtime->producer_clock, frame);
+        if (result == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+            notify(runtime->worker_task);
+            return true;
+        }
+        if (result != NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
+            publish_error(runtime, kErrorHorizon);
+            return false;
+        }
+        ++attempt;
+        runtime->horizon_wait_attempts.store(attempt,
+                                             std::memory_order_release);
+        runtime->producer_waiting.store(1U, std::memory_order_release);
+        if ((runtime->scenario == Scenario::HorizonWakeBeforeRecheck ||
+             runtime->scenario == Scenario::HorizonSpuriousThenNormal) &&
+            attempt == 1U) {
+            xSemaphoreGive(runtime->injection);
+            xSemaphoreTake(runtime->resume, portMAX_DELAY);
+        } else if (runtime->scenario == Scenario::HorizonSpuriousThenNormal &&
+                   attempt == 2U) {
+            xSemaphoreGive(runtime->injection);
+        } else if ((runtime->scenario == Scenario::HorizonWaitStop ||
+                    runtime->scenario == Scenario::HorizonWaitFatal) &&
+                   attempt == 1U) {
+            xSemaphoreGive(runtime->injection);
+        }
+        if (!np2audio86_runtime_horizon_pending(&runtime->control)) {
+            runtime->producer_waiting.store(0U, std::memory_order_release);
+            continue;
+        }
+        if (abort_requested(runtime)) {
+            runtime->producer_waiting.store(0U, std::memory_order_release);
+            return false;
+        }
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        ++runtime->producer_wakes;
+        runtime->producer_waiting.store(0U, std::memory_order_release);
+    }
 }
 
 bool enqueue_event_wait(Runtime *runtime,
@@ -297,24 +373,17 @@ bool publish_normal_stream(Runtime *runtime)
         return false;
     }
     /* All slot and DATA_RUN release publications precede this release store. */
-    if (np2audio86_runtime_horizon_publish(
-            &runtime->control, &runtime->producer_clock, 16U) !=
-        NP2_AUDIO86_RUNTIME_HORIZON_OK) {
-        publish_error(runtime, kErrorHorizon);
+    if (!publish_horizon_wait(runtime, 16U)) {
         return false;
     }
-    notify(runtime->worker_task);
     if (!wait_reset_ack(runtime, 1U)) {
         return false;
     }
     if (!publish_event(runtime, 16U, NP2_AUDIO86_EVENT_PSG_REGISTER, 7U) ||
-        np2audio86_runtime_horizon_publish(
-            &runtime->control, &runtime->producer_clock, 16U) !=
-            NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        !publish_horizon_wait(runtime, 16U)) {
         publish_error(runtime, kErrorProducer);
         return false;
     }
-    notify(runtime->worker_task);
     return true;
 }
 
@@ -344,8 +413,15 @@ void producer_task(void *opaque)
     auto *runtime = static_cast<Runtime *>(opaque);
     runtime->producer_core.store(static_cast<uint32_t>(xPortGetCoreID()),
                                  std::memory_order_release);
-    xSemaphoreGive(runtime->ready);
+    if (runtime->scenario != Scenario::ProducerReadyTimeout) {
+        xSemaphoreGive(runtime->ready);
+    }
     xSemaphoreTake(runtime->start, portMAX_DELAY);
+
+    if (abort_requested(runtime)) {
+        task_quiescent_epilogue(runtime, &runtime->producer_quiescent);
+        return;
+    }
 
     switch (runtime->scenario) {
     case Scenario::Normal:
@@ -370,10 +446,7 @@ void producer_task(void *opaque)
     case Scenario::StopResetWait:
     case Scenario::FatalResetWait:
         if (publish_event(runtime, 0U, NP2_AUDIO86_EVENT_RESET_BARRIER, 1U) &&
-            np2audio86_runtime_horizon_publish(
-                &runtime->control, &runtime->producer_clock, 0U) ==
-                NP2_AUDIO86_RUNTIME_HORIZON_OK) {
-            notify(runtime->worker_task);
+            publish_horizon_wait(runtime, 0U)) {
             (void)wait_reset_ack(runtime, 1U);
         }
         break;
@@ -391,9 +464,39 @@ void producer_task(void *opaque)
             (void)enqueue_bytes_wait(runtime, kDataRun, sizeof(kDataRun));
         }
         break;
+    case Scenario::HorizonWakeBeforeRecheck:
+    case Scenario::HorizonSpuriousThenNormal:
+    case Scenario::HorizonWaitStop:
+    case Scenario::HorizonWaitFatal:
+        if (np2audio86_runtime_horizon_publish(
+                &runtime->control, &runtime->producer_clock, 0U) !=
+                NP2_AUDIO86_RUNTIME_HORIZON_OK ||
+            !publish_horizon_wait(runtime, 0U)) {
+            if (!abort_requested(runtime)) {
+                publish_error(runtime, kErrorHorizon);
+            }
+        } else {
+            np2audio86_runtime_producer_done_publish(&runtime->control);
+            notify(runtime->worker_task);
+        }
+        break;
+    case Scenario::TransportBeforeHorizon:
+        if (publish_event(runtime, 0U, NP2_AUDIO86_EVENT_FM_KEY, 0x28U)) {
+            xSemaphoreGive(runtime->injection);
+            xSemaphoreTake(runtime->resume, portMAX_DELAY);
+            if (publish_horizon_wait(runtime, 0U)) {
+                np2audio86_runtime_producer_done_publish(&runtime->control);
+                notify(runtime->worker_task);
+            }
+        }
+        break;
+    case Scenario::WorkerOnlyPartialCreate:
+    case Scenario::ProducerOnlyPartialCreate:
+    case Scenario::ProducerReadyTimeout:
+    case Scenario::WorkerReadyTimeout:
+        break;
     }
-    xSemaphoreGive(runtime->terminal);
-    vTaskSuspend(nullptr);
+    task_quiescent_epilogue(runtime, &runtime->producer_quiescent);
 }
 
 enum class WorkerDecision { Work, Wait, Finish, Abort };
@@ -401,17 +504,21 @@ enum class WorkerDecision { Work, Wait, Finish, Abort };
 WorkerDecision worker_decision(Runtime *runtime,
                                const struct np2audio86_event **event)
 {
+    if (abort_requested(runtime)) {
+        return WorkerDecision::Abort;
+    }
     const int horizon = np2audio86_runtime_horizon_try_observe(
         &runtime->control, &runtime->consumer_clock);
     if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_RETRY) {
-        return WorkerDecision::Wait;
-    }
-    if (horizon != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        if (!runtime->consumer_has_horizon) {
+            return WorkerDecision::Wait;
+        }
+    } else if (horizon != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
         publish_error(runtime, kErrorHorizon);
         return WorkerDecision::Abort;
-    }
-    if (abort_requested(runtime)) {
-        return WorkerDecision::Abort;
+    } else {
+        runtime->consumer_has_horizon = true;
+        notify(runtime->producer_task);
     }
     const int peek = np2audio86_event_ring_peek(&runtime->events, event);
     if (peek == NP2_AUDIO86_TRANSPORT_OK) {
@@ -523,8 +630,15 @@ void worker_task(void *opaque)
     runtime->worker_priority.store(
         static_cast<uint32_t>(uxTaskPriorityGet(nullptr)),
         std::memory_order_release);
-    xSemaphoreGive(runtime->ready);
+    if (runtime->scenario != Scenario::WorkerReadyTimeout) {
+        xSemaphoreGive(runtime->ready);
+    }
     xSemaphoreTake(runtime->start, portMAX_DELAY);
+
+    if (abort_requested(runtime)) {
+        task_quiescent_epilogue(runtime, &runtime->worker_quiescent);
+        return;
+    }
 
     if (runtime->scenario == Scenario::FatalProducerWait) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
@@ -571,15 +685,55 @@ void worker_task(void *opaque)
     } else if (runtime->scenario == Scenario::ByteWaitFatal) {
         xSemaphoreTake(runtime->injection, portMAX_DELAY);
         publish_error(runtime, kErrorWorker);
+    } else if (runtime->scenario == Scenario::HorizonWakeBeforeRecheck) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        if (np2audio86_runtime_horizon_try_observe(
+                &runtime->control, &runtime->consumer_clock) !=
+            NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+            publish_error(runtime, kErrorHorizon);
+        }
+        notify(runtime->producer_task);
+        xSemaphoreGive(runtime->resume);
+        worker_normal(runtime);
+    } else if (runtime->scenario == Scenario::HorizonSpuriousThenNormal) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        notify(runtime->producer_task);
+        xSemaphoreGive(runtime->resume);
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        if (np2audio86_runtime_horizon_try_observe(
+                &runtime->control, &runtime->consumer_clock) !=
+            NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+            publish_error(runtime, kErrorHorizon);
+        }
+        notify(runtime->producer_task);
+        worker_normal(runtime);
+    } else if (runtime->scenario == Scenario::HorizonWaitStop) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        publish_stop(runtime);
+    } else if (runtime->scenario == Scenario::HorizonWaitFatal) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        publish_error(runtime, kErrorWorker);
+    } else if (runtime->scenario == Scenario::TransportBeforeHorizon) {
+        xSemaphoreTake(runtime->injection, portMAX_DELAY);
+        const struct np2audio86_event *event = nullptr;
+        if (worker_decision(runtime, &event) != WorkerDecision::Wait ||
+            runtime->action_count != 0U) {
+            publish_error(runtime, kErrorHorizon);
+        } else {
+            runtime->transport_pause_verified.store(1U,
+                                                     std::memory_order_release);
+        }
+        xSemaphoreGive(runtime->resume);
+        worker_normal(runtime);
     } else {
         worker_normal(runtime);
     }
-    xSemaphoreGive(runtime->terminal);
-    vTaskSuspend(nullptr);
+    task_quiescent_epilogue(runtime, &runtime->worker_quiescent);
 }
 
 void reset_runtime(Scenario scenario)
 {
+    ++s_next_generation;
     np2audio86_event_ring_init(&s_runtime.events);
     np2audio86_byte_ring_init(&s_runtime.bytes);
     np2audio86_runtime_control_init(&s_runtime.control);
@@ -591,7 +745,13 @@ void reset_runtime(Scenario scenario)
     s_runtime.worker_core.store(UINT32_MAX, std::memory_order_relaxed);
     s_runtime.worker_priority.store(0U, std::memory_order_relaxed);
     s_runtime.byte_wait_attempts.store(0U, std::memory_order_relaxed);
+    s_runtime.horizon_wait_attempts.store(0U, std::memory_order_relaxed);
+    s_runtime.producer_quiescent.store(0U, std::memory_order_relaxed);
+    s_runtime.worker_quiescent.store(0U, std::memory_order_relaxed);
+    s_runtime.transport_pause_verified.store(0U, std::memory_order_relaxed);
+    s_runtime.generation = s_next_generation;
     s_runtime.scenario = scenario;
+    s_runtime.consumer_has_horizon = false;
     s_runtime.rendered_frame = 0U;
     s_runtime.next_sequence = 0U;
     s_runtime.action_count = 0U;
@@ -624,59 +784,134 @@ bool wait_task_suspended(TaskHandle_t task)
     return true;
 }
 
+bool storage_reuse_permitted(bool terminal, bool quiescent, bool suspended)
+{
+    return terminal && quiescent && suspended;
+}
+
+bool retire_created_tasks(uint32_t created)
+{
+    bool terminal = true;
+    for (uint32_t index = 0U; index < created; ++index) {
+        terminal = terminal &&
+                   xSemaphoreTake(s_runtime.terminal, kTimeout) == pdTRUE;
+    }
+    const bool producer_quiescent = s_runtime.producer_task == nullptr ||
+        s_runtime.producer_quiescent.load(std::memory_order_acquire) ==
+            s_runtime.generation;
+    const bool worker_quiescent = s_runtime.worker_task == nullptr ||
+        s_runtime.worker_quiescent.load(std::memory_order_acquire) ==
+            s_runtime.generation;
+    const bool suspended = terminal && producer_quiescent && worker_quiescent &&
+        (s_runtime.producer_task == nullptr ||
+         wait_task_suspended(s_runtime.producer_task)) &&
+        (s_runtime.worker_task == nullptr ||
+         wait_task_suspended(s_runtime.worker_task));
+    if (!storage_reuse_permitted(terminal,
+                                 producer_quiescent && worker_quiescent,
+                                 suspended)) {
+        /* Fail closed: live task backing storage and Runtime are retained,
+         * and run() must not start another in-process scenario. */
+        s_storage_reusable = false;
+        return false;
+    }
+    if (s_runtime.producer_task != nullptr) {
+        vTaskDelete(s_runtime.producer_task);
+        s_runtime.producer_task = nullptr;
+    }
+    if (s_runtime.worker_task != nullptr) {
+        vTaskDelete(s_runtime.worker_task);
+        s_runtime.worker_task = nullptr;
+    }
+    s_last_deleted_generation = s_runtime.generation;
+    return true;
+}
+
+bool abort_and_retire_created_tasks(uint32_t created)
+{
+    publish_stop(&s_runtime);
+    for (uint32_t index = 0U; index < created; ++index) {
+        xSemaphoreGive(s_runtime.start);
+    }
+    wake_all(&s_runtime);
+    return retire_created_tasks(created);
+}
+
 bool run_scenario(Scenario scenario, const char *name)
 {
+    if (!s_storage_reusable ||
+        (s_next_generation != 0U &&
+         s_last_deleted_generation != s_next_generation)) {
+        return false;
+    }
     reset_runtime(scenario);
     if (s_runtime.ready == nullptr || s_runtime.start == nullptr ||
         s_runtime.terminal == nullptr || s_runtime.injection == nullptr ||
         s_runtime.resume == nullptr) {
         return false;
     }
-    s_runtime.worker_task = xTaskCreateStaticPinnedToCore(
-        worker_task, "audio86_worker", kWorkerStackBytes, &s_runtime,
-        kWorkerPriority, s_runtime.worker_stack, &s_runtime.worker_tcb,
-        kWorkerCore);
-    s_runtime.producer_task = xTaskCreateStaticPinnedToCore(
-        producer_task, "audio86_test_g", kProducerStackBytes, &s_runtime,
-        kProducerPriority, s_runtime.producer_stack, &s_runtime.producer_tcb,
-        kProducerCore);
-    if (s_runtime.worker_task == nullptr || s_runtime.producer_task == nullptr) {
-        if (s_runtime.producer_task != nullptr) {
-            vTaskDelete(s_runtime.producer_task);
-            s_runtime.producer_task = nullptr;
-        }
-        if (s_runtime.worker_task != nullptr) {
-            vTaskDelete(s_runtime.worker_task);
-            s_runtime.worker_task = nullptr;
+    if (scenario != Scenario::ProducerOnlyPartialCreate) {
+        s_runtime.worker_task = xTaskCreateStaticPinnedToCore(
+            worker_task, "audio86_worker", kWorkerStackBytes, &s_runtime,
+            kWorkerPriority, s_runtime.worker_stack, &s_runtime.worker_tcb,
+            kWorkerCore);
+    }
+    if (scenario != Scenario::WorkerOnlyPartialCreate) {
+        s_runtime.producer_task = xTaskCreateStaticPinnedToCore(
+            producer_task, "audio86_test_g", kProducerStackBytes, &s_runtime,
+            kProducerPriority, s_runtime.producer_stack, &s_runtime.producer_tcb,
+            kProducerCore);
+    }
+    const uint32_t created = (s_runtime.worker_task != nullptr ? 1U : 0U) +
+                             (s_runtime.producer_task != nullptr ? 1U : 0U);
+    const bool expected_partial =
+        scenario == Scenario::WorkerOnlyPartialCreate ||
+        scenario == Scenario::ProducerOnlyPartialCreate;
+    if (created != (expected_partial ? 1U : 2U)) {
+        if (created != 0U) {
+            (void)abort_and_retire_created_tasks(created);
         }
         return false;
     }
-    if (xSemaphoreTake(s_runtime.ready, kTimeout) != pdTRUE ||
-        xSemaphoreTake(s_runtime.ready, kTimeout) != pdTRUE) {
-        publish_stop(&s_runtime);
-        xSemaphoreGive(s_runtime.start);
-        xSemaphoreGive(s_runtime.start);
-        vTaskDelete(s_runtime.producer_task);
-        vTaskDelete(s_runtime.worker_task);
-        s_runtime.producer_task = nullptr;
-        s_runtime.worker_task = nullptr;
+    if (expected_partial) {
+        const bool ready = xSemaphoreTake(s_runtime.ready, kTimeout) == pdTRUE;
+        const bool retired = abort_and_retire_created_tasks(created);
+        const bool result = ready && retired;
+        std::printf("AUDIO86_86R5A_SCENARIO name=%s result=%s first_error=%" PRIu32
+                    " stop=%u producer_wakes=%" PRIu32 " worker_wakes=%" PRIu32
+                    "\n", name, result ? "PASS" : "FAIL",
+                    np2audio86_runtime_first_error(&s_runtime.control),
+                    np2audio86_runtime_stop_requested(&s_runtime.control) ? 1U : 0U,
+                    s_runtime.producer_wakes, s_runtime.worker_wakes);
+        return result;
+    }
+    const TickType_t ready_timeout =
+        (scenario == Scenario::ProducerReadyTimeout ||
+         scenario == Scenario::WorkerReadyTimeout)
+            ? pdMS_TO_TICKS(20U) : kTimeout;
+    const bool ready = xSemaphoreTake(s_runtime.ready, ready_timeout) == pdTRUE &&
+                       xSemaphoreTake(s_runtime.ready, ready_timeout) == pdTRUE;
+    const bool expected_ready_timeout =
+        scenario == Scenario::ProducerReadyTimeout ||
+        scenario == Scenario::WorkerReadyTimeout;
+    if (!ready) {
+        const bool retired = abort_and_retire_created_tasks(created);
+        const bool result = expected_ready_timeout && retired;
+        std::printf("AUDIO86_86R5A_SCENARIO name=%s result=%s first_error=%" PRIu32
+                    " stop=%u producer_wakes=%" PRIu32 " worker_wakes=%" PRIu32
+                    "\n", name, result ? "PASS" : "FAIL",
+                    np2audio86_runtime_first_error(&s_runtime.control),
+                    np2audio86_runtime_stop_requested(&s_runtime.control) ? 1U : 0U,
+                    s_runtime.producer_wakes, s_runtime.worker_wakes);
+        return result;
+    }
+    if (expected_ready_timeout) {
+        (void)abort_and_retire_created_tasks(created);
         return false;
     }
     xSemaphoreGive(s_runtime.start);
     xSemaphoreGive(s_runtime.start);
-    const bool terminal =
-        xSemaphoreTake(s_runtime.terminal, kTimeout) == pdTRUE &&
-        xSemaphoreTake(s_runtime.terminal, kTimeout) == pdTRUE;
-    /* A terminal give precedes self-suspend.  Do not recycle any task or
-     * semaphore backing storage until both cores have completed that final
-     * transition. */
-    const bool quiescent = terminal &&
-                           wait_task_suspended(s_runtime.producer_task) &&
-                           wait_task_suspended(s_runtime.worker_task);
-    vTaskDelete(s_runtime.producer_task);
-    vTaskDelete(s_runtime.worker_task);
-    s_runtime.producer_task = nullptr;
-    s_runtime.worker_task = nullptr;
+    const bool quiescent = retire_created_tasks(created);
 
     const bool affinity =
         s_runtime.producer_core.load(std::memory_order_acquire) ==
@@ -685,7 +920,7 @@ bool run_scenario(Scenario scenario, const char *name)
             static_cast<uint32_t>(kWorkerCore) &&
         s_runtime.worker_priority.load(std::memory_order_acquire) ==
             kWorkerPriority;
-    bool result = terminal && quiescent && affinity;
+    bool result = quiescent && affinity;
     if (scenario == Scenario::Normal) {
         np2_sha256_final(&s_runtime.data_sha_context, s_runtime.data_sha);
         result = result &&
@@ -777,14 +1012,51 @@ bool run_scenario(Scenario scenario, const char *name)
                  s_runtime.producer_wakes > 0U &&
                  np2audio86_byte_ring_occupancy(&s_runtime.bytes) ==
                      NP2_AUDIO86_ASYNC_BYTE_CAPACITY;
+    } else if (scenario == Scenario::HorizonWakeBeforeRecheck) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.horizon_wait_attempts.load(
+                     std::memory_order_acquire) == 1U &&
+                 s_runtime.producer_wakes == 0U &&
+                 s_runtime.consumer_clock.committed_frame_reconstructed == 0U;
+    } else if (scenario == Scenario::HorizonSpuriousThenNormal) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.horizon_wait_attempts.load(
+                     std::memory_order_acquire) >= 2U &&
+                 s_runtime.producer_wakes >= 1U &&
+                 s_runtime.consumer_clock.committed_frame_reconstructed == 0U;
+    } else if (scenario == Scenario::HorizonWaitStop) {
+        result = result &&
+                 np2audio86_runtime_stop_requested(&s_runtime.control) &&
+                 s_runtime.producer_wakes > 0U &&
+                 np2audio86_runtime_horizon_pending(&s_runtime.control);
+    } else if (scenario == Scenario::HorizonWaitFatal) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) ==
+                     kErrorWorker &&
+                 s_runtime.producer_wakes > 0U &&
+                 np2audio86_runtime_horizon_pending(&s_runtime.control);
+    } else if (scenario == Scenario::TransportBeforeHorizon) {
+        result = result &&
+                 np2audio86_runtime_first_error(&s_runtime.control) == 0U &&
+                 s_runtime.transport_pause_verified.load(
+                     std::memory_order_acquire) == 1U &&
+                 s_runtime.action_count == 1U &&
+                 np2audio86_event_ring_occupancy(&s_runtime.events) == 0U;
     }
     std::printf("AUDIO86_86R5A_SCENARIO name=%s result=%s first_error=%" PRIu32
                 " stop=%u producer_wakes=%" PRIu32 " worker_wakes=%" PRIu32
-                "\n",
+                " quiescent=%u affinity=%u producer_q=%" PRIu32
+                " worker_q=%" PRIu32 " generation=%" PRIu32 "\n",
                 name, result ? "PASS" : "FAIL",
                 np2audio86_runtime_first_error(&s_runtime.control),
                 np2audio86_runtime_stop_requested(&s_runtime.control) ? 1U : 0U,
-                s_runtime.producer_wakes, s_runtime.worker_wakes);
+                s_runtime.producer_wakes, s_runtime.worker_wakes,
+                quiescent ? 1U : 0U, affinity ? 1U : 0U,
+                s_runtime.producer_quiescent.load(std::memory_order_acquire),
+                s_runtime.worker_quiescent.load(std::memory_order_acquire),
+                s_runtime.generation);
     return result;
 }
 
@@ -809,11 +1081,14 @@ esp_err_t run()
                 " production_runtime_active=NO i2s=NO es8311=NO a2=NO"
                 " guest_binding=NO\n");
     std::printf("AUDIO86_86R5A_SIZE event_abi=%zu event_ring=%zu byte_ring=%zu"
-                " control=%zu control_align=%zu producer_clock=%zu"
+                " mailbox=%zu mailbox_align=%zu control=%zu control_align=%zu producer_clock=%zu"
                 " consumer_clock=%zu worker_context=%zu worker_stack=%u"
                 " producer_stack=%u\n",
                 sizeof(struct np2audio86_event), sizeof(s_runtime.events),
-                sizeof(s_runtime.bytes), sizeof(s_runtime.control),
+                sizeof(s_runtime.bytes),
+                sizeof(struct np2audio86_runtime_horizon_mailbox),
+                alignof(struct np2audio86_runtime_horizon_mailbox),
+                sizeof(s_runtime.control),
                 alignof(struct np2audio86_runtime_control),
                 sizeof(s_runtime.producer_clock),
                 sizeof(s_runtime.consumer_clock), sizeof(s_runtime),
@@ -828,22 +1103,38 @@ esp_err_t run()
                     MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
 
     bool ok = memory_is_internal();
-    ok = run_scenario(Scenario::FatalWorkerWait, "fatal_worker_wait") && ok;
-    ok = run_scenario(Scenario::FatalProducerWait, "fatal_producer_wait") && ok;
-    ok = run_scenario(Scenario::StopEventWait, "stop_event_wait") && ok;
-    ok = run_scenario(Scenario::EventWaitNormal, "event_wait_normal") && ok;
-    ok = run_scenario(Scenario::StopResetWait, "stop_reset_wait") && ok;
-    ok = run_scenario(Scenario::FatalResetWait, "fatal_reset_wait") && ok;
-    ok = run_scenario(Scenario::StopWorkerWait, "stop_worker_wait") && ok;
-    ok = run_scenario(Scenario::ByteWakeBeforeRecheck,
-                      "byte_wake_before_recheck") && ok;
-    ok = run_scenario(Scenario::ByteSpuriousThenNormal,
-                      "byte_spurious_then_normal") && ok;
-    ok = run_scenario(Scenario::ByteWaitStop, "byte_wait_stop") && ok;
-    ok = run_scenario(Scenario::ByteWaitFatal, "byte_wait_fatal") && ok;
+    ok = ok && run_scenario(Scenario::WorkerOnlyPartialCreate,
+                            "worker_only_partial_create");
+    ok = ok && run_scenario(Scenario::ProducerOnlyPartialCreate,
+                            "producer_only_partial_create");
+    ok = ok && run_scenario(Scenario::ProducerReadyTimeout,
+                            "producer_ready_timeout");
+    ok = ok && run_scenario(Scenario::WorkerReadyTimeout,
+                            "worker_ready_timeout");
+    ok = ok && run_scenario(Scenario::FatalWorkerWait, "fatal_worker_wait");
+    ok = ok && run_scenario(Scenario::FatalProducerWait, "fatal_producer_wait");
+    ok = ok && run_scenario(Scenario::StopEventWait, "stop_event_wait");
+    ok = ok && run_scenario(Scenario::EventWaitNormal, "event_wait_normal");
+    ok = ok && run_scenario(Scenario::StopResetWait, "stop_reset_wait");
+    ok = ok && run_scenario(Scenario::FatalResetWait, "fatal_reset_wait");
+    ok = ok && run_scenario(Scenario::StopWorkerWait, "stop_worker_wait");
+    ok = ok && run_scenario(Scenario::ByteWakeBeforeRecheck,
+                            "byte_wake_before_recheck");
+    ok = ok && run_scenario(Scenario::ByteSpuriousThenNormal,
+                            "byte_spurious_then_normal");
+    ok = ok && run_scenario(Scenario::ByteWaitStop, "byte_wait_stop");
+    ok = ok && run_scenario(Scenario::ByteWaitFatal, "byte_wait_fatal");
+    ok = ok && run_scenario(Scenario::HorizonWakeBeforeRecheck,
+                            "horizon_wake_before_recheck");
+    ok = ok && run_scenario(Scenario::HorizonSpuriousThenNormal,
+                            "horizon_spurious_then_normal");
+    ok = ok && run_scenario(Scenario::HorizonWaitStop, "horizon_wait_stop");
+    ok = ok && run_scenario(Scenario::HorizonWaitFatal, "horizon_wait_fatal");
+    ok = ok && run_scenario(Scenario::TransportBeforeHorizon,
+                            "transport_before_horizon");
     /* Finish on the canonical successful stream so final residual evidence
      * describes successful finalize rather than an injected abort. */
-    ok = run_scenario(Scenario::Normal, "normal") && ok;
+    ok = ok && run_scenario(Scenario::Normal, "normal");
 
     std::printf("P4_AUDIO86_AFFINITY=%s producer_core=1 worker_core=0"
                 " worker_priority=6 worker_stack=8192\n",
@@ -864,6 +1155,29 @@ esp_err_t run()
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
                 ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL");
+    const bool terminal_timeout_policy =
+        !storage_reuse_permitted(false, false, false);
+    std::printf("HORIZON_MAILBOX_C11_PROOF=%s\n"
+                "HORIZON_INDEFINITE_PUBLICATION=%s\n"
+                "HORIZON_FULL_WAIT_RETRY=%s\n"
+                "HORIZON_WAIT_PROTOCOL=%s\n"
+                "TRANSPORT_BEFORE_HORIZON=%s\n"
+                "STATIC_TASK_QUIESCENCE_PROTOCOL=%s\n"
+                "PARTIAL_CREATE_QUIESCENCE=%s\n"
+                "READY_TIMEOUT_QUIESCENCE=%s\n"
+                "TERMINAL_PATHS_UNIFIED=%s\n"
+                "TERMINAL_TIMEOUT_NO_REUSE=%s\n"
+                "STATIC_STORAGE_REUSE_SAFE=%s generation=%" PRIu32 "\n",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL", ok ? "PASS" : "FAIL",
+                ok ? "PASS" : "FAIL",
+                ok && terminal_timeout_policy ? "PASS" : "FAIL",
+                ok && s_storage_reusable &&
+                        s_last_deleted_generation == s_next_generation
+                    ? "PASS" : "FAIL",
+                s_last_deleted_generation);
     std::printf("AUDIO86_86R5A_FINAL residual_events=%" PRIu32
                 " residual_bytes=%" PRIu32 " result=%s timing=NOT_VALIDATED\n",
                 np2audio86_event_ring_occupancy(&s_runtime.events),

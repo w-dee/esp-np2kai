@@ -40,6 +40,17 @@ def valid_log() -> str:
         "FREERTOS_WAIT_PROTOCOL=PASS",
         "LOST_WAKEUP_PROOF=PASS",
         "P4_WAKE_MATRIX=PASS",
+        "HORIZON_MAILBOX_C11_PROOF=PASS",
+        "HORIZON_INDEFINITE_PUBLICATION=PASS",
+        "HORIZON_FULL_WAIT_RETRY=PASS",
+        "HORIZON_WAIT_PROTOCOL=PASS",
+        "TRANSPORT_BEFORE_HORIZON=PASS",
+        "STATIC_TASK_QUIESCENCE_PROTOCOL=PASS",
+        "PARTIAL_CREATE_QUIESCENCE=PASS",
+        "READY_TIMEOUT_QUIESCENCE=PASS",
+        "TERMINAL_PATHS_UNIFIED=PASS",
+        "TERMINAL_TIMEOUT_NO_REUSE=PASS",
+        "STATIC_STORAGE_REUSE_SAFE=PASS generation=21",
         "AUDIO86_86R5A_FINAL residual_events=0 residual_bytes=0 "
         "result=PASS timing=NOT_VALIDATED",
         "AUDIO86_86R5A_RESULT=PASS",
@@ -62,13 +73,29 @@ def main() -> None:
     complete = valid_log()
     validate(complete)
     print("ESP_EMU_VALIDATOR_POSITIVE name=complete result=PASS")
+    harmless = complete + "I audit: panic handling prose is harmless\n"
+    validate(harmless)
+    print("ESP_EMU_VALIDATOR_POSITIVE name=harmless_panic_prose result=PASS")
     expect_failure("guru", complete + "Guru Meditation Error\n")
-    expect_failure("panic", complete + "Core 0 panic'ed (Load access fault)\n")
+    expect_failure("panic_ed", complete + "Core 0 panic'ed (Load access fault)\n")
+    expect_failure("bare_panic", complete + "  PaNiC : synthetic fatal\n")
+    expect_failure("assert", complete + "assert failed: synthetic\n")
+    expect_failure("abort", complete + "abort() was called\n")
+    expect_failure("stack_overflow", complete + "Stack overflow\n")
+    expect_failure("stack_smashing", complete + "Stack smashing\n")
+    expect_failure("task_wdt", complete + "Task watchdog got triggered\n")
+    expect_failure("interrupt_wdt", complete + "Interrupt wdt timeout\n")
+    expect_failure("esp_error_check", complete + "ESP_ERROR_CHECK failed\n")
+    expect_failure("unhandled_exception",
+                   complete + "Unhandled fatal exception\n")
     expect_failure("missing_marker",
                    complete.replace("P4_WAKE_MATRIX=PASS\n", ""))
     expect_failure("truncated_boot", "ESP-ROM:esp32p4-eco5-20250430\n")
     expect_failure("scenario_plus_panic",
                    complete + "Guru Meditation Error after scenario PASS\n")
+    print("VALIDATOR_MATRIX=16/16_PASS")
+    print("BARE_PANIC_REJECTED=PASS")
+    print("HARMLESS_PANIC_PROSE_ACCEPTED=PASS")
     print("ESP_EMU_VALIDATOR_FAIL_CLOSED=PASS")
 
 

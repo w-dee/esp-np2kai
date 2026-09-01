@@ -855,6 +855,9 @@ struct continuation_context {
     _Atomic bool pre_mutated_domain_a;
     _Atomic bool reset_baseline_domain_a;
     _Atomic bool post_mutated_domain_a;
+    _Atomic bool completion_recheck_enabled;
+    _Atomic bool worker_empty_paused;
+    _Atomic bool release_worker_after_done;
     _Atomic uint64_t reset_ack_plus_one;
     uint64_t producer_next;
     uint64_t worker_next;
@@ -914,6 +917,18 @@ static void *continuation_producer(void *opaque)
     }
     atomic_store_explicit(&context->producer_waiting_ack, false, memory_order_release);
     atomic_store_explicit(&context->producer_observed_ack, true, memory_order_release);
+    if (atomic_load_explicit(&context->completion_recheck_enabled,
+                             memory_order_acquire)) {
+        while (!atomic_load_explicit(&context->worker_empty_paused,
+                                     memory_order_acquire)) {
+            if (continuation_failed(context)) {
+                atomic_store_explicit(&context->producer_done, true,
+                                      memory_order_release);
+                return NULL;
+            }
+            sched_yield();
+        }
+    }
     if (continuation_push(context, 2U, NP2AUDIO86_TRACE_OPNA_REGISTER,
                           UINT32_C(0x307e)) != 0) {
         continuation_fail(context, ASYNC_ERROR_TRANSPORT);
@@ -924,6 +939,11 @@ static void *continuation_producer(void *opaque)
     atomic_store_explicit(&context->post_published, true, memory_order_release);
     atomic_store_explicit(&context->producer_terminal, true, memory_order_release);
     atomic_store_explicit(&context->producer_done, true, memory_order_release);
+    if (atomic_load_explicit(&context->completion_recheck_enabled,
+                             memory_order_acquire)) {
+        atomic_store_explicit(&context->release_worker_after_done, true,
+                              memory_order_release);
+    }
     return NULL;
 }
 
@@ -996,8 +1016,30 @@ static void *continuation_worker(void *opaque)
         const struct np2audio86_event *event = NULL;
         const int status = np2audio86_event_ring_peek(&context->events, &event);
         if (status == NP2_AUDIO86_TRANSPORT_EMPTY) {
+            if (context->worker_next == 2U &&
+                atomic_load_explicit(&context->completion_recheck_enabled,
+                                     memory_order_acquire) &&
+                !atomic_load_explicit(&context->worker_empty_paused,
+                                      memory_order_acquire)) {
+                atomic_store_explicit(&context->worker_empty_paused, true,
+                                      memory_order_release);
+                while (!atomic_load_explicit(
+                    &context->release_worker_after_done, memory_order_acquire)) {
+                    if (continuation_failed(context)) return NULL;
+                    sched_yield();
+                }
+            }
             if (atomic_load_explicit(&context->producer_done, memory_order_acquire)) {
-                break;
+                const int recheck = np2audio86_event_ring_peek(&context->events,
+                                                               &event);
+                if (recheck == NP2_AUDIO86_TRANSPORT_OK) {
+                    continue;
+                }
+                if (recheck == NP2_AUDIO86_TRANSPORT_EMPTY) {
+                    break;
+                }
+                continuation_fail(context, ASYNC_ERROR_TRANSPORT);
+                return NULL;
             }
             if (continuation_failed(context)) return NULL;
             sched_yield();
@@ -1018,7 +1060,7 @@ static void *continuation_worker(void *opaque)
     return NULL;
 }
 
-static int run_reset_continuation(void)
+static int run_reset_continuation(int completion_recheck)
 {
     struct continuation_context context;
     pthread_t producer;
@@ -1043,6 +1085,9 @@ static int run_reset_continuation(void)
     atomic_init(&context.pre_mutated_domain_a, false);
     atomic_init(&context.reset_baseline_domain_a, false);
     atomic_init(&context.post_mutated_domain_a, false);
+    atomic_init(&context.completion_recheck_enabled, completion_recheck != 0);
+    atomic_init(&context.worker_empty_paused, false);
+    atomic_init(&context.release_worker_after_done, false);
     atomic_init(&context.reset_ack_plus_one, 0U);
     if (pthread_create(&worker, NULL, continuation_worker, &context) != 0) goto done;
     worker_created = 1;
@@ -1060,8 +1105,16 @@ static int run_reset_continuation(void)
     worker_created = 0;
     result = !continuation_failed(&context) && context.producer_next == 3U &&
              context.worker_next == 3U &&
+             np2audio86_event_ring_occupancy(&context.events) == 0U &&
+             atomic_load_explicit(&context.producer_terminal,
+                                  memory_order_acquire) &&
+             atomic_load_explicit(&context.worker_terminal,
+                                  memory_order_acquire) &&
              atomic_load_explicit(&context.producer_observed_ack,
                                   memory_order_acquire) &&
+             (!completion_recheck ||
+              atomic_load_explicit(&context.worker_empty_paused,
+                                   memory_order_acquire)) &&
              atomic_load_explicit(&context.post_published, memory_order_acquire) &&
              atomic_load_explicit(&context.post_consumed, memory_order_acquire) &&
              atomic_load_explicit(&context.pre_mutated_domain_a,
@@ -1089,6 +1142,8 @@ static int run_reset_continuation(void)
     }
 done:
     atomic_store_explicit(&context.release_reset, true, memory_order_release);
+    atomic_store_explicit(&context.release_worker_after_done, true,
+                          memory_order_release);
     continuation_fail(&context, ASYNC_ERROR_STOP);
     if (producer_created && pthread_join(producer, NULL) != 0) result = -1;
     if (worker_created && pthread_join(worker, NULL) != 0) result = -1;
@@ -1149,11 +1204,14 @@ static int run_case(const char *name)
         if (run_split_pressure() != 0) return -1;
         printf("AUDIO86_GUEST_ASYNC_DATA_RUN_SPLIT_PRESSURE=PASS\n");
     } else if (strcmp(name, "continuation") == 0) {
-        if (run_reset_continuation() != 0) return -1;
+        if (run_reset_continuation(0) != 0) return -1;
         printf("AUDIO86_GUEST_ASYNC_POST_RESET_CONTINUATION=PASS\n");
+    } else if (strcmp(name, "completion-recheck") == 0) {
+        if (run_reset_continuation(1) != 0) return -1;
+        printf("AUDIO86_GUEST_ASYNC_COMPLETION_RECHECK=PASS\n");
     } else if (strcmp(name, "supplemental") == 0) {
         if (run_byte_full_cases() != 0 || run_split_pressure() != 0 ||
-            run_reset_continuation() != 0 || run_first_error_immutability() != 0)
+            run_reset_continuation(0) != 0 || run_first_error_immutability() != 0)
             return -1;
         printf("AUDIO86_GUEST_ASYNC_BYTE_FULL=PASS\n");
         printf("DATA_RUN_RESERVATION_ORDER=PASS\n");
