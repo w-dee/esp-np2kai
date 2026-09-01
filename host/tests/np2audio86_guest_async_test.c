@@ -97,6 +97,17 @@ struct async_context {
     uint64_t bytes_consumed;
     uint64_t resets_published;
     uint64_t resets_acknowledged;
+    /* Sole-producer checked-transaction ownership.  The worker only advances
+     * ring tails, so it cannot consume capacity reserved here before commit. */
+    uint32_t transaction_generation;
+    uint32_t active_generation;
+    size_t reserved_events;
+    size_t reserved_bytes;
+    uint8_t horizon_owned;
+    uint8_t transaction_active;
+    uint8_t transaction_kind;
+    uint8_t transaction_event_committed;
+    uint8_t transaction_run_committed;
 };
 
 static void fail(struct async_context *context, enum async_error error);
@@ -527,183 +538,268 @@ static int wait_retry(const struct async_context *context)
     return 0;
 }
 
-static int enqueue_event(struct async_context *context,
-                         const struct np2audio86_event *event)
+static int reserve_event_slot(struct async_context *context)
 {
     for (;;) {
-        const int status = np2audio86_event_ring_enqueue(&context->events, event);
-        if (status == NP2_AUDIO86_TRANSPORT_OK) {
-            return 0;
-        }
-        if (status != NP2_AUDIO86_TRANSPORT_FULL) {
-            fail(context, ASYNC_ERROR_TRANSPORT);
-            return -1;
-        }
+        if (np2audio86_event_ring_occupancy(&context->events) +
+            context->reserved_events < NP2_AUDIO86_ASYNC_EVENT_CAPACITY) return 0;
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-        if (hardening_hold_event_full(context, event) != 0) {
-            return -1;
-        }
+        const struct np2audio86_event waiting = {
+            .sequence = context->producer_next_sequence,
+        };
+        if (hardening_hold_event_full(context, &waiting) != 0) return -1;
 #endif
-        if (wait_retry(context) != 0) {
-            return -1;
-        }
+        if (wait_retry(context) != 0) return -1;
     }
 }
 
-static int enqueue_byte(struct async_context *context, uint8_t value)
+static int reserve_byte_slot(struct async_context *context)
 {
     for (;;) {
-#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-        uint32_t head_before;
-        if (hardening_enabled()) {
-            head_before = atomic_load_explicit(&context->bytes.head,
-                                               memory_order_relaxed);
-        }
-#endif
-        const int status = np2audio86_byte_ring_push(&context->bytes, &value, 1U);
-        if (status == NP2_AUDIO86_TRANSPORT_OK) {
-#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-            if (hardening_enabled() &&
-                (head_before & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)) ==
-                    NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U) {
-                atomic_fetch_add_explicit(&g_async_hardening_live.byte_wrap_count,
-                                          1U, memory_order_relaxed);
-            }
-#endif
-            return 0;
-        }
-        if (status != NP2_AUDIO86_TRANSPORT_FULL) {
-            fail(context, ASYNC_ERROR_TRANSPORT);
-            return -1;
-        }
-        if (wait_retry(context) != 0) {
-            return -1;
-        }
+        if (np2audio86_byte_ring_occupancy(&context->bytes) +
+            context->reserved_bytes < NP2_AUDIO86_ASYNC_BYTE_CAPACITY) return 0;
+        if (wait_retry(context) != 0) return -1;
     }
 }
 
-static int publish_pcm_byte(void *opaque, uint64_t frame_timestamp,
-                            uint64_t sequence, uint8_t value)
+static void token_set(struct async_context *context,
+                      np2audio86_guest_transaction_t *transaction,
+                      uint32_t kind)
+{
+    memset(transaction, 0, sizeof(*transaction));
+    transaction->opaque[0] = (uintptr_t)context;
+    transaction->opaque[1] = (uintptr_t)context->active_generation;
+    transaction->opaque[2] = (uintptr_t)kind;
+    transaction->opaque[3] = 1U;
+}
+
+static int token_matches(const struct async_context *context,
+                         const np2audio86_guest_transaction_t *transaction,
+                         uint32_t kind)
+{
+    return context != NULL && transaction != NULL && context->transaction_active &&
+           transaction->opaque[0] == (uintptr_t)context &&
+           transaction->opaque[1] == (uintptr_t)context->active_generation &&
+           transaction->opaque[2] == (uintptr_t)kind &&
+           transaction->opaque[3] == 1U && context->transaction_kind == kind;
+}
+
+static int reserve_checked(void *opaque, uint32_t kind, size_t bytes,
+                           np2audio86_guest_transaction_t *transaction)
 {
     struct async_context *context = opaque;
-    if (context == NULL || sequence != context->producer_next_sequence ||
+    if (context == NULL || transaction == NULL || context->transaction_active ||
+        (kind != NP2AUDIO86_GUEST_TRANSACTION_EVENT &&
+         kind != NP2AUDIO86_GUEST_TRANSACTION_RESET &&
+         kind != NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
+        (kind == NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN ? bytes != 1U : bytes != 0U)) {
+        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_producer_fatal_requested()) {
+        /* This is the native producer fail-stop path.  Keep its first-error
+         * classification independent of scheduler perturbation so a released
+         * checked reservation cannot be mistaken for ordinary termination. */
+        fail(context, ASYNC_ERROR_DISPATCH);
+        return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+    }
+    if (hardening_schedule_producer(context) != 0) {
+        return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+    }
+#endif
+    if (reserve_event_slot(context) != 0 ||
+        (kind == NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN && reserve_byte_slot(context) != 0)) {
+        return stopped(context) ? NP2AUDIO86_GUEST_TRANSACTION_TERMINATED :
+                                  NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+    if (stopped(context) || failed(context)) return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+    ++context->reserved_events;
+    if (kind == NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ++context->reserved_bytes;
+    context->horizon_owned = 1U;
+    context->transaction_active = 1U;
+    context->transaction_kind = (uint8_t)kind;
+    context->transaction_event_committed = 0U;
+    context->transaction_run_committed = 0U;
+    context->active_generation = ++context->transaction_generation;
+    token_set(context, transaction, kind);
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
+}
+
+static int extend_checked(void *opaque, np2audio86_guest_transaction_t *transaction,
+                          size_t bytes)
+{
+    struct async_context *context = opaque;
+    if (!token_matches(context, transaction, NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
+        bytes != 1U || context->transaction_run_committed) {
+        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+    if (reserve_byte_slot(context) != 0)
+        return stopped(context) ? NP2AUDIO86_GUEST_TRANSACTION_TERMINATED :
+                                  NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    if (stopped(context) || failed(context)) return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+    ++context->reserved_bytes;
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
+}
+
+static void commit_pcm_byte(void *opaque, np2audio86_guest_transaction_t *transaction,
+                            uint64_t frame_timestamp, uint64_t sequence,
+                            uint8_t value)
+{
+    struct async_context *context = opaque;
+    int status;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    uint32_t head_before = 0U;
+#endif
+    if (!token_matches(context, transaction, NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
+        context->reserved_bytes == 0U || sequence != context->producer_next_sequence ||
         (context->pending_run_bytes != 0U &&
          (context->pending_run_sequence != sequence ||
           context->pending_run_frame != frame_timestamp)) ||
         context->pending_run_bytes >= NP2_AUDIO86_ASYNC_MAX_DATA_RUN) {
-        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
-        return -1;
+        fail(context, ASYNC_ERROR_SEQUENCE);
+        return;
     }
-    if (enqueue_byte(context, value) != 0) {
-        return -1;
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_enabled()) {
+        head_before = atomic_load_explicit(&context->bytes.head, memory_order_relaxed);
     }
+#endif
+    status = np2audio86_byte_ring_push(&context->bytes, &value, 1U);
+    if (status != NP2_AUDIO86_TRANSPORT_OK) {
+        fail(context, ASYNC_ERROR_TRANSPORT);
+        return;
+    }
+#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
+    if (hardening_enabled() &&
+        (head_before & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)) ==
+            NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U) {
+        atomic_fetch_add_explicit(&g_async_hardening_live.byte_wrap_count,
+                                  1U, memory_order_relaxed);
+    }
+#endif
+    --context->reserved_bytes;
     context->pending_run_sequence = sequence;
     context->pending_run_frame = frame_timestamp;
     ++context->pending_run_bytes;
     ++context->bytes_published;
-    return 0;
 }
 
-static int publish_data_run(void *opaque, const np2audio86_guest_data_run_t *run)
+static void commit_data_run(void *opaque, np2audio86_guest_transaction_t *transaction,
+                            const np2audio86_guest_data_run_t *run)
 {
     struct async_context *context = opaque;
     struct np2audio86_event event;
-    if (context == NULL || run == NULL ||
+    int status;
+    if (!token_matches(context, transaction, NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
+        context->reserved_events != 1U || run == NULL ||
         run->sequence != context->producer_next_sequence || run->count == 0U ||
         run->count > NP2_AUDIO86_ASYNC_MAX_DATA_RUN ||
         context->pending_run_sequence != run->sequence ||
         context->pending_run_frame != run->frame_timestamp ||
         context->pending_run_bytes != run->count) {
-        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
-        return -1;
+        fail(context, ASYNC_ERROR_SEQUENCE);
+        return;
     }
     event.frame_timestamp = run->frame_timestamp;
     event.sequence = run->sequence;
     event.opcode = NP2_AUDIO86_GUEST_TRANSPORT_DATA_RUN;
     event.payload = run->count;
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-    if (hardening_schedule_producer(context) != 0 ||
-        hardening_cutpoint(context,
-                           NP2_AUDIO86_ASYNC_CP_BYTE_HEAD_BEFORE_DATA_RUN,
-                           run->count) != 0) {
-        return -1;
-    }
+    (void)hardening_cutpoint(context, NP2_AUDIO86_ASYNC_CP_BYTE_HEAD_BEFORE_DATA_RUN,
+                             run->count);
 #endif
-    if (enqueue_event(context, &event) != 0) {
-        return -1;
+    status = np2audio86_event_ring_enqueue(&context->events, &event);
+    if (status != NP2_AUDIO86_TRANSPORT_OK) {
+        fail(context, ASYNC_ERROR_TRANSPORT);
+        return;
     }
-#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-    hardening_schedule_producer_published();
-#endif
+    --context->reserved_events;
+    context->transaction_run_committed = 1U;
     ++context->producer_next_sequence;
     ++context->actions_published;
     ++context->data_runs_published;
     context->pending_run_bytes = 0U;
-    return 0;
 }
 
-static int publish_event(void *opaque, const np2audio86_guest_event_t *guest)
+static void commit_event(void *opaque, np2audio86_guest_transaction_t *transaction,
+                         const np2audio86_guest_event_t *guest)
 {
     struct async_context *context = opaque;
     struct np2audio86_event event;
     uint8_t kind;
-    if (context == NULL || guest == NULL ||
+    int status;
+    if ((!token_matches(context, transaction, NP2AUDIO86_GUEST_TRANSACTION_EVENT) &&
+         !token_matches(context, transaction, NP2AUDIO86_GUEST_TRANSACTION_RESET)) ||
+        context->reserved_events != 1U || guest == NULL ||
         guest->sequence != context->producer_next_sequence ||
         np2audio86_guest_action_kind_for_opcode(guest->opcode, &kind) != 0) {
-        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
-        return -1;
+        fail(context, ASYNC_ERROR_SEQUENCE);
+        return;
     }
     event.frame_timestamp = guest->frame_timestamp;
     event.sequence = guest->sequence;
     event.opcode = guest->opcode;
     event.payload = guest->payload;
-    if (atomic_load_explicit(&context->worker_started, memory_order_acquire)) {
+    if (atomic_load_explicit(&context->worker_started, memory_order_acquire))
         atomic_store_explicit(&context->producer_observed_worker, true,
                               memory_order_release);
+    status = np2audio86_event_ring_enqueue(&context->events, &event);
+    if (status != NP2_AUDIO86_TRANSPORT_OK) {
+        fail(context, ASYNC_ERROR_TRANSPORT);
+        return;
     }
-#if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-    if (hardening_producer_fatal_requested()) {
-        fail(context, ASYNC_ERROR_DISPATCH);
-        return -1;
-    }
-    if (hardening_schedule_producer(context) != 0) {
-        return -1;
-    }
-#endif
-    if (enqueue_event(context, &event) != 0) {
-        return -1;
-    }
+    --context->reserved_events;
+    context->transaction_event_committed = 1U;
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
     hardening_schedule_producer_published();
 #endif
     ++context->producer_next_sequence;
     ++context->actions_published;
-    if (kind != NP2_AUDIO86_GUEST_ACTION_RESET) {
-        return 0;
+    if (kind == NP2_AUDIO86_GUEST_ACTION_RESET) {
+        ++context->resets_published;
+        atomic_store_explicit(&context->producer_reset_waiting, true,
+                              memory_order_release);
     }
-    ++context->resets_published;
-    atomic_store_explicit(&context->producer_reset_waiting, true,
-                          memory_order_release);
+}
+
+static void commit_horizon(void *opaque, np2audio86_guest_transaction_t *transaction,
+                           uint64_t frame_timestamp)
+{
+    struct async_context *context = opaque;
+    uint8_t reset;
+    (void)frame_timestamp;
+    if (context == NULL || transaction == NULL || !context->transaction_active ||
+        transaction->opaque[0] != (uintptr_t)context ||
+        transaction->opaque[1] != (uintptr_t)context->active_generation ||
+        !context->horizon_owned ||
+        (!context->transaction_event_committed && !context->transaction_run_committed)) {
+        if (context != NULL) fail(context, ASYNC_ERROR_SEQUENCE);
+        return;
+    }
+    reset = context->transaction_kind == NP2AUDIO86_GUEST_TRANSACTION_RESET;
+    context->horizon_owned = 0U;
+    context->transaction_active = 0U;
+    context->transaction_kind = 0U;
+    transaction->opaque[3] = 0U;
+    if (!reset) return;
     for (;;) {
         if (atomic_load_explicit(&context->reset_ack_plus_one,
-                                 memory_order_acquire) == guest->sequence + 1U) {
+                                 memory_order_acquire) == context->producer_next_sequence) {
 #if defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-            if (hardening_cutpoint(context,
-                                   NP2_AUDIO86_ASYNC_CP_ACK_BEFORE_PRODUCER_RESUME,
-                                   guest->sequence) != 0) {
-                atomic_store_explicit(&context->producer_reset_waiting, false,
-                                      memory_order_release);
-                return -1;
-            }
+            (void)hardening_cutpoint(context,
+                                     NP2_AUDIO86_ASYNC_CP_ACK_BEFORE_PRODUCER_RESUME,
+                                     context->producer_next_sequence - 1U);
 #endif
             atomic_store_explicit(&context->producer_reset_waiting, false,
                                   memory_order_release);
-            return 0;
+            return;
         }
         if (wait_retry(context) != 0) {
             atomic_store_explicit(&context->producer_reset_waiting, false,
                                   memory_order_release);
-            return -1;
+            return;
         }
     }
 }
@@ -1115,9 +1211,12 @@ static void *producer_thread(void *opaque)
     struct producer_context *producer = opaque;
     const np2audio86_guest_sink_t sink = {
         .opaque = producer->transport,
-        .publish_event = publish_event,
-        .publish_pcm_byte = publish_pcm_byte,
-        .publish_data_run = publish_data_run,
+        .reserve_checked = reserve_checked,
+        .extend_checked = extend_checked,
+        .commit_event = commit_event,
+        .commit_pcm_byte = commit_pcm_byte,
+        .commit_data_run = commit_data_run,
+        .commit_horizon = commit_horizon,
     };
     atomic_store_explicit(&producer->transport->producer_started, true,
                           memory_order_release);
@@ -1293,7 +1392,9 @@ done:
         context.bytes_consumed != 8U || context.resets_published != 1U ||
         context.resets_acknowledged != 1U || context.worker_next_sequence != 19U ||
         np2audio86_event_ring_occupancy(&context.events) != 0U ||
-        np2audio86_byte_ring_occupancy(&context.bytes) != 0U) {
+        np2audio86_byte_ring_occupancy(&context.bytes) != 0U ||
+        context.transaction_active || context.reserved_events != 0U ||
+        context.reserved_bytes != 0U || context.horizon_owned) {
         return 1;
     }
     event_bytes = serialize_events(trace.events, trace.event_count, event_copy);

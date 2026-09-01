@@ -60,26 +60,34 @@ enum {
     NP2AUDIO86_GUEST_TRANSACTION_RESET = 3,
 };
 
+/* A checked operation reports only an authorization decision.  RETRY is
+ * ordinary finite-capacity backpressure; TERMINATED is a control decision
+ * observed before authorization.  CONTRACT is reserved for a sink detecting
+ * invalid token use and is never a recoverable publication result. */
+enum {
+    NP2AUDIO86_GUEST_TRANSACTION_OK = 0,
+    NP2AUDIO86_GUEST_TRANSACTION_RETRY = -1,
+    NP2AUDIO86_GUEST_TRANSACTION_TERMINATED = -2,
+    NP2AUDIO86_GUEST_TRANSACTION_CONTRACT = -3,
+};
+
 /* A narrow semantic publication seam.  The guest remains the sole owner of
  * sequence, timestamp, pending-run, timer, and PCM accounting state.  A sink
  * may synchronously block a semantic handler, which is the required boundary
  * for a lossless live producer; it never owns or mutates guest state.
  *
- * reserve/extend are the only recoverable operations.  Once reserve succeeds
- * and the adapter performs the guest effect, every commit callback is void:
- * the sink has already guaranteed the event/byte/horizon capacity.  cancel is
- * valid only before that guest effect.  The legacy callbacks are retained
- * temporarily for pre-transaction host consumers; new sinks must implement
- * the transaction callbacks. */
+ * A checked reservation is the semantic success linearization point: success
+ * means that capacity ownership and the control predicate were accepted in
+ * one sink operation.  Once it returns success and the adapter performs the
+ * guest effect, every commit callback is void: the sink has already
+ * guaranteed the event/byte/horizon capacity. */
 typedef struct {
     void *opaque;
-    int (*reserve)(void *opaque, uint32_t kind, size_t initial_bytes,
-                   np2audio86_guest_transaction_t *transaction);
-    int (*extend)(void *opaque, np2audio86_guest_transaction_t *transaction,
-                  size_t additional_bytes);
-    int (*recheck)(void *opaque,
-                   const np2audio86_guest_transaction_t *transaction);
-    void (*cancel)(void *opaque, np2audio86_guest_transaction_t *transaction);
+    int (*reserve_checked)(void *opaque, uint32_t kind, size_t initial_bytes,
+                           np2audio86_guest_transaction_t *transaction);
+    int (*extend_checked)(void *opaque,
+                          np2audio86_guest_transaction_t *transaction,
+                          size_t additional_bytes);
     void (*commit_event)(void *opaque, np2audio86_guest_transaction_t *transaction,
                          const np2audio86_guest_event_t *event);
     void (*commit_pcm_byte)(void *opaque,
@@ -92,14 +100,6 @@ typedef struct {
     void (*commit_horizon)(void *opaque,
                            np2audio86_guest_transaction_t *transaction,
                            uint64_t frame_timestamp);
-    /* Compatibility-only callbacks.  They are used only by sinks which have
-     * not opted into reserve; production Slice 2 must bind the transaction
-     * half above. */
-    int (*publish_event)(void *opaque, const np2audio86_guest_event_t *event);
-    int (*publish_pcm_byte)(void *opaque, uint64_t frame_timestamp,
-                            uint64_t sequence, uint8_t value);
-    int (*publish_data_run)(void *opaque,
-                            const np2audio86_guest_data_run_t *run);
 } np2audio86_guest_sink_t;
 
 typedef struct {
@@ -209,6 +209,9 @@ void np2audio86_guest_host_set_cpu_position(uint32_t position);
  * callers neither build nor expose this test instrumentation. */
 uint32_t np2audio86_guest_host_current_cpu_position(void);
 int np2audio86_guest_host_sink_is_bound(void);
+size_t np2audio86_guest_test_full_snapshot_size(void);
+int np2audio86_guest_test_full_snapshot(void *out, size_t bytes);
+uint8_t np2audio86_guest_test_contract_violation(void);
 #endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple);
 void np2audio86_guest_host_set_cpumode(uint32_t cpumode);
@@ -234,6 +237,10 @@ uint8_t np2audio86_guest_host_save_load_supported(void);
 /* Optional host-only hooks used by the prepared board/PCM handlers. */
 void np2audio86_guest_host_record_io(uint16_t port, uint8_t direction,
                                      uint8_t value, uint8_t result);
+/* The prepared PCM output handlers have already applied their accepted
+ * prospective sync plan.  Record their evidence without a second sync. */
+void np2audio86_guest_host_record_io_accepted(uint16_t port, uint8_t direction,
+                                              uint8_t value, uint8_t result);
 
 /* OPNA register/address shadow and Domain-A hand-off. */
 void np2audio86_guest_opna_write_address_low(uint8_t value);
@@ -259,8 +266,10 @@ void np2audio86_guest_soundrom_load(uint32_t address, const char *name);
 void np2audio86_guest_audio_sync(void);
 
 /* Plain PC-9801-86 PCM86 guest/accounting hand-off. */
-void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value);
-void np2audio86_guest_pcm86_write_data(uint8_t value);
+/* Returns nonzero only when the operation was accepted/handled.  A checked
+ * rejection leaves guest state and accepted-operation I/O evidence unchanged. */
+int np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value);
+int np2audio86_guest_pcm86_write_data(uint8_t value);
 void np2audio86_guest_pcm86_set_mixer_volume(uint8_t value);
 uint8_t np2audio86_guest_pcm86_read(uint8_t register_index);
 void np2audio86_guest_pcm86_set_options(uint8_t dip_switch);

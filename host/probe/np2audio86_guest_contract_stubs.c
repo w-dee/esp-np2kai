@@ -75,12 +75,20 @@ void np2audio86_guest_host_record_io(uint16_t port, uint8_t direction,
     (void)value;
     (void)result;
 }
+void np2audio86_guest_host_record_io_accepted(uint16_t port, uint8_t direction,
+                                              uint8_t value, uint8_t result) {
+    (void)port;
+    (void)direction;
+    (void)value;
+    (void)result;
+}
 
-void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value) {
+int np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value) {
     (void)register_index;
     (void)value;
+    return 1;
 }
-void np2audio86_guest_pcm86_write_data(uint8_t value) { (void)value; }
+int np2audio86_guest_pcm86_write_data(uint8_t value) { (void)value; return 1; }
 void np2audio86_guest_pcm86_set_mixer_volume(uint8_t value) { (void)value; }
 uint8_t np2audio86_guest_pcm86_read(uint8_t register_index) {
     (void)register_index;

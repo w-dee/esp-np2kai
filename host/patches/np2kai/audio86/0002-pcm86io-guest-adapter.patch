@@ -1,6 +1,6 @@
 --- a/cbus/pcm86io.c
 +++ b/cbus/pcm86io.c
-@@ -1,517 +1,653 @@
+@@ -1,517 +1,656 @@
 -#include	<compiler.h>
 -#include	<cpucore.h>
 -#include	<pccore.h>
@@ -541,43 +541,46 @@
 + */
 +static void IOOUTCALL pcm86_oa460(UINT port, REG8 val)
 +{
-+	np2audio86_guest_pcm86_write(0x00, val);
-+	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)val, 0);
++	if (np2audio86_guest_pcm86_write(0x00, val))
++	{
++		np2audio86_guest_host_record_io_accepted((UINT16)port, 1, (REG8)val, 0);
++	}
 +	(void)port;
 +}
 +
 +static void IOOUTCALL pcm86_oa466(UINT port, REG8 val)
 +{
-+	np2audio86_guest_audio_sync();
-+	if ((val & 0xe0) == 0xa0)
++	if (np2audio86_guest_pcm86_write(0x06, val))
 +	{
-+		np2audio86_guest_pcm86_set_mixer_volume((REG8)((~val) & 15));
++		np2audio86_guest_host_record_io_accepted((UINT16)port, 1, (REG8)val, 0);
 +	}
-+	np2audio86_guest_pcm86_write(0x06, val);
-+	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)val, 0);
 +	(void)port;
 +}
 +
 +static void IOOUTCALL pcm86_oa468(UINT port, REG8 val)
 +{
-+	np2audio86_guest_audio_sync();
-+	np2audio86_guest_pcm86_write(0x08, val);
-+	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)val, 0);
++	if (np2audio86_guest_pcm86_write(0x08, val))
++	{
++		np2audio86_guest_host_record_io_accepted((UINT16)port, 1, (REG8)val, 0);
++	}
 +	(void)port;
 +}
 +
 +static void IOOUTCALL pcm86_oa46a(UINT port, REG8 val)
 +{
-+	np2audio86_guest_audio_sync();
-+	np2audio86_guest_pcm86_write(0x0a, val);
-+	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)val, 0);
++	if (np2audio86_guest_pcm86_write(0x0a, val))
++	{
++		np2audio86_guest_host_record_io_accepted((UINT16)port, 1, (REG8)val, 0);
++	}
 +	(void)port;
 +}
 +
 +static void IOOUTCALL pcm86_oa46c(UINT port, REG8 val)
 +{
-+	np2audio86_guest_pcm86_write_data(val);
-+	np2audio86_guest_host_record_io((UINT16)port, 1, (REG8)val, 0);
++	if (np2audio86_guest_pcm86_write_data(val))
++	{
++		np2audio86_guest_host_record_io_accepted((UINT16)port, 1, (REG8)val, 0);
++	}
 +	(void)port;
 +}
 +

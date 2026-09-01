@@ -15,8 +15,8 @@
       "pristine_path": "cbus/pcm86io.c",
       "pristine_sha256": "e81275514f7814c3698983d867bf8d5bcc991d4d50085900feec8b04dab653f5",
       "patch_path": "0002-pcm86io-guest-adapter.patch",
-      "patch_sha256": "92350db7311ffec5991f54289645135e8129d106e24f0323ec389ed171d34feb",
-      "patched_sha256": "8b8981cb04699ccbff3c0b0f55db1775bf37a1b6030e9376de007eeaf6ea4507"
+      "patch_sha256": "28ad2372d6351ca61a5b669deae9b5fbffedd5ec503601e2d5161ee83e39025c",
+      "patched_sha256": "514814473d242325065cb31d42bca5365372358a9d17aede167315f64d93b7be"
     }
   ]
 }

@@ -47,8 +47,31 @@ static uint64_t g_run_timestamp, g_run_sequence;
 static size_t g_run_offset, g_run_count;
 static np2audio86_guest_transaction_t g_run_transaction;
 static uint8_t g_run_transaction_active;
+/* A DATA_RUN owns transport state across calls; this guard instead covers one
+ * synchronous guest semantic call.  They deliberately have independent
+ * lifetimes. */
+static uint8_t g_semantic_call_active;
+static uint8_t g_contract_violation;
+static uint8_t g_termination_pending;
 
 static int flush_pending_run(void);
+
+typedef struct {
+    uint32_t cpu_position;
+    uint32_t last_cpu_position;
+    uint32_t pcm_step_remainder;
+    uint32_t pcm_virtual_buffer;
+    uint32_t frame_remainder;
+    uint64_t pcm_lastclock;
+    uint64_t guest_cycles;
+    uint64_t frame_timestamp;
+    uint8_t cpu_position_valid;
+    uint8_t pcm_clock_valid;
+} np2audio86_guest_sync_plan_t;
+
+static int sync_plan_compute(np2audio86_guest_sync_plan_t *plan);
+static void sync_plan_apply(const np2audio86_guest_sync_plan_t *plan);
+static void fail_sync_plan(int status);
 
 /* These are the pinned pcm86.c fixed-point delays.  The first MVP keeps the
  * waveform-owned underflow history out of Domain G, so the supported boundary
@@ -73,6 +96,29 @@ static void fail(const char *reason)
     }
 }
 
+static int semantic_enter(void)
+{
+    if (g_semantic_call_active) {
+        /* Do not turn this into g_failed here: an already-authorized outer
+         * operation must still reach its infallible commits. */
+        g_contract_violation = 1U;
+        return -1;
+    }
+    if (g_failed) return -1;
+    if (g_contract_violation) {
+        fail("guest semantic reentrancy");
+        return -1;
+    }
+    if (g_termination_pending) {
+        fail("guest transaction terminated");
+        return -1;
+    }
+    g_semantic_call_active = 1U;
+    return 0;
+}
+
+static void semantic_leave(void) { g_semantic_call_active = 0U; }
+
 static void append_io(uint16_t port, uint8_t direction, uint8_t value,
                       uint8_t result)
 {
@@ -92,50 +138,54 @@ static void append_io(uint16_t port, uint8_t direction, uint8_t value,
 static int transaction_begin(uint32_t kind, size_t initial_bytes,
                              np2audio86_guest_transaction_t *transaction)
 {
+    np2audio86_guest_transaction_t candidate;
     if (transaction == NULL || g_failed) return -1;
-    memset(transaction, 0, sizeof(*transaction));
+    memset(&candidate, 0, sizeof(candidate));
     if (kind == NP2AUDIO86_GUEST_TRANSACTION_EVENT ||
         kind == NP2AUDIO86_GUEST_TRANSACTION_RESET) {
         if (g_trace && g_trace->event_count >= g_trace->event_capacity) {
-            fail("event trace capacity"); return -1;
+            if (!g_sink) fail("event trace capacity");
+            return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
     } else if (kind == NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) {
-        if (initial_bytes == 0U) { fail("PCM DATA_RUN length"); return -1; }
+        if (initial_bytes == 0U) {
+            fail("PCM DATA_RUN length");
+            return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+        }
         if (g_trace && g_trace->pcm_count >= g_trace->pcm_capacity) {
-            fail("PCM byte trace capacity"); return -1;
+            if (!g_sink) fail("PCM byte trace capacity");
+            return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
         if (g_trace && g_trace->data_run_count >= g_trace->data_run_capacity) {
-            fail("PCM DATA_RUN trace capacity"); return -1;
+            if (!g_sink) fail("PCM DATA_RUN trace capacity");
+            return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
     }
-    if (g_sink && g_sink->reserve) {
-        if (g_sink->reserve(g_sink->opaque, kind, initial_bytes,
-                            transaction) != 0) {
-            return -1;
-        }
-        if (g_sink->recheck && g_sink->recheck(g_sink->opaque, transaction) != 0) {
-            if (g_sink->cancel) g_sink->cancel(g_sink->opaque, transaction);
-            return -1;
-        }
+    if (g_sink) {
+        const int result = g_sink->reserve_checked(g_sink->opaque, kind,
+                                                   initial_bytes, &candidate);
+        if (result != NP2AUDIO86_GUEST_TRANSACTION_OK) return result;
     }
-    return 0;
+    /* A rejected checked reservation must not even overwrite the retained
+     * DATA_RUN token.  Publish the new opaque authorization to adapter state
+     * only after its successful linearization point. */
+    *transaction = candidate;
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
 }
 
 static int transaction_extend(np2audio86_guest_transaction_t *transaction,
                               size_t additional_bytes)
 {
-    if (transaction == NULL || additional_bytes == 0U || g_failed) return -1;
-    if (g_trace && g_trace->pcm_count > g_trace->pcm_capacity - additional_bytes) {
-        fail("PCM byte trace capacity"); return -1;
+    if (transaction == NULL || additional_bytes == 0U || g_failed)
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    if (g_trace && (additional_bytes > g_trace->pcm_capacity ||
+                    g_trace->pcm_count > g_trace->pcm_capacity - additional_bytes)) {
+        if (!g_sink) fail("PCM byte trace capacity");
+        return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
     }
-    if (g_sink && g_sink->reserve &&
-        (!g_sink->extend ||
-         g_sink->extend(g_sink->opaque, transaction, additional_bytes) != 0)) {
-        return -1;
-    }
-    if (g_sink && g_sink->recheck &&
-        g_sink->recheck(g_sink->opaque, transaction) != 0) return -1;
-    return 0;
+    if (g_sink) return g_sink->extend_checked(g_sink->opaque, transaction,
+                                               additional_bytes);
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
 }
 
 static int prepare_event_transaction(uint32_t kind,
@@ -159,13 +209,11 @@ static void commit_event(np2audio86_guest_transaction_t *transaction,
     item.opcode = opcode;
     item.payload = payload;
     if (g_trace) g_trace->events[g_trace->event_count++] = item;
-    if (g_sink && g_sink->reserve) {
+    if (g_sink) {
         g_sink->commit_event(g_sink->opaque, transaction, &item);
         if (g_sink->commit_horizon)
             g_sink->commit_horizon(g_sink->opaque, transaction,
                                    item.frame_timestamp);
-    } else if (g_sink && g_sink->publish_event(g_sink->opaque, &item) != 0) {
-        fail("legacy event sink publication"); return;
     }
     ++g_state.sequence;
 }
@@ -190,7 +238,7 @@ static int flush_pending_run(void)
      * for host observation buffers, which are externally owned and can be
      * detached/re-attached around a pending run. */
     if (g_trace && g_trace->data_run_count >= g_trace->data_run_capacity) {
-        fail("PCM DATA_RUN trace capacity");
+        fail("reserved PCM DATA_RUN trace capacity lost");
         return -1;
     }
     if (g_trace) g_trace->data_runs[g_trace->data_run_count++] = run;
@@ -199,8 +247,6 @@ static int flush_pending_run(void)
         if (g_sink->commit_horizon)
             g_sink->commit_horizon(g_sink->opaque, &g_run_transaction,
                                    run.frame_timestamp);
-    } else if (g_sink && g_sink->publish_data_run(g_sink->opaque, &run) != 0) {
-        fail("legacy PCM DATA_RUN sink publication"); return -1;
     }
     g_run_pending = 0; g_run_count = 0; g_run_transaction_active = 0;
     return 0;
@@ -209,20 +255,24 @@ static int flush_pending_run(void)
 static int prepare_byte_transaction(np2audio86_guest_transaction_t **transaction,
                                     uint8_t *starting)
 {
+    int result;
     *starting = 0U;
     if (g_failed) return -1;
     if (!g_run_pending || g_run_timestamp != g_state.frame_timestamp ||
         g_run_count >= 32768u) {
-        if (flush_pending_run() != 0 || g_state.sequence == UINT64_MAX ||
-            transaction_begin(NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN, 1U,
-                              &g_run_transaction) != 0) {
-            if (g_state.sequence == UINT64_MAX) fail("sequence overflow");
+        if (flush_pending_run() != 0) return -1;
+        if (g_state.sequence == UINT64_MAX) {
+            fail("sequence overflow");
             return -1;
         }
-        g_run_transaction_active = g_sink && g_sink->reserve;
+        result = transaction_begin(NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN, 1U,
+                                   &g_run_transaction);
+        if (result != NP2AUDIO86_GUEST_TRANSACTION_OK) return result;
+        g_run_transaction_active = g_sink != NULL;
         *starting = 1U;
-    } else if (transaction_extend(&g_run_transaction, 1U) != 0) {
-        return -1;
+    } else {
+        result = transaction_extend(&g_run_transaction, 1U);
+        if (result != NP2AUDIO86_GUEST_TRANSACTION_OK) return result;
     }
     *transaction = &g_run_transaction;
     return 0;
@@ -243,10 +293,6 @@ static void commit_pcm_byte(np2audio86_guest_transaction_t *transaction,
     if (g_sink && g_run_transaction_active) {
         g_sink->commit_pcm_byte(g_sink->opaque, transaction, g_run_timestamp,
                                 g_run_sequence, value);
-    } else if (g_sink &&
-               g_sink->publish_pcm_byte(g_sink->opaque, g_run_timestamp,
-                                         g_run_sequence, value) != 0) {
-        fail("legacy PCM byte sink publication"); return;
     }
     ++g_run_count;
 }
@@ -473,16 +519,34 @@ static void pcm_expire(void)
 static void timer_expire(uint8_t timer)
 {
     np2audio86_guest_transaction_t transaction;
+    np2audio86_guest_sync_plan_t sync_plan;
     uint8_t bit = timer == NP2AUDIO86_TRACE_TIMER_A ? 1u : 2u;
     uint8_t enable = timer == NP2AUDIO86_TRACE_TIMER_A ?
         (uint8_t)((g_state.timer_control >> 2) & 1u) :
         (uint8_t)((g_state.timer_control >> 3) & 1u);
     uint8_t cause = 0, intreq = 0;
+    int sync_status;
     const uint8_t csm = timer == NP2AUDIO86_TRACE_TIMER_A &&
                         (g_state.timer_control & 0xc0u) == 0x80u;
-    if (csm &&
-        prepare_event_transaction(NP2AUDIO86_GUEST_TRANSACTION_EVENT,
-                                  &transaction) != 0) return;
+    if (csm) {
+        if (flush_pending_run() != 0) return;
+        sync_status = sync_plan_compute(&sync_plan);
+        if (sync_status != 0) {
+            if (!g_failed) fail_sync_plan(sync_status);
+            return;
+        }
+        if (g_state.sequence == UINT64_MAX) {
+            fail("event sequence overflow");
+            return;
+        }
+        if (transaction_begin(NP2AUDIO86_GUEST_TRANSACTION_EVENT, 0U,
+                              &transaction) != 0) return;
+        /* Checked CSM authorization precedes all timer/PIC/nevent state. */
+        sync_plan_apply(&sync_plan);
+    } else {
+        np2audio86_guest_audio_sync();
+        if (g_failed) return;
+    }
     if (g_state.pcm_irq_line == g_state.opna_irq) {
         if (pcmgen_intrq(1)) { cause |= 4u; intreq = 1; }
         if (!(g_state.timer_status & bit) && g_state.pcm_irq) {
@@ -505,26 +569,126 @@ static void timer_expire(uint8_t timer)
     }
 }
 
+static void sync_plan_recalc_pcm(np2audio86_guest_sync_plan_t *plan)
+{
+    const uint64_t past_cycle = (uint64_t)UINT_MAX << 6;
+    uint64_t cur, past, count;
+    if (!g_state.pcm_rateval) return;
+    cur = (uint64_t)plan->cpu_position << 6;
+    if (!plan->pcm_clock_valid) {
+        plan->pcm_lastclock = cur;
+        plan->pcm_clock_valid = 1U;
+        plan->pcm_step_remainder = 0U;
+        return;
+    }
+    past = (cur + past_cycle - plan->pcm_lastclock) % past_cycle;
+    if (past > past_cycle / 2U) {
+        if (past < past_cycle - g_state.pcm_stepclock * 4U) {
+            past = 1U;
+            plan->pcm_lastclock = cur - 1U;
+        } else {
+            past = 0U;
+        }
+    }
+    if (past >= g_state.pcm_stepclock) {
+        count = past / g_state.pcm_stepclock;
+        plan->pcm_lastclock = (plan->pcm_lastclock +
+                               count * g_state.pcm_stepclock) % past_cycle;
+        plan->pcm_step_remainder = (uint32_t)(past % g_state.pcm_stepclock);
+        if (g_state.pcm_fifo & 0x80U) {
+            const uint64_t consumed = count << g_state.pcm_stepbit;
+            if (consumed < plan->pcm_virtual_buffer)
+                plan->pcm_virtual_buffer -= (uint32_t)consumed;
+            else
+                plan->pcm_virtual_buffer &= g_state.pcm_stepmask;
+        }
+    } else {
+        plan->pcm_step_remainder = (uint32_t)past;
+    }
+}
+
+static int sync_plan_compute(np2audio86_guest_sync_plan_t *plan)
+{
+    uint32_t delta;
+    uint64_t total;
+    if (plan == NULL) return -1;
+    plan->cpu_position = current_cpu_position();
+    plan->last_cpu_position = g_state.last_cpu_position;
+    plan->pcm_step_remainder = g_state.pcm_step_remainder;
+    plan->pcm_virtual_buffer = g_state.pcm_virtual_buffer;
+    plan->frame_remainder = g_state.frame_remainder;
+    plan->pcm_lastclock = g_state.pcm_lastclock;
+    plan->guest_cycles = g_state.guest_cycles;
+    plan->frame_timestamp = g_state.frame_timestamp;
+    plan->cpu_position_valid = g_state.cpu_position_valid;
+    plan->pcm_clock_valid = g_state.pcm_clock_valid;
+    if (!plan->cpu_position_valid) {
+        plan->last_cpu_position = plan->cpu_position;
+        plan->cpu_position_valid = 1U;
+        plan->pcm_lastclock = (uint64_t)plan->cpu_position << 6;
+        plan->pcm_clock_valid = 1U;
+        return 0;
+    }
+    delta = (uint32_t)(plan->cpu_position - plan->last_cpu_position);
+    plan->last_cpu_position = plan->cpu_position;
+    if (plan->guest_cycles > UINT64_MAX - delta) return -1;
+    plan->guest_cycles += delta;
+    sync_plan_recalc_pcm(plan);
+    total = (uint64_t)plan->frame_remainder + delta;
+    if (plan->frame_timestamp > UINT64_MAX - total / 1024U) return -2;
+    plan->frame_timestamp += total / 1024U;
+    plan->frame_remainder = (uint32_t)(total % 1024U);
+    return 0;
+}
+
+/* The prepared legacy PCM handlers used to sample guest time immediately
+ * before entering the adapter for 0x06/0x08/0x0a.  Preserve that established
+ * guest-time sampling contract without applying either sample before checked
+ * authorization: both samples remain prospective and are applied once. */
+static int sync_plan_compute_following(np2audio86_guest_sync_plan_t *plan)
+{
+    uint32_t delta;
+    uint64_t total;
+    if (plan == NULL) return -1;
+    plan->cpu_position = current_cpu_position();
+    delta = (uint32_t)(plan->cpu_position - plan->last_cpu_position);
+    plan->last_cpu_position = plan->cpu_position;
+    if (plan->guest_cycles > UINT64_MAX - delta) return -1;
+    plan->guest_cycles += delta;
+    sync_plan_recalc_pcm(plan);
+    total = (uint64_t)plan->frame_remainder + delta;
+    if (plan->frame_timestamp > UINT64_MAX - total / 1024U) return -2;
+    plan->frame_timestamp += total / 1024U;
+    plan->frame_remainder = (uint32_t)(total % 1024U);
+    return 0;
+}
+
+static void sync_plan_apply(const np2audio86_guest_sync_plan_t *plan)
+{
+    g_state.last_cpu_position = plan->last_cpu_position;
+    g_state.pcm_step_remainder = plan->pcm_step_remainder;
+    g_state.pcm_virtual_buffer = plan->pcm_virtual_buffer;
+    g_state.frame_remainder = plan->frame_remainder;
+    g_state.pcm_lastclock = plan->pcm_lastclock;
+    g_state.guest_cycles = plan->guest_cycles;
+    g_state.frame_timestamp = plan->frame_timestamp;
+    g_state.cpu_position_valid = plan->cpu_position_valid;
+    g_state.pcm_clock_valid = plan->pcm_clock_valid;
+}
+
+static void fail_sync_plan(int status)
+{
+    if (status == -1) fail("guest cycle overflow");
+    else if (status == -2) fail("frame timestamp overflow");
+    else fail("guest audio sync overflow");
+}
+
 void np2audio86_guest_audio_sync(void)
 {
-    uint32_t position = current_cpu_position(), delta; uint64_t total;
-    if (!g_state.cpu_position_valid) {
-        g_state.last_cpu_position = position; g_state.cpu_position_valid = 1;
-        g_state.pcm_lastclock = (uint64_t)position << 6;
-        g_state.pcm_clock_valid = 1; return;
-    }
-    delta = (uint32_t)(position - g_state.last_cpu_position);
-    g_state.last_cpu_position = position;
-    if (g_state.guest_cycles > UINT64_MAX - delta) {
-        fail("guest cycle overflow"); return;
-    }
-    g_state.guest_cycles += delta; pcm_recalc_position();
-    total = (uint64_t)g_state.frame_remainder + delta;
-    if (g_state.frame_timestamp > UINT64_MAX - total / 1024u) {
-        fail("frame timestamp overflow"); return;
-    }
-    g_state.frame_timestamp += total / 1024u;
-    g_state.frame_remainder = (uint32_t)(total % 1024u);
+    np2audio86_guest_sync_plan_t plan;
+    const int status = sync_plan_compute(&plan);
+    if (status != 0) { fail_sync_plan(status); return; }
+    sync_plan_apply(&plan);
 }
 
 void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace)
@@ -536,8 +700,8 @@ void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace)
 void np2audio86_guest_host_trace_detach(void) { flush_pending_run(); g_trace = NULL; }
 void np2audio86_guest_sink_bind(const np2audio86_guest_sink_t *sink)
 {
-    if (sink && sink->reserve &&
-        (!sink->extend || !sink->cancel || !sink->commit_event ||
+    if (sink &&
+        (!sink->reserve_checked || !sink->extend_checked || !sink->commit_event ||
          !sink->commit_pcm_byte || !sink->commit_data_run ||
          !sink->commit_horizon)) {
         g_sink = NULL;
@@ -556,6 +720,34 @@ uint32_t np2audio86_guest_host_current_cpu_position(void)
 { return current_cpu_position(); }
 int np2audio86_guest_host_sink_is_bound(void)
 { return g_sink != NULL; }
+size_t np2audio86_guest_test_full_snapshot_size(void)
+{
+    return sizeof(g_state) + sizeof(g_run_timestamp) + sizeof(g_run_sequence) +
+           sizeof(g_run_offset) + sizeof(g_run_count) + sizeof(g_run_transaction) +
+           sizeof(g_run_pending) + sizeof(g_run_transaction_active) +
+           sizeof(g_semantic_call_active) + sizeof(g_contract_violation) +
+           sizeof(g_termination_pending) + sizeof(g_failed);
+}
+int np2audio86_guest_test_full_snapshot(void *out, size_t bytes)
+{
+    uint8_t *cursor = out;
+    if (out == NULL || bytes != np2audio86_guest_test_full_snapshot_size()) return -1;
+    memcpy(cursor, &g_state, sizeof(g_state)); cursor += sizeof(g_state);
+    memcpy(cursor, &g_run_timestamp, sizeof(g_run_timestamp)); cursor += sizeof(g_run_timestamp);
+    memcpy(cursor, &g_run_sequence, sizeof(g_run_sequence)); cursor += sizeof(g_run_sequence);
+    memcpy(cursor, &g_run_offset, sizeof(g_run_offset)); cursor += sizeof(g_run_offset);
+    memcpy(cursor, &g_run_count, sizeof(g_run_count)); cursor += sizeof(g_run_count);
+    memcpy(cursor, &g_run_transaction, sizeof(g_run_transaction)); cursor += sizeof(g_run_transaction);
+    *cursor++ = g_run_pending;
+    *cursor++ = g_run_transaction_active;
+    *cursor++ = g_semantic_call_active;
+    *cursor++ = g_contract_violation;
+    *cursor++ = g_termination_pending;
+    *cursor = g_failed;
+    return 0;
+}
+uint8_t np2audio86_guest_test_contract_violation(void)
+{ return g_contract_violation; }
 #endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple)
 {
@@ -577,10 +769,14 @@ void np2audio86_guest_host_set_timer_hooks(
 { g_schedule = schedule; g_cancel = cancel; g_iswork = iswork; g_irq = irq; }
 void np2audio86_guest_host_timer_dispatch(uint8_t timer)
 {
-    np2audio86_guest_audio_sync();
-    if (timer == NP2AUDIO86_TRACE_PCM) pcm_expire();
-    else if (timer == NP2AUDIO86_TRACE_TIMER_A || timer == NP2AUDIO86_TRACE_TIMER_B)
+    if (semantic_enter() != 0) return;
+    if (timer == NP2AUDIO86_TRACE_PCM) {
+        np2audio86_guest_audio_sync();
+        if (!g_failed) pcm_expire();
+    } else if (timer == NP2AUDIO86_TRACE_TIMER_A || timer == NP2AUDIO86_TRACE_TIMER_B) {
         timer_expire(timer);
+    }
+    semantic_leave();
 }
 void np2audio86_guest_host_timer_tick(uint8_t timer)
 { np2audio86_guest_host_timer_dispatch(timer); }
@@ -591,6 +787,9 @@ void np2audio86_guest_host_test_seed(uint64_t frame_timestamp, uint64_t sequence
     g_state.sequence = sequence; g_state.guest_cycles = 0;
     g_state.frame_remainder = 0; g_state.cpu_position_valid = 0;
     g_state.pcm_clock_valid = 0; g_failed = 0; g_failure_reason[0] = '\0';
+    g_semantic_call_active = 0U;
+    g_contract_violation = 0U;
+    g_termination_pending = 0U;
 }
 
 void np2audio86_guest_host_snapshot(np2audio86_guest_state_snapshot_t *snapshot)
@@ -632,15 +831,22 @@ uint8_t np2audio86_guest_host_save_load_supported(void) { return 0; }
 void np2audio86_guest_host_record_io(uint16_t port, uint8_t direction,
                                      uint8_t value, uint8_t result)
 { np2audio86_guest_audio_sync(); append_io(port, direction, value, result); }
+void np2audio86_guest_host_record_io_accepted(uint16_t port, uint8_t direction,
+                                              uint8_t value, uint8_t result)
+{ append_io(port, direction, value, result); }
 
 void np2audio86_guest_opna_write_address_low(uint8_t value)
 { g_state.address_low = value; g_state.data = value; }
 
-static void opna_write_register(uint16_t address, uint8_t value)
+static int opna_write_register(uint16_t address, uint8_t value)
 {
     np2audio86_guest_transaction_t transaction;
     if (prepare_event_transaction(NP2AUDIO86_GUEST_TRANSACTION_EVENT,
-                                  &transaction) != 0) return;
+                                  &transaction) != 0) return 0;
+    /* The checked call above is the success linearization point.  The data
+     * latch is therefore not visible when a finite sink/control rejects the
+     * operation. */
+    g_state.data = value;
     g_state.regs[address & 0x1ffu] = value;
     if (address < 0x100u) {
         if (address == 0x24u)
@@ -666,13 +872,22 @@ static void opna_write_register(uint16_t address, uint8_t value)
     }
     commit_event(&transaction, NP2AUDIO86_TRACE_OPNA_REGISTER,
                  ((uint32_t)address << 8) | value);
+    return 1;
 }
 void np2audio86_guest_opna_write_data_low(uint8_t value)
-{ g_state.data = value; opna_write_register(g_state.address_low, value); }
+{
+    if (semantic_enter() != 0) return;
+    (void)opna_write_register(g_state.address_low, value);
+    semantic_leave();
+}
 void np2audio86_guest_opna_write_address_extended(uint8_t value)
 { if (g_state.extension) { g_state.address_extended = value; g_state.data = value; } }
 void np2audio86_guest_opna_write_data_extended(uint8_t value)
-{ if (g_state.extension) { g_state.data = value; opna_write_register((uint16_t)(0x100u | g_state.address_extended), value); } }
+{
+    if (!g_state.extension || semantic_enter() != 0) return;
+    (void)opna_write_register((uint16_t)(0x100u | g_state.address_extended), value);
+    semantic_leave();
+}
 uint8_t np2audio86_guest_opna_read_status(void)
 { flush_pending_run(); return g_state.timer_status; }
 uint8_t np2audio86_guest_opna_read_data(void)
@@ -704,9 +919,14 @@ void np2audio86_guest_opna_reset(uint8_t capabilities, uint32_t irq,
     uint64_t sequence = g_state.sequence; uint32_t remainder = g_state.frame_remainder;
     uint8_t had_state = g_state.bound;
     np2audio86_guest_transaction_t transaction;
-    if (had_state &&
-        prepare_event_transaction(NP2AUDIO86_GUEST_TRANSACTION_RESET,
-                                  &transaction) != 0) return;
+    if (had_state) {
+        if (semantic_enter() != 0) return;
+        if (prepare_event_transaction(NP2AUDIO86_GUEST_TRANSACTION_RESET,
+                                      &transaction) != 0) {
+            semantic_leave();
+            return;
+        }
+    }
     cancel_event(1); cancel_event(2); cancel_event(NP2AUDIO86_TRACE_PCM);
     memset(&g_state, 0, sizeof(g_state));
     g_state.frame_timestamp = frame; g_state.guest_cycles = cycles;
@@ -720,7 +940,11 @@ void np2audio86_guest_opna_reset(uint8_t capabilities, uint32_t irq,
     g_state.pcm_stepbit = 2u; g_state.pcm_stepmask = 3u; g_state.bound = had_state;
     pcm_set_rate(0); g_failed = 0; g_failure_reason[0] = '\0';
     g_run_pending = 0; g_run_count = 0; g_run_transaction_active = 0;
-    if (had_state) commit_event(&transaction, NP2AUDIO86_TRACE_RESET_BARRIER, 0);
+    g_termination_pending = 0U;
+    if (had_state) {
+        commit_event(&transaction, NP2AUDIO86_TRACE_RESET_BARRIER, 0);
+        semantic_leave();
+    }
 }
 void np2audio86_guest_opna_set_config(uint8_t channels, uint32_t mode)
 { g_state.channels = channels; (void)mode; }
@@ -733,10 +957,16 @@ void np2audio86_guest_opna_unbind(void) { g_state.bound = 0; }
 void np2audio86_guest_soundrom_load(uint32_t address, const char *name)
 { (void)address; (void)name; g_state.soundrom_rejected = 1; }
 
-void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
+int np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
 {
-    uint8_t old; uint64_t cur; static const uint8_t bits[8] = {1,1,1,2,0,0,0,1};
+    uint8_t old;
+    uint64_t cur;
+    int accepted = 0;
+    static const uint8_t bits[8] = {1,1,1,2,0,0,0,1};
     np2audio86_guest_transaction_t transaction;
+    np2audio86_guest_sync_plan_t sync_plan;
+    int sync_status;
+    if (semantic_enter() != 0) return 0;
     /* Pinned pcm86_oa46a() synchronizes guest time before rejecting an
      * invalid DAC format.  The rejected write is a true no-op at the
      * publication boundary: do not flush a pending data run, append a
@@ -744,12 +974,31 @@ void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
     if (register_index == 0x0au && !(g_state.pcm_fifo & 0x20u) &&
         ((value & 15u) == 15u)) {
         np2audio86_guest_audio_sync();
-        return;
+        semantic_leave();
+        return g_failed ? 0 : 1;
     }
-    if (flush_pending_run() != 0) return;
-    np2audio86_guest_audio_sync();
+    if (flush_pending_run() != 0) {
+        semantic_leave();
+        return 0;
+    }
+    sync_status = sync_plan_compute(&sync_plan);
+    if (sync_status == 0 &&
+        (register_index == 0x06U || register_index == 0x08U ||
+         register_index == 0x0aU)) {
+        sync_status = sync_plan_compute_following(&sync_plan);
+    }
+    if (sync_status != 0) {
+        if (!g_failed) fail_sync_plan(sync_status);
+        semantic_leave();
+        return 0;
+    }
     if (prepare_event_transaction(NP2AUDIO86_GUEST_TRANSACTION_EVENT,
-                                  &transaction) != 0) return;
+                                  &transaction) != 0) {
+        semantic_leave();
+        return 0;
+    }
+    /* No guest time/accounting field changes before the checked success. */
+    sync_plan_apply(&sync_plan);
     switch (register_index) {
     case 0x00:
         g_state.pcm_soundflags = (uint8_t)((g_state.pcm_soundflags & 0xfeu) | (value & 1u));
@@ -758,7 +1007,7 @@ void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
         break;
     case 0x06: if ((value & 0xe0u) == 0xa0u) g_state.pcm_volume = (~value) & 15u; break;
     case 0x08:
-        old = g_state.pcm_fifo; cur = pcm_current_clock();
+        old = g_state.pcm_fifo; cur = sync_plan.cpu_position;
         if ((value & 8u) && !(old & 8u)) {
             g_state.pcm_write_position = g_state.pcm_read_position = 0;
             g_state.pcm_real_buffer = g_state.pcm_virtual_buffer = 0;
@@ -792,14 +1041,27 @@ void np2audio86_guest_pcm86_write(uint8_t register_index, uint8_t value)
     }
     commit_event(&transaction, NP2AUDIO86_TRACE_PCM_CONTROL,
                  ((uint32_t)register_index << 8) | value);
+    accepted = 1;
+    semantic_leave();
+    return accepted;
 }
-void np2audio86_guest_pcm86_write_data(uint8_t value)
+int np2audio86_guest_pcm86_write_data(uint8_t value)
 {
     np2audio86_guest_transaction_t *transaction;
     uint8_t starting;
+    int result;
     uint64_t cur = pcm_current_clock(), wait = 20000u * (uint64_t)g_multiple;
     uint64_t add_clock = 0;
-    if (prepare_byte_transaction(&transaction, &starting) != 0) return;
+    if (semantic_enter() != 0) return 0;
+    result = prepare_byte_transaction(&transaction, &starting);
+    if (result != NP2AUDIO86_GUEST_TRANSACTION_OK) {
+        if (result == NP2AUDIO86_GUEST_TRANSACTION_TERMINATED && g_run_pending) {
+            /* A later STOP cannot discard already-authorized bytes. */
+            if (flush_pending_run() == 0) g_termination_pending = 1U;
+        }
+        semantic_leave();
+        return 0;
+    }
     if (g_state.pcm_virtual_buffer < 0x8000u) ++g_state.pcm_virtual_buffer;
     ++g_state.pcm_real_buffer;
     if (g_state.pcm_real_buffer >= 0x8000u + g_state.pcm_rescue) {
@@ -814,6 +1076,8 @@ void np2audio86_guest_pcm86_write_data(uint8_t value)
         add_clock = wait;
     g_state.pcm_lastclockforwait = cur + add_clock;
     commit_pcm_byte(transaction, starting, value);
+    semantic_leave();
+    return 1;
 }
 void np2audio86_guest_pcm86_set_mixer_volume(uint8_t value) { g_state.pcm_volume = value & 15u; }
 uint8_t np2audio86_guest_pcm86_read(uint8_t register_index)
