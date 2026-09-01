@@ -69,7 +69,7 @@ constexpr size_t kApplyRecordBytes = 40U;
 #endif
 enum : uint32_t { kPressureNone = 0U, kPressureEvent = 1U,
                   kPressureByte = 2U, kPressureHorizon = 3U,
-                  kPressureResetAck = 4U };
+                  kPressureResetAck = 4U, kPressureByteExtend = 5U };
 constexpr uint32_t kPressureScenario = P4_NANO_AUDIO86_PRESSURE_SCENARIO;
 enum : uint32_t { kFailureNone = 0U, kFailureStop = 1U, kFailureFatal = 2U };
 constexpr uint32_t kFailureKind = P4_NANO_AUDIO86_FAILURE_KIND;
@@ -164,6 +164,29 @@ struct Runtime {
     std::atomic<uint32_t> failure_later_guest_instructions{0U};
     std::atomic<uint32_t> failure_reset_closed{0U};
     std::atomic<uint32_t> failure_first_error_after_cleanup{0U};
+    /* Profile-only BYTE_EXTEND evidence.  These fields observe the existing
+     * adapter close path; they do not participate in authorization or commit. */
+    uint32_t byte_extend_pending_at_wait = 0U;
+    uint32_t byte_extend_run_bytes_at_wait = 0U;
+    uint32_t byte_extend_first_byte = 0U;
+    uint32_t byte_extend_transport_bytes_at_wait = 0U;
+    uint32_t byte_extend_descriptor_owned_at_wait = 0U;
+    uint32_t byte_extend_horizon_owned_at_wait = 0U;
+    uint32_t byte_extend_terminal_order = 0U;
+    uint32_t byte_extend_terminal_reserve_calls = 0U;
+    uint32_t byte_extend_terminal_extend_calls = 0U;
+    uint32_t byte_extend_terminal_control_rechecks = 0U;
+    uint32_t byte_extend_run_commits = 0U;
+    uint32_t byte_extend_horizon_commits = 0U;
+    uint32_t byte_extend_sink_bound_run = 0U;
+    uint32_t byte_extend_sink_bound_horizon = 0U;
+    uint32_t byte_extend_run_count = 0U;
+    uint32_t byte_extend_run_byte = 0U;
+    uint64_t byte_extend_run_frame = 0U;
+    uint64_t byte_extend_run_sequence = 0U;
+    uint64_t byte_extend_run_offset = 0U;
+    uint32_t byte_extend_cleanup_after_close = 0U;
+    uint32_t byte_extend_done_after_close = 0U;
 };
 
 DRAM_ATTR Runtime s_runtime{};
@@ -368,10 +391,36 @@ void arm_pressure_lease(Runtime *runtime, const uint32_t kind)
     notify_worker(runtime);
 }
 
+void arm_byte_extend_lease(Runtime *runtime)
+{
+    if (kPressureScenario != kPressureByteExtend ||
+        runtime->pressure_phase.load(std::memory_order_acquire) != 1U ||
+        runtime->next_sequence != 16U || runtime->reserved_bytes != 0U ||
+        !runtime->transaction_active || !runtime->horizon_owned ||
+        np2audio86_byte_ring_occupancy(&runtime->bytes) != 1U)
+        return;
+    runtime->byte_extend_pending_at_wait = 1U;
+    runtime->byte_extend_run_bytes_at_wait =
+        static_cast<uint32_t>(runtime->trace.pcm_count);
+    runtime->byte_extend_first_byte = runtime->trace.pcm_count == 1U
+        ? runtime->trace.pcm_bytes[0] : UINT32_MAX;
+    runtime->byte_extend_transport_bytes_at_wait =
+        np2audio86_byte_ring_occupancy(&runtime->bytes);
+    runtime->byte_extend_descriptor_owned_at_wait = runtime->reserved_events;
+    runtime->byte_extend_horizon_owned_at_wait = runtime->horizon_owned ? 1U : 0U;
+    runtime->byte_lease.store(NP2_AUDIO86_ASYNC_BYTE_CAPACITY,
+                              std::memory_order_release);
+    runtime->pressure_phase.store(2U, std::memory_order_release); /* LEASE_HELD */
+    notify_worker(runtime);
+}
+
 int reserve_checked(void *opaque, const uint32_t kind, const size_t bytes,
                     np2audio86_guest_transaction_t *token)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime != nullptr && kPressureScenario == kPressureByteExtend &&
+        runtime->byte_extend_terminal_order != 0U)
+        ++runtime->byte_extend_terminal_reserve_calls;
     if (runtime == nullptr || token == nullptr || runtime->transaction_active ||
         (kind != NP2AUDIO86_GUEST_TRANSACTION_EVENT &&
          kind != NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN &&
@@ -400,19 +449,40 @@ int extend_checked(void *opaque, np2audio86_guest_transaction_t *token,
                    const size_t bytes)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime != nullptr && kPressureScenario == kPressureByteExtend &&
+        runtime->byte_extend_terminal_order != 0U)
+        ++runtime->byte_extend_terminal_extend_calls;
     if (runtime == nullptr || !token_matches(runtime, token,
                                                NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
         bytes != 1U || runtime->run_committed) {
         if (runtime != nullptr) fail(runtime, kErrorTransport);
         return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
     }
+    arm_byte_extend_lease(runtime);
     for (;;) {
-        if (failed(runtime)) return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
-        if (np2audio86_byte_ring_occupancy(&runtime->bytes) + runtime->reserved_bytes <
+        if (failed(runtime)) {
+            if (kPressureScenario == kPressureByteExtend)
+                runtime->byte_extend_terminal_order = 1U; /* EXTEND_TERMINATED */
+            return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+        }
+        if (np2audio86_byte_ring_occupancy(&runtime->bytes) + runtime->reserved_bytes +
+                runtime->byte_lease.load(std::memory_order_acquire) <
             NP2_AUDIO86_ASYNC_BYTE_CAPACITY) break;
+        const bool pressure_wait = kPressureScenario == kPressureByteExtend &&
+            runtime->pressure_phase.load(std::memory_order_acquire) == 2U;
+        if (pressure_wait) {
+            pressure_capture_before(runtime);
+            runtime->pressure_phase.store(3U, std::memory_order_release); /* PRODUCER_WAITING */
+        }
         runtime->producer_waiting.store(1U, std::memory_order_release);
+        notify_worker(runtime);
         (void)p4_nano_audio86_notifications::wait_producer();
         runtime->producer_waiting.store(0U, std::memory_order_release);
+        if (pressure_wait) {
+            pressure_capture_after(runtime);
+            runtime->pressure_resume_count.fetch_add(1U, std::memory_order_relaxed);
+            runtime->pressure_phase.store(5U, std::memory_order_release); /* PRODUCER_WOKE */
+        }
     }
     ++runtime->reserved_bytes;
     return NP2AUDIO86_GUEST_TRANSACTION_OK;
@@ -452,6 +522,18 @@ void commit_data_run(void *opaque, np2audio86_guest_transaction_t *token,
     runtime->reserved_events = 0U;
     runtime->run_committed = true;
     ++runtime->next_sequence;
+    if (kPressureScenario == kPressureByteExtend &&
+        runtime->byte_extend_terminal_order == 1U) {
+        runtime->byte_extend_terminal_order = 2U; /* DATA_RUN_COMMIT */
+        runtime->byte_extend_sink_bound_run = 1U;
+        ++runtime->byte_extend_run_commits;
+        runtime->byte_extend_run_count = run->count;
+        runtime->byte_extend_run_byte = runtime->trace.pcm_count == 1U
+            ? runtime->trace.pcm_bytes[0] : UINT32_MAX;
+        runtime->byte_extend_run_frame = run->frame_timestamp;
+        runtime->byte_extend_run_sequence = run->sequence;
+        runtime->byte_extend_run_offset = run->byte_offset;
+    }
     notify_worker(runtime);
 }
 
@@ -501,6 +583,12 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
     runtime->transaction_kind = 0U;
     runtime->event_committed = false;
     runtime->run_committed = false;
+    if (kPressureScenario == kPressureByteExtend &&
+        runtime->byte_extend_terminal_order == 2U) {
+        runtime->byte_extend_terminal_order = 3U; /* HORIZON_COMMIT / RUN_CLOSED */
+        runtime->byte_extend_sink_bound_horizon = 1U;
+        ++runtime->byte_extend_horizon_commits;
+    }
     notify_worker(runtime);
     if (reset) {
         const uint32_t ordinal = ++runtime->reset_ordinal;
@@ -842,13 +930,17 @@ void emit_summary(const Runtime *runtime, const bool ok)
     if (kPressureScenario != kPressureNone && kFailureKind == kFailureNone) {
         const char *const name = kPressureScenario == kPressureEvent ? "EVENT" :
             kPressureScenario == kPressureByte ? "BYTE" :
-            kPressureScenario == kPressureHorizon ? "HORIZON" : "RESET_ACK";
+            kPressureScenario == kPressureHorizon ? "HORIZON" :
+            kPressureScenario == kPressureByteExtend ? "BYTE_EXTEND" : "RESET_ACK";
         const char *const cause = kPressureScenario == kPressureEvent ? "EVENT_CAPACITY_ONLY" :
             kPressureScenario == kPressureByte ? "BYTE_CAPACITY_ONLY" :
-            kPressureScenario == kPressureHorizon ? "HORIZON_ONLY" : "POSTCOMMIT_ACK";
+            kPressureScenario == kPressureHorizon ? "HORIZON_ONLY" :
+            kPressureScenario == kPressureByteExtend ? "BYTE_CAPACITY_ONLY" : "POSTCOMMIT_ACK";
         const char *const target = kPressureScenario == kPressureEvent ? "EVENT_SEQUENCE_0" :
             kPressureScenario == kPressureByte ? "DATA_RUN_SEQUENCE_16" :
-            kPressureScenario == kPressureHorizon ? "HORIZON_EVENT_SEQUENCE_0" : "RESET_ORDINAL_1";
+            kPressureScenario == kPressureHorizon ? "HORIZON_EVENT_SEQUENCE_0" :
+            kPressureScenario == kPressureByteExtend ? "DATA_RUN_SEQUENCE_16_BYTE_2" :
+            "RESET_ORDINAL_1";
         std::printf("P4_AUDIO86_PRESSURE scenario=%s target=%s cause=%s producer=p4_nano_pc98 core=1 priority=3 wait_index=1 phase=%" PRIu32 " state=COMPLETE\n",
                     name, target, cause, runtime->pressure_phase.load());
         std::printf("P4_AUDIO86_PRESSURE_WAIT ip_before=%" PRIu32 " ip_after=%" PRIu32
@@ -872,7 +964,8 @@ void emit_summary(const Runtime *runtime, const bool ok)
         const char *const kind = kFailureKind == kFailureStop ? "STOP" : "FATAL";
         const char *const wait = kPressureScenario == kPressureEvent ? "EVENT" :
             kPressureScenario == kPressureByte ? "BYTE" :
-            kPressureScenario == kPressureHorizon ? "HORIZON" : "RESET_ACK";
+            kPressureScenario == kPressureHorizon ? "HORIZON" :
+            kPressureScenario == kPressureByteExtend ? "BYTE_EXTEND" : "RESET_ACK";
         const np2runtime::State state = runtime->lifecycle_runtime == nullptr
             ? np2runtime::State::Created : runtime->lifecycle_runtime->state();
         const char *const final_state = state == np2runtime::State::Stopped ? "Stopped" :
@@ -903,6 +996,55 @@ void emit_summary(const Runtime *runtime, const bool ok)
                     runtime->failure_reset_closed.load(),
                     runtime->failure_first_error_after_cleanup.load());
         std::printf("P4_AUDIO86_FAILURE_RESULT=%s\n", ok ? "PASS" : "FAIL");
+    }
+    if (kPressureScenario == kPressureByteExtend) {
+        std::printf("P4_AUDIO86_BYTE_EXTEND_WAIT pending_run=%" PRIu32
+                    " run_bytes=%" PRIu32 " first_byte=%02" PRIx32
+                    " transport_bytes=%" PRIu32 " descriptor_owned=%" PRIu32
+                    " horizon_owned=%" PRIu32
+                    " rejected_ordinal=2 rejected_byte=20 second_authorized=0"
+                    " second_mutated=0 second_appended=0 wait_index=1\n",
+                    runtime->byte_extend_pending_at_wait,
+                    runtime->byte_extend_run_bytes_at_wait,
+                    runtime->byte_extend_first_byte,
+                    runtime->byte_extend_transport_bytes_at_wait,
+                    runtime->byte_extend_descriptor_owned_at_wait,
+                    runtime->byte_extend_horizon_owned_at_wait);
+        if (kFailureKind != kFailureNone) {
+            const bool rejected_absent = runtime->trace.pcm_count == 1U &&
+                runtime->trace.pcm_bytes[0] == 0x10U;
+            std::printf("P4_AUDIO86_BYTE_EXTEND_TERMINAL order=%" PRIu32
+                        " semantic_handler_flush=%u sink_bound_run=%" PRIu32
+                        " sink_bound_horizon=%" PRIu32
+                        " reserve_calls=%" PRIu32 " extend_calls=%" PRIu32
+                        " control_rechecks=%" PRIu32 " run_commits=%" PRIu32
+                        " horizon_commits=%" PRIu32 " run_count=%" PRIu32
+                        " run_byte=%02" PRIx32 " run_frame=%" PRIu64
+                        " run_sequence=%" PRIu64 " run_offset=%" PRIu64
+                        " rejected_absent=%u cleanup_after_close=%" PRIu32
+                        " producer_done_after_close=%" PRIu32
+                        " transaction_active=%u join_timeout=%u\n",
+                        runtime->byte_extend_terminal_order,
+                        runtime->byte_extend_terminal_order >= 3U ? 1U : 0U,
+                        runtime->byte_extend_sink_bound_run,
+                        runtime->byte_extend_sink_bound_horizon,
+                        runtime->byte_extend_terminal_reserve_calls,
+                        runtime->byte_extend_terminal_extend_calls,
+                        runtime->byte_extend_terminal_control_rechecks,
+                        runtime->byte_extend_run_commits,
+                        runtime->byte_extend_horizon_commits,
+                        runtime->byte_extend_run_count,
+                        runtime->byte_extend_run_byte,
+                        runtime->byte_extend_run_frame,
+                        runtime->byte_extend_run_sequence,
+                        runtime->byte_extend_run_offset,
+                        rejected_absent ? 1U : 0U,
+                        runtime->byte_extend_cleanup_after_close,
+                        runtime->byte_extend_done_after_close,
+                        runtime->transaction_active ? 1U : 0U,
+                        runtime->worker_quiescent.load() ? 0U : 1U);
+            std::printf("P4_AUDIO86_BYTE_EXTEND_RESULT=%s\n", ok ? "PASS" : "FAIL");
+        }
     }
     std::printf("P4_AUDIO86_REAL_GUEST_RESULT=%s\n", ok ? "PASS" : "FAIL");
 }
@@ -935,6 +1077,27 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->failure_later_guest_instructions.store(0U, std::memory_order_relaxed);
     runtime->failure_reset_closed.store(0U, std::memory_order_relaxed);
     runtime->failure_first_error_after_cleanup.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_pending_at_wait = 0U;
+    runtime->byte_extend_run_bytes_at_wait = 0U;
+    runtime->byte_extend_first_byte = 0U;
+    runtime->byte_extend_transport_bytes_at_wait = 0U;
+    runtime->byte_extend_descriptor_owned_at_wait = 0U;
+    runtime->byte_extend_horizon_owned_at_wait = 0U;
+    runtime->byte_extend_terminal_order = 0U;
+    runtime->byte_extend_terminal_reserve_calls = 0U;
+    runtime->byte_extend_terminal_extend_calls = 0U;
+    runtime->byte_extend_terminal_control_rechecks = 0U;
+    runtime->byte_extend_run_commits = 0U;
+    runtime->byte_extend_horizon_commits = 0U;
+    runtime->byte_extend_sink_bound_run = 0U;
+    runtime->byte_extend_sink_bound_horizon = 0U;
+    runtime->byte_extend_run_count = 0U;
+    runtime->byte_extend_run_byte = 0U;
+    runtime->byte_extend_run_frame = 0U;
+    runtime->byte_extend_run_sequence = 0U;
+    runtime->byte_extend_run_offset = 0U;
+    runtime->byte_extend_cleanup_after_close = 0U;
+    runtime->byte_extend_done_after_close = 0U;
     runtime->pressure_ip_before = runtime->pressure_ip_after = 0U;
     runtime->pressure_position_before = runtime->pressure_position_after = 0U;
     runtime->pressure_snapshot_before = runtime->pressure_snapshot_after = 0U;
@@ -955,9 +1118,21 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         fail(runtime, kErrorWorker); emit_summary(runtime, false); return ESP_FAIL;
     }
     const bool guest_ok = execute_real_i286(runtime);
+    if (kPressureScenario == kPressureByteExtend && kFailureKind != kFailureNone &&
+        runtime->byte_extend_terminal_order == 3U)
+        runtime->byte_extend_terminal_order = 4U; /* GUEST_EXECUTION_EXIT */
+    if (kPressureScenario == kPressureByteExtend && kFailureKind != kFailureNone)
+        runtime->byte_extend_cleanup_after_close =
+            runtime->byte_extend_terminal_order >= 4U ? 1U : 0U;
     np2audio86_guest_sink_unbind();
     np2audio86_guest_host_trace_detach();
     board86_unbind();
+    if (kPressureScenario == kPressureByteExtend && kFailureKind != kFailureNone &&
+        runtime->byte_extend_terminal_order == 4U)
+        runtime->byte_extend_terminal_order = 5U; /* CLEANUP_COMPLETE */
+    if (kPressureScenario == kPressureByteExtend && kFailureKind != kFailureNone)
+        runtime->byte_extend_done_after_close =
+            runtime->byte_extend_terminal_order >= 5U ? 1U : 0U;
     runtime->producer_done.store(1U, std::memory_order_release);
     np2audio86_runtime_producer_done_publish(&runtime->control);
     notify_worker(runtime);
@@ -1009,7 +1184,32 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
           lifecycle_runtime->state() == np2runtime::State::Failed &&
           runtime->first_error.load(std::memory_order_acquire) == kErrorInjectedFatal &&
           runtime->failure_first_error_after_cleanup.load(std::memory_order_acquire) == kErrorInjectedFatal));
-    const bool ok = kFailureKind == kFailureNone ? normal_ok : failure_ok;
+    const bool byte_extend_failure_ok = kPressureScenario != kPressureByteExtend ||
+        (runtime->byte_extend_pending_at_wait == 1U &&
+         runtime->byte_extend_run_bytes_at_wait == 1U &&
+         runtime->byte_extend_first_byte == 0x10U &&
+         runtime->byte_extend_transport_bytes_at_wait == 1U &&
+         runtime->byte_extend_descriptor_owned_at_wait == 1U &&
+         runtime->byte_extend_horizon_owned_at_wait == 1U &&
+         runtime->byte_extend_terminal_order == 5U &&
+         runtime->byte_extend_terminal_reserve_calls == 0U &&
+         runtime->byte_extend_terminal_extend_calls == 0U &&
+         runtime->byte_extend_terminal_control_rechecks == 0U &&
+         runtime->byte_extend_run_commits == 1U &&
+         runtime->byte_extend_horizon_commits == 1U &&
+         runtime->byte_extend_sink_bound_run == 1U &&
+         runtime->byte_extend_sink_bound_horizon == 1U &&
+         runtime->byte_extend_run_count == 1U &&
+         runtime->byte_extend_run_byte == 0x10U &&
+         runtime->byte_extend_run_frame == 0U &&
+         runtime->byte_extend_run_sequence == 16U &&
+         runtime->byte_extend_run_offset == 0U &&
+         runtime->trace.pcm_count == 1U &&
+         runtime->byte_extend_cleanup_after_close == 1U &&
+         runtime->byte_extend_done_after_close == 1U &&
+         !runtime->transaction_active);
+    const bool ok = kFailureKind == kFailureNone ? normal_ok :
+        (failure_ok && byte_extend_failure_ok);
     if (kPressureScenario != kPressureNone && pressure_ok)
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
     emit_summary(runtime, ok);

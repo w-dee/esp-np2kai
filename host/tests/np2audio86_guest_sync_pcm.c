@@ -91,6 +91,186 @@ struct sync_input_snapshot {
 static int validate_action_stream(const struct sync_action *actions,
                                   size_t action_count, size_t pcm_count);
 
+static int pcm86_feed_semantically_equal(
+    const struct np2audio86_pcm86_feed *left,
+    const struct np2audio86_pcm86_feed *right)
+{
+    return memcmp(&left->pcm, &right->pcm, sizeof(left->pcm)) == 0 &&
+           left->source_frame == right->source_frame &&
+           left->supplied == right->supplied &&
+           left->underrun == right->underrun;
+}
+
+static int test_pcm86_partial_lengths(void)
+{
+    static const size_t lengths[] = {1U, 2U, 3U, 4U, 5U, 7U, 8U};
+    static const size_t fragments[][2] = {
+        {8U, 0U}, {1U, 7U}, {2U, 6U}, {3U, 5U}, {4U, 4U},
+    };
+    uint8_t *bytes = malloc(NP2_AUDIO86_PCM86_REFILL_BYTES + 1U);
+    struct np2audio86_render_state *state = malloc(sizeof(*state));
+    struct np2audio86_render_state *whole = malloc(sizeof(*whole));
+    struct np2audio86_render_state *split = malloc(sizeof(*split));
+    struct np2audio86_render_state *snapshot = malloc(sizeof(*snapshot));
+    size_t i;
+    if (bytes == NULL || state == NULL || whole == NULL || split == NULL ||
+        snapshot == NULL) {
+        free(bytes); free(state); free(whole); free(split); free(snapshot);
+        return -1;
+    }
+    for (i = 0U; i <= NP2_AUDIO86_PCM86_REFILL_BYTES; ++i) {
+        bytes[i] = (uint8_t)(i * 37U + 11U);
+    }
+    for (i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+        const size_t count = lengths[i];
+        if (np2audio86_render_init(state) != 0 ||
+            np2audio86_render_pcm86_push(state, bytes, count) != 0 ||
+            state->pcm86.pcm.wrtpos != count ||
+            state->pcm86.pcm.realbuf != (SINT32)count ||
+            state->pcm86.supplied != count || state->pcm86.underrun != 0U ||
+            memcmp(state->pcm86.pcm.buffer, bytes, count) != 0 ||
+            (count < PCM86_BUFSIZE && state->pcm86.pcm.buffer[count] != 0U)) {
+            free(bytes); free(state); free(whole); free(split); free(snapshot);
+            return -1;
+        }
+    }
+    if (np2audio86_render_init(state) != 0) {
+        free(bytes); free(state); free(whole); free(split); free(snapshot);
+        return -1;
+    }
+    memcpy(snapshot, state, sizeof(*snapshot));
+    if (np2audio86_render_pcm86_push(state, bytes, 0U) == 0 ||
+        memcmp(state, snapshot, sizeof(*state)) != 0 ||
+        np2audio86_render_pcm86_push(
+            state, bytes, NP2_AUDIO86_PCM86_REFILL_BYTES + 1U) == 0 ||
+        memcmp(state, snapshot, sizeof(*state)) != 0 ||
+        np2audio86_render_pcm86_push(
+            state, bytes, NP2_AUDIO86_PCM86_REFILL_BYTES) != 0 ||
+        state->pcm86.pcm.realbuf != NP2_AUDIO86_PCM86_REFILL_BYTES ||
+        state->pcm86.supplied != NP2_AUDIO86_PCM86_REFILL_BYTES) {
+        free(bytes); free(state); free(whole); free(split); free(snapshot);
+        return -1;
+    }
+    for (i = 0U; i < sizeof(fragments) / sizeof(fragments[0]); ++i) {
+        SINT32 whole_pcm[4] = {0, 0, 0, 0};
+        SINT32 split_pcm[4] = {0, 0, 0, 0};
+        if (np2audio86_render_init(whole) != 0 ||
+            np2audio86_render_init(split) != 0 ||
+            np2audio86_render_pcm86_push(whole, bytes, 8U) != 0 ||
+            np2audio86_render_pcm86_push(split, bytes, fragments[i][0]) != 0 ||
+            (fragments[i][1] != 0U &&
+             np2audio86_render_pcm86_push(split, bytes + fragments[i][0],
+                                          fragments[i][1]) != 0) ||
+            !pcm86_feed_semantically_equal(&whole->pcm86, &split->pcm86)) {
+            free(bytes); free(state); free(whole); free(split); free(snapshot);
+            return -1;
+        }
+        whole->pcm86.pcm.divremain = -1;
+        split->pcm86.pcm.divremain = -1;
+        pcm86gen_getpcm(&whole->pcm86.pcm, whole_pcm, 2U);
+        pcm86gen_getpcm(&split->pcm86.pcm, split_pcm, 2U);
+        if (memcmp(whole_pcm, split_pcm, sizeof(whole_pcm)) != 0 ||
+            !pcm86_feed_semantically_equal(&whole->pcm86, &split->pcm86)) {
+            free(bytes); free(state); free(whole); free(split); free(snapshot);
+            return -1;
+        }
+    }
+    free(bytes); free(state); free(whole); free(split); free(snapshot);
+    return 0;
+}
+
+static int test_pcm86_incomplete_frames(void)
+{
+    static const struct {
+        uint8_t dactrl;
+        size_t bytes_per_sample;
+    } formats[] = {
+        {0x50U, 1U}, /* 8-bit mono */
+        {0x70U, 2U}, /* 8-bit stereo */
+        {0x10U, 2U}, /* 16-bit mono */
+        {0x30U, 4U}, /* 16-bit stereo */
+    };
+    static const uint8_t sample[4] = {0x21U, 0x43U, 0x65U, 0x87U};
+    struct np2audio86_render_state *state = malloc(sizeof(*state));
+    size_t i;
+    if (state == NULL) return -1;
+    for (i = 0U; i < sizeof(formats) / sizeof(formats[0]); ++i) {
+        const size_t required = formats[i].bytes_per_sample;
+        const size_t partial = required == 1U ? 0U : required - 1U;
+        SINT32 mix[2] = {0, 0};
+        if (np2audio86_render_init(state) != 0) {
+            free(state); return -1;
+        }
+        state->pcm86.pcm.dactrl = formats[i].dactrl;
+        if (partial != 0U) {
+            if (np2audio86_render_pcm86_push(state, sample, partial) != 0) {
+                free(state); return -1;
+            }
+            state->pcm86.pcm.divremain = -1;
+            pcm86gen_getpcm(&state->pcm86.pcm, mix, 1U);
+            if (state->pcm86.pcm.realbuf != (SINT32)partial ||
+                state->pcm86.pcm.readpos != 0U || mix[0] != 0 || mix[1] != 0) {
+                free(state); return -1;
+            }
+        }
+        if (np2audio86_render_pcm86_push(state, sample + partial,
+                                         required - partial) != 0) {
+            free(state); return -1;
+        }
+        state->pcm86.pcm.divremain = -1;
+        pcm86gen_getpcm(&state->pcm86.pcm, mix, 1U);
+        if (state->pcm86.pcm.realbuf != 0 ||
+            state->pcm86.pcm.readpos != required) {
+            free(state); return -1;
+        }
+    }
+    free(state);
+    return 0;
+}
+
+static int test_pcm86_partial_boundaries(void)
+{
+    static const uint8_t bytes[3] = {0x10U, 0x20U, 0x30U};
+    struct np2audio86_render_state *state = malloc(sizeof(*state));
+    const struct np2audio86_guest_action run = {
+        0U, 0U, NP2AUDIO86_TRACE_PCM, 0U, 0U, 3U,
+        NP2_AUDIO86_GUEST_ACTION_DATA_RUN
+    };
+    const struct np2audio86_guest_action event = {
+        0U, 1U, NP2AUDIO86_TRACE_OPNA_REGISTER, 0x000028f0U, 0U, 0U,
+        NP2_AUDIO86_GUEST_ACTION_OPNA_REGISTER
+    };
+    const struct np2audio86_guest_action reset = {
+        0U, 1U, NP2AUDIO86_TRACE_RESET_BARRIER, 0U, 0U, 0U,
+        NP2_AUDIO86_GUEST_ACTION_RESET
+    };
+    uint8_t *source = malloc(SYNC_SOURCE_BYTES);
+    if (state == NULL || source == NULL) {
+        free(state); free(source); return -1;
+    }
+    if (np2audio86_render_init(state) != 0 ||
+        np2audio86_guest_action_apply(state, &run, bytes, sizeof(bytes),
+                                      source, SYNC_SOURCE_BYTES) != 0 ||
+        state->pcm86.supplied != sizeof(bytes) ||
+        np2audio86_guest_action_apply(state, &event, NULL, 0U, source,
+                                      SYNC_SOURCE_BYTES) != 0 ||
+        state->pcm86.supplied != sizeof(bytes)) {
+        free(state); free(source); return -1;
+    }
+    if (np2audio86_render_init(state) != 0 ||
+        np2audio86_guest_action_apply(state, &run, bytes, sizeof(bytes),
+                                      source, SYNC_SOURCE_BYTES) != 0 ||
+        state->pcm86.supplied != sizeof(bytes) ||
+        np2audio86_guest_action_apply(state, &reset, NULL, 0U, source,
+                                      SYNC_SOURCE_BYTES) != 0 ||
+        state->pcm86.supplied != SYNC_SOURCE_BYTES ||
+        state->pcm86.pcm.realbuf != SYNC_SOURCE_BYTES) {
+        free(state); free(source); return -1;
+    }
+    free(state); free(source);
+    return 0;
+}
+
 static void put_le32(uint8_t *out, uint32_t value)
 {
     out[0] = (uint8_t)value;
@@ -983,6 +1163,10 @@ int main(void)
     struct sync_input_snapshot input_snapshot;
     uint8_t pcm_mutation_copy[32768];
 
+    if (test_pcm86_partial_lengths() != 0) return 2;
+    if (test_pcm86_incomplete_frames() != 0) return 3;
+    if (test_pcm86_partial_boundaries() != 0) return 4;
+
     if (np2audio86_guest_runtime_capture(&trace, &guest_state) != 0) return 1;
     printf("SOURCE_86R2_HEAD=0639a606842d04842f68baf717d41c4d93d794bf\n");
     event_bytes = serialize_guest_events(trace.events, trace.event_count,
@@ -1071,6 +1255,18 @@ int main(void)
     printf("AUDIO86_GUEST_SYNC_PCM_DETERMINISM=PASS\n");
     printf("AUDIO86_GUEST_SYNC_NEGATIVE_TESTS=PASS\n");
     printf("AUDIO86_GUEST_SYNC_BOUNDARY_TESTS=PASS\n");
+    printf("PCM86_RENDERER_ARBITRARY_LENGTH_ACCEPTANCE=PASS\n");
+    printf("PCM86_ZERO_LENGTH_REJECTED=PASS\n");
+    printf("PCM86_MAX_LENGTH_BOUNDARY=PASS\n");
+    printf("PCM86_PARTIAL_LENGTH_MATRIX=7/7_PASS\n");
+    printf("PCM86_INVALID_LENGTH_MATRIX=PASS\n");
+    printf("PCM86_FRAGMENTATION_EQUIVALENCE=5/5_PASS\n");
+    printf("PARTIAL_RUN_THEN_EVENT=PASS\n");
+    printf("PARTIAL_RUN_RESET_ORDER=PASS\n");
+    printf("PARTIAL_RUN_FINALIZE=PASS\n");
+    printf("PCM86_PARTIAL_SAMPLE_FIFO_SEMANTICS=PASS\n");
+    printf("PCM86_INCOMPLETE_FRAME_STAGING=PASS\n");
+    printf("PCM86_SYNTHETIC_PADDING=0\n");
     printf("AUDIO86_GUEST_SYNC_RESULT=PASS\n");
     return 0;
 }

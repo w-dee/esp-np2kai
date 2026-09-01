@@ -101,6 +101,36 @@ def reject_failure(name: str, text: str) -> None:
     raise SystemExit(f"ERROR: failure mutation accepted: {name}")
 
 
+def byte_extend_failure_log(kind: str) -> str:
+    fatal = kind == "fatal"
+    return "\n".join((
+        "ESP-ROM:esp32p4-eco5-20250430",
+        "I main_task: Calling app_main()",
+        "P4_AUDIO86_FAILURE kind=%s wait=BYTE_EXTEND reason=%s producer_waiting=1 predicate_published=1 producer_wake_index=1 worker_wake_index=0 order=3 lifecycle=%s first_error=%s later_guest_instructions=0" %
+        (kind.upper(), "86" if fatal else "0", "Failed" if fatal else "Stopped",
+         "86" if fatal else "0"),
+        "P4_AUDIO86_FAILURE_CLEANUP worker_quiescent=1 leases_events=0 leases_bytes=0 leases_horizon=0 reset_ack=0 events=0 bytes=0 horizon=0 reset_closed=1 first_error_after_cleanup=%s" %
+        ("86" if fatal else "0"),
+        "P4_AUDIO86_FAILURE_RESULT=PASS",
+        "P4_AUDIO86_BYTE_EXTEND_WAIT pending_run=1 run_bytes=1 first_byte=10 transport_bytes=1 descriptor_owned=1 horizon_owned=1 rejected_ordinal=2 rejected_byte=20 second_authorized=0 second_mutated=0 second_appended=0 wait_index=1",
+        "P4_AUDIO86_BYTE_EXTEND_TERMINAL order=5 semantic_handler_flush=1 sink_bound_run=1 sink_bound_horizon=1 reserve_calls=0 extend_calls=0 control_rechecks=0 run_commits=1 horizon_commits=1 run_count=1 run_byte=10 run_frame=0 run_sequence=16 run_offset=0 rejected_absent=1 cleanup_after_close=1 producer_done_after_close=1 transaction_active=0 join_timeout=0",
+        "P4_AUDIO86_BYTE_EXTEND_RESULT=PASS",
+        "P4_AUDIO86_REAL_GUEST_RESULT=PASS",
+        "P4_NANO_AUDIO86_REAL_GUEST_STATUS=PASS",
+        "I main_task: Returned from app_main()",
+        "",
+    ))
+
+
+def reject_byte_extend(name: str, text: str, kind: str = "fatal") -> None:
+    try:
+        validate_failure(text, kind, "byte-extend")
+    except SystemExit:
+        print(f"BYTE_EXTEND_VALIDATOR_MUTATION name={name} result=REJECTED")
+        return
+    raise SystemExit(f"ERROR: BYTE_EXTEND mutation accepted: {name}")
+
+
 def main() -> None:
     complete = valid_log()
     validate(complete)
@@ -175,6 +205,35 @@ def main() -> None:
     }
     for name, mutated in failure_mutations.items():
         reject_failure(name, mutated)
+    byte_extend = byte_extend_failure_log("fatal")
+    validate_failure(byte_extend, "fatal", "byte-extend")
+    stop_byte_extend = byte_extend_failure_log("stop")
+    validate_failure(stop_byte_extend, "stop", "byte-extend")
+    byte_extend_mutations = {
+        "initial_byte_label": changed(byte_extend, "wait=BYTE_EXTEND", "wait=BYTE"),
+        "pending_run_absent": changed(byte_extend, "pending_run=1", "pending_run=0"),
+        "pending_run_empty": changed(byte_extend, "run_bytes=1", "run_bytes=0"),
+        "authorized_byte_missing": changed(byte_extend, "first_byte=10", "first_byte=00"),
+        "rejected_byte_present": changed(byte_extend, "rejected_absent=1", "rejected_absent=0"),
+        "flush_marker_missing": byte_extend.replace(
+            next(line for line in byte_extend.splitlines()
+                 if line.startswith("P4_AUDIO86_BYTE_EXTEND_TERMINAL ")) + "\n", ""),
+        "flush_after_unbind": changed(byte_extend, "cleanup_after_close=1", "cleanup_after_close=0"),
+        "sink_unbound_at_commit": changed(byte_extend, "sink_bound_run=1", "sink_bound_run=0"),
+        "wrong_run_count": changed(byte_extend, "run_count=1", "run_count=2"),
+        "descriptor_missing": changed(byte_extend, "run_commits=1", "run_commits=0"),
+        "horizon_missing": changed(byte_extend, "horizon_commits=1", "horizon_commits=0"),
+        "new_reservation": changed(byte_extend, "reserve_calls=0", "reserve_calls=1"),
+        "control_recheck": changed(byte_extend, "control_rechecks=0", "control_rechecks=1"),
+        "producer_done_early": changed(byte_extend, "producer_done_after_close=1", "producer_done_after_close=0"),
+        "byte_residual": changed(byte_extend, " bytes=0 horizon=0", " bytes=1 horizon=0"),
+        "worker_join_timeout": changed(byte_extend, "join_timeout=0", "join_timeout=1"),
+        "fatal_first_error_changed": changed(byte_extend, "first_error_after_cleanup=86", "first_error_after_cleanup=87"),
+    }
+    stop_first_error = changed(stop_byte_extend, "first_error=0", "first_error=1")
+    for name, mutated in byte_extend_mutations.items():
+        reject_byte_extend(name, mutated)
+    reject_byte_extend("stop_first_error_nonzero", stop_first_error, "stop")
     print(f"S2_VALIDATOR_MUTATION_COUNT={len(mutations)}")
     print(f"S2_VALIDATOR_REJECTED_COUNT={len(mutations)}")
     print("S2_VALIDATOR_MUTATIONS=ALL_REJECTED")
@@ -184,6 +243,9 @@ def main() -> None:
     print(f"FAILURE_VALIDATOR_MUTATION_COUNT={len(failure_mutations)}")
     print(f"FAILURE_VALIDATOR_REJECTED_COUNT={len(failure_mutations)}")
     print("FAILURE_VALIDATOR_MUTATIONS=ALL_REJECTED")
+    print(f"BYTE_EXTEND_VALIDATOR_MUTATION_COUNT={len(byte_extend_mutations) + 1}")
+    print(f"BYTE_EXTEND_VALIDATOR_REJECTED_COUNT={len(byte_extend_mutations) + 1}")
+    print("BYTE_EXTEND_VALIDATOR_MUTATIONS=ALL_REJECTED")
 
 
 if __name__ == "__main__":

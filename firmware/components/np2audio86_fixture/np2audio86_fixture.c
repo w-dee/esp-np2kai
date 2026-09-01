@@ -629,7 +629,7 @@ int np2audio86_render_pcm86_push(struct np2audio86_render_state *state,
     uint32_t destination;
     size_t first;
     if (state == NULL || bytes == NULL || count == 0U ||
-        count > NP2_AUDIO86_PCM86_REFILL_BYTES || (count & 3U) != 0U) {
+        count > NP2_AUDIO86_PCM86_REFILL_BYTES) {
         return -1;
     }
     feed = &state->pcm86;

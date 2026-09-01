@@ -72,6 +72,18 @@ MARKERS = (
     "AUDIO86_GUEST_SYNC_PCM_DETERMINISM",
     "AUDIO86_GUEST_SYNC_NEGATIVE_TESTS",
     "AUDIO86_GUEST_SYNC_BOUNDARY_TESTS",
+    "PCM86_RENDERER_ARBITRARY_LENGTH_ACCEPTANCE",
+    "PCM86_ZERO_LENGTH_REJECTED",
+    "PCM86_MAX_LENGTH_BOUNDARY",
+    "PCM86_PARTIAL_LENGTH_MATRIX",
+    "PCM86_INVALID_LENGTH_MATRIX",
+    "PCM86_FRAGMENTATION_EQUIVALENCE",
+    "PARTIAL_RUN_THEN_EVENT",
+    "PARTIAL_RUN_RESET_ORDER",
+    "PARTIAL_RUN_FINALIZE",
+    "PCM86_PARTIAL_SAMPLE_FIFO_SEMANTICS",
+    "PCM86_INCOMPLETE_FRAME_STAGING",
+    "PCM86_SYNTHETIC_PADDING",
     "AUDIO86_GUEST_SYNC_RESULT",
 )
 
@@ -121,7 +133,12 @@ def main() -> int:
                     f"{key} mismatch: got {values.get(key)!r}, expected {value!r}"
                 )
         for marker in MARKERS:
-            if values.get(marker) != "PASS":
+            expected_marker = {
+                "PCM86_PARTIAL_LENGTH_MATRIX": "7/7_PASS",
+                "PCM86_FRAGMENTATION_EQUIVALENCE": "5/5_PASS",
+                "PCM86_SYNTHETIC_PADDING": "0",
+            }.get(marker, "PASS")
+            if values.get(marker) != expected_marker:
                 raise RuntimeError(f"missing {marker}=PASS")
         if values.get("PCM86_COVERAGE") != "NOT_EXERCISED":
             raise RuntimeError("PCM86 coverage classification changed")

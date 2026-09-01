@@ -3,8 +3,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-scenario=${1:?"usage: $0 event|byte|horizon|reset-ack"}
-case "${scenario}" in event|byte|horizon|reset-ack) ;; *) exit 2;; esac
+scenario=${1:?"usage: $0 event|byte|byte-extend|horizon|reset-ack"}
+case "${scenario}" in event|byte|byte-extend|horizon|reset-ack) ;; *) exit 2;; esac
 scenario_tag=${scenario//-/_}
 scenario_upper=${scenario_tag^^}
 build_dir=${P4_AUDIO86_PRESSURE_BUILD_DIR:-"${repo_root}/firmware/build-p4-v3x-audio86-pressure-${scenario}"}
@@ -34,7 +34,7 @@ for run in $(seq 1 20); do
         --timeout 8s --log-color never >"${log}" 2>&1
     python3 tools/emu/validate_p4_audio86_real_guest_log.py --log "${log}" \
         --pressure-scenario "${scenario}"
-    evidence=$(rg '^(P4_AUDIO86_REAL_GUEST profile|P4_AUDIO86_REAL_GUEST_RESIDUAL|GUEST_IO_|AUDIO_EVENTS_|PCM86_|TIMER_PIC_|FINAL_G_STATE_|WORKER_APPLY_TRACE_|PRE_RESET_PCM_|FULL_PCM_|P4_AUDIO86_ACTION |P4_AUDIO86_PRESSURE|P4_AUDIO86_REAL_GUEST_RESULT|P4_NANO_AUDIO86_REAL_GUEST_STATUS)' "${log}" | sha256sum | awk '{print $1}')
+    evidence=$(rg '^(P4_AUDIO86_REAL_GUEST profile|P4_AUDIO86_REAL_GUEST_RESIDUAL|GUEST_IO_|AUDIO_EVENTS_|PCM86_|TIMER_PIC_|FINAL_G_STATE_|WORKER_APPLY_TRACE_|PRE_RESET_PCM_|FULL_PCM_|P4_AUDIO86_ACTION |P4_AUDIO86_PRESSURE|P4_AUDIO86_BYTE_EXTEND|P4_AUDIO86_REAL_GUEST_RESULT|P4_NANO_AUDIO86_REAL_GUEST_STATUS)' "${log}" | sha256sum | awk '{print $1}')
     if [[ -z "${first_evidence}" ]]; then
         first_evidence=${evidence}
     elif [[ "${evidence}" != "${first_evidence}" ]]; then

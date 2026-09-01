@@ -42,6 +42,8 @@ EXPECTED = {
 PRESSURE = {
     "event": ("EVENT", "EVENT_SEQUENCE_0", "EVENT_CAPACITY_ONLY", "1", "0"),
     "byte": ("BYTE", "DATA_RUN_SEQUENCE_16", "BYTE_CAPACITY_ONLY", "0", "0"),
+    "byte-extend": ("BYTE_EXTEND", "DATA_RUN_SEQUENCE_16_BYTE_2",
+                    "BYTE_CAPACITY_ONLY", "0", "0"),
     "horizon": ("HORIZON", "HORIZON_EVENT_SEQUENCE_0", "HORIZON_ONLY", "0", "0"),
     "reset-ack": ("RESET_ACK", "RESET_ORDINAL_1", "POSTCOMMIT_ACK", "0", "1"),
 }
@@ -131,6 +133,31 @@ def pressure_fields(text: str, prefix: str) -> dict[str, str]:
     return dict(field.split("=", 1) for field in line_after(text, prefix).split())
 
 
+def validate_byte_extend_wait(text: str) -> None:
+    wait = pressure_fields(text, "P4_AUDIO86_BYTE_EXTEND_WAIT ")
+    require(wait == {
+        "pending_run": "1", "run_bytes": "1", "first_byte": "10",
+        "transport_bytes": "1", "descriptor_owned": "1", "horizon_owned": "1",
+        "rejected_ordinal": "2", "rejected_byte": "20", "second_authorized": "0",
+        "second_mutated": "0", "second_appended": "0", "wait_index": "1",
+    }, "BYTE_EXTEND cutpoint mismatch")
+
+
+def validate_byte_extend_terminal(text: str) -> None:
+    terminal = pressure_fields(text, "P4_AUDIO86_BYTE_EXTEND_TERMINAL ")
+    require(terminal == {
+        "order": "5", "semantic_handler_flush": "1", "sink_bound_run": "1",
+        "sink_bound_horizon": "1", "reserve_calls": "0", "extend_calls": "0",
+        "control_rechecks": "0", "run_commits": "1", "horizon_commits": "1",
+        "run_count": "1", "run_byte": "10", "run_frame": "0",
+        "run_sequence": "16", "run_offset": "0", "rejected_absent": "1",
+        "cleanup_after_close": "1", "producer_done_after_close": "1",
+        "transaction_active": "0", "join_timeout": "0",
+    }, "BYTE_EXTEND terminal close mismatch")
+    require(one(text, "P4_AUDIO86_BYTE_EXTEND_RESULT") == "PASS",
+            "BYTE_EXTEND terminal result")
+
+
 def validate_pressure(text: str, scenario: str) -> None:
     """Validate out-of-band pressure evidence without weakening 86R2/86R3."""
     require(scenario in PRESSURE, f"unknown pressure scenario: {scenario}")
@@ -160,6 +187,8 @@ def validate_pressure(text: str, scenario: str) -> None:
     require(release == {"released": "1", "index0_isolated": expected_index0,
                         "ack_published": expected_ack}, "pressure release evidence")
     require(one(text, "P4_AUDIO86_PRESSURE_RESULT") == "PASS", "pressure result")
+    if scenario == "byte-extend":
+        validate_byte_extend_wait(text)
 
 
 def validate_failure(text: str, kind: str, scenario: str) -> None:
@@ -194,6 +223,9 @@ def validate_failure(text: str, kind: str, scenario: str) -> None:
     require(one(text, "P4_AUDIO86_FAILURE_RESULT") == "PASS", "failure result")
     require(one(text, "P4_AUDIO86_REAL_GUEST_RESULT") == "PASS", "real guest result")
     require(one(text, "P4_NANO_AUDIO86_REAL_GUEST_STATUS") == "PASS", "main status")
+    if scenario == "byte-extend":
+        validate_byte_extend_wait(text)
+        validate_byte_extend_terminal(text)
 
 
 def main() -> None:

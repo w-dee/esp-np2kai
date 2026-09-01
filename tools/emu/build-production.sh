@@ -194,7 +194,7 @@ while (($# > 0)); do
             ;;
         --audio86-pressure)
             (($# >= 2)) || { usage >&2; exit 2; }
-            case "$2" in event) audio86_pressure_scenario=1;; byte) audio86_pressure_scenario=2;; horizon) audio86_pressure_scenario=3;; reset-ack) audio86_pressure_scenario=4;; *) echo "ERROR: invalid audio86 pressure scenario: $2" >&2; exit 2;; esac
+            case "$2" in event) audio86_pressure_scenario=1;; byte) audio86_pressure_scenario=2;; horizon) audio86_pressure_scenario=3;; reset-ack) audio86_pressure_scenario=4;; byte-extend) audio86_pressure_scenario=5;; *) echo "ERROR: invalid audio86 pressure scenario: $2" >&2; exit 2;; esac
             audio86_real_guest=1
             audio86_async=1
             shift 2
