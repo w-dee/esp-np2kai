@@ -128,6 +128,48 @@ tools/dev/idf.sh -B <build-dir> build
 ESP-IDF v5.5.4 also supports `idf.py -C firmware`, but the wrapper avoids
 repeated cwd mistakes.
 
+## Host ThreadSanitizer validation
+
+On this Ubuntu host, GCC ThreadSanitizer may fail during process startup under
+normal ASLR with:
+
+```
+FATAL: ThreadSanitizer: unexpected memory mapping
+```
+
+This occurs before project main or project code executes and is classified as
+`BLOCKED-BY-ENVIRONMENT` for the ordinary-ASLR invocation. Repository TSan
+acceptance gates must use the controlled no-ASLR form:
+
+```bash
+setarch x86_64 -R make -C host <tsan-target>
+```
+
+For example, the E1B gate is:
+
+```bash
+setarch x86_64 -R make -C host test-opngen-e1b-tsan
+```
+
+The controlled invocation is the authoritative acceptance result. Do not
+classify the project as failing TSan solely because ordinary ASLR produces the
+known startup mapping failure. Disabling ASLR here is a controlled workaround
+for the host TSan address-space-layout incompatibility; it is not evidence
+that normal project operation requires ASLR to be disabled.
+
+If the controlled invocation fails, stop and report the exact command, exact
+failure, exit status, and whether the failure occurred during startup or in
+project code where that distinction is available. Do not silently change the
+compiler, sanitizer, toolchain, optimization, test target, source, or kernel
+settings to obtain a green result. Do not retry a failed controlled invocation
+and substitute a later pass unless the test procedure explicitly requires
+retries.
+
+TSan evidence covers only the target actually executed. For example, passing
+`test-opngen-e1b-tsan` does not prove unrelated host concurrency paths, ESP
+FreeRTOS code, or hardware concurrency correct, and is not a project-wide
+race-freedom claim.
+
 ## Build directory identity
 
 For a hardware run, the flashed image, ELF selected by IDF Monitor, and stated
