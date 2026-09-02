@@ -43,7 +43,7 @@ start_no_self_delete	Start fatal never self deletes	STATIC_PROJECT_SOURCE	tools/
 owner_cleanup_guards	Owner cleanup guards	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_cleanup_guards	terminal|quiescent|ack|wait_task_suspended	source_checker
 owner_delete_order	Delete follows suspension	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_delete_order	suspended_before_delete	source_checker
 owner_destroy_order	Destroy follows suspension	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_destroy_order	suspended_before_destroy	source_checker
-production_projection	Production guest binding unchanged	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	production_projection	baseline|test_guard_false	source_checker
+production_projection	Production guest binding unchanged outside physical-short	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	production_projection	baseline|test_guard_false|physical_short_false	source_checker
 profile_isolation	Fake profile is esp-emu only	BUILD	tools/emu/build-production.sh	profile_isolation	p4_v3x|generic|esp_emu	exit_zero
 build_matrix	Twelve profiles build	BUILD	tools/emu/test-p4-audio86-physical-build-matrix.sh	build_matrix	profiles	exit_zero
 public_sink_unchanged	Public sink contract unchanged	INTEGRITY	git diff --quiet	public_sink_unchanged	path	diff_empty

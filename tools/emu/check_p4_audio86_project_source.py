@@ -9,6 +9,7 @@ BASELINE = "6460b3d87f3b62d2974f187d12fbe1b0a5a0035c"
 SINK = ROOT / "firmware/components/p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.c"
 BINDING = ROOT / "firmware/components/p4_nano_audio86_guest_binding/p4_nano_audio86_guest_binding.cpp"
 TEST_GUARD = "P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE"
+SHORT_GUARD = "P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE"
 
 
 def evidence(property_id: str, required_fields: str) -> None:
@@ -30,23 +31,38 @@ def ordered(text: str, *tokens: str) -> bool:
 
 
 def production_projection(text: str) -> str:
-    """Select the test-profile-false branch without preprocessing IDF."""
+    """Select test-profile-false and physical-short-false source branches."""
     output: list[str] = []
-    test_stack: list[tuple[bool, bool]] = []
+    conditional_stack: list[tuple[bool, bool, bool]] = []
     suppressed = False
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("#if") and TEST_GUARD in stripped:
-            test_stack.append((suppressed, False))
-            suppressed = True
+        if stripped.startswith(("#if", "#ifdef", "#ifndef")):
+            selected_guard = next(
+                (guard for guard in (TEST_GUARD, SHORT_GUARD)
+                 if guard in stripped), None)
+            if selected_guard is None:
+                conditional_stack.append((False, suppressed, True))
+                if not suppressed:
+                    output.append(line.rstrip())
+                continue
+            condition_true = stripped.startswith("#ifndef") or \
+                "!defined" in stripped
+            conditional_stack.append((True, suppressed, condition_true))
+            suppressed = suppressed or not condition_true
             continue
-        if test_stack and stripped == "#else":
-            parent_suppressed, _ = test_stack[-1]
-            test_stack[-1] = (parent_suppressed, True)
-            suppressed = parent_suppressed
+        if conditional_stack and stripped == "#else":
+            selected, parent_suppressed, condition_true = \
+                conditional_stack[-1]
+            if selected:
+                suppressed = parent_suppressed or condition_true
+            elif not suppressed:
+                output.append(line.rstrip())
             continue
-        if test_stack and stripped == "#endif":
-            parent_suppressed, _ = test_stack.pop()
+        if conditional_stack and stripped == "#endif":
+            selected, parent_suppressed, _ = conditional_stack.pop()
+            if not selected and not suppressed:
+                output.append(line.rstrip())
             suppressed = parent_suppressed
             continue
         if not suppressed:
@@ -94,10 +110,11 @@ def main() -> int:
              "terminal|quiescent|ack|wait_task_suspended")
     evidence("owner_delete_order", "suspended_before_delete")
     evidence("owner_destroy_order", "suspended_before_destroy")
-    evidence("production_projection", "baseline|test_guard_false")
+    evidence("production_projection",
+             "baseline|test_guard_false|physical_short_false")
     print("5D1_NON_ACCEPTANCE_SUMMARY name=START_STATIC_GUARDS value=3/3_PASS")
     print("START_RUNTIME_FAULT_INJECTION_REQUIRED_FOR_5D1=NO")
-    print("PRODUCTION_BEHAVIOR_CHANGED=NO")
+    print("PRODUCTION_BEHAVIOR_CHANGED=PHYSICAL_SHORT_ONLY")
     return 0
 
 

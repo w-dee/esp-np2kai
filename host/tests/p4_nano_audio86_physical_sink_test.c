@@ -371,8 +371,25 @@ static void test_full_controller(void)
     p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
     assert(telemetry.physical_units_copied == 1U &&
            telemetry.physical_bytes_copied == 960U &&
+           telemetry.full_units == 1U &&
+           telemetry.final_partial_units == 0U &&
+           telemetry.submit_attempts == 1U &&
+           telemetry.retry_count == 0U &&
+           telemetry.drain_completion_epoch -
+                   telemetry.drain_snapshot_epoch ==
+               P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
+           telemetry.drain_duration_ms == 4U &&
            telemetry.physically_drained_frames == 240U &&
-           telemetry.accepted_pending_drain_frames == 0U);
+           telemetry.accepted_pending_drain_frames == 0U &&
+           telemetry.prepare_completed && telemetry.pa_initial_low &&
+           telemetry.codec_initialized_muted && telemetry.i2s_initialized &&
+           telemetry.muted_warmup_completed &&
+           telemetry.callbacks_registered && telemetry.stream_started &&
+           telemetry.codec_unmute_completed && telemetry.finish_completed &&
+           telemetry.codec_final_muted && telemetry.pa_final_low &&
+           !telemetry.i2s_enabled && !telemetry.i2s_created &&
+           telemetry.registered_generation == 1U &&
+           telemetry.generation == 2U);
     close_sink(&fake, sink, &interface);
     emit_history(&fake, "full_q240_history");
     puts("5D1_FULL_Q240 semantic_frames=240 semantic_bytes=960 physical_bytes=960 consume_calls=1 result=PASS");
@@ -405,7 +422,14 @@ static void test_final_partial(unsigned frames)
     assert(telemetry.semantic_accepted_frames == frames &&
            telemetry.semantic_accepted_bytes == semantic &&
            telemetry.physical_bytes_copied == 960U &&
-           telemetry.physical_padding_frames == 240U - frames);
+           telemetry.physical_padding_frames == 240U - frames &&
+           telemetry.full_units == 0U &&
+           telemetry.final_partial_units == 1U &&
+           telemetry.final_valid_frames == frames &&
+           telemetry.submit_attempts == 1U &&
+           telemetry.retry_count == 0U && telemetry.finish_completed &&
+           telemetry.stream_started && !telemetry.i2s_enabled &&
+           !telemetry.i2s_created);
     close_sink(&fake, sink, &interface);
     printf("5D1_FINAL_PARTIAL frames=%u semantic_bytes=%zu physical_bytes=960 padding_frames=%u padding_zero=1 digest_excludes_padding=1 result=PASS\n",
            frames, semantic, 240U - frames);
@@ -463,7 +487,9 @@ static void test_retry_and_lost_wake(void)
         assert(interface.submit(interface.opaque, &view) ==
                NP2_PCM_SINK_ACCEPTED);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-        assert(telemetry.semantic_accepted_frames == 5U * 240U);
+        assert(telemetry.semantic_accepted_frames == 5U * 240U &&
+               telemetry.submit_attempts == 6U &&
+               telemetry.retry_count == 1U);
         printf(EVIDENCE "scenario=%s epoch_before=%u epoch_after=%u callbacks=%u notification_only_ready=0 tail_held=1 accepted_once=1 forced_abort=0\n",
                scenarios[scenario], snapshot, telemetry.tx_eof_epoch,
                callbacks);

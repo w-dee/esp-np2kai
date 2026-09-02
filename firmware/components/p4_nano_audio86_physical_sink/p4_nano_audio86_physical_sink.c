@@ -36,8 +36,14 @@ struct p4_nano_audio86_physical_sink {
     _Atomic uint32_t running_queue_overflow_count;
     _Atomic uint32_t draining_queue_overflow_count;
     uint32_t preloaded_units;
+    uint32_t full_units;
+    uint32_t final_partial_units;
+    uint32_t final_valid_frames;
     uint32_t drain_snapshot_epoch;
     uint32_t drain_completion_epoch;
+    uint64_t submit_attempts;
+    uint64_t retry_count;
+    uint64_t drain_duration_ms;
     uint64_t semantic_accepted_frames;
     uint64_t semantic_accepted_bytes;
     uint64_t physical_units_copied;
@@ -46,6 +52,19 @@ struct p4_nano_audio86_physical_sink {
     uint64_t accepted_pending_drain_frames;
     uint64_t physically_drained_frames;
     uint64_t physically_discarded_accepted_frames;
+    bool prepare_completed;
+    bool pa_initial_low;
+    bool codec_initialized_muted;
+    bool i2s_initialized;
+    bool muted_warmup_completed;
+    bool callbacks_registered;
+    bool stream_started;
+    bool codec_unmute_completed;
+    bool finish_completed;
+    bool codec_final_muted;
+    bool pa_final_low;
+    bool i2s_enabled;
+    bool i2s_created;
     _Alignas(16) uint8_t staging[P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
 };
 
@@ -173,6 +192,16 @@ static enum np2_pcm_sink_result physical_start(void *opaque)
         mark_failed(sink);
         return NP2_PCM_SINK_FATAL;
     }
+    /* A successful production prepare contract includes PA-low entry,
+     * muted codec initialization, I2S initialization, muted warm-up, and
+     * callback registration.  These are history latches, not current state. */
+    sink->prepare_completed = true;
+    sink->pa_initial_low = true;
+    sink->codec_initialized_muted = true;
+    sink->i2s_initialized = true;
+    sink->muted_warmup_completed = true;
+    sink->callbacks_registered = true;
+    sink->i2s_created = true;
     atomic_store_explicit(&sink->callback_gate.armed, 1U,
                           memory_order_release);
     atomic_store_explicit(&sink->state,
@@ -220,6 +249,9 @@ static bool start_stream(struct p4_nano_audio86_physical_sink *sink,
         mark_failed(sink);
         return false;
     }
+    sink->stream_started = true;
+    sink->codec_unmute_completed = true;
+    sink->i2s_enabled = true;
     atomic_store_explicit(&sink->state, success_state, memory_order_release);
     return true;
 }
@@ -233,6 +265,7 @@ static enum np2_pcm_sink_result physical_submit(
     uint64_t semantic_bytes = 0U;
     uint32_t padding_frames = 0U;
     size_t copied = 0U;
+    if (sink != NULL) sink->submit_attempts++;
     if (sink == NULL ||
         !prepare_physical_unit(sink, view, &semantic_bytes, &padding_frames)) {
         if (sink != NULL) mark_failed(sink);
@@ -252,6 +285,7 @@ static enum np2_pcm_sink_result physical_submit(
 
     if (result == P4_NANO_AUDIO86_PHYSICAL_IO_TIMEOUT && copied == 0U &&
         state == P4_NANO_AUDIO86_PHYSICAL_RUNNING) {
+        sink->retry_count++;
         return NP2_PCM_SINK_RETRY;
     }
     if (result != P4_NANO_AUDIO86_PHYSICAL_IO_OK ||
@@ -265,6 +299,12 @@ static enum np2_pcm_sink_result physical_submit(
     sink->physical_units_copied++;
     sink->physical_bytes_copied += P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES;
     sink->physical_padding_frames += padding_frames;
+    if (view->valid_frames == P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT) {
+        sink->full_units++;
+    } else {
+        sink->final_partial_units++;
+        sink->final_valid_frames = view->valid_frames;
+    }
     sink->accepted_pending_drain_frames += view->valid_frames;
     sink->drain_snapshot_epoch = atomic_load_explicit(
         &sink->tx_eof_epoch, memory_order_acquire);
@@ -358,18 +398,34 @@ static enum np2_pcm_sink_result physical_finish(void *opaque)
     }
     sink->drain_completion_epoch = atomic_load_explicit(
         &sink->tx_eof_epoch, memory_order_acquire);
+    sink->drain_duration_ms = sink->backend.now_ms(sink->backend.opaque) -
+                              start_ms;
     disarm_callbacks(sink);
-    if (sink->backend.mute(sink->backend.opaque) != 0 ||
-        sink->backend.pa_low(sink->backend.opaque) != 0 ||
-        sink->backend.disable(sink->backend.opaque) != 0 ||
-        !close_callbacks(sink)) {
+    if (sink->backend.mute(sink->backend.opaque) != 0) {
         mark_failed(sink);
         return NP2_PCM_SINK_FATAL;
     }
+    sink->codec_final_muted = true;
+    if (sink->backend.pa_low(sink->backend.opaque) != 0) {
+        mark_failed(sink);
+        return NP2_PCM_SINK_FATAL;
+    }
+    sink->pa_final_low = true;
+    if (sink->backend.disable(sink->backend.opaque) != 0) {
+        mark_failed(sink);
+        return NP2_PCM_SINK_FATAL;
+    }
+    sink->i2s_enabled = false;
+    if (!close_callbacks(sink)) {
+        mark_failed(sink);
+        return NP2_PCM_SINK_FATAL;
+    }
+    sink->i2s_created = false;
     sink->physically_drained_frames += sink->accepted_pending_drain_frames;
     sink->accepted_pending_drain_frames = 0U;
     atomic_store_explicit(&sink->state, P4_NANO_AUDIO86_PHYSICAL_QUIESCENT,
                           memory_order_release);
+    sink->finish_completed = true;
     return NP2_PCM_SINK_ACCEPTED;
 }
 
@@ -383,10 +439,16 @@ static enum np2_pcm_sink_result physical_abort(void *opaque)
     disarm_callbacks(sink);
     notify_waiter(sink, false);
     if (sink->backend.mute(sink->backend.opaque) != 0) ok = false;
+    else sink->codec_final_muted = true;
     if (sink->backend.pa_low(sink->backend.opaque) != 0) ok = false;
+    else sink->pa_final_low = true;
     if (sink->backend.disable(sink->backend.opaque) != 0) ok = false;
-    if (sink->backend.unregister_callbacks(sink->backend.opaque) != 0)
+    else sink->i2s_enabled = false;
+    if (sink->backend.unregister_callbacks(sink->backend.opaque) != 0) {
         ok = false;
+    } else {
+        sink->i2s_created = false;
+    }
     if (!wait_for_callbacks_zero(sink)) ok = false;
     sink->physically_discarded_accepted_frames +=
         sink->accepted_pending_drain_frames;
@@ -527,15 +589,23 @@ void p4_nano_audio86_physical_sink_get_telemetry(
     telemetry->physical_units_copied = sink->physical_units_copied;
     telemetry->physical_bytes_copied = sink->physical_bytes_copied;
     telemetry->physical_padding_frames = sink->physical_padding_frames;
+    telemetry->submit_attempts = sink->submit_attempts;
+    telemetry->retry_count = sink->retry_count;
+    telemetry->drain_duration_ms = sink->drain_duration_ms;
     telemetry->accepted_pending_drain_frames =
         sink->accepted_pending_drain_frames;
     telemetry->physically_drained_frames = sink->physically_drained_frames;
     telemetry->physically_discarded_accepted_frames =
         sink->physically_discarded_accepted_frames;
+    telemetry->full_units = sink->full_units;
+    telemetry->final_partial_units = sink->final_partial_units;
+    telemetry->final_valid_frames = sink->final_valid_frames;
     telemetry->tx_eof_epoch = atomic_load_explicit(
         &sink->tx_eof_epoch, memory_order_acquire);
     telemetry->drain_snapshot_epoch = sink->drain_snapshot_epoch;
     telemetry->drain_completion_epoch = sink->drain_completion_epoch;
+    telemetry->registered_generation = atomic_load_explicit(
+        &sink->callback_gate.registration_generation, memory_order_acquire);
     telemetry->generation = atomic_load_explicit(&sink->generation,
                                                   memory_order_acquire);
     telemetry->stale_callback_count = atomic_load_explicit(
@@ -548,6 +618,19 @@ void p4_nano_audio86_physical_sink_get_telemetry(
         &sink->callback_gate.in_flight, memory_order_acquire);
     telemetry->preloaded_units = sink->preloaded_units;
     telemetry->state = load_state(sink);
+    telemetry->prepare_completed = sink->prepare_completed;
+    telemetry->pa_initial_low = sink->pa_initial_low;
+    telemetry->codec_initialized_muted = sink->codec_initialized_muted;
+    telemetry->i2s_initialized = sink->i2s_initialized;
+    telemetry->muted_warmup_completed = sink->muted_warmup_completed;
+    telemetry->callbacks_registered = sink->callbacks_registered;
+    telemetry->stream_started = sink->stream_started;
+    telemetry->codec_unmute_completed = sink->codec_unmute_completed;
+    telemetry->finish_completed = sink->finish_completed;
+    telemetry->codec_final_muted = sink->codec_final_muted;
+    telemetry->pa_final_low = sink->pa_final_low;
+    telemetry->i2s_enabled = sink->i2s_enabled;
+    telemetry->i2s_created = sink->i2s_created;
     telemetry->sticky_error = atomic_load_explicit(
         &sink->sticky_error, memory_order_acquire) != 0U;
     telemetry->callbacks_active = atomic_load_explicit(

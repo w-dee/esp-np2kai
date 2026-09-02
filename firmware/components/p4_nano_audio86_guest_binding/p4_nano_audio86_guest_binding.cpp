@@ -153,6 +153,23 @@ struct ApplyRecord {
     uint32_t payload = 0U;
 };
 
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+struct PhysicalS1Snapshot {
+    p4_nano_audio86_physical_telemetry sink{};
+    uint64_t semantic_frames = 0U;
+    uint64_t semantic_bytes = 0U;
+    uint64_t controller_accepted_frames = 0U;
+    uint64_t controller_accepted_bytes = 0U;
+    uint32_t semantic_crc32 = 0U;
+    uint8_t semantic_sha256[NP2_SHA256_DIGEST_SIZE]{};
+    enum np2_pcm_output_state controller_state = NP2_PCM_OUTPUT_INITIAL;
+    uint32_t first_error = 0U;
+    uint32_t forced_abort = 0U;
+    uint32_t sink_destroyed = 0U;
+    bool captured = false;
+};
+#endif
+
 struct Runtime {
     np2audio86_event_ring events{};
     np2audio86_byte_ring bytes{};
@@ -180,6 +197,9 @@ struct Runtime {
     TaskHandle_t pcm_consumer = nullptr;
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     p4_nano_audio86_physical_sink *physical_sink = nullptr;
+#endif
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    PhysicalS1Snapshot physical_s1{};
 #endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
     uint32_t test_ready_wait = 0U;
@@ -1798,6 +1818,44 @@ bool wait_task_suspended(TaskHandle_t task)
     return task != nullptr;
 }
 
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+void capture_physical_s1_snapshot(Runtime *runtime)
+{
+    PhysicalS1Snapshot snapshot{};
+    const size_t semantic_bytes =
+        static_cast<size_t>(runtime->pre_reset_frame) *
+        P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME;
+    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink,
+                                                 &snapshot.sink);
+    snapshot.semantic_frames = runtime->pre_reset_frame;
+    snapshot.semantic_bytes = semantic_bytes;
+    snapshot.controller_accepted_frames =
+        runtime->pcm_controller.accepted_frames;
+    snapshot.controller_accepted_bytes =
+        runtime->pcm_controller.accepted_bytes;
+    snapshot.semantic_crc32 = np2_crc32_iso_hdlc(
+        runtime->pre_reset_pcm, semantic_bytes);
+    np2_sha256_context sha{};
+    np2_sha256_init(&sha);
+    np2_sha256_update(&sha, runtime->pre_reset_pcm, semantic_bytes);
+    np2_sha256_final(&sha, snapshot.semantic_sha256);
+    snapshot.controller_state = runtime->pcm_controller.state;
+    snapshot.first_error = runtime->first_error.load(std::memory_order_acquire);
+    snapshot.forced_abort = runtime->pcm_forced_abort_requested.load(
+        std::memory_order_acquire);
+    snapshot.captured = true;
+    runtime->physical_s1 = snapshot;
+}
+
+void record_physical_s1_destroy(Runtime *runtime, const bool destroyed)
+{
+    if (!runtime->physical_s1.captured) return;
+    runtime->physical_s1.sink_destroyed = destroyed ? 1U : 0U;
+    runtime->physical_s1.first_error = runtime->first_error.load(
+        std::memory_order_acquire);
+}
+#endif
+
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
 bool cleanup_pcm_start_failure(Runtime *runtime)
 {
@@ -1818,6 +1876,15 @@ bool cleanup_pcm_start_failure(Runtime *runtime)
     runtime->pcm_consumer_suspended_observed.store(suspended ? 1U : 0U,
                                                    std::memory_order_release);
     runtime->pcm_join_timeout = suspended ? 0U : 1U;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    /* PHYSICAL_TELEMETRY_SNAPSHOT_POINT=
+     * AFTER_DONE_SEMAPHORE_ACK_QUIESCENT_AND_ESUSPENDED_
+     * BEFORE_TASK_DELETE_AND_SINK_DESTROY */
+    const bool physical_snapshot_ready = terminal && quiescent && ack &&
+        suspended;
+    if (physical_snapshot_ready && runtime->physical_sink != nullptr)
+        capture_physical_s1_snapshot(runtime);
+#endif
     if (suspended) {
         vTaskDelete(runtime->pcm_consumer);
         runtime->pcm_consumer = nullptr;
@@ -1829,8 +1896,16 @@ bool cleanup_pcm_start_failure(Runtime *runtime)
     }
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     if (suspended && runtime->physical_sink != nullptr) {
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+        const bool destroyed = p4_nano_audio86_physical_sink_destroy(
+                                   runtime->physical_sink) == 0;
+        record_physical_s1_destroy(runtime, destroyed);
+        if (!destroyed)
+            return false;
+#else
         if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) != 0)
             return false;
+#endif
         runtime->physical_sink = nullptr;
 #if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
         runtime->test_sink_destroy_performed = 1U;
@@ -2001,6 +2076,162 @@ void emit_exact_evidence(const Runtime *runtime)
     std::printf("PCM86_NOT_EXERCISED_REQUIRES_SUPPLEMENTAL_EXISTING_86H_EVIDENCE\n");
     std::printf("REAL_P4_AUDIO_TIMING=NOT_VALIDATED\n");
 }
+
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+const char *physical_s1_controller_state_name(
+    const enum np2_pcm_output_state state)
+{
+    switch (state) {
+    case NP2_PCM_OUTPUT_INITIAL: return "INITIAL";
+    case NP2_PCM_OUTPUT_STARTED: return "STARTED";
+    case NP2_PCM_OUTPUT_FAILED: return "FAILED";
+    case NP2_PCM_OUTPUT_FINISHED: return "FINISHED";
+    case NP2_PCM_OUTPUT_ABORTED: return "ABORTED";
+    }
+    return "UNKNOWN";
+}
+
+const char *physical_s1_sink_state_name(
+    const enum p4_nano_audio86_physical_state state)
+{
+    switch (state) {
+    case P4_NANO_AUDIO86_PHYSICAL_INITIAL: return "INITIAL";
+    case P4_NANO_AUDIO86_PHYSICAL_PREPARED_ACCEPTING:
+        return "PREPARED_ACCEPTING";
+    case P4_NANO_AUDIO86_PHYSICAL_STARTING: return "STARTING";
+    case P4_NANO_AUDIO86_PHYSICAL_RUNNING: return "RUNNING";
+    case P4_NANO_AUDIO86_PHYSICAL_DRAINING: return "DRAINING";
+    case P4_NANO_AUDIO86_PHYSICAL_FAILED: return "FAILED";
+    case P4_NANO_AUDIO86_PHYSICAL_ABORTING: return "ABORTING";
+    case P4_NANO_AUDIO86_PHYSICAL_QUIESCENT: return "QUIESCENT";
+    }
+    return "UNKNOWN";
+}
+
+void emit_physical_s1_evidence(const Runtime *runtime)
+{
+    const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
+    if (!snapshot.captured) return;
+    const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
+    const uint32_t post_snapshot_eofs =
+        sink.drain_completion_epoch - sink.drain_snapshot_epoch;
+    const uint64_t padding_bytes = sink.physical_padding_frames *
+        P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME;
+    std::printf("5D2_S1_IDENTITY schema=1 evidence_class=PHYSICAL_EXEC"
+                " source_git_sha=%s"
+                " profile=AUDIO86_REAL_GUEST_PHYSICAL_I2S_SHORT"
+                " board=P4_NANO_P4_V1X backend=IDF_I2S0_ES8311"
+                " stimulus=PRE_RESET_PCM display=DISABLED\n",
+                P4_AUDIO86_GIT_SHA);
+    std::printf("5D2_S1_START schema=1 evidence_class=PHYSICAL_EXEC"
+                " rate_hz=48000 channels=2 sample_bits=16 encoding=S16LE"
+                " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
+                " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
+                " physical_unit_bytes=%u dma_desc=%u dma_frames=%u"
+                " prepare_completed=%u pa_initial_low=%u"
+                " codec_initialized_muted=%u i2s_initialized=%u"
+                " muted_warmup_completed=%u callbacks_registered=%u"
+                " stream_started=%u codec_unmute_completed=%u\n",
+                P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT,
+                P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME,
+                P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES,
+                P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS,
+                P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT,
+                sink.prepare_completed ? 1U : 0U,
+                sink.pa_initial_low ? 1U : 0U,
+                sink.codec_initialized_muted ? 1U : 0U,
+                sink.i2s_initialized ? 1U : 0U,
+                sink.muted_warmup_completed ? 1U : 0U,
+                sink.callbacks_registered ? 1U : 0U,
+                sink.stream_started ? 1U : 0U,
+                sink.codec_unmute_completed ? 1U : 0U);
+    std::printf("5D2_S1_PCM schema=1 evidence_class=PHYSICAL_EXEC"
+                " semantic_frames=%" PRIu64 " semantic_bytes=%" PRIu64
+                " semantic_crc32=%08" PRIx32 " semantic_sha256=",
+                snapshot.semantic_frames, snapshot.semantic_bytes,
+                snapshot.semantic_crc32);
+    for (const uint8_t byte : snapshot.semantic_sha256)
+        std::printf("%02x", byte);
+    std::printf(" controller_accepted_frames=%" PRIu64
+                " controller_accepted_bytes=%" PRIu64
+                " sink_accepted_frames=%" PRIu64
+                " sink_accepted_bytes=%" PRIu64
+                " full_units=%" PRIu32 " final_partial_units=%" PRIu32
+                " final_valid_frames=%" PRIu32
+                " physical_units=%" PRIu64 " physical_bytes=%" PRIu64
+                " padding_frames=%" PRIu64 " padding_bytes=%" PRIu64
+                " submit_attempts=%" PRIu64 " retry_count=%" PRIu64 "\n",
+                snapshot.controller_accepted_frames,
+                snapshot.controller_accepted_bytes,
+                sink.semantic_accepted_frames, sink.semantic_accepted_bytes,
+                sink.full_units, sink.final_partial_units,
+                sink.final_valid_frames, sink.physical_units_copied,
+                sink.physical_bytes_copied, sink.physical_padding_frames,
+                padding_bytes, sink.submit_attempts, sink.retry_count);
+    std::printf("5D2_S1_FINISH schema=1 evidence_class=PHYSICAL_EXEC"
+                " controller_state=%s sink_state=%s"
+                " final_copy_eof_epoch=%" PRIu32
+                " finish_eof_epoch=%" PRIu32
+                " post_snapshot_eofs=%" PRIu32
+                " drain_duration_ms=%" PRIu64 " finish_completed=%u"
+                " pending_frames=%" PRIu64 " drained_frames=%" PRIu64
+                " discarded_frames=%" PRIu64
+                " running_q_ovf=%" PRIu32 " draining_q_ovf=%" PRIu32
+                " sticky_error=%u registered_generation=%" PRIu32
+                " terminal_generation=%" PRIu32
+                " stale_callbacks=%" PRIu32
+                " callback_in_flight=%" PRIu32 " callbacks_active=%u"
+                " codec_final_muted=%u pa_final_low=%u"
+                " i2s_enabled=%u i2s_created=%u"
+                " first_error=%" PRIu32 " forced_abort=%" PRIu32
+                " sink_destroyed=%" PRIu32 "\n",
+                physical_s1_controller_state_name(snapshot.controller_state),
+                physical_s1_sink_state_name(sink.state),
+                sink.drain_snapshot_epoch, sink.drain_completion_epoch,
+                post_snapshot_eofs, sink.drain_duration_ms,
+                sink.finish_completed ? 1U : 0U,
+                sink.accepted_pending_drain_frames,
+                sink.physically_drained_frames,
+                sink.physically_discarded_accepted_frames,
+                sink.running_queue_overflow_count,
+                sink.draining_queue_overflow_count,
+                sink.sticky_error ? 1U : 0U,
+                sink.registered_generation, sink.generation,
+                sink.stale_callback_count, sink.callback_refcount,
+                sink.callbacks_active ? 1U : 0U,
+                sink.codec_final_muted ? 1U : 0U,
+                sink.pa_final_low ? 1U : 0U,
+                sink.i2s_enabled ? 1U : 0U,
+                sink.i2s_created ? 1U : 0U,
+                snapshot.first_error, snapshot.forced_abort,
+                snapshot.sink_destroyed);
+}
+
+bool physical_s1_snapshot_healthy(const Runtime *runtime)
+{
+    const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
+    const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
+    return snapshot.captured && snapshot.sink_destroyed == 1U &&
+        snapshot.controller_state == NP2_PCM_OUTPUT_FINISHED &&
+        sink.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
+        sink.prepare_completed && sink.stream_started &&
+        sink.finish_completed &&
+        snapshot.controller_accepted_frames == kRenderFrames &&
+        snapshot.controller_accepted_bytes == kRenderFrames *
+            P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME &&
+        sink.semantic_accepted_frames == snapshot.controller_accepted_frames &&
+        sink.semantic_accepted_bytes == snapshot.controller_accepted_bytes &&
+        sink.accepted_pending_drain_frames == 0U &&
+        sink.physically_drained_frames == kRenderFrames &&
+        sink.physically_discarded_accepted_frames == 0U &&
+        sink.running_queue_overflow_count == 0U &&
+        sink.draining_queue_overflow_count == 0U &&
+        !sink.sticky_error && sink.callback_refcount == 0U &&
+        !sink.callbacks_active && sink.codec_final_muted &&
+        sink.pa_final_low && !sink.i2s_enabled && !sink.i2s_created &&
+        snapshot.first_error == 0U && snapshot.forced_abort == 0U;
+}
+#endif
 
 void emit_summary(const Runtime *runtime, const bool ok)
 {
@@ -2385,7 +2616,14 @@ void emit_summary(const Runtime *runtime, const bool ok)
                         ok ? "PASS" : "FAIL");
     }
 #endif
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    emit_physical_s1_evidence(runtime);
+#endif
     std::printf("P4_AUDIO86_REAL_GUEST_RESULT=%s\n", ok ? "PASS" : "FAIL");
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    std::printf("P4_AUDIO86_PHYSICAL_S1_TERMINAL=%s\n",
+                ok ? "COMPLETE" : "FAILED");
+#endif
 }
 
 } // namespace
@@ -2459,6 +2697,9 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     np2opngen_pcm_ring_init(&runtime->pcm_ring);
     std::memset(runtime->ring_pcm, 0, sizeof(runtime->ring_pcm));
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    runtime->physical_s1 = {};
+#endif
     runtime->pcm_consumer_ready.store(0U, std::memory_order_relaxed);
     runtime->pcm_production_done.store(0U, std::memory_order_relaxed);
     runtime->pcm_consumer_quiescent.store(0U, std::memory_order_relaxed);
@@ -2623,6 +2864,10 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         }
 #endif
         if (!cleaned) fail(runtime, kErrorWorker);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+        record_physical_s1_destroy(runtime,
+                                   runtime->physical_sink == nullptr);
+#endif
         emit_summary(runtime, false);
 #if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
         p4_nano_audio86_physical::emit_lifecycle_test_backend_evidence();
@@ -2711,6 +2956,15 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                                                     std::memory_order_release);
     runtime->pcm_join_timeout = pcm_suspended ? 0U : 1U;
     const bool pcm_joined = pcm_terminal && pcm_quiescent && pcm_ack && pcm_suspended;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    /* PHYSICAL_TELEMETRY_SNAPSHOT_POINT=
+     * AFTER_DONE_SEMAPHORE_ACK_QUIESCENT_AND_ESUSPENDED_
+     * BEFORE_TASK_DELETE_AND_SINK_DESTROY */
+    const bool physical_snapshot_ready = pcm_terminal && pcm_quiescent &&
+        pcm_ack && pcm_suspended;
+    if (physical_snapshot_ready && runtime->physical_sink != nullptr)
+        capture_physical_s1_snapshot(runtime);
+#endif
 
     if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U &&
         joined && pcm_joined) {
@@ -2752,10 +3006,20 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     }
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     if (pcm_joined && runtime->physical_sink != nullptr) {
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+        const bool destroyed = p4_nano_audio86_physical_sink_destroy(
+                                   runtime->physical_sink) == 0;
+        if (!destroyed)
+            fail(runtime, kErrorWorker);
+        else
+            runtime->physical_sink = nullptr;
+        record_physical_s1_destroy(runtime, destroyed);
+#else
         if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) != 0)
             fail(runtime, kErrorWorker);
         else
             runtime->physical_sink = nullptr;
+#endif
     }
 #endif
 #endif
@@ -2808,12 +3072,18 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                     && runtime->pcm_abandoned_published_frames == 0U
                     && runtime->pcm_abandoned_partial_frames == 0U
                     && runtime->pcm_abandoned_rendered_frames == 0U
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+                    && physical_s1_snapshot_healthy(runtime)
+#else
                     && runtime->pcm_sink_started == 1U
                     && runtime->pcm_sink_finished == 1U
+#endif
                     && runtime->pcm_ring_before_done == 1U
                     && runtime->pcm_eos_after_done == 1U
                     && runtime->pcm_finish_after_empty == 1U
+#if !defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
                     && runtime->pcm_ack_after_finish == 1U
+#endif
                     && runtime->pcm_first_submit_occupancy >=
                        (kRenderFrames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES
                             ? 1U : kPcmPrefillSlots)
