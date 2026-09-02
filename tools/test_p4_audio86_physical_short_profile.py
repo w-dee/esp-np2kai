@@ -18,6 +18,7 @@ BINDING_SOURCE = (ROOT / "firmware/components/p4_nano_audio86_guest_binding/"
 MATRIX = ROOT / "tools/emu/test-p4-audio86-physical-build-matrix.sh"
 MANIFEST = ROOT / "tools/emu/p4_audio86_physical_sink_acceptance_manifest.tsv"
 GOLDEN = ROOT / "host/probe/audio86_guest_sync_pcm_golden.json"
+PROVENANCE = ROOT / "tools/emu/resolve-clean-source-git-sha.sh"
 
 
 def require(condition: bool, message: str) -> None:
@@ -61,6 +62,7 @@ def main() -> int:
     binding_source = BINDING_SOURCE.read_text(encoding="utf-8")
     matrix = MATRIX.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
+    provenance = PROVENANCE.read_text(encoding="utf-8")
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))["values"]
 
     for assignment in (
@@ -137,6 +139,21 @@ def main() -> int:
         "P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE=1" in binding_cmake,
         "binding component does not receive the short-profile identity",
     )
+    require(
+        build.count('"${SCRIPT_DIR}/resolve-clean-source-git-sha.sh"') == 2 and
+        'post_build_git_sha' in build and
+        '"${post_build_git_sha}" != "${REPOSITORY_GIT_SHA}"' in build,
+        "physical-short build does not enforce clean provenance before and "
+        "after the build",
+    )
+    for command in (
+        "ls-files -v -z",
+        "diff-files --quiet --ignore-submodules=none",
+        "diff-index --cached --quiet",
+        "ls-files --others --exclude-standard -z",
+    ):
+        require(command in provenance,
+                f"clean-source provenance check missing: {command}")
 
     physical_start = binding_source.index("np2_pcm_sink selected_sink = kPcmSink;")
     physical_branch = binding_source[

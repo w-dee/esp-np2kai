@@ -4,7 +4,6 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
-readonly REPOSITORY_GIT_SHA="$(git -C "${REPOSITORY_ROOT}" rev-parse HEAD)"
 
 usage() {
     printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-physical-i2s | --audio86-real-guest-physical-i2s-short | --audio86-physical-lifecycle-test early|post-i2s|post-callback|post-codec | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
@@ -1042,6 +1041,14 @@ if [[ "${transform_opt}" == "o2" ]] && (( ! transform_profile )); then
     exit 2
 fi
 
+repository_git_sha="$(git -C "${REPOSITORY_ROOT}" rev-parse --verify 'HEAD^{commit}')"
+if (( audio86_physical_short )); then
+    repository_git_sha="$(
+        "${SCRIPT_DIR}/resolve-clean-source-git-sha.sh" "${REPOSITORY_ROOT}"
+    )"
+fi
+readonly REPOSITORY_GIT_SHA="${repository_git_sha}"
+
 if [[ -z "${build_dir}" ]]; then
     if [[ -n "${refresh_visual_profile}" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-refresh-visual-${refresh_visual_profile}"
@@ -1565,6 +1572,15 @@ idf.py "${cmake_args[@]}" reconfigure
 check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 idf.py "${cmake_args[@]}" build
 check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
+if (( audio86_physical_short )); then
+    post_build_git_sha="$(
+        "${SCRIPT_DIR}/resolve-clean-source-git-sha.sh" "${REPOSITORY_ROOT}"
+    )"
+    if [[ "${post_build_git_sha}" != "${REPOSITORY_GIT_SHA}" ]]; then
+        printf 'ERROR: physical S1 source HEAD changed during build\n' >&2
+        exit 1
+    fi
+fi
 printf '%s\n' "${variant}" > "${VARIANT_MARKER}"
 printf '%s\n' "${board}" > "${BOARD_MARKER}"
 
