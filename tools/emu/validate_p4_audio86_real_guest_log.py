@@ -143,6 +143,23 @@ def validate_byte_extend_wait(text: str) -> None:
     }, "BYTE_EXTEND cutpoint mismatch")
 
 
+def validate_byte_extend_stale_wake(text: str) -> None:
+    stale = pressure_fields(text, "P4_AUDIO86_BYTE_EXTEND_STALE_WAKE ")
+    require(set(stale) == {
+        "notifications", "consumed", "wake_returns", "phase_advance",
+        "guest_progress", "second_authorized",
+    }, "BYTE_EXTEND stale-wake fields mismatch")
+    require(stale["notifications"] == "3" and int(stale["consumed"]) >= 3 and
+            int(stale["wake_returns"]) >= 1 and stale["phase_advance"] == "0" and
+            stale["guest_progress"] == "0" and stale["second_authorized"] == "0",
+            "BYTE_EXTEND stale-wake level recheck mismatch")
+    release = pressure_fields(text, "P4_AUDIO86_BYTE_EXTEND_RELEASE ")
+    require(release == {
+        "signalled": "1", "observed": "1", "lease": "0",
+        "second_authorized": "1", "second_mutated": "1", "second_appended": "1",
+    }, "BYTE_EXTEND authoritative release mismatch")
+
+
 def validate_byte_extend_terminal(text: str) -> None:
     terminal = pressure_fields(text, "P4_AUDIO86_BYTE_EXTEND_TERMINAL ")
     require(terminal == {
@@ -189,9 +206,10 @@ def validate_pressure(text: str, scenario: str) -> None:
     require(one(text, "P4_AUDIO86_PRESSURE_RESULT") == "PASS", "pressure result")
     if scenario == "byte-extend":
         validate_byte_extend_wait(text)
+        validate_byte_extend_stale_wake(text)
 
 
-def validate_failure(text: str, kind: str, scenario: str) -> None:
+def validate_failure(text: str, kind: str, scenario: str, pcm_output: bool = False) -> None:
     """Validate C3's real C2-rendezvous STOP/FATAL result, fail closed."""
     require(kind in {"stop", "fatal"}, f"unknown failure kind: {kind}")
     require(scenario in PRESSURE, f"unknown failure scenario: {scenario}")
@@ -223,6 +241,15 @@ def validate_failure(text: str, kind: str, scenario: str) -> None:
     require(one(text, "P4_AUDIO86_FAILURE_RESULT") == "PASS", "failure result")
     require(one(text, "P4_AUDIO86_REAL_GUEST_RESULT") == "PASS", "real guest result")
     require(one(text, "P4_NANO_AUDIO86_REAL_GUEST_STATUS") == "PASS", "main status")
+    if pcm_output:
+        pcm = pressure_fields(text, "P4_AUDIO86_PCM_FAILURE ")
+        require(pcm["ring_finished"] == "1" and pcm["pcm_done"] == "1" and
+                pcm["occupancy"] == "0" and pcm["partial"] == "0" and
+                pcm["produced_frames"] == pcm["consumed_frames"] and
+                pcm["consumer_ack"] == "1" and
+                pcm["consumer_quiescent"] == "1" and
+                pcm["sink_finished"] == "1" and pcm["forced_abort"] == "0",
+                "PCM failure drain/quiescence mismatch")
     if scenario == "byte-extend":
         validate_byte_extend_wait(text)
         validate_byte_extend_terminal(text)
@@ -233,12 +260,14 @@ def main() -> None:
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--pressure-scenario", choices=sorted(PRESSURE))
     parser.add_argument("--failure-kind", choices=("stop", "fatal"))
+    parser.add_argument("--pcm-output", action="store_true")
     args = parser.parse_args()
     text = args.log.read_text(encoding="utf-8", errors="replace")
     require((args.failure_kind is None) or (args.pressure_scenario is not None),
             "failure validation requires a pressure scenario")
     if args.failure_kind:
-        validate_failure(text, args.failure_kind, args.pressure_scenario)
+        validate_failure(text, args.failure_kind, args.pressure_scenario,
+                         args.pcm_output)
     elif args.pressure_scenario:
         validate_pressure(text, args.pressure_scenario)
     else:

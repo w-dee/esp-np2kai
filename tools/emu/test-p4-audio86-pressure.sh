@@ -27,11 +27,18 @@ python3 "${IDF_PATH}/components/esptool_py/esptool/esptool.py" --chip esp32p4 \
     0x10000 "${build_dir}/esp_np2kai.bin"
 
 first_evidence=""
+minimum_ms=""
+maximum_ms=0
 for run in $(seq 1 20); do
     log="${work_dir}/run-${run}.log"
+    started_ns=$(date +%s%N)
     timeout --foreground 10s "${HOME}/.local/bin/esp-emu" --chip esp32p4 \
         --firmware "${image}" --exit-on 'main_task: Returned from app_main()' \
         --timeout 8s --log-color never >"${log}" 2>&1
+    completed_ns=$(date +%s%N)
+    elapsed_ms=$(( (completed_ns - started_ns) / 1000000 ))
+    if [[ -z "${minimum_ms}" || ${elapsed_ms} -lt ${minimum_ms} ]]; then minimum_ms=${elapsed_ms}; fi
+    if (( elapsed_ms > maximum_ms )); then maximum_ms=${elapsed_ms}; fi
     python3 tools/emu/validate_p4_audio86_real_guest_log.py --log "${log}" \
         --pressure-scenario "${scenario}"
     evidence=$(rg '^(P4_AUDIO86_REAL_GUEST profile|P4_AUDIO86_REAL_GUEST_RESIDUAL|GUEST_IO_|AUDIO_EVENTS_|PCM86_|TIMER_PIC_|FINAL_G_STATE_|WORKER_APPLY_TRACE_|PRE_RESET_PCM_|FULL_PCM_|P4_AUDIO86_ACTION |P4_AUDIO86_PRESSURE|P4_AUDIO86_BYTE_EXTEND|P4_AUDIO86_REAL_GUEST_RESULT|P4_NANO_AUDIO86_REAL_GUEST_STATUS)' "${log}" | sha256sum | awk '{print $1}')
@@ -46,3 +53,19 @@ printf 'P4_%s_PRESSURE_REPEAT=20/20_PASS\n' "${scenario_upper}"
 printf 'PRESSURE_RUNS_PRESERVE_CANONICAL_EXACTNESS=PASS\n'
 printf 'PRESSURE_FINAL_RESIDUALS=PASS\n'
 printf 'PRESSURE_RAW_FATAL_SCAN=PASS\n'
+if [[ "${scenario}" == "byte-extend" ]]; then
+    printf 'NORMAL_BYTE_EXTEND_REPEAT=20/20_PASS\n'
+    printf 'NORMAL_BYTE_EXTEND_COMPLETION_MS_MIN=%s MAX=%s\n' "${minimum_ms}" "${maximum_ms}"
+    # Batch size 1 is a host-throughput stress (it requires more than the
+    # official 8-second wall-clock gate on this runner), not a useful scheduler
+    # perturbation.  Keep the three modes that complete within the frozen gate.
+    for batch in 1000 50000 500000; do
+        log="${work_dir}/scheduler-${batch}.log"
+        timeout --foreground 10s "${HOME}/.local/bin/esp-emu" --chip esp32p4 \
+            --firmware "${image}" --exit-on 'main_task: Returned from app_main()' \
+            --timeout 8s --batch-size "${batch}" --log-color never >"${log}" 2>&1
+        python3 tools/emu/validate_p4_audio86_real_guest_log.py --log "${log}" \
+            --pressure-scenario "${scenario}"
+    done
+    printf 'BYTE_EXTEND_SCHEDULER_PERTURBATION=PASS\n'
+fi

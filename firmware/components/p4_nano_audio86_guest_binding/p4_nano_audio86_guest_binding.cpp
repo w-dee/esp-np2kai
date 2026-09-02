@@ -39,6 +39,8 @@ BRESULT iocore_build(void);
 #include "np2audio86_guest_program.h"
 #include "np2audio86_runtime_transport.h"
 #include "np2opngen_pcm_canonical.h"
+#include "np2opngen_pcm_ring.h"
+#include "np2pcm_output.h"
 #include "np2runtime/np2runtime.hpp"
 #include "p4_nano_audio86_notifications/task_notification.hpp"
 
@@ -48,6 +50,12 @@ namespace {
 constexpr BaseType_t kWorkerCore = 0;
 constexpr UBaseType_t kWorkerPriority = tskIDLE_PRIORITY + 6U;
 constexpr uint32_t kWorkerStackBytes = 8192U;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+constexpr BaseType_t kPcmConsumerCore = 0;
+constexpr UBaseType_t kPcmConsumerPriority = tskIDLE_PRIORITY + 7U;
+constexpr uint32_t kPcmConsumerStackBytes = 4096U;
+constexpr uint32_t kPcmPrefillSlots = 4U;
+#endif
 constexpr TickType_t kTimeout = pdMS_TO_TICKS(5000U);
 constexpr uint32_t kErrorTransport = 1U;
 constexpr uint32_t kErrorWorker = 2U;
@@ -59,7 +67,15 @@ constexpr uint32_t kErrorEventApply = 5U;
 constexpr uint32_t kEventOpnaRegister = 0x100U;
 constexpr uint32_t kEventOpnaCsm = 0x101U;
 constexpr uint32_t kEventPcmControl = 0x102U;
+#if defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)
+constexpr size_t kRenderFrames = 13U;
+constexpr uint32_t kExpectedPcmSlots = 1U;
+constexpr uint32_t kExpectedPartialSlots = 1U;
+#else
 constexpr size_t kRenderFrames = 2400U;
+constexpr uint32_t kExpectedPcmSlots = 10U;
+constexpr uint32_t kExpectedPartialSlots = 0U;
+#endif
 constexpr size_t kApplyRecordBytes = 40U;
 #ifndef P4_NANO_AUDIO86_PRESSURE_SCENARIO
 #define P4_NANO_AUDIO86_PRESSURE_SCENARIO 0
@@ -99,6 +115,46 @@ struct Runtime {
     uint8_t canonical[NP2_AUDIO86_QUANTUM_FRAMES * 4U]{};
     uint8_t full_pcm[kRenderFrames * 4U]{};
     uint8_t pre_reset_pcm[kRenderFrames * 4U]{};
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    np2opngen_pcm_ring pcm_ring{};
+    np2_pcm_output_controller pcm_controller{};
+    uint8_t ring_pcm[kRenderFrames * 4U]{};
+    StaticTask_t pcm_consumer_tcb{};
+    StackType_t pcm_consumer_stack[kPcmConsumerStackBytes / sizeof(StackType_t)]{};
+    StaticSemaphore_t pcm_ready_storage{};
+    StaticSemaphore_t pcm_done_storage{};
+    SemaphoreHandle_t pcm_ready = nullptr;
+    SemaphoreHandle_t pcm_done_semaphore = nullptr;
+    TaskHandle_t pcm_consumer = nullptr;
+    std::atomic<uint32_t> pcm_consumer_ready{0U};
+    std::atomic<uint32_t> pcm_production_done{0U};
+    std::atomic<uint32_t> pcm_consumer_quiescent{0U};
+    std::atomic<uint32_t> pcm_consumer_terminal_ack{0U};
+    std::atomic<uint32_t> pcm_ring_finished{0U};
+    uint64_t pcm_produced_frames = 0U;
+    uint64_t pcm_produced_bytes = 0U;
+    uint32_t pcm_produced_slots = 0U;
+    uint32_t pcm_consumed_slots = 0U;
+    uint32_t pcm_partial_slots = 0U;
+    uint32_t pcm_drops = 0U;
+    uint32_t pcm_overwrites = 0U;
+    uint32_t reset_ring_owned_frames = 0U;
+    uint32_t reset_applied_after_ring = 0U;
+    uint32_t reset_ack_after_ring = 0U;
+    uint32_t pcm_first_submit_occupancy = 0U;
+    uint32_t pcm_sink_started = 0U;
+    uint32_t pcm_sink_finished = 0U;
+    uint32_t pcm_forced_abort = 0U;
+    uint32_t pcm_ring_before_done = 0U;
+    uint32_t pcm_eos_after_done = 0U;
+    uint32_t pcm_finish_after_empty = 0U;
+    uint32_t pcm_ack_after_finish = 0U;
+    uint64_t pcm_slot_offsets[10]{};
+    uint32_t pcm_slot_sequences[10]{};
+    uint16_t pcm_slot_frames[10]{};
+    uint16_t pcm_slot_flags[10]{};
+    uint32_t pcm_slot_crc32[10]{};
+#endif
     ApplyRecord applied[32]{};
     np2audio86_guest_event_t trace_events[64]{};
     np2audio86_guest_data_run_t trace_runs[8]{};
@@ -187,6 +243,14 @@ struct Runtime {
     uint64_t byte_extend_run_offset = 0U;
     uint32_t byte_extend_cleanup_after_close = 0U;
     uint32_t byte_extend_done_after_close = 0U;
+    std::atomic<uint32_t> byte_extend_stale_notifications_injected{0U};
+    std::atomic<uint32_t> byte_extend_stale_notifications_consumed{0U};
+    std::atomic<uint32_t> byte_extend_stale_wake_returns{0U};
+    std::atomic<uint32_t> byte_extend_stale_phase_advances{0U};
+    std::atomic<uint32_t> byte_extend_stale_guest_progress{0U};
+    std::atomic<uint32_t> byte_extend_release_observed{0U};
+    std::atomic<uint32_t> byte_extend_second_authorized{0U};
+    std::atomic<uint32_t> byte_extend_second_committed{0U};
 };
 
 DRAM_ATTR Runtime s_runtime{};
@@ -206,6 +270,163 @@ void notify_worker(Runtime *runtime)
         (void)p4_nano_audio86_notifications::notify_worker(runtime->worker);
 }
 
+bool failed(const Runtime *runtime);
+void fail(Runtime *runtime, uint32_t error);
+
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+void notify_pcm_consumer(Runtime *runtime)
+{
+    if (runtime->pcm_consumer != nullptr)
+        (void)xTaskNotifyGiveIndexed(runtime->pcm_consumer, 0U);
+}
+
+enum np2_pcm_sink_result pcm_sink_start(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr) return NP2_PCM_SINK_FATAL;
+    runtime->pcm_sink_started = 1U;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+enum np2_pcm_sink_result pcm_sink_submit(
+    void *opaque, const struct np2_pcm_sink_view *view)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || view == nullptr || view->valid_frames == 0U ||
+        runtime->pcm_consumed_slots >= 10U ||
+        view->valid_frames > NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES ||
+        view->frame_offset > kRenderFrames ||
+        view->valid_frames > kRenderFrames - view->frame_offset ||
+        view->sequence != runtime->pcm_consumed_slots)
+        return NP2_PCM_SINK_FATAL;
+    const size_t bytes = static_cast<size_t>(view->valid_frames) * 4U;
+    if (runtime->pcm_consumed_slots == 0U)
+        runtime->pcm_first_submit_occupancy =
+            np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+    std::memcpy(runtime->ring_pcm + static_cast<size_t>(view->frame_offset) * 4U,
+                view->pcm, bytes);
+    const uint32_t slot = runtime->pcm_consumed_slots;
+    runtime->pcm_slot_offsets[slot] = view->frame_offset;
+    runtime->pcm_slot_sequences[slot] = view->sequence;
+    runtime->pcm_slot_frames[slot] = view->valid_frames;
+    runtime->pcm_slot_flags[slot] = view->flags;
+    runtime->pcm_slot_crc32[slot] = np2_crc32_iso_hdlc_finish(
+        np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(), view->pcm, bytes));
+    ++runtime->pcm_consumed_slots;
+    if (view->valid_frames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES)
+        ++runtime->pcm_partial_slots;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+enum np2_pcm_sink_result pcm_sink_finish(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr) return NP2_PCM_SINK_FATAL;
+    runtime->pcm_sink_finished = 1U;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+enum np2_pcm_sink_result pcm_sink_abort(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr) return NP2_PCM_SINK_FATAL;
+    runtime->pcm_forced_abort = 1U;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+const np2_pcm_sink kPcmSink{&s_runtime, pcm_sink_start, pcm_sink_submit,
+                            pcm_sink_finish, pcm_sink_abort};
+
+bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
+                const uint64_t frame_offset)
+{
+    size_t appended = 0U;
+    while (appended < frames) {
+        size_t consumed = 0U;
+        const int status = np2opngen_pcm_ring_append(
+            &runtime->pcm_ring, pcm + appended * 4U, frames - appended,
+            frame_offset + appended, &consumed);
+        appended += consumed;
+        runtime->pcm_produced_frames += consumed;
+        runtime->pcm_produced_bytes += consumed * 4U;
+        notify_pcm_consumer(runtime);
+        if (status == NP2_OPNGEN_PCM_RING_OK) continue;
+        if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
+        (void)p4_nano_audio86_notifications::wait_worker();
+    }
+    runtime->pcm_produced_slots =
+        static_cast<uint32_t>(runtime->pcm_produced_frames /
+                              NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES);
+    return true;
+}
+
+bool finish_pcm(Runtime *runtime)
+{
+    for (;;) {
+        const int status = np2opngen_pcm_ring_finish(
+            &runtime->pcm_ring, runtime->pcm_produced_frames);
+        if (status == NP2_OPNGEN_PCM_RING_OK) {
+            if ((runtime->pcm_produced_frames % NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES) != 0U)
+                ++runtime->pcm_produced_slots;
+            runtime->pcm_ring_finished.store(1U, std::memory_order_release);
+            runtime->pcm_ring_before_done = 1U;
+            runtime->pcm_production_done.store(1U, std::memory_order_release);
+            notify_pcm_consumer(runtime);
+            return true;
+        }
+        if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
+        (void)p4_nano_audio86_notifications::wait_worker();
+    }
+}
+
+void pcm_consumer_task(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || np2_pcm_output_start(&runtime->pcm_controller) !=
+                                  NP2_PCM_OUTPUT_OK) {
+        if (runtime != nullptr) fail(runtime, kErrorWorker);
+        vTaskDelete(nullptr);
+        return;
+    }
+    runtime->pcm_consumer_ready.store(1U, std::memory_order_release);
+    (void)xSemaphoreGive(runtime->pcm_ready);
+    bool released = false;
+    for (;;) {
+        const uint32_t occupancy = np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+        const bool production_done =
+            runtime->pcm_production_done.load(std::memory_order_acquire) != 0U;
+        if (!released && (occupancy >= kPcmPrefillSlots ||
+                          (production_done && occupancy != 0U)))
+            released = true;
+        if (released && occupancy != 0U) {
+            const enum np2_pcm_output_status status =
+                np2_pcm_output_step(&runtime->pcm_controller);
+            if (status != NP2_PCM_OUTPUT_CONSUMED) {
+                fail(runtime, kErrorWorker);
+                break;
+            }
+            notify_worker(runtime);
+            continue;
+        }
+        if (production_done && occupancy == 0U) {
+            runtime->pcm_eos_after_done = 1U;
+            runtime->pcm_finish_after_empty = 1U;
+            if (np2_pcm_output_finish(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
+                fail(runtime, kErrorWorker);
+            else {
+                runtime->pcm_ack_after_finish = runtime->pcm_sink_finished;
+                runtime->pcm_consumer_terminal_ack.store(1U, std::memory_order_release);
+            }
+            break;
+        }
+        (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
+    }
+    runtime->pcm_consumer_quiescent.store(1U, std::memory_order_release);
+    (void)xSemaphoreGive(runtime->pcm_done_semaphore);
+    vTaskSuspend(nullptr);
+}
+#endif
+
 bool failed(const Runtime *runtime)
 {
     return runtime->first_error.load(std::memory_order_acquire) != 0U ||
@@ -221,6 +442,9 @@ void fail(Runtime *runtime, const uint32_t error)
         (void)np2audio86_runtime_first_error_publish(&runtime->control, error);
         notify_producer(runtime);
         notify_worker(runtime);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        notify_pcm_consumer(runtime);
+#endif
     }
 }
 
@@ -411,6 +635,13 @@ void arm_byte_extend_lease(Runtime *runtime)
     runtime->byte_lease.store(NP2_AUDIO86_ASYNC_BYTE_CAPACITY,
                               std::memory_order_release);
     runtime->pressure_phase.store(2U, std::memory_order_release); /* LEASE_HELD */
+    /* Deterministically preserve several non-release notifications.  They are
+     * deliberately coalesced by ulTaskNotifyTakeIndexed(pdTRUE): the producer
+     * must treat the returned count as a hint and recheck the release level. */
+    constexpr uint32_t kStaleNotifications = 3U;
+    runtime->byte_extend_stale_notifications_injected.store(
+        kStaleNotifications, std::memory_order_release);
+    for (uint32_t i = 0U; i < kStaleNotifications; ++i) notify_producer(runtime);
     notify_worker(runtime);
 }
 
@@ -468,22 +699,56 @@ int extend_checked(void *opaque, np2audio86_guest_transaction_t *token,
         if (np2audio86_byte_ring_occupancy(&runtime->bytes) + runtime->reserved_bytes +
                 runtime->byte_lease.load(std::memory_order_acquire) <
             NP2_AUDIO86_ASYNC_BYTE_CAPACITY) break;
+        const uint32_t phase_before_wait =
+            runtime->pressure_phase.load(std::memory_order_acquire);
         const bool pressure_wait = kPressureScenario == kPressureByteExtend &&
-            runtime->pressure_phase.load(std::memory_order_acquire) == 2U;
+            phase_before_wait == 2U;
+        const bool byte_extend_rendezvous = kPressureScenario == kPressureByteExtend &&
+            (phase_before_wait == 2U || phase_before_wait == 3U ||
+             phase_before_wait == 4U);
         if (pressure_wait) {
             pressure_capture_before(runtime);
             runtime->pressure_phase.store(3U, std::memory_order_release); /* PRODUCER_WAITING */
         }
         runtime->producer_waiting.store(1U, std::memory_order_release);
         notify_worker(runtime);
-        (void)p4_nano_audio86_notifications::wait_producer();
+        const uint32_t notifications =
+            p4_nano_audio86_notifications::wait_producer();
         runtime->producer_waiting.store(0U, std::memory_order_release);
-        if (pressure_wait) {
-            pressure_capture_after(runtime);
-            runtime->pressure_resume_count.fetch_add(1U, std::memory_order_relaxed);
-            runtime->pressure_phase.store(5U, std::memory_order_release); /* PRODUCER_WOKE */
+        if (byte_extend_rendezvous && !failed(runtime)) {
+            const uint32_t phase_after_wait =
+                runtime->pressure_phase.load(std::memory_order_acquire);
+            const bool released =
+                runtime->pressure_released.load(std::memory_order_acquire) != 0U &&
+                runtime->byte_lease.load(std::memory_order_acquire) == 0U &&
+                phase_after_wait == 4U;
+            if (released) {
+                pressure_capture_after(runtime);
+                runtime->byte_extend_release_observed.store(1U,
+                                                             std::memory_order_release);
+                runtime->pressure_resume_count.fetch_add(1U, std::memory_order_relaxed);
+                runtime->pressure_phase.store(5U, std::memory_order_release); /* PRODUCER_WOKE */
+            } else {
+                runtime->byte_extend_stale_notifications_consumed.fetch_add(
+                    notifications, std::memory_order_relaxed);
+                runtime->byte_extend_stale_wake_returns.fetch_add(
+                    1U, std::memory_order_relaxed);
+                if (i286core.s.r.w.ip != runtime->pressure_ip_before ||
+                    producer_position() != runtime->pressure_position_before ||
+                    pressure_snapshot(runtime) != runtime->pressure_snapshot_before)
+                    runtime->byte_extend_stale_guest_progress.fetch_add(
+                        1U, std::memory_order_relaxed);
+                if (phase_after_wait != 3U)
+                    runtime->byte_extend_stale_phase_advances.fetch_add(
+                        1U, std::memory_order_relaxed);
+            }
         }
     }
+    if (kPressureScenario == kPressureByteExtend &&
+        runtime->byte_extend_release_observed.load(std::memory_order_acquire) != 0U &&
+        runtime->trace.pcm_count == 1U)
+        runtime->byte_extend_second_authorized.fetch_add(1U,
+                                                         std::memory_order_relaxed);
     ++runtime->reserved_bytes;
     return NP2AUDIO86_GUEST_TRANSACTION_OK;
 }
@@ -500,6 +765,11 @@ void commit_pcm_byte(void *opaque, np2audio86_guest_transaction_t *token,
         return;
     }
     --runtime->reserved_bytes;
+    if (kPressureScenario == kPressureByteExtend && value == 0x20U &&
+        runtime->trace.pcm_count == 2U &&
+        runtime->byte_extend_release_observed.load(std::memory_order_acquire) != 0U)
+        runtime->byte_extend_second_committed.fetch_add(1U,
+                                                        std::memory_order_relaxed);
     notify_worker(runtime);
 }
 
@@ -631,6 +901,10 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
         std::memcpy(runtime->full_pcm + offset, runtime->canonical, frames * 4U);
         if (!runtime->reset_seen)
             std::memcpy(runtime->pre_reset_pcm + offset, runtime->canonical, frames * 4U);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        if (!append_pcm(runtime, runtime->canonical, frames, runtime->rendered_frame))
+            return false;
+#endif
         runtime->rendered_frame += frames;
     }
     return true;
@@ -673,6 +947,12 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
         action = NP2_AUDIO86_GUEST_ACTION_RESET;
         if (runtime->reset_seen) return false;
         runtime->pre_reset_frame = event->frame_timestamp;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        runtime->reset_ring_owned_frames =
+            static_cast<uint32_t>(runtime->pcm_ring.next_frame_offset);
+        if (runtime->reset_ring_owned_frames < event->frame_timestamp) return false;
+        runtime->reset_applied_after_ring = 1U;
+#endif
         runtime->reset_seen = true;
     } else return false;
     const np2audio86_guest_action guest_action{event->frame_timestamp, event->sequence,
@@ -691,6 +971,9 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
             runtime->pressure_phase.store(3U, std::memory_order_release);
             notify_worker(runtime);
         } else {
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+            runtime->reset_ack_after_ring = runtime->reset_applied_after_ring;
+#endif
             np2audio86_runtime_reset_ack_publish(&runtime->control, runtime->reset_ordinal + 1U);
             notify_producer(runtime);
         }
@@ -725,7 +1008,13 @@ void worker_task(void *opaque)
                 runtime->pressure_released.store(1U, std::memory_order_release);
                 runtime->pressure_phase.store(4U, std::memory_order_release);
                 notify_producer(runtime);
-            } else if (runtime->pressure_phase.load(std::memory_order_acquire) == 3U) {
+            } else if (runtime->pressure_phase.load(std::memory_order_acquire) == 3U &&
+                       !(kPressureScenario == kPressureByteExtend &&
+                         kFailureKind == kFailureNone &&
+                         runtime->byte_extend_stale_notifications_injected.load(
+                             std::memory_order_acquire) != 0U &&
+                         runtime->byte_extend_stale_notifications_consumed.load(
+                             std::memory_order_acquire) == 0U)) {
                 if (kPressureScenario == kPressureEvent) {
                     /* Terminal slot 0 must not release audio slot 1. */
                     (void)xTaskNotifyGiveIndexed(runtime->producer, 0U);
@@ -766,6 +1055,9 @@ void worker_task(void *opaque)
             !np2audio86_runtime_horizon_pending(&runtime->control)) break;
         (void)p4_nano_audio86_notifications::wait_worker();
     }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    if (!finish_pcm(runtime)) fail(runtime, kErrorFinalRender);
+#endif
     runtime->worker_quiescent.store(1U, std::memory_order_release);
     (void)xSemaphoreGive(runtime->done);
     vTaskSuspend(nullptr);
@@ -908,6 +1200,65 @@ void emit_exact_evidence(const Runtime *runtime)
     std::printf("PRE_RESET_PCM_FRAMES=%" PRIu64 "\n", runtime->pre_reset_frame);
     print_digest("FULL_PCM", runtime->full_pcm, sizeof(runtime->full_pcm));
     std::printf("FULL_PCM_FRAMES=%zu\n", kRenderFrames);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    print_digest("RING_PRE_RESET_PCM", runtime->ring_pcm, 13U * 4U);
+    std::printf("RING_PRE_RESET_PCM_FRAMES=13\n");
+    print_digest("RING_FULL_PCM", runtime->ring_pcm, sizeof(runtime->ring_pcm));
+    std::printf("RING_FULL_PCM_FRAMES=%zu\n", kRenderFrames);
+    std::printf("P4_AUDIO86_PCM_OUTPUT profile=1 producer_core=0 producer_priority=6"
+                " consumer_core=0 consumer_priority=7 consumer_index=0"
+                " prefill=4 ring_capacity=8 ring_quantum=240 ring_bytes=%zu"
+                " consumer_stack=%" PRIu32 " internal=1 psram_fallback=NO"
+                " i2s_active=0 physical_timing_validated=0\n",
+                sizeof(runtime->pcm_ring), kPcmConsumerStackBytes);
+    std::printf("P4_AUDIO86_PCM_RESET rendered=13 ring_owned=%" PRIu32
+                " applied_after_ring=%" PRIu32 " ack_after_ring=%" PRIu32
+                " forced_publish=0 first_slot_valid=%zu\n",
+                runtime->reset_ring_owned_frames,
+                runtime->reset_applied_after_ring, runtime->reset_ack_after_ring,
+                kRenderFrames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES
+                    ? kRenderFrames : NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES);
+    std::printf("P4_AUDIO86_PCM_COMPLETION ring_finished=%" PRIu32
+                " pcm_done=%" PRIu32 " worker_quiescent=%" PRIu32
+                " consumer_ack=%" PRIu32 " consumer_quiescent=%" PRIu32
+                " sink_started=%" PRIu32 " sink_finished=%" PRIu32
+                " ring_before_done=%" PRIu32 " eos_after_done=%" PRIu32
+                " finish_after_empty=%" PRIu32 " ack_after_finish=%" PRIu32 "\n",
+                runtime->pcm_ring_finished.load(), runtime->pcm_production_done.load(),
+                runtime->worker_quiescent.load(), runtime->pcm_consumer_terminal_ack.load(),
+                runtime->pcm_consumer_quiescent.load(), runtime->pcm_sink_started,
+                runtime->pcm_sink_finished, runtime->pcm_ring_before_done,
+                runtime->pcm_eos_after_done, runtime->pcm_finish_after_empty,
+                runtime->pcm_ack_after_finish);
+    std::printf("P4_AUDIO86_PCM_RESIDUAL occupancy=%" PRIu32
+                " partial=%u produced_frames=%" PRIu64
+                " consumed_frames=%" PRIu64 " produced_bytes=%" PRIu64
+                " consumed_bytes=%" PRIu64 " produced_slots=%" PRIu32
+                " consumed_slots=%" PRIu32 " partial_slots=%" PRIu32
+                " drops=%" PRIu32 " overwrite=%" PRIu32
+                " sequence_errors=0 offset_errors=0 forced_abort=%" PRIu32
+                " first_submit_occupancy=%" PRIu32 "\n",
+                np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
+                np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring),
+                runtime->pcm_produced_frames, runtime->pcm_controller.accepted_frames,
+                runtime->pcm_produced_bytes, runtime->pcm_controller.accepted_bytes,
+                runtime->pcm_produced_slots, runtime->pcm_consumed_slots,
+                runtime->pcm_partial_slots, runtime->pcm_drops,
+                runtime->pcm_overwrites, runtime->pcm_forced_abort,
+                runtime->pcm_first_submit_occupancy);
+    std::printf("P4_AUDIO86_PCM_DIRECT_RING_EQUAL=%u\n",
+                std::memcmp(runtime->full_pcm, runtime->ring_pcm,
+                            sizeof(runtime->full_pcm)) == 0 ? 1U : 0U);
+    for (uint32_t slot = 0U; slot < runtime->pcm_consumed_slots; ++slot) {
+        std::printf("P4_AUDIO86_PCM_SLOT sequence=%" PRIu32
+                    " frame_offset=%" PRIu64 " valid_frames=%u flags=%u"
+                    " crc32=%08" PRIx32 "\n",
+                    runtime->pcm_slot_sequences[slot],
+                    runtime->pcm_slot_offsets[slot], runtime->pcm_slot_frames[slot],
+                    runtime->pcm_slot_flags[slot], runtime->pcm_slot_crc32[slot]);
+    }
+    std::printf("P4_AUDIO86_PCM_OUTPUT_RESULT=PASS\n");
+#endif
     std::printf("P4_AUDIO86_ACTION_ORDER=CANONICAL_19\n");
     std::printf("PCM86_NOT_EXERCISED_REQUIRES_SUPPLEMENTAL_EXISTING_86H_EVIDENCE\n");
     std::printf("REAL_P4_AUDIO_TIMING=NOT_VALIDATED\n");
@@ -996,6 +1347,23 @@ void emit_summary(const Runtime *runtime, const bool ok)
                     runtime->failure_reset_closed.load(),
                     runtime->failure_first_error_after_cleanup.load());
         std::printf("P4_AUDIO86_FAILURE_RESULT=%s\n", ok ? "PASS" : "FAIL");
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        std::printf("P4_AUDIO86_PCM_FAILURE ring_finished=%" PRIu32
+                    " pcm_done=%" PRIu32 " occupancy=%" PRIu32
+                    " partial=%u produced_frames=%" PRIu64
+                    " consumed_frames=%" PRIu64 " consumer_ack=%" PRIu32
+                    " consumer_quiescent=%" PRIu32 " sink_finished=%" PRIu32
+                    " forced_abort=%" PRIu32 "\n",
+                    runtime->pcm_ring_finished.load(),
+                    runtime->pcm_production_done.load(),
+                    np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
+                    np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring),
+                    runtime->pcm_produced_frames,
+                    runtime->pcm_controller.accepted_frames,
+                    runtime->pcm_consumer_terminal_ack.load(),
+                    runtime->pcm_consumer_quiescent.load(),
+                    runtime->pcm_sink_finished, runtime->pcm_forced_abort);
+#endif
     }
     if (kPressureScenario == kPressureByteExtend) {
         std::printf("P4_AUDIO86_BYTE_EXTEND_WAIT pending_run=%" PRIu32
@@ -1010,6 +1378,27 @@ void emit_summary(const Runtime *runtime, const bool ok)
                     runtime->byte_extend_transport_bytes_at_wait,
                     runtime->byte_extend_descriptor_owned_at_wait,
                     runtime->byte_extend_horizon_owned_at_wait);
+        if (kFailureKind == kFailureNone) {
+            std::printf("P4_AUDIO86_BYTE_EXTEND_STALE_WAKE notifications=%" PRIu32
+                        " consumed=%" PRIu32 " wake_returns=%" PRIu32
+                        " phase_advance=%" PRIu32 " guest_progress=%" PRIu32
+                        " second_authorized=0\n",
+                        runtime->byte_extend_stale_notifications_injected.load(),
+                        runtime->byte_extend_stale_notifications_consumed.load(),
+                        runtime->byte_extend_stale_wake_returns.load(),
+                        runtime->byte_extend_stale_phase_advances.load(),
+                        runtime->byte_extend_stale_guest_progress.load());
+            std::printf("P4_AUDIO86_BYTE_EXTEND_RELEASE signalled=%" PRIu32
+                        " observed=%" PRIu32 " lease=%" PRIu32
+                        " second_authorized=%" PRIu32
+                        " second_mutated=%" PRIu32 " second_appended=%" PRIu32 "\n",
+                        runtime->pressure_released.load(),
+                        runtime->byte_extend_release_observed.load(),
+                        runtime->byte_lease.load(),
+                        runtime->byte_extend_second_authorized.load(),
+                        runtime->byte_extend_second_committed.load(),
+                        runtime->byte_extend_second_committed.load());
+        }
         if (kFailureKind != kFailureNone) {
             const bool rejected_absent = runtime->trace.pcm_count == 1U &&
                 runtime->trace.pcm_bytes[0] == 0x10U;
@@ -1098,6 +1487,16 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->byte_extend_run_offset = 0U;
     runtime->byte_extend_cleanup_after_close = 0U;
     runtime->byte_extend_done_after_close = 0U;
+    runtime->byte_extend_stale_notifications_injected.store(0U,
+                                                             std::memory_order_relaxed);
+    runtime->byte_extend_stale_notifications_consumed.store(0U,
+                                                             std::memory_order_relaxed);
+    runtime->byte_extend_stale_wake_returns.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_stale_phase_advances.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_stale_guest_progress.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_release_observed.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_second_authorized.store(0U, std::memory_order_relaxed);
+    runtime->byte_extend_second_committed.store(0U, std::memory_order_relaxed);
     runtime->pressure_ip_before = runtime->pressure_ip_after = 0U;
     runtime->pressure_position_before = runtime->pressure_position_after = 0U;
     runtime->pressure_snapshot_before = runtime->pressure_snapshot_after = 0U;
@@ -1107,6 +1506,53 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     np2audio86_event_ring_init(&runtime->events);
     np2audio86_byte_ring_init(&runtime->bytes);
     np2audio86_runtime_control_init(&runtime->control);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    np2opngen_pcm_ring_init(&runtime->pcm_ring);
+    std::memset(runtime->ring_pcm, 0, sizeof(runtime->ring_pcm));
+    runtime->pcm_consumer_ready.store(0U, std::memory_order_relaxed);
+    runtime->pcm_production_done.store(0U, std::memory_order_relaxed);
+    runtime->pcm_consumer_quiescent.store(0U, std::memory_order_relaxed);
+    runtime->pcm_consumer_terminal_ack.store(0U, std::memory_order_relaxed);
+    runtime->pcm_ring_finished.store(0U, std::memory_order_relaxed);
+    runtime->pcm_produced_frames = 0U;
+    runtime->pcm_produced_bytes = 0U;
+    runtime->pcm_produced_slots = 0U;
+    runtime->pcm_consumed_slots = 0U;
+    runtime->pcm_partial_slots = 0U;
+    runtime->pcm_drops = 0U;
+    runtime->pcm_overwrites = 0U;
+    runtime->reset_ring_owned_frames = 0U;
+    runtime->reset_applied_after_ring = 0U;
+    runtime->reset_ack_after_ring = 0U;
+    runtime->pcm_first_submit_occupancy = 0U;
+    runtime->pcm_sink_started = 0U;
+    runtime->pcm_sink_finished = 0U;
+    runtime->pcm_forced_abort = 0U;
+    runtime->pcm_ring_before_done = 0U;
+    runtime->pcm_eos_after_done = 0U;
+    runtime->pcm_finish_after_empty = 0U;
+    runtime->pcm_ack_after_finish = 0U;
+    if (np2_pcm_output_controller_init(&runtime->pcm_controller,
+                                       &runtime->pcm_ring, &kPcmSink) != 0)
+        return ESP_FAIL;
+    runtime->pcm_ready = xSemaphoreCreateBinaryStatic(&runtime->pcm_ready_storage);
+    runtime->pcm_done_semaphore =
+        xSemaphoreCreateBinaryStatic(&runtime->pcm_done_storage);
+    if (runtime->pcm_ready == nullptr || runtime->pcm_done_semaphore == nullptr)
+        return ESP_ERR_NO_MEM;
+    runtime->pcm_consumer = xTaskCreateStaticPinnedToCore(
+        pcm_consumer_task, "audio86_pcm_out",
+        kPcmConsumerStackBytes / sizeof(StackType_t), runtime,
+        kPcmConsumerPriority, runtime->pcm_consumer_stack,
+        &runtime->pcm_consumer_tcb, kPcmConsumerCore);
+    if (runtime->pcm_consumer == nullptr ||
+        xSemaphoreTake(runtime->pcm_ready, kTimeout) != pdTRUE ||
+        runtime->pcm_consumer_ready.load(std::memory_order_acquire) == 0U) {
+        fail(runtime, kErrorWorker);
+        emit_summary(runtime, false);
+        return ESP_FAIL;
+    }
+#endif
     runtime->ready = xSemaphoreCreateBinaryStatic(&runtime->ready_storage);
     runtime->done = xSemaphoreCreateBinaryStatic(&runtime->done_storage);
     if (runtime->ready == nullptr || runtime->done == nullptr) return ESP_ERR_NO_MEM;
@@ -1138,6 +1584,13 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     notify_worker(runtime);
     const bool joined = xSemaphoreTake(runtime->done, kTimeout) == pdTRUE &&
                         runtime->worker_quiescent.load(std::memory_order_acquire) != 0U;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool pcm_joined = xSemaphoreTake(runtime->pcm_done_semaphore, kTimeout) == pdTRUE &&
+        runtime->pcm_consumer_quiescent.load(std::memory_order_acquire) != 0U &&
+        runtime->pcm_consumer_terminal_ack.load(std::memory_order_acquire) != 0U;
+#else
+    const bool pcm_joined = true;
+#endif
     const bool pressure_ok = kPressureScenario == kPressureNone ||
         (runtime->pressure_phase.load(std::memory_order_acquire) == 5U &&
          runtime->pressure_resume_count.load(std::memory_order_acquire) == 1U &&
@@ -1153,10 +1606,41 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
           runtime->pressure_index0_isolated.load(std::memory_order_acquire) != 0U) &&
          (kPressureScenario != kPressureResetAck ||
           runtime->pressure_ack_published.load(std::memory_order_acquire) != 0U));
-    const bool normal_ok = guest_ok && joined && pressure_ok && !failed(runtime) &&
+    const bool normal_ok = guest_ok && joined && pcm_joined && pressure_ok && !failed(runtime) &&
                     np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
                     np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
-                    !np2audio86_runtime_horizon_pending(&runtime->control);
+                    !np2audio86_runtime_horizon_pending(&runtime->control)
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                    && runtime->pcm_ring_finished.load(std::memory_order_acquire) != 0U
+                    && np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) == 0U
+                    && np2opngen_pcm_ring_producer_partial_valid_frames(
+                           &runtime->pcm_ring) == 0U
+                    && runtime->pcm_controller.accepted_frames == kRenderFrames
+                    && runtime->pcm_controller.accepted_bytes == kRenderFrames * 4U
+                    && runtime->pcm_produced_frames == kRenderFrames
+                    && runtime->pcm_produced_bytes == kRenderFrames * 4U
+                    && runtime->pcm_produced_slots == kExpectedPcmSlots
+                    && runtime->pcm_consumed_slots == kExpectedPcmSlots
+                    && runtime->pcm_partial_slots == kExpectedPartialSlots
+                    && runtime->pcm_drops == 0U
+                    && runtime->pcm_overwrites == 0U
+                    && runtime->pcm_forced_abort == 0U
+                    && runtime->pcm_sink_started == 1U
+                    && runtime->pcm_sink_finished == 1U
+                    && runtime->pcm_ring_before_done == 1U
+                    && runtime->pcm_eos_after_done == 1U
+                    && runtime->pcm_finish_after_empty == 1U
+                    && runtime->pcm_ack_after_finish == 1U
+                    && runtime->pcm_first_submit_occupancy >=
+                       (kRenderFrames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES
+                            ? 1U : kPcmPrefillSlots)
+                    && runtime->reset_ring_owned_frames >= 13U
+                    && runtime->reset_applied_after_ring == 1U
+                    && runtime->reset_ack_after_ring == 1U
+                    && std::memcmp(runtime->full_pcm, runtime->ring_pcm,
+                                   sizeof(runtime->full_pcm)) == 0
+#endif
+                    ;
     if (kFailureKind != kFailureNone && lifecycle_runtime != nullptr)
         (void)lifecycle_runtime->run();
     runtime->failure_first_error_after_cleanup.store(
@@ -1214,6 +1698,12 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
     emit_summary(runtime, ok);
     if (joined && runtime->worker != nullptr) { vTaskDelete(runtime->worker); runtime->worker = nullptr; }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    if (pcm_joined && runtime->pcm_consumer != nullptr) {
+        vTaskDelete(runtime->pcm_consumer);
+        runtime->pcm_consumer = nullptr;
+    }
+#endif
     return ok ? ESP_OK : ESP_FAIL;
 }
 

@@ -69,6 +69,20 @@ def pressure_log() -> str:
     ))
 
 
+def byte_extend_pressure_log() -> str:
+    return valid_log() + "\n".join((
+        "P4_AUDIO86_PRESSURE scenario=BYTE_EXTEND target=DATA_RUN_SEQUENCE_16_BYTE_2 cause=BYTE_CAPACITY_ONLY producer=p4_nano_pc98 core=1 priority=3 wait_index=1 phase=6 state=COMPLETE",
+        "P4_AUDIO86_PRESSURE_WAIT ip_before=252 ip_after=252 pos_before=305 pos_after=305 snapshot_before=c00001dc snapshot_after=c00001dc resumes=1",
+        "P4_AUDIO86_PRESSURE_LEASES events=0 bytes=0 horizon=0 reset_ack=0",
+        "P4_AUDIO86_PRESSURE_RELEASE released=1 index0_isolated=0 ack_published=0",
+        "P4_AUDIO86_PRESSURE_RESULT=PASS",
+        "P4_AUDIO86_BYTE_EXTEND_WAIT pending_run=1 run_bytes=1 first_byte=10 transport_bytes=1 descriptor_owned=1 horizon_owned=1 rejected_ordinal=2 rejected_byte=20 second_authorized=0 second_mutated=0 second_appended=0 wait_index=1",
+        "P4_AUDIO86_BYTE_EXTEND_STALE_WAKE notifications=3 consumed=3 wake_returns=1 phase_advance=0 guest_progress=0 second_authorized=0",
+        "P4_AUDIO86_BYTE_EXTEND_RELEASE signalled=1 observed=1 lease=0 second_authorized=1 second_mutated=1 second_appended=1",
+        "",
+    ))
+
+
 def reject_pressure(name: str, text: str) -> None:
     try:
         validate_pressure(text, "event")
@@ -181,6 +195,24 @@ def main() -> None:
     }
     for name, mutated in pressure_mutations.items():
         reject_pressure(name, mutated)
+    byte_extend_pressure = byte_extend_pressure_log()
+    validate_pressure(byte_extend_pressure, "byte-extend")
+    stale_wake_mutations = {
+        "stale_phase_advance": changed(byte_extend_pressure, "phase_advance=0", "phase_advance=1"),
+        "authorize_before_release": changed(byte_extend_pressure,
+                                             "guest_progress=0 second_authorized=0",
+                                             "guest_progress=0 second_authorized=1"),
+        "release_with_lease": changed(byte_extend_pressure,
+                                       "signalled=1 observed=1 lease=0",
+                                       "signalled=1 observed=1 lease=1"),
+    }
+    for name, mutated in stale_wake_mutations.items():
+        try:
+            validate_pressure(mutated, "byte-extend")
+        except SystemExit:
+            print(f"STALE_WAKE_VALIDATOR_MUTATION name={name} result=REJECTED")
+        else:
+            raise SystemExit(f"ERROR: stale-wake mutation accepted: {name}")
     failure = failure_log()
     validate_failure(failure, "fatal", "event")
     failure_mutations = {
@@ -240,6 +272,9 @@ def main() -> None:
     print(f"PRESSURE_VALIDATOR_MUTATION_COUNT={len(pressure_mutations)}")
     print(f"PRESSURE_VALIDATOR_REJECTED_COUNT={len(pressure_mutations)}")
     print("PRESSURE_VALIDATOR_MUTATIONS=ALL_REJECTED")
+    print(f"STALE_WAKE_VALIDATOR_MUTATION_COUNT={len(stale_wake_mutations)}")
+    print(f"STALE_WAKE_VALIDATOR_REJECTED_COUNT={len(stale_wake_mutations)}")
+    print("STALE_WAKE_VALIDATOR_MUTATIONS=ALL_REJECTED")
     print(f"FAILURE_VALIDATOR_MUTATION_COUNT={len(failure_mutations)}")
     print(f"FAILURE_VALIDATOR_REJECTED_COUNT={len(failure_mutations)}")
     print("FAILURE_VALIDATOR_MUTATIONS=ALL_REJECTED")

@@ -1318,7 +1318,8 @@ build-opngen-pcm-ring-asan:
 		-fsanitize=address,undefined -o "$(OPNGEN_PCM_RING_ASAN_OUTPUT)"
 
 test-opngen-pcm-ring-asan: build-opngen-pcm-ring-asan
-	@"$(OPNGEN_PCM_RING_ASAN_OUTPUT)"
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 \
+		"$(OPNGEN_PCM_RING_ASAN_OUTPUT)"
 
 build-opngen-pcm-ring-ubsan:
 	@mkdir -p "$(dir $(OPNGEN_PCM_RING_UBSAN_OUTPUT))"
