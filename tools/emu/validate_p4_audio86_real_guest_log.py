@@ -243,13 +243,22 @@ def validate_failure(text: str, kind: str, scenario: str, pcm_output: bool = Fal
     require(one(text, "P4_NANO_AUDIO86_REAL_GUEST_STATUS") == "PASS", "main status")
     if pcm_output:
         pcm = pressure_fields(text, "P4_AUDIO86_PCM_FAILURE ")
-        require(pcm["ring_finished"] == "1" and pcm["pcm_done"] == "1" and
-                pcm["occupancy"] == "0" and pcm["partial"] == "0" and
-                pcm["produced_frames"] == pcm["consumed_frames"] and
-                pcm["consumer_ack"] == "1" and
-                pcm["consumer_quiescent"] == "1" and
-                pcm["sink_finished"] == "1" and pcm["forced_abort"] == "0",
-                "PCM failure drain/quiescence mismatch")
+        produced_frames = pcm.get("produced_frames")
+        consumed_frames = pcm.get("consumed_frames")
+        require(produced_frames == consumed_frames,
+                "PCM failure produced/consumed mismatch")
+        expected_pcm = {
+            "ring_finished": "1", "pcm_done": "1", "occupancy": "0",
+            "partial": "0", "produced_frames": produced_frames,
+            "consumed_frames": consumed_frames, "consumer_ack": "1",
+            "consumer_quiescent": "1", "sink_finished": "1",
+            "forced_abort": "0", "worker_suspended": "1",
+            "consumer_suspended": "1", "worker_deleted_after_suspended": "1",
+            "consumer_deleted_after_suspended": "1", "worker_join_timeout": "0",
+            "consumer_join_timeout": "0", "abandoned_published": "0",
+            "abandoned_partial": "0", "abandoned_rendered": "0",
+        }
+        require(pcm == expected_pcm, "PCM failure drain/quiescence mismatch")
     if scenario == "byte-extend":
         validate_byte_extend_wait(text)
         validate_byte_extend_terminal(text)

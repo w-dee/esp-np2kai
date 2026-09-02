@@ -83,6 +83,9 @@ constexpr size_t kApplyRecordBytes = 40U;
 #ifndef P4_NANO_AUDIO86_FAILURE_KIND
 #define P4_NANO_AUDIO86_FAILURE_KIND 0
 #endif
+#ifndef P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO
+#define P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO 0
+#endif
 enum : uint32_t { kPressureNone = 0U, kPressureEvent = 1U,
                   kPressureByte = 2U, kPressureHorizon = 3U,
                   kPressureResetAck = 4U, kPressureByteExtend = 5U };
@@ -90,6 +93,14 @@ constexpr uint32_t kPressureScenario = P4_NANO_AUDIO86_PRESSURE_SCENARIO;
 enum : uint32_t { kFailureNone = 0U, kFailureStop = 1U, kFailureFatal = 2U };
 constexpr uint32_t kFailureKind = P4_NANO_AUDIO86_FAILURE_KIND;
 constexpr uint32_t kErrorInjectedFatal = 86U;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+enum : uint32_t { kPcmLifecycleNone = 0U, kPcmLifecycleStopFull = 1U,
+                  kPcmLifecycleFatalFull = 2U,
+                  kPcmLifecycleConsumerFailureFull = 3U,
+                  kPcmLifecycleConsumerFailureEmpty = 4U };
+constexpr uint32_t kPcmLifecycleScenario =
+    P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO;
+#endif
 
 struct ApplyRecord {
     uint64_t frame = 0U;
@@ -131,6 +142,14 @@ struct Runtime {
     std::atomic<uint32_t> pcm_consumer_quiescent{0U};
     std::atomic<uint32_t> pcm_consumer_terminal_ack{0U};
     std::atomic<uint32_t> pcm_ring_finished{0U};
+    std::atomic<uint32_t> pcm_forced_abort_requested{0U};
+    std::atomic<uint32_t> pcm_worker_space_waiting{0U};
+    std::atomic<uint32_t> pcm_lifecycle_triggered{0U};
+    std::atomic<uint32_t> pcm_forced_abort_published_before_wake{0U};
+    std::atomic<uint32_t> pcm_worker_suspended_observed{0U};
+    std::atomic<uint32_t> pcm_consumer_suspended_observed{0U};
+    std::atomic<uint32_t> pcm_worker_deleted_after_suspended{0U};
+    std::atomic<uint32_t> pcm_consumer_deleted_after_suspended{0U};
     uint64_t pcm_produced_frames = 0U;
     uint64_t pcm_produced_bytes = 0U;
     uint32_t pcm_produced_slots = 0U;
@@ -145,6 +164,14 @@ struct Runtime {
     uint32_t pcm_sink_started = 0U;
     uint32_t pcm_sink_finished = 0U;
     uint32_t pcm_forced_abort = 0U;
+    uint32_t pcm_join_timeout = 0U;
+    uint32_t pcm_worker_join_timeout = 0U;
+    uint32_t pcm_sink_abort_calls = 0U;
+    uint64_t pcm_abandoned_published_frames = 0U;
+    uint64_t pcm_abandoned_partial_frames = 0U;
+    uint64_t pcm_abandoned_rendered_frames = 0U;
+    uint32_t pcm_abort_pre_cleanup_occupancy = 0U;
+    uint16_t pcm_abort_pre_cleanup_partial = 0U;
     uint32_t pcm_ring_before_done = 0U;
     uint32_t pcm_eos_after_done = 0U;
     uint32_t pcm_finish_after_empty = 0U;
@@ -272,12 +299,30 @@ void notify_worker(Runtime *runtime)
 
 bool failed(const Runtime *runtime);
 void fail(Runtime *runtime, uint32_t error);
+void publish_failure(Runtime *runtime);
 
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
 void notify_pcm_consumer(Runtime *runtime)
 {
     if (runtime->pcm_consumer != nullptr)
         (void)xTaskNotifyGiveIndexed(runtime->pcm_consumer, 0U);
+}
+
+void publish_pcm_forced_abort(Runtime *runtime, const uint32_t error)
+{
+    uint32_t expected = 0U;
+    if (runtime->first_error.compare_exchange_strong(expected, error,
+                                                      std::memory_order_acq_rel)) {
+        (void)np2audio86_runtime_first_error_publish(&runtime->control, error);
+        if (runtime->lifecycle_runtime != nullptr)
+            (void)runtime->lifecycle_runtime->mark_failure();
+    }
+    runtime->pcm_forced_abort_requested.store(1U, std::memory_order_release);
+    runtime->pcm_forced_abort_published_before_wake.store(1U,
+                                                          std::memory_order_release);
+    notify_producer(runtime);
+    notify_worker(runtime);
+    notify_pcm_consumer(runtime);
 }
 
 enum np2_pcm_sink_result pcm_sink_start(void *opaque)
@@ -330,6 +375,7 @@ enum np2_pcm_sink_result pcm_sink_abort(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
     if (runtime == nullptr) return NP2_PCM_SINK_FATAL;
+    ++runtime->pcm_sink_abort_calls;
     runtime->pcm_forced_abort = 1U;
     return NP2_PCM_SINK_ACCEPTED;
 }
@@ -342,6 +388,11 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
 {
     size_t appended = 0U;
     while (appended < frames) {
+        if (runtime->pcm_forced_abort_requested.load(
+                std::memory_order_acquire) != 0U) {
+            runtime->pcm_abandoned_rendered_frames += frames - appended;
+            return false;
+        }
         size_t consumed = 0U;
         const int status = np2opngen_pcm_ring_append(
             &runtime->pcm_ring, pcm + appended * 4U, frames - appended,
@@ -352,7 +403,17 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         notify_pcm_consumer(runtime);
         if (status == NP2_OPNGEN_PCM_RING_OK) continue;
         if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
-        (void)p4_nano_audio86_notifications::wait_worker();
+        runtime->pcm_worker_space_waiting.store(1U, std::memory_order_release);
+        notify_pcm_consumer(runtime);
+        if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
+            runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
+            runtime->pcm_abandoned_rendered_frames += frames - appended;
+            return false;
+        }
+        if (np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) ==
+            NP2_OPNGEN_PCM_RING_CAPACITY)
+            (void)p4_nano_audio86_notifications::wait_worker();
+        runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
     }
     runtime->pcm_produced_slots =
         static_cast<uint32_t>(runtime->pcm_produced_frames /
@@ -363,6 +424,9 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
 bool finish_pcm(Runtime *runtime)
 {
     for (;;) {
+        if (runtime->pcm_forced_abort_requested.load(
+                std::memory_order_acquire) != 0U)
+            return false;
         const int status = np2opngen_pcm_ring_finish(
             &runtime->pcm_ring, runtime->pcm_produced_frames);
         if (status == NP2_OPNGEN_PCM_RING_OK) {
@@ -375,7 +439,16 @@ bool finish_pcm(Runtime *runtime)
             return true;
         }
         if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
-        (void)p4_nano_audio86_notifications::wait_worker();
+        runtime->pcm_worker_space_waiting.store(1U, std::memory_order_release);
+        notify_pcm_consumer(runtime);
+        if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
+            runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
+            return false;
+        }
+        if (np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) ==
+            NP2_OPNGEN_PCM_RING_CAPACITY)
+            (void)p4_nano_audio86_notifications::wait_worker();
+        runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
     }
 }
 
@@ -395,15 +468,38 @@ void pcm_consumer_task(void *opaque)
         const uint32_t occupancy = np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
         const bool production_done =
             runtime->pcm_production_done.load(std::memory_order_acquire) != 0U;
+        if (kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty &&
+            runtime->pcm_lifecycle_triggered.exchange(1U,
+                                                       std::memory_order_acq_rel) == 0U)
+            publish_pcm_forced_abort(runtime, kErrorWorker);
+        if ((kPcmLifecycleScenario == kPcmLifecycleStopFull ||
+             kPcmLifecycleScenario == kPcmLifecycleFatalFull ||
+             kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull) &&
+            occupancy == NP2_OPNGEN_PCM_RING_CAPACITY &&
+            runtime->pcm_worker_space_waiting.load(std::memory_order_acquire) != 0U &&
+            runtime->pcm_lifecycle_triggered.exchange(1U,
+                                                       std::memory_order_acq_rel) == 0U) {
+            if (kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull)
+                publish_pcm_forced_abort(runtime, kErrorWorker);
+            else
+                publish_failure(runtime);
+            released = true;
+        }
         if (!released && (occupancy >= kPcmPrefillSlots ||
                           (production_done && occupancy != 0U)))
-            released = true;
+            released = kPcmLifecycleScenario == kPcmLifecycleNone;
+        if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
+            if (np2_pcm_output_abort(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
+                fail(runtime, kErrorWorker);
+            runtime->pcm_consumer_terminal_ack.store(1U, std::memory_order_release);
+            break;
+        }
         if (released && occupancy != 0U) {
             const enum np2_pcm_output_status status =
                 np2_pcm_output_step(&runtime->pcm_controller);
             if (status != NP2_PCM_OUTPUT_CONSUMED) {
-                fail(runtime, kErrorWorker);
-                break;
+                publish_pcm_forced_abort(runtime, kErrorWorker);
+                continue;
             }
             notify_worker(runtime);
             continue;
@@ -1118,6 +1214,16 @@ bool execute_real_i286(Runtime *runtime)
     return !np2audio86_guest_host_failed();
 }
 
+bool wait_task_suspended(TaskHandle_t task)
+{
+    const TickType_t start = xTaskGetTickCount();
+    while (task != nullptr && eTaskGetState(task) != eSuspended) {
+        if (xTaskGetTickCount() - start >= kTimeout) return false;
+        taskYIELD();
+    }
+    return task != nullptr;
+}
+
 void put_le32(uint8_t *out, const uint32_t value)
 {
     out[0] = static_cast<uint8_t>(value);
@@ -1221,13 +1327,23 @@ void emit_exact_evidence(const Runtime *runtime)
     std::printf("P4_AUDIO86_PCM_COMPLETION ring_finished=%" PRIu32
                 " pcm_done=%" PRIu32 " worker_quiescent=%" PRIu32
                 " consumer_ack=%" PRIu32 " consumer_quiescent=%" PRIu32
+                " worker_suspended=%" PRIu32 " consumer_suspended=%" PRIu32
+                " worker_deleted_after_suspended=%" PRIu32
+                " consumer_deleted_after_suspended=%" PRIu32
+                " worker_join_timeout=%" PRIu32 " consumer_join_timeout=%" PRIu32
                 " sink_started=%" PRIu32 " sink_finished=%" PRIu32
                 " ring_before_done=%" PRIu32 " eos_after_done=%" PRIu32
                 " finish_after_empty=%" PRIu32 " ack_after_finish=%" PRIu32 "\n",
                 runtime->pcm_ring_finished.load(), runtime->pcm_production_done.load(),
                 runtime->worker_quiescent.load(), runtime->pcm_consumer_terminal_ack.load(),
-                runtime->pcm_consumer_quiescent.load(), runtime->pcm_sink_started,
-                runtime->pcm_sink_finished, runtime->pcm_ring_before_done,
+                runtime->pcm_consumer_quiescent.load(),
+                runtime->pcm_worker_suspended_observed.load(),
+                runtime->pcm_consumer_suspended_observed.load(),
+                runtime->pcm_worker_deleted_after_suspended.load(),
+                runtime->pcm_consumer_deleted_after_suspended.load(),
+                runtime->pcm_worker_join_timeout, runtime->pcm_join_timeout,
+                runtime->pcm_sink_started, runtime->pcm_sink_finished,
+                runtime->pcm_ring_before_done,
                 runtime->pcm_eos_after_done, runtime->pcm_finish_after_empty,
                 runtime->pcm_ack_after_finish);
     std::printf("P4_AUDIO86_PCM_RESIDUAL occupancy=%" PRIu32
@@ -1237,6 +1353,8 @@ void emit_exact_evidence(const Runtime *runtime)
                 " consumed_slots=%" PRIu32 " partial_slots=%" PRIu32
                 " drops=%" PRIu32 " overwrite=%" PRIu32
                 " sequence_errors=0 offset_errors=0 forced_abort=%" PRIu32
+                " abandoned_published=%" PRIu64 " abandoned_partial=%" PRIu64
+                " abandoned_rendered=%" PRIu64
                 " first_submit_occupancy=%" PRIu32 "\n",
                 np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
                 np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring),
@@ -1245,6 +1363,9 @@ void emit_exact_evidence(const Runtime *runtime)
                 runtime->pcm_produced_slots, runtime->pcm_consumed_slots,
                 runtime->pcm_partial_slots, runtime->pcm_drops,
                 runtime->pcm_overwrites, runtime->pcm_forced_abort,
+                runtime->pcm_abandoned_published_frames,
+                runtime->pcm_abandoned_partial_frames,
+                runtime->pcm_abandoned_rendered_frames,
                 runtime->pcm_first_submit_occupancy);
     std::printf("P4_AUDIO86_PCM_DIRECT_RING_EQUAL=%u\n",
                 std::memcmp(runtime->full_pcm, runtime->ring_pcm,
@@ -1277,7 +1398,11 @@ void emit_summary(const Runtime *runtime, const bool ok)
     std::printf("P4_AUDIO86_REAL_GUEST_MEMORY psram_fallback=NO free_internal=%" PRIu32 " largest_internal=%" PRIu32 "\n",
                 static_cast<uint32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                 static_cast<uint32_t>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
-    if (ok && kFailureKind == kFailureNone) emit_exact_evidence(runtime);
+    bool exact_evidence = ok && kFailureKind == kFailureNone;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    exact_evidence = exact_evidence && kPcmLifecycleScenario == kPcmLifecycleNone;
+#endif
+    if (exact_evidence) emit_exact_evidence(runtime);
     if (kPressureScenario != kPressureNone && kFailureKind == kFailureNone) {
         const char *const name = kPressureScenario == kPressureEvent ? "EVENT" :
             kPressureScenario == kPressureByte ? "BYTE" :
@@ -1322,11 +1447,12 @@ void emit_summary(const Runtime *runtime, const bool ok)
         const char *const final_state = state == np2runtime::State::Stopped ? "Stopped" :
             state == np2runtime::State::Failed ? "Failed" : "NOT_TERMINAL";
         std::printf("P4_AUDIO86_FAILURE kind=%s wait=%s reason=%" PRIu32
-                    " producer_waiting=1 predicate_published=%" PRIu32
+                    " producer_waiting=%" PRIu32 " predicate_published=%" PRIu32
                     " producer_wake_index=%" PRIu32 " worker_wake_index=%" PRIu32
                     " order=%" PRIu32 " lifecycle=%s first_error=%" PRIu32
                     " later_guest_instructions=%" PRIu32 "\n",
                     kind, wait, kFailureKind == kFailureFatal ? kErrorInjectedFatal : 0U,
+                    runtime->failure_wait_confirmed.load(),
                     runtime->failure_predicate_published.load(),
                     static_cast<uint32_t>(runtime->failure_producer_wake.load()),
                     static_cast<uint32_t>(runtime->failure_worker_wake.load() ? 0U : 1U),
@@ -1353,7 +1479,15 @@ void emit_summary(const Runtime *runtime, const bool ok)
                     " partial=%u produced_frames=%" PRIu64
                     " consumed_frames=%" PRIu64 " consumer_ack=%" PRIu32
                     " consumer_quiescent=%" PRIu32 " sink_finished=%" PRIu32
-                    " forced_abort=%" PRIu32 "\n",
+                    " forced_abort=%" PRIu32 " worker_suspended=%" PRIu32
+                    " consumer_suspended=%" PRIu32
+                    " worker_deleted_after_suspended=%" PRIu32
+                    " consumer_deleted_after_suspended=%" PRIu32
+                    " worker_join_timeout=%" PRIu32
+                    " consumer_join_timeout=%" PRIu32
+                    " abandoned_published=%" PRIu64
+                    " abandoned_partial=%" PRIu64
+                    " abandoned_rendered=%" PRIu64 "\n",
                     runtime->pcm_ring_finished.load(),
                     runtime->pcm_production_done.load(),
                     np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
@@ -1362,7 +1496,15 @@ void emit_summary(const Runtime *runtime, const bool ok)
                     runtime->pcm_controller.accepted_frames,
                     runtime->pcm_consumer_terminal_ack.load(),
                     runtime->pcm_consumer_quiescent.load(),
-                    runtime->pcm_sink_finished, runtime->pcm_forced_abort);
+                    runtime->pcm_sink_finished, runtime->pcm_forced_abort,
+                    runtime->pcm_worker_suspended_observed.load(),
+                    runtime->pcm_consumer_suspended_observed.load(),
+                    runtime->pcm_worker_deleted_after_suspended.load(),
+                    runtime->pcm_consumer_deleted_after_suspended.load(),
+                    runtime->pcm_worker_join_timeout, runtime->pcm_join_timeout,
+                    runtime->pcm_abandoned_published_frames,
+                    runtime->pcm_abandoned_partial_frames,
+                    runtime->pcm_abandoned_rendered_frames);
 #endif
     }
     if (kPressureScenario == kPressureByteExtend) {
@@ -1435,6 +1577,55 @@ void emit_summary(const Runtime *runtime, const bool ok)
             std::printf("P4_AUDIO86_BYTE_EXTEND_RESULT=%s\n", ok ? "PASS" : "FAIL");
         }
     }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const char *const pcm_scenario =
+        kPcmLifecycleScenario == kPcmLifecycleStopFull ? "STOP_FULL" :
+        kPcmLifecycleScenario == kPcmLifecycleFatalFull ? "FATAL_FULL" :
+        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull
+            ? "CONSUMER_FAILURE_FULL" :
+        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty
+            ? "CONSUMER_FAILURE_EMPTY" : "NONE";
+    std::printf("P4_AUDIO86_PCM_LIFECYCLE scenario=%s triggered=%" PRIu32
+                " forced_abort=%" PRIu32 " forced_before_wake=%" PRIu32
+                " ring_finished=%" PRIu32 " pcm_done=%" PRIu32
+                " worker_quiescent=%" PRIu32 " consumer_ack=%" PRIu32
+                " consumer_quiescent=%" PRIu32 " worker_suspended=%" PRIu32
+                " consumer_suspended=%" PRIu32
+                " worker_deleted_after_suspended=%" PRIu32
+                " consumer_deleted_after_suspended=%" PRIu32
+                " worker_join_timeout=%" PRIu32 " consumer_join_timeout=%" PRIu32
+                " sink_abort_calls=%" PRIu32 " worker_waiting=%" PRIu32
+                " pre_cleanup_occupancy=%" PRIu32 " pre_cleanup_partial=%u"
+                " final_occupancy=%" PRIu32 " final_partial=%u"
+                " produced_frames=%" PRIu64 " consumed_frames=%" PRIu64
+                " abandoned_published=%" PRIu64 " abandoned_partial=%" PRIu64
+                " abandoned_rendered=%" PRIu64 " first_error=%" PRIu32
+                " result=%s\n",
+                pcm_scenario, runtime->pcm_lifecycle_triggered.load(),
+                runtime->pcm_forced_abort,
+                runtime->pcm_forced_abort_published_before_wake.load(),
+                runtime->pcm_ring_finished.load(), runtime->pcm_production_done.load(),
+                runtime->worker_quiescent.load(),
+                runtime->pcm_consumer_terminal_ack.load(),
+                runtime->pcm_consumer_quiescent.load(),
+                runtime->pcm_worker_suspended_observed.load(),
+                runtime->pcm_consumer_suspended_observed.load(),
+                runtime->pcm_worker_deleted_after_suspended.load(),
+                runtime->pcm_consumer_deleted_after_suspended.load(),
+                runtime->pcm_worker_join_timeout, runtime->pcm_join_timeout,
+                runtime->pcm_sink_abort_calls,
+                runtime->pcm_worker_space_waiting.load(),
+                runtime->pcm_abort_pre_cleanup_occupancy,
+                runtime->pcm_abort_pre_cleanup_partial,
+                np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
+                np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring),
+                runtime->pcm_produced_frames,
+                runtime->pcm_controller.accepted_frames,
+                runtime->pcm_abandoned_published_frames,
+                runtime->pcm_abandoned_partial_frames,
+                runtime->pcm_abandoned_rendered_frames,
+                runtime->first_error.load(), ok ? "PASS" : "FAIL");
+#endif
     std::printf("P4_AUDIO86_REAL_GUEST_RESULT=%s\n", ok ? "PASS" : "FAIL");
 }
 
@@ -1514,6 +1705,16 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_consumer_quiescent.store(0U, std::memory_order_relaxed);
     runtime->pcm_consumer_terminal_ack.store(0U, std::memory_order_relaxed);
     runtime->pcm_ring_finished.store(0U, std::memory_order_relaxed);
+    runtime->pcm_forced_abort_requested.store(0U, std::memory_order_relaxed);
+    runtime->pcm_worker_space_waiting.store(0U, std::memory_order_relaxed);
+    runtime->pcm_lifecycle_triggered.store(0U, std::memory_order_relaxed);
+    runtime->pcm_forced_abort_published_before_wake.store(0U,
+                                                          std::memory_order_relaxed);
+    runtime->pcm_worker_suspended_observed.store(0U, std::memory_order_relaxed);
+    runtime->pcm_consumer_suspended_observed.store(0U, std::memory_order_relaxed);
+    runtime->pcm_worker_deleted_after_suspended.store(0U, std::memory_order_relaxed);
+    runtime->pcm_consumer_deleted_after_suspended.store(0U,
+                                                        std::memory_order_relaxed);
     runtime->pcm_produced_frames = 0U;
     runtime->pcm_produced_bytes = 0U;
     runtime->pcm_produced_slots = 0U;
@@ -1528,6 +1729,14 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_sink_started = 0U;
     runtime->pcm_sink_finished = 0U;
     runtime->pcm_forced_abort = 0U;
+    runtime->pcm_join_timeout = 0U;
+    runtime->pcm_worker_join_timeout = 0U;
+    runtime->pcm_sink_abort_calls = 0U;
+    runtime->pcm_abandoned_published_frames = 0U;
+    runtime->pcm_abandoned_partial_frames = 0U;
+    runtime->pcm_abandoned_rendered_frames = 0U;
+    runtime->pcm_abort_pre_cleanup_occupancy = 0U;
+    runtime->pcm_abort_pre_cleanup_partial = 0U;
     runtime->pcm_ring_before_done = 0U;
     runtime->pcm_eos_after_done = 0U;
     runtime->pcm_finish_after_empty = 0U;
@@ -1582,14 +1791,69 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->producer_done.store(1U, std::memory_order_release);
     np2audio86_runtime_producer_done_publish(&runtime->control);
     notify_worker(runtime);
-    const bool joined = xSemaphoreTake(runtime->done, kTimeout) == pdTRUE &&
-                        runtime->worker_quiescent.load(std::memory_order_acquire) != 0U;
+    const bool worker_terminal = xSemaphoreTake(runtime->done, kTimeout) == pdTRUE;
+    const bool worker_quiescent =
+        runtime->worker_quiescent.load(std::memory_order_acquire) != 0U;
+    const bool worker_suspended = worker_terminal && worker_quiescent &&
+        wait_task_suspended(runtime->worker);
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
-    const bool pcm_joined = xSemaphoreTake(runtime->pcm_done_semaphore, kTimeout) == pdTRUE &&
-        runtime->pcm_consumer_quiescent.load(std::memory_order_acquire) != 0U &&
+    runtime->pcm_worker_suspended_observed.store(worker_suspended ? 1U : 0U,
+                                                  std::memory_order_release);
+    runtime->pcm_worker_join_timeout = worker_suspended ? 0U : 1U;
+#endif
+    const bool joined = worker_terminal && worker_quiescent && worker_suspended;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool pcm_terminal =
+        xSemaphoreTake(runtime->pcm_done_semaphore, kTimeout) == pdTRUE;
+    const bool pcm_quiescent =
+        runtime->pcm_consumer_quiescent.load(std::memory_order_acquire) != 0U;
+    const bool pcm_ack =
         runtime->pcm_consumer_terminal_ack.load(std::memory_order_acquire) != 0U;
+    const bool pcm_suspended = pcm_terminal && pcm_quiescent && pcm_ack &&
+        wait_task_suspended(runtime->pcm_consumer);
+    runtime->pcm_consumer_suspended_observed.store(pcm_suspended ? 1U : 0U,
+                                                    std::memory_order_release);
+    runtime->pcm_join_timeout = pcm_suspended ? 0U : 1U;
+    const bool pcm_joined = pcm_terminal && pcm_quiescent && pcm_ack && pcm_suspended;
+
+    if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U &&
+        joined && pcm_joined) {
+        runtime->pcm_abort_pre_cleanup_occupancy =
+            np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+        runtime->pcm_abort_pre_cleanup_partial =
+            np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring);
+        const uint64_t abandoned =
+            runtime->pcm_produced_frames >= runtime->pcm_controller.accepted_frames
+                ? runtime->pcm_produced_frames -
+                      runtime->pcm_controller.accepted_frames
+                : 0U;
+        runtime->pcm_abandoned_partial_frames =
+            runtime->pcm_abort_pre_cleanup_partial;
+        runtime->pcm_abandoned_published_frames =
+            abandoned >= runtime->pcm_abandoned_partial_frames
+                ? abandoned - runtime->pcm_abandoned_partial_frames
+                : 0U;
+        np2opngen_pcm_ring_init(&runtime->pcm_ring);
+    }
 #else
     const bool pcm_joined = true;
+#endif
+
+    if (joined && runtime->worker != nullptr) {
+        vTaskDelete(runtime->worker);
+        runtime->worker = nullptr;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        runtime->pcm_worker_deleted_after_suspended.store(1U,
+                                                           std::memory_order_release);
+#endif
+    }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    if (pcm_joined && runtime->pcm_consumer != nullptr) {
+        vTaskDelete(runtime->pcm_consumer);
+        runtime->pcm_consumer = nullptr;
+        runtime->pcm_consumer_deleted_after_suspended.store(1U,
+                                                             std::memory_order_release);
+    }
 #endif
     const bool pressure_ok = kPressureScenario == kPressureNone ||
         (runtime->pressure_phase.load(std::memory_order_acquire) == 5U &&
@@ -1625,6 +1889,21 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                     && runtime->pcm_drops == 0U
                     && runtime->pcm_overwrites == 0U
                     && runtime->pcm_forced_abort == 0U
+                    && runtime->pcm_forced_abort_requested.load(
+                           std::memory_order_acquire) == 0U
+                    && runtime->pcm_join_timeout == 0U
+                    && runtime->pcm_worker_join_timeout == 0U
+                    && runtime->pcm_consumer_suspended_observed.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->pcm_worker_suspended_observed.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->pcm_consumer_deleted_after_suspended.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->pcm_worker_deleted_after_suspended.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->pcm_abandoned_published_frames == 0U
+                    && runtime->pcm_abandoned_partial_frames == 0U
+                    && runtime->pcm_abandoned_rendered_frames == 0U
                     && runtime->pcm_sink_started == 1U
                     && runtime->pcm_sink_finished == 1U
                     && runtime->pcm_ring_before_done == 1U
@@ -1641,11 +1920,15 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                                    sizeof(runtime->full_pcm)) == 0
 #endif
                     ;
-    if (kFailureKind != kFailureNone && lifecycle_runtime != nullptr)
+    if ((kFailureKind != kFailureNone
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+         || runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U
+#endif
+         ) && lifecycle_runtime != nullptr)
         (void)lifecycle_runtime->run();
     runtime->failure_first_error_after_cleanup.store(
         runtime->first_error.load(std::memory_order_acquire), std::memory_order_release);
-    const bool failure_ok = kFailureKind != kFailureNone && joined &&
+    const bool failure_ok = kFailureKind != kFailureNone && joined && pcm_joined &&
         runtime->failure_injected.load(std::memory_order_acquire) != 0U &&
         runtime->failure_wait_confirmed.load(std::memory_order_acquire) != 0U &&
         runtime->failure_predicate_published.load(std::memory_order_acquire) != 0U &&
@@ -1661,6 +1944,24 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
         !np2audio86_runtime_horizon_pending(&runtime->control) &&
         runtime->failure_reset_closed.load(std::memory_order_acquire) != 0U &&
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        runtime->pcm_consumer_suspended_observed.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_worker_suspended_observed.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_consumer_deleted_after_suspended.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_worker_deleted_after_suspended.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_join_timeout == 0U && runtime->pcm_worker_join_timeout == 0U &&
+        runtime->pcm_consumer_terminal_ack.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_ring_finished.load(std::memory_order_acquire) == 1U &&
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) == 0U &&
+        np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring) == 0U &&
+        runtime->pcm_produced_frames == runtime->pcm_controller.accepted_frames &&
+        runtime->pcm_produced_bytes == runtime->pcm_controller.accepted_bytes &&
+        runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) == 0U &&
+        runtime->pcm_forced_abort == 0U && runtime->pcm_sink_finished == 1U &&
+        runtime->pcm_abandoned_published_frames == 0U &&
+        runtime->pcm_abandoned_partial_frames == 0U &&
+        runtime->pcm_abandoned_rendered_frames == 0U &&
+#endif
         ((kFailureKind == kFailureStop &&
           lifecycle_runtime->state() == np2runtime::State::Stopped &&
           runtime->first_error.load(std::memory_order_acquire) == 0U) ||
@@ -1692,18 +1993,44 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
          runtime->byte_extend_cleanup_after_close == 1U &&
          runtime->byte_extend_done_after_close == 1U &&
          !runtime->transaction_active);
-    const bool ok = kFailureKind == kFailureNone ? normal_ok :
-        (failure_ok && byte_extend_failure_ok);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool forced_abort_ok =
+        (kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull ||
+         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty) &&
+        joined && pcm_joined &&
+        runtime->first_error.load(std::memory_order_acquire) == kErrorWorker &&
+        lifecycle_runtime != nullptr &&
+        lifecycle_runtime->state() == np2runtime::State::Failed &&
+        runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_forced_abort_published_before_wake.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->pcm_forced_abort == 1U && runtime->pcm_sink_abort_calls == 1U &&
+        runtime->pcm_consumer_terminal_ack.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_consumer_suspended_observed.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_worker_suspended_observed.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_consumer_deleted_after_suspended.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->pcm_worker_deleted_after_suspended.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->pcm_join_timeout == 0U && runtime->pcm_worker_join_timeout == 0U &&
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) == 0U &&
+        np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring) == 0U &&
+        runtime->pcm_produced_frames == runtime->pcm_controller.accepted_frames +
+            runtime->pcm_abandoned_published_frames +
+            runtime->pcm_abandoned_partial_frames;
+    const bool pcm_lifecycle_failure =
+        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull ||
+        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty;
+#else
+    const bool forced_abort_ok = false;
+    const bool pcm_lifecycle_failure = false;
+#endif
+    const bool ok = pcm_lifecycle_failure ? forced_abort_ok :
+        (kFailureKind == kFailureNone ? normal_ok :
+         (failure_ok && byte_extend_failure_ok));
     if (kPressureScenario != kPressureNone && pressure_ok)
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
     emit_summary(runtime, ok);
-    if (joined && runtime->worker != nullptr) { vTaskDelete(runtime->worker); runtime->worker = nullptr; }
-#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
-    if (pcm_joined && runtime->pcm_consumer != nullptr) {
-        vTaskDelete(runtime->pcm_consumer);
-        runtime->pcm_consumer = nullptr;
-    }
-#endif
     return ok ? ESP_OK : ESP_FAIL;
 }
 

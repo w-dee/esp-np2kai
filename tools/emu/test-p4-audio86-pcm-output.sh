@@ -28,7 +28,7 @@ merge_image() {
 image="${work_dir}/pcm-output.bin"
 merge_image "${build_dir}" "${image}"
 first_evidence=""
-for run in $(seq 1 10); do
+for run in $(seq 1 20); do
     log="${work_dir}/run-${run}.log"
     timeout --foreground 10s "${HOME}/.local/bin/esp-emu" --chip esp32p4 \
         --firmware "${image}" --exit-on 'main_task: Returned from app_main()' \
@@ -43,6 +43,7 @@ for run in $(seq 1 10); do
     fi
 done
 printf '5C2_CANONICAL_REPEATABILITY=10/10_PASS\n'
+printf 'PCM_CONSUMER_QUIESCENCE_REPEAT=20/20_PASS\n'
 printf 'PCM_PREFILL_4=PASS\n'
 printf 'RESET_INSIDE_Q240_REAL_PATH=PASS\n'
 

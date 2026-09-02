@@ -44,6 +44,10 @@ def validate_pcm(text: str, partial: bool = False) -> None:
     require(completion == {
         "ring_finished": "1", "pcm_done": "1", "worker_quiescent": "1",
         "consumer_ack": "1", "consumer_quiescent": "1", "sink_started": "1",
+        "worker_suspended": "1", "consumer_suspended": "1",
+        "worker_deleted_after_suspended": "1",
+        "consumer_deleted_after_suspended": "1",
+        "worker_join_timeout": "0", "consumer_join_timeout": "0",
         "sink_finished": "1", "ring_before_done": "1", "eos_after_done": "1",
         "finish_after_empty": "1", "ack_after_finish": "1",
     }, "completion graph mismatch")
@@ -64,7 +68,9 @@ def validate_pcm(text: str, partial: bool = False) -> None:
         "consumed_bytes": str(int(frames) * 4), "produced_slots": slots,
         "consumed_slots": slots, "partial_slots": partial_slots, "drops": "0",
         "overwrite": "0", "sequence_errors": "0", "offset_errors": "0",
-        "forced_abort": "0", "first_submit_occupancy": first_occupancy,
+        "forced_abort": "0", "abandoned_published": "0",
+        "abandoned_partial": "0", "abandoned_rendered": "0",
+        "first_submit_occupancy": first_occupancy,
     }, "PCM residual/accounting mismatch")
     require(one(text, "P4_AUDIO86_PCM_DIRECT_RING_EQUAL") == "1", "direct/ring mismatch")
     require(one(text, "P4_AUDIO86_PCM_OUTPUT_RESULT") == "PASS", "PCM result")
@@ -85,13 +91,101 @@ def validate_pcm(text: str, partial: bool = False) -> None:
         require(int(valid) == expected_frames, "slot valid_frames mismatch")
         require(int(flags) == expected_flags, "slot flags mismatch")
 
+    lifecycle = fields(text, "P4_AUDIO86_PCM_LIFECYCLE ")
+    require(lifecycle == {
+        "scenario": "NONE", "triggered": "0", "forced_abort": "0",
+        "forced_before_wake": "0", "ring_finished": "1", "pcm_done": "1",
+        "worker_quiescent": "1", "consumer_ack": "1",
+        "consumer_quiescent": "1", "worker_suspended": "1",
+        "consumer_suspended": "1", "worker_deleted_after_suspended": "1",
+        "consumer_deleted_after_suspended": "1", "worker_join_timeout": "0",
+        "consumer_join_timeout": "0", "sink_abort_calls": "0",
+        "worker_waiting": "0", "pre_cleanup_occupancy": "0",
+        "pre_cleanup_partial": "0", "final_occupancy": "0",
+        "final_partial": "0", "produced_frames": frames,
+        "consumed_frames": frames, "abandoned_published": "0",
+        "abandoned_partial": "0", "abandoned_rendered": "0",
+        "first_error": "0", "result": "PASS",
+    }, "normal PCM lifecycle closure mismatch")
+
+
+def validate_lifecycle(text: str, scenario: str) -> None:
+    expected = {
+        "stop-full": ("STOP_FULL", "0", "0"),
+        "fatal-full": ("FATAL_FULL", "0", "86"),
+        "consumer-failure-full": ("CONSUMER_FAILURE_FULL", "1", "2"),
+        "consumer-failure-empty": ("CONSUMER_FAILURE_EMPTY", "1", "2"),
+    }
+    require(scenario in expected, "unknown PCM lifecycle scenario")
+    for pattern in FATAL_PATTERNS:
+        require(pattern.search(text) is None, f"raw fatal signature: {pattern.pattern}")
+    require("main_task: Returned from app_main()" in text, "app_main completion missing")
+    require(one(text, "P4_AUDIO86_REAL_GUEST_RESULT") == "PASS", "guest result")
+    require(one(text, "P4_NANO_AUDIO86_REAL_GUEST_STATUS") == "PASS", "main status")
+    marker = fields(text, "P4_AUDIO86_PCM_LIFECYCLE ")
+    name, forced, first_error = expected[scenario]
+    require(set(marker) == {
+        "scenario", "triggered", "forced_abort", "forced_before_wake",
+        "ring_finished", "pcm_done", "worker_quiescent", "consumer_ack",
+        "consumer_quiescent", "worker_suspended", "consumer_suspended",
+        "worker_deleted_after_suspended", "consumer_deleted_after_suspended",
+        "worker_join_timeout", "consumer_join_timeout", "sink_abort_calls",
+        "worker_waiting", "pre_cleanup_occupancy", "pre_cleanup_partial",
+        "final_occupancy", "final_partial", "produced_frames", "consumed_frames",
+        "abandoned_published", "abandoned_partial", "abandoned_rendered",
+        "first_error", "result",
+    }, "PCM lifecycle fields mismatch")
+    require(marker["scenario"] == name and marker["triggered"] == "1",
+            "PCM lifecycle scenario trigger mismatch")
+    require(marker["forced_abort"] == forced and marker["first_error"] == first_error,
+            "PCM lifecycle terminal identity mismatch")
+    require(marker["worker_quiescent"] == "1" and marker["consumer_ack"] == "1" and
+            marker["consumer_quiescent"] == "1" and
+            marker["worker_suspended"] == "1" and marker["consumer_suspended"] == "1" and
+            marker["worker_deleted_after_suspended"] == "1" and
+            marker["consumer_deleted_after_suspended"] == "1" and
+            marker["worker_join_timeout"] == "0" and
+            marker["consumer_join_timeout"] == "0" and
+            marker["worker_waiting"] == "0" and marker["final_occupancy"] == "0" and
+            marker["final_partial"] == "0" and marker["result"] == "PASS",
+            "PCM lifecycle join/quiescence mismatch")
+    produced = int(marker["produced_frames"])
+    consumed = int(marker["consumed_frames"])
+    abandoned = int(marker["abandoned_published"]) + int(marker["abandoned_partial"])
+    if forced == "0":
+        require(marker["forced_before_wake"] == "0" and
+                marker["sink_abort_calls"] == "0" and
+                marker["ring_finished"] == "1" and marker["pcm_done"] == "1" and
+                produced == consumed and abandoned == 0 and
+                marker["abandoned_rendered"] == "0",
+                "healthy STOP/FATAL drain mismatch")
+    else:
+        require(marker["forced_before_wake"] == "1" and
+                marker["sink_abort_calls"] == "1" and
+                marker["ring_finished"] == "0" and marker["pcm_done"] == "0" and
+                produced == consumed + abandoned,
+                "forced-abort accounting mismatch")
+        if scenario == "consumer-failure-full":
+            require(int(marker["pre_cleanup_occupancy"]) > 0 and abandoned > 0,
+                    "full-ring forced abort did not abandon published PCM")
+        else:
+            require(produced == 0 and consumed == 0 and abandoned == 0,
+                    "empty-wait forced abort accounting mismatch")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--log", required=True, type=Path)
     parser.add_argument("--partial", action="store_true")
+    parser.add_argument("--lifecycle-scenario", choices=(
+        "stop-full", "fatal-full", "consumer-failure-full",
+        "consumer-failure-empty"))
     args = parser.parse_args()
-    validate_pcm(args.log.read_text(errors="replace"), args.partial)
+    text = args.log.read_text(errors="replace")
+    if args.lifecycle_scenario:
+        validate_lifecycle(text, args.lifecycle_scenario)
+    else:
+        validate_pcm(text, args.partial)
     print("5C2_VALIDATOR=PASS")
     if args.partial:
         print("5C2_PARTIAL_EOS=PASS")
