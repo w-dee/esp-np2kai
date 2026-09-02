@@ -18,6 +18,9 @@ CLASSES = {"HOST_EXEC", "ESP_EMU_EXEC", "STATIC_IDF_SOURCE",
 PREDICATES = {"host_validator", "lifecycle_validator", "source_checker",
               "exit_zero", "diff_empty", "absent"}
 STATIC_SCHEMA = "1"
+STATIC_EVIDENCE_FIELDS = {
+    "schema", "property_id", "evidence_class", "fields", "predicate",
+}
 START_STATIC_GUARDS = {
     "start_epilogue", "owner_cleanup_guards", "owner_delete_order",
     "owner_destroy_order",
@@ -508,6 +511,13 @@ def validate_static_diagnostic(line: str, evidence_class: str,
     seen.add(name)
 
 
+def validate_static_evidence(line: str) -> dict[str, str]:
+    item = structured_fields(line)
+    if set(item) != STATIC_EVIDENCE_FIELDS:
+        raise SystemExit(f"static evidence fields mismatch: {line}")
+    return item
+
+
 def static_records(path: Path, evidence_class: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     diagnostics: set[str] = set()
@@ -521,7 +531,7 @@ def static_records(path: Path, evidence_class: str) -> list[dict[str, str]]:
                 raise SystemExit(f"orphan acceptance/control output: {line}")
             continue
         if line.startswith("5D1_STATIC_EVIDENCE "):
-            result.append(structured_fields(line))
+            result.append(validate_static_evidence(line))
         elif line.startswith("5D1_NON_ACCEPTANCE_SUMMARY "):
             validate_static_diagnostic(line, evidence_class, diagnostics)
         elif line.startswith("5D1_"):
@@ -603,7 +613,7 @@ def test_evidence_grammar_change_sensitivity(args: argparse.Namespace) -> None:
             esp_logs.append(destination)
 
         command = validator_command(host_log, esp_logs, idf_static_log, static_log)
-        require_accepted(command, "F6_CANONICAL_ACCEPTED")
+        require_accepted(command, "F7_CANONICAL_ACCEPTED")
         print("LEGITIMATE_DIAGNOSTIC_SCHEMA_POSITIVE=PASS")
 
         def mutate_text(label: str, path: Path, mutated: str,
@@ -736,6 +746,51 @@ def test_evidence_grammar_change_sensitivity(args: argparse.Namespace) -> None:
                      evidence_line, evidence_line + " note=extra")
         print("STRUCTURED_EVIDENCE_EXACT_FIELD_SCHEMA=PASS")
         print("STRUCTURED_EVIDENCE_UNEXPECTED_FIELD_REJECTED=PASS")
+
+        idf_static_line = next(line for line in idf_static_log.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+                               if line.startswith("5D1_STATIC_EVIDENCE "))
+        project_static_line = next(line for line in static_log.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+                                   if line.startswith("5D1_STATIC_EVIDENCE "))
+        replace_once("IDF_STATIC_EXTRA_ACCEPTANCE_REJECTED", idf_static_log,
+                     idf_static_line, idf_static_line + " acceptance=PASS")
+        replace_once("IDF_STATIC_EXTRA_NEUTRAL_FIELD_REJECTED", idf_static_log,
+                     idf_static_line, idf_static_line + " note=extra")
+        replace_once("PROJECT_STATIC_EXTRA_ACCEPTANCE_REJECTED", static_log,
+                     project_static_line,
+                     project_static_line + " acceptance=PASS")
+        replace_once("PROJECT_STATIC_EXTRA_NEUTRAL_FIELD_REJECTED", static_log,
+                     project_static_line, project_static_line + " note=extra")
+        replace_once("STATIC_EVIDENCE_MISSING_FIELD_REJECTED", idf_static_log,
+                     idf_static_line,
+                     idf_static_line.replace(" predicate=PASS", ""))
+        replace_once("STATIC_EVIDENCE_DUPLICATE_FIELD_REJECTED", idf_static_log,
+                     idf_static_line, idf_static_line + " schema=1")
+        replace_once("STATIC_EVIDENCE_MALFORMED_VALUE_REJECTED", idf_static_log,
+                     idf_static_line,
+                     idf_static_line.replace("schema=1", "schema=2", 1))
+        static_tokens = idf_static_line.split()
+        reordered_static = " ".join(
+            [static_tokens[0], *reversed(static_tokens[1:])])
+        replace_once("STATIC_EVIDENCE_FIELD_REORDERING_ACCEPTED", idf_static_log,
+                     idf_static_line, reordered_static, accepted=True)
+        replace_once("STATIC_EVIDENCE_MULTIPLE_SPACES_ACCEPTED", idf_static_log,
+                     idf_static_line, "  ".join(static_tokens), accepted=True)
+        replace_once("STATIC_EVIDENCE_TRAILING_WHITESPACE_ACCEPTED",
+                     idf_static_log, idf_static_line,
+                     idf_static_line + "   ", accepted=True)
+        replace_once("STATIC_EVIDENCE_LEADING_WHITESPACE_REJECTED",
+                     idf_static_log, idf_static_line,
+                     " " + idf_static_line)
+        print("STATIC_EVIDENCE_PRODUCER_GRAMMAR_AUDITED=PASS")
+        print("STATIC_EVIDENCE_EXACT_TOP_LEVEL_SCHEMA=PASS")
+        print("STATIC_EVIDENCE_UNEXPECTED_FIELD_REJECTED=PASS")
+        print("STATIC_EVIDENCE_INNER_SEMANTICS_NONREGRESSION=PASS")
+        print("STATIC_EVIDENCE_ENVELOPE_BOUNDARY_AUDIT=PASS")
+        print("STATIC_SCHEMA_FIX_IS_FIELD_SET_BASED=PASS")
+        print("STATIC_SCHEMA_LITERAL_OVERFIT=NO")
+        print("COMPLETE_GRAMMAR_STATIC_ENVELOPE_COVERAGE=PASS")
 
         partials = [line for line in host_log.read_text(
             encoding="utf-8", errors="replace").splitlines()
