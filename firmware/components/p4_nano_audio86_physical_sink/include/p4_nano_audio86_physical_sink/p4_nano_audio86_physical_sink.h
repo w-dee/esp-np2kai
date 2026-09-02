@@ -23,6 +23,7 @@ extern "C" {
 #define P4_NANO_AUDIO86_PHYSICAL_DRAIN_TIMEOUT_MS 40U
 
 struct p4_nano_audio86_physical_sink;
+struct p4_nano_audio86_callback_gate;
 
 enum p4_nano_audio86_physical_io_result {
     P4_NANO_AUDIO86_PHYSICAL_IO_OK = 0,
@@ -34,7 +35,7 @@ enum p4_nano_audio86_physical_io_result {
  * operation reports both its status and the number of bytes already copied. */
 struct p4_nano_audio86_physical_backend {
     int (*prepare)(void *opaque,
-                   struct p4_nano_audio86_physical_sink *sink,
+                   struct p4_nano_audio86_callback_gate *callback_gate,
                    uint32_t generation);
     enum p4_nano_audio86_physical_io_result (*preload)(
         void *opaque, const uint8_t *pcm, size_t bytes, size_t *bytes_loaded);
@@ -103,10 +104,12 @@ uint32_t p4_nano_audio86_physical_sink_retry_snapshot(
 bool p4_nano_audio86_physical_sink_retry_ready(
     const struct p4_nano_audio86_physical_sink *sink, uint32_t snapshot);
 
-void p4_nano_audio86_physical_sink_on_sent(
-    struct p4_nano_audio86_physical_sink *sink, uint32_t generation);
-void p4_nano_audio86_physical_sink_on_send_q_ovf(
-    struct p4_nano_audio86_physical_sink *sink, uint32_t generation);
+/* The callback gate is the ESP-IDF user_data object.  Its entry routine takes
+ * in-flight ownership before following the reclaimable sink pointer. */
+void p4_nano_audio86_callback_gate_on_sent(
+    struct p4_nano_audio86_callback_gate *gate);
+void p4_nano_audio86_callback_gate_on_send_q_ovf(
+    struct p4_nano_audio86_callback_gate *gate);
 
 void p4_nano_audio86_physical_sink_get_telemetry(
     const struct p4_nano_audio86_physical_sink *sink,
@@ -115,6 +118,16 @@ void p4_nano_audio86_physical_sink_get_telemetry(
 #if defined(P4_NANO_AUDIO86_PHYSICAL_SINK_TESTING)
 void p4_nano_audio86_physical_sink_test_set_callback_refcount(
     struct p4_nano_audio86_physical_sink *sink, uint32_t count);
+void p4_nano_audio86_physical_sink_test_on_sent_generation(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation);
+void p4_nano_audio86_physical_sink_test_on_send_q_ovf_generation(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation);
+bool p4_nano_audio86_physical_sink_test_callback_enter(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation);
+void p4_nano_audio86_physical_sink_test_callback_exit(
+    struct p4_nano_audio86_physical_sink *sink);
+void p4_nano_audio86_physical_sink_test_disarm_callbacks(
+    struct p4_nano_audio86_physical_sink *sink);
 #endif
 
 #ifdef __cplusplus

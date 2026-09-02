@@ -790,10 +790,24 @@ bool finish_pcm(Runtime *runtime)
 void pcm_consumer_task(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
-    if (runtime == nullptr || np2_pcm_output_start(&runtime->pcm_controller) !=
-                                  NP2_PCM_OUTPUT_OK) {
-        if (runtime != nullptr) fail(runtime, kErrorWorker);
-        vTaskDelete(nullptr);
+    if (runtime == nullptr) {
+        vTaskSuspend(nullptr);
+        return;
+    }
+    if (np2_pcm_output_start(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK) {
+        /* A sink start FATAL is an output failure.  Publish the same forced
+         * abort authority as a submit/finish failure, run the controller's
+         * abort cleanup while FAILED, then use the established quiescent /
+         * owner-reap protocol instead of self-deleting. */
+        publish_pcm_forced_abort(runtime, kErrorWorker);
+        if (np2_pcm_output_abort(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
+            fail(runtime, kErrorWorker);
+        runtime->pcm_consumer_terminal_ack.store(1U,
+                                                 std::memory_order_release);
+        runtime->pcm_consumer_quiescent.store(1U, std::memory_order_release);
+        (void)xSemaphoreGive(runtime->pcm_ready);
+        (void)xSemaphoreGive(runtime->pcm_done_semaphore);
+        vTaskSuspend(nullptr);
         return;
     }
     runtime->pcm_consumer_ready.store(1U, std::memory_order_release);
@@ -1775,6 +1789,37 @@ bool wait_task_suspended(TaskHandle_t task)
     return task != nullptr;
 }
 
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+bool cleanup_pcm_start_failure(Runtime *runtime)
+{
+    const bool terminal = runtime->pcm_done_semaphore != nullptr &&
+        xSemaphoreTake(runtime->pcm_done_semaphore, kTimeout) == pdTRUE;
+    const bool quiescent =
+        runtime->pcm_consumer_quiescent.load(std::memory_order_acquire) != 0U;
+    const bool ack = runtime->pcm_consumer_terminal_ack.load(
+                         std::memory_order_acquire) != 0U;
+    const bool suspended = runtime->pcm_consumer != nullptr && terminal &&
+        quiescent && ack && wait_task_suspended(runtime->pcm_consumer);
+    runtime->pcm_consumer_suspended_observed.store(suspended ? 1U : 0U,
+                                                   std::memory_order_release);
+    runtime->pcm_join_timeout = suspended ? 0U : 1U;
+    if (suspended) {
+        vTaskDelete(runtime->pcm_consumer);
+        runtime->pcm_consumer = nullptr;
+        runtime->pcm_consumer_deleted_after_suspended.store(
+            1U, std::memory_order_release);
+    }
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    if (suspended && runtime->physical_sink != nullptr) {
+        if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) != 0)
+            return false;
+        runtime->physical_sink = nullptr;
+    }
+#endif
+    return terminal && quiescent && ack && suspended;
+}
+#endif
+
 void put_le32(uint8_t *out, const uint32_t value)
 {
     out[0] = static_cast<uint8_t>(value);
@@ -2508,13 +2553,23 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         runtime->physical_sink);
 #endif
     if (np2_pcm_output_controller_init(&runtime->pcm_controller,
-                                       &runtime->pcm_ring, &selected_sink) != 0)
+                                       &runtime->pcm_ring, &selected_sink) != 0) {
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+        (void)p4_nano_audio86_physical_sink_destroy(runtime->physical_sink);
+        runtime->physical_sink = nullptr;
+#endif
         return ESP_FAIL;
+    }
     runtime->pcm_ready = xSemaphoreCreateBinaryStatic(&runtime->pcm_ready_storage);
     runtime->pcm_done_semaphore =
         xSemaphoreCreateBinaryStatic(&runtime->pcm_done_storage);
-    if (runtime->pcm_ready == nullptr || runtime->pcm_done_semaphore == nullptr)
+    if (runtime->pcm_ready == nullptr || runtime->pcm_done_semaphore == nullptr) {
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+        (void)p4_nano_audio86_physical_sink_destroy(runtime->physical_sink);
+        runtime->physical_sink = nullptr;
+#endif
         return ESP_ERR_NO_MEM;
+    }
     runtime->pcm_consumer = xTaskCreateStaticPinnedToCore(
         pcm_consumer_task, "audio86_pcm_out",
         kPcmConsumerStackBytes / sizeof(StackType_t), runtime,
@@ -2523,7 +2578,16 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     if (runtime->pcm_consumer == nullptr ||
         xSemaphoreTake(runtime->pcm_ready, kTimeout) != pdTRUE ||
         runtime->pcm_consumer_ready.load(std::memory_order_acquire) == 0U) {
-        fail(runtime, kErrorWorker);
+        publish_pcm_forced_abort(runtime, kErrorWorker);
+        const bool cleaned = runtime->pcm_consumer != nullptr &&
+            cleanup_pcm_start_failure(runtime);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+        if (runtime->pcm_consumer == nullptr && runtime->physical_sink != nullptr) {
+            if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) == 0)
+                runtime->physical_sink = nullptr;
+        }
+#endif
+        if (!cleaned) fail(runtime, kErrorWorker);
         emit_summary(runtime, false);
         return ESP_FAIL;
     }

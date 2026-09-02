@@ -257,6 +257,9 @@ P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_
 P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_asan
 P4_NANO_AUDIO86_PHYSICAL_SINK_UBSAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_ubsan
 P4_NANO_AUDIO86_PHYSICAL_SINK_TSAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_tsan
+P4_NANO_AUDIO86_PHYSICAL_VALIDATOR := $(HOST_ROOT)/tools/emu/validate_p4_audio86_physical_sink_log.py
+P4_NANO_AUDIO86_PHYSICAL_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_sink_log.py
+P4_NANO_AUDIO86_PHYSICAL_MANIFEST := $(HOST_ROOT)/tools/emu/test_p4_audio86_physical_sink_manifest.py
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
 OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
@@ -1433,7 +1436,12 @@ build-p4-audio86-physical-sink:
 	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT),,)
 
 test-p4-audio86-physical-sink: build-p4-audio86-physical-sink
-	@"$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT)"
+	@set -e; evidence="$$(mktemp)"; trap 'rm -f "$$evidence"' EXIT; \
+		"$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT)" >"$$evidence"; \
+		cat "$$evidence"; \
+		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_VALIDATOR)" "$$evidence"; \
+		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MUTATIONS)"; \
+		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MANIFEST)"
 
 build-p4-audio86-physical-sink-asan:
 	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT),-O1 -g -fsanitize=address$(p4_audio86_comma)undefined -fno-omit-frame-pointer,-fsanitize=address$(p4_audio86_comma)undefined)

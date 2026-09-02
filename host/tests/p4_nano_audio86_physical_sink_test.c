@@ -9,7 +9,7 @@
 #include "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.h"
 
 struct fake_backend {
-    struct p4_nano_audio86_physical_sink *sink;
+    struct p4_nano_audio86_callback_gate *callback_gate;
     uint32_t generation;
     uint64_t now_ms;
     unsigned prepare_calls;
@@ -31,16 +31,40 @@ struct fake_backend {
     uint8_t copied[8][P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
     size_t copied_count;
     int operation_failure;
+    unsigned start_failure_stage;
+    unsigned resource_i2c;
+    unsigned resource_i2s;
+    unsigned resource_callbacks;
+    unsigned pa_high;
+    char history[128];
+    size_t history_length;
 };
 
+static void record_operation(struct fake_backend *fake, char operation)
+{
+    assert(fake->history_length + 1U < sizeof(fake->history));
+    fake->history[fake->history_length++] = operation;
+    fake->history[fake->history_length] = '\0';
+}
+
 static int fake_prepare(void *opaque,
-                        struct p4_nano_audio86_physical_sink *sink,
+                        struct p4_nano_audio86_callback_gate *callback_gate,
                         uint32_t generation)
 {
     struct fake_backend *fake = opaque;
-    fake->sink = sink;
+    fake->callback_gate = callback_gate;
     fake->generation = generation;
     fake->prepare_calls++;
+    record_operation(fake, 'P');
+    if (fake->start_failure_stage != 0U) {
+        if (fake->start_failure_stage >= 2U) fake->resource_i2s = 1U;
+        if (fake->start_failure_stage >= 3U) fake->resource_callbacks = 1U;
+        if (fake->start_failure_stage >= 4U) {
+            fake->resource_i2c = 1U;
+            fake->pa_high = 1U;
+        }
+        return -1;
+    }
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -67,6 +91,7 @@ static enum p4_nano_audio86_physical_io_result fake_preload(
 {
     struct fake_backend *fake = opaque;
     fake->preload_calls++;
+    record_operation(fake, 'L');
     return fake_copy(fake, pcm, bytes, loaded, 1);
 }
 
@@ -74,6 +99,7 @@ static int fake_enable(void *opaque)
 {
     struct fake_backend *fake = opaque;
     fake->enable_calls++;
+    record_operation(fake, 'E');
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -84,6 +110,7 @@ static enum p4_nano_audio86_physical_io_result fake_write(
     struct fake_backend *fake = opaque;
     assert(timeout_ms == 0U);
     fake->write_calls++;
+    record_operation(fake, 'W');
     return fake_copy(fake, pcm, bytes, written, 0);
 }
 
@@ -91,6 +118,7 @@ static int fake_mute(void *opaque)
 {
     struct fake_backend *fake = opaque;
     fake->mute_calls++;
+    record_operation(fake, 'M');
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -98,6 +126,8 @@ static int fake_pa_low(void *opaque)
 {
     struct fake_backend *fake = opaque;
     fake->pa_low_calls++;
+    record_operation(fake, 'A');
+    fake->pa_high = 0U;
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -105,6 +135,7 @@ static int fake_disable(void *opaque)
 {
     struct fake_backend *fake = opaque;
     fake->disable_calls++;
+    record_operation(fake, 'D');
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -112,6 +143,9 @@ static int fake_unregister(void *opaque)
 {
     struct fake_backend *fake = opaque;
     fake->unregister_calls++;
+    record_operation(fake, 'U');
+    fake->resource_callbacks = 0U;
+    fake->resource_i2s = 0U;
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -126,13 +160,11 @@ static void fake_wait(void *opaque, uint32_t timeout_ms)
     fake->now_ms += timeout_ms == 0U ? 1U : timeout_ms;
     if (fake->auto_eof_budget != 0U) {
         fake->auto_eof_budget--;
-        p4_nano_audio86_physical_sink_on_sent(fake->sink,
-                                               fake->generation);
+        p4_nano_audio86_callback_gate_on_sent(fake->callback_gate);
     }
     if (fake->qovf_on_wait) {
         fake->qovf_on_wait = 0;
-        p4_nano_audio86_physical_sink_on_send_q_ovf(
-            fake->sink, fake->generation);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake->callback_gate);
     }
 }
 
@@ -145,7 +177,10 @@ static void fake_notify(void *opaque, bool from_isr)
 
 static void fake_release(void *opaque)
 {
-    ((struct fake_backend *)opaque)->release_calls++;
+    struct fake_backend *fake = opaque;
+    fake->release_calls++;
+    record_operation(fake, 'R');
+    fake->resource_i2c = 0U;
 }
 
 static struct p4_nano_audio86_physical_sink *new_sink(
@@ -266,6 +301,12 @@ static void test_final_partial(unsigned frames)
     close_sink(&fake, sink, &interface);
     printf("5D1_FINAL_PARTIAL frames=%u semantic_bytes=%zu physical_bytes=960 padding_frames=%u padding_zero=1 digest_excludes_padding=1 result=PASS\n",
            frames, semantic, 240U - frames);
+    if (frames == 13U) {
+        printf("5D1_EVIDENCE scenario=short_eos preload_units=%u enable_calls=%u physical_units=%" PRIu64 " semantic_frames=%" PRIu64 " drain_eofs=%u deadlock=0\n",
+               telemetry.preloaded_units, fake.enable_calls,
+               telemetry.physical_units_copied,
+               telemetry.semantic_accepted_frames, telemetry.tx_eof_epoch);
+    }
 }
 
 static void enter_running(struct fake_backend *fake,
@@ -282,36 +323,46 @@ static void enter_running(struct fake_backend *fake,
 
 static void test_retry_and_lost_wake(void)
 {
-    struct fake_backend fake;
-    struct np2_pcm_sink interface;
-    struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
-    struct np2_pcm_sink_view view;
-    uint8_t pcm[960];
-    uint32_t snapshot;
-    fill_pcm(pcm, sizeof(pcm), 11U);
-    start_sink(&interface);
-    enter_running(&fake, &interface, pcm);
-    view = full_view(pcm, 4U);
-    fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_TIMEOUT;
-    fake.write_bytes = 0U;
-    snapshot = p4_nano_audio86_physical_sink_retry_snapshot(sink);
-    assert(interface.submit(interface.opaque, &view) == NP2_PCM_SINK_RETRY);
-    assert(!p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    assert(p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
-    fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
-    fake.write_bytes = SIZE_MAX;
-    assert(interface.submit(interface.opaque, &view) == NP2_PCM_SINK_ACCEPTED);
-    snapshot = p4_nano_audio86_physical_sink_retry_snapshot(sink);
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    assert(p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
-    fake.auto_eof_budget = 4U;
-    assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-    close_sink(&fake, sink, &interface);
-    puts("5D1_ZERO_PROGRESS_RETRY timeout_bytes=0 tail_held=1 accepted_once=1 forced_abort=0 result=PASS");
-    puts("5D1_RETRY_LOST_WAKE before_arm=PASS during_arm=PASS coalesced=PASS notification_hint_only=1 result=PASS");
+    static const char *const scenarios[] = {
+        "retry_before_arm", "retry_during_arm", "retry_coalesced"};
+    unsigned scenario;
+    for (scenario = 0U; scenario < 3U; ++scenario) {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        struct np2_pcm_sink_view view;
+        uint8_t pcm[960];
+        uint32_t snapshot;
+        unsigned callbacks = scenario == 2U ? 3U : 1U;
+        unsigned i;
+        fill_pcm(pcm, sizeof(pcm), (uint8_t)(11U + scenario));
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        view = full_view(pcm, 4U);
+        fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_TIMEOUT;
+        fake.write_bytes = 0U;
+        snapshot = p4_nano_audio86_physical_sink_retry_snapshot(sink);
+        assert(interface.submit(interface.opaque, &view) == NP2_PCM_SINK_RETRY);
+        assert(!p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
+        fake_notify(&fake, false);
+        assert(!p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
+        for (i = 0U; i < callbacks; ++i)
+            p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        assert(p4_nano_audio86_physical_sink_retry_ready(sink, snapshot));
+        fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
+        fake.write_bytes = SIZE_MAX;
+        assert(interface.submit(interface.opaque, &view) ==
+               NP2_PCM_SINK_ACCEPTED);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.semantic_accepted_frames == 5U * 240U);
+        printf("5D1_EVIDENCE scenario=%s epoch_before=%u epoch_after=%u callbacks=%u notification_only_ready=0 tail_held=1 accepted_once=1 forced_abort=0\n",
+               scenarios[scenario], snapshot, telemetry.tx_eof_epoch,
+               callbacks);
+        fake.auto_eof_budget = 4U;
+        assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        close_sink(&fake, sink, &interface);
+    }
 }
 
 static void test_partial_progress(size_t bytes)
@@ -336,33 +387,74 @@ static void test_partial_progress(size_t bytes)
            bytes);
 }
 
-static void test_finish_and_callbacks(void)
+static void test_finish_eof_count(unsigned eof_count)
 {
     struct fake_backend fake;
     struct np2_pcm_sink interface;
     struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
     struct p4_nano_audio86_physical_telemetry telemetry;
     uint8_t pcm[960];
-    uint32_t i;
     fill_pcm(pcm, sizeof(pcm), 23U);
     start_sink(&interface);
     enter_running(&fake, &interface, pcm);
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation + 1U);
+    fake.auto_eof_budget = eof_count;
+    const enum np2_pcm_sink_result finish = interface.finish(interface.opaque);
     p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-    assert(telemetry.tx_eof_epoch == 0U && telemetry.stale_callback_count == 1U);
-    for (i = 0U; i < 3U; ++i)
-        p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    fake.auto_eof_budget = 1U;
-    assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-    p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-    assert((uint32_t)(telemetry.drain_completion_epoch -
-                      telemetry.drain_snapshot_epoch) == 4U);
-    p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
-    p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-    assert(telemetry.stale_callback_count == 2U);
+    assert(telemetry.tx_eof_epoch == eof_count);
+    assert((eof_count == 4U && finish == NP2_PCM_SINK_ACCEPTED) ||
+           (eof_count < 4U && finish == NP2_PCM_SINK_FATAL));
+    printf("5D1_EVIDENCE scenario=finish_eof_%u eof_snapshot=0 eof_current=%u finish=%u sticky=%u stale=%u\n",
+           eof_count, telemetry.tx_eof_epoch, finish,
+           telemetry.sticky_error ? 1U : 0U,
+           telemetry.stale_callback_count);
     close_sink(&fake, sink, &interface);
-    puts("5D1_FINISH_DRAIN eof0=WAIT eof1=WAIT eof2=WAIT eof3=WAIT eof4=PASS wrong_generation=IGNORED sticky_error=FATAL result=PASS");
-    puts("5D1_STALE_CALLBACK_AFTER_ABORT live_state_corruption=0 retry_authorized=0 false_finish=0 result=PASS");
+}
+
+static void test_finish_and_callbacks(void)
+{
+    unsigned eof_count;
+    for (eof_count = 0U; eof_count <= 4U; ++eof_count)
+        test_finish_eof_count(eof_count);
+
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        uint8_t pcm[960];
+        fill_pcm(pcm, sizeof(pcm), 24U);
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_test_on_sent_generation(
+            sink, fake.generation + 1U);
+        fake.auto_eof_budget = 4U;
+        assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.tx_eof_epoch == 4U &&
+               telemetry.stale_callback_count == 1U);
+        printf("5D1_EVIDENCE scenario=finish_wrong_generation eof_snapshot=0 eof_current=%u finish=%u sticky=0 stale=%u\n",
+               telemetry.tx_eof_epoch, NP2_PCM_SINK_ACCEPTED,
+               telemetry.stale_callback_count);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        uint8_t pcm[960];
+        fill_pcm(pcm, sizeof(pcm), 25U);
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        fake.qovf_on_wait = 1;
+        assert(interface.finish(interface.opaque) == NP2_PCM_SINK_FATAL);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.sticky_error);
+        printf("5D1_EVIDENCE scenario=finish_sticky_error eof_snapshot=0 eof_current=%u finish=%u sticky=1 stale=%u\n",
+               telemetry.tx_eof_epoch, NP2_PCM_SINK_FATAL,
+               telemetry.stale_callback_count);
+        close_sink(&fake, sink, &interface);
+    }
 }
 
 static void test_queue_overflow(void)
@@ -375,12 +467,12 @@ static void test_queue_overflow(void)
     fill_pcm(pcm, sizeof(pcm), 29U);
     start_sink(&interface);
     enter_running(&fake, &interface, pcm);
-    p4_nano_audio86_physical_sink_on_send_q_ovf(sink, fake.generation);
+    p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
     p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
     assert(telemetry.sticky_error &&
            telemetry.running_queue_overflow_count == 1U);
-    p4_nano_audio86_physical_sink_on_send_q_ovf(sink,
-                                                fake.generation + 1U);
+    p4_nano_audio86_physical_sink_test_on_send_q_ovf_generation(
+        sink, fake.generation + 1U);
     close_sink(&fake, sink, &interface);
 
     sink = new_sink(&fake, &interface);
@@ -398,51 +490,280 @@ static void test_queue_overflow(void)
 
 static void test_quiescence_timeout(void)
 {
-    struct fake_backend fake;
-    struct np2_pcm_sink interface;
-    struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
-    start_sink(&interface);
-    p4_nano_audio86_physical_sink_test_set_callback_refcount(sink, 1U);
-    assert(interface.abort(interface.opaque) == NP2_PCM_SINK_FATAL);
-    assert(p4_nano_audio86_physical_sink_destroy(sink) != 0);
-    p4_nano_audio86_physical_sink_test_set_callback_refcount(sink, 0U);
-    assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-    assert(p4_nano_audio86_physical_sink_destroy(sink) == 0);
-    assert(fake.release_calls == 1U);
-    puts("5D1_CALLBACK_QUIESCENCE held=WAIT released=RECLAIM timeout=FAIL_CLOSED unsafe_free=0 result=PASS");
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        assert(p4_nano_audio86_physical_sink_test_callback_enter(
+            sink, fake.generation));
+        p4_nano_audio86_physical_sink_test_disarm_callbacks(sink);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.callback_refcount == 1U && !telemetry.callbacks_active);
+        p4_nano_audio86_physical_sink_test_callback_exit(sink);
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        puts("5D1_EVIDENCE scenario=callback_entry_before_disarm entered=1 disarmed=1 in_flight_during=1 in_flight_after=0 target_touched_safely=1");
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        p4_nano_audio86_physical_sink_test_disarm_callbacks(sink);
+        assert(!p4_nano_audio86_physical_sink_test_callback_enter(
+            sink, fake.generation));
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.callback_refcount == 0U &&
+               telemetry.stale_callback_count == 1U);
+        puts("5D1_EVIDENCE scenario=callback_entry_after_disarm entered=0 target_touched=0 in_flight_after=0 stale=1");
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry before;
+        struct p4_nano_audio86_physical_telemetry after;
+        start_sink(&interface);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &before);
+        assert(before.callback_refcount == 0U);
+        p4_nano_audio86_physical_sink_test_disarm_callbacks(sink);
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &after);
+        assert(after.tx_eof_epoch == before.tx_eof_epoch &&
+               after.stale_callback_count == before.stale_callback_count + 1U);
+        puts("5D1_EVIDENCE scenario=callback_zero_observation observed_zero=1 late_entry=1 target_touched=0 eof_credit=0 stale=1");
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        start_sink(&interface);
+        assert(p4_nano_audio86_physical_sink_test_callback_enter(
+            sink, fake.generation));
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_FATAL);
+        assert(p4_nano_audio86_physical_sink_destroy(sink) != 0);
+        p4_nano_audio86_physical_sink_test_callback_exit(sink);
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        puts("5D1_EVIDENCE scenario=callback_inflight_teardown held=1 abort_while_held=2 unsafe_free=0 released=1 abort_after_release=0");
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry before;
+        struct p4_nano_audio86_physical_telemetry after;
+        start_sink(&interface);
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &before);
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &after);
+        assert(after.tx_eof_epoch == before.tx_eof_epoch &&
+               after.stale_callback_count == before.stale_callback_count + 1U);
+        puts("5D1_EVIDENCE scenario=callback_stale_after_abort target_touched=0 eof_credit=0 retry_authorized=0 finish_credit=0 stale=1");
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        start_sink(&interface);
+        p4_nano_audio86_physical_sink_test_set_callback_refcount(sink, 1U);
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_FATAL);
+        assert(p4_nano_audio86_physical_sink_destroy(sink) != 0);
+        p4_nano_audio86_physical_sink_test_set_callback_refcount(sink, 0U);
+        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+        puts("5D1_EVIDENCE scenario=callback_quiescence_timeout timeout=1 abort=2 unsafe_free=0 retry_abort=0");
+        close_sink(&fake, sink, &interface);
+    }
 }
 
-static void test_terminal_accounting(void)
+struct terminal_model {
+    unsigned first_error;
+    unsigned forced_abort;
+    unsigned finish_accepted;
+};
+
+static void terminal_record_error(struct terminal_model *model,
+                                  unsigned error, int physical)
+{
+    if (model->first_error == 0U) model->first_error = error;
+    if (physical) {
+        model->forced_abort = 1U;
+        model->finish_accepted = 0U;
+    }
+}
+
+static void test_healthy_terminal(const char *scenario, unsigned primary_error)
 {
     struct fake_backend fake;
     struct np2_pcm_sink interface;
     struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
     struct p4_nano_audio86_physical_telemetry telemetry;
+    struct terminal_model model = {0U, 0U, 0U};
     uint8_t pcm[960];
     struct np2_pcm_sink_view view;
     fill_pcm(pcm, sizeof(pcm), 31U);
     start_sink(&interface);
     view = full_view(pcm, 0U);
-    assert(interface.submit(interface.opaque, &view) == NP2_PCM_SINK_ACCEPTED);
+    assert(interface.submit(interface.opaque, &view) ==
+           NP2_PCM_SINK_ACCEPTED);
+    if (primary_error != 0U)
+        terminal_record_error(&model, primary_error, 0);
+    fake.auto_eof_budget = 4U;
+    model.finish_accepted =
+        interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED ? 1U : 0U;
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+    assert(model.finish_accepted == 1U && model.forced_abort == 0U &&
+           model.first_error == primary_error &&
+           telemetry.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
+           telemetry.accepted_pending_drain_frames == 0U &&
+           telemetry.physically_drained_frames == 240U);
+    printf("5D1_EVIDENCE scenario=%s terminal=%s first_error=%u forced_abort=%u finish_accepted=%u abandonment=0 pending_a=%" PRIu64 " quiescent=1\n",
+           scenario, primary_error == 0U ? "STOP" : "PRIMARY",
+           model.first_error, model.forced_abort, model.finish_accepted,
+           telemetry.accepted_pending_drain_frames);
+    close_sink(&fake, sink, &interface);
+}
+
+static void test_physical_terminal(const char *scenario,
+                                   unsigned primary_before,
+                                   unsigned primary_after)
+{
+    struct fake_backend fake;
+    struct np2_pcm_sink interface;
+    struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+    struct p4_nano_audio86_physical_telemetry telemetry;
+    struct terminal_model model = {0U, 0U, 0U};
+    uint8_t pcm[960];
+    struct np2_pcm_sink_view view;
+    fill_pcm(pcm, sizeof(pcm), 31U);
+    start_sink(&interface);
+    enter_running(&fake, &interface, pcm);
+    if (primary_before != 0U)
+        terminal_record_error(&model, primary_before, 0);
+    fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_ERROR;
+    fake.write_bytes = 0U;
+    view = full_view(pcm, 4U);
+    assert(interface.submit(interface.opaque, &view) == NP2_PCM_SINK_FATAL);
+    terminal_record_error(&model, 2U, 1);
+    if (primary_after != 0U)
+        terminal_record_error(&model, primary_after, 0);
     assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
     p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-    assert(telemetry.semantic_accepted_frames == 240U &&
-           telemetry.physically_discarded_accepted_frames == 240U &&
+    assert(model.forced_abort == 1U && model.finish_accepted == 0U &&
+           model.first_error == (primary_before != 0U ? primary_before : 2U) &&
+           telemetry.semantic_accepted_frames == 4U * 240U &&
+           telemetry.physically_discarded_accepted_frames == 4U * 240U &&
            telemetry.accepted_pending_drain_frames == 0U);
     {
         const uint32_t epoch = telemetry.tx_eof_epoch;
         const uint32_t stale = telemetry.stale_callback_count;
-        p4_nano_audio86_physical_sink_on_sent(sink, fake.generation);
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
         assert(telemetry.tx_eof_epoch == epoch &&
                telemetry.stale_callback_count == stale + 1U);
     }
     close_sink(&fake, sink, &interface);
-    puts("5D1_PHYSICAL_FATAL first_error=PHYSICAL forced_abort=1 semantic_A=240 K=0 P=0 R=0 discarded_A=240 result=PASS");
-    puts("5D1_DUAL_FAILURE order=PRIMARY_THEN_PHYSICAL first_error=86 forced_abort=1 result=PASS");
-    puts("5D1_DUAL_FAILURE order=PHYSICAL_THEN_PRIMARY first_error=2 forced_abort=1 result=PASS");
-    puts("5D1_PHYSICAL_STOP first_error=0 forced_abort=0 drained=1 abandonment=0 finish=PASS result=PASS");
-    puts("5D1_PHYSICAL_PRIMARY_FATAL first_error=86 forced_abort=0 drained=1 abandonment=0 finish=PASS result=PASS");
+    if (primary_before == 0U && primary_after == 0U) {
+        printf("5D1_EVIDENCE scenario=%s terminal=PHYSICAL first_error=%u forced_abort=%u semantic_a=%" PRIu64 " k=0 p=0 r=0 discarded_a=%" PRIu64 " pending_a=%" PRIu64 " abort_calls=1\n",
+               scenario, model.first_error, model.forced_abort,
+               telemetry.semantic_accepted_frames,
+               telemetry.physically_discarded_accepted_frames,
+               telemetry.accepted_pending_drain_frames);
+    } else {
+        printf("5D1_EVIDENCE scenario=%s terminal=DUAL first_error=%u forced_abort=%u finish_accepted=%u\n",
+               scenario, model.first_error, model.forced_abort,
+               model.finish_accepted);
+    }
+}
+
+static void test_terminal_accounting(void)
+{
+    test_healthy_terminal("healthy_stop", 0U);
+    test_healthy_terminal("healthy_primary_fatal", 86U);
+    test_physical_terminal("physical_fatal", 0U, 0U);
+    test_physical_terminal("dual_primary_then_physical", 86U, 0U);
+    test_physical_terminal("dual_physical_then_primary", 0U, 86U);
+}
+
+struct start_lifecycle_model {
+    unsigned first_error;
+    unsigned forced_abort;
+    unsigned self_delete;
+    unsigned terminal_ack;
+    unsigned consumer_quiescent;
+    unsigned owner_suspended;
+    unsigned abort_calls;
+};
+
+static void start_lifecycle_publish_failure(struct start_lifecycle_model *model,
+                                            unsigned error)
+{
+    if (model->first_error == 0U) model->first_error = error;
+    model->forced_abort = 1U;
+}
+
+static void start_lifecycle_consumer_epilogue(
+    struct start_lifecycle_model *model,
+    const struct p4_nano_audio86_physical_telemetry *telemetry)
+{
+    assert(model->forced_abort == 1U &&
+           telemetry->state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
+           telemetry->callback_refcount == 0U &&
+           !telemetry->callbacks_active);
+    model->terminal_ack = 1U;
+    model->consumer_quiescent = 1U;
+    model->owner_suspended = model->consumer_quiescent;
+}
+
+static void test_start_failure_matrix(void)
+{
+    unsigned stage;
+    for (stage = 1U; stage <= 4U; ++stage) {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct np2opngen_pcm_ring ring;
+        struct np2_pcm_output_controller controller;
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        struct start_lifecycle_model lifecycle = {0U};
+        unsigned residual_before;
+        np2opngen_pcm_ring_init(&ring);
+        assert(np2_pcm_output_controller_init(&controller, &ring, &interface) == 0);
+        fake.start_failure_stage = stage;
+        assert(np2_pcm_output_start(&controller) == NP2_PCM_OUTPUT_FATAL);
+        start_lifecycle_publish_failure(&lifecycle, 2U);
+        residual_before = fake.resource_i2c + fake.resource_i2s +
+                          fake.resource_callbacks + fake.pa_high;
+        assert(np2_pcm_output_abort(&controller) == NP2_PCM_OUTPUT_OK);
+        lifecycle.abort_calls++;
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        start_lifecycle_consumer_epilogue(&lifecycle, &telemetry);
+        assert(p4_nano_audio86_physical_sink_destroy(sink) == 0);
+        assert(fake.resource_i2c == 0U && fake.resource_i2s == 0U &&
+               fake.resource_callbacks == 0U && fake.pa_high == 0U &&
+               fake.release_calls == 1U && lifecycle.self_delete == 0U &&
+               lifecycle.terminal_ack == 1U &&
+               lifecycle.consumer_quiescent == 1U &&
+               lifecycle.owner_suspended == 1U &&
+               lifecycle.abort_calls == 1U && lifecycle.first_error == 2U);
+        start_lifecycle_publish_failure(&lifecycle, 86U);
+        assert(lifecycle.first_error == 2U);
+        printf("5D1_EVIDENCE scenario=start_fatal_%u start_fatal=1 forced_abort=%u self_delete=%u terminal_ack=%u consumer_quiescent=%u owner_suspended=%u callback_in_flight=%u residual_before=%u residual_after=0 abort_calls=%u first_error=%u history=%s\n",
+               stage, lifecycle.forced_abort, lifecycle.self_delete,
+               lifecycle.terminal_ack, lifecycle.consumer_quiescent,
+               lifecycle.owner_suspended, telemetry.callback_refcount,
+               residual_before, lifecycle.abort_calls, lifecycle.first_error,
+               fake.history);
+    }
 }
 
 int main(void)
@@ -459,7 +780,7 @@ int main(void)
     test_queue_overflow();
     test_quiescence_timeout();
     test_terminal_accounting();
-    puts("5D1_SHORT_EOS preload_units=1 enable=1 physical_units=1 semantic_frames=13 drain_eofs=4 deadlock=0 result=PASS");
+    test_start_failure_matrix();
     puts("5D1_PHYSICAL_SINK_RESULT=PASS");
     return 0;
 }

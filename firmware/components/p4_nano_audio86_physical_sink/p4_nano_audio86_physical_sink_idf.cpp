@@ -30,16 +30,11 @@ constexpr uint8_t kMuteMask = 0x60U;
 constexpr uint8_t kDacVolume = 0xa0U;
 constexpr TickType_t kPaSettleTicks = pdMS_TO_TICKS(150U);
 
-struct CallbackContext {
-    struct p4_nano_audio86_physical_sink *sink = nullptr;
-    uint32_t generation = 0U;
-};
-
 struct IdfBackend {
     p4_nano_board::I2cDeviceLease codec{};
     i2s_chan_handle_t tx = nullptr;
     TaskHandle_t *waiter_slot = nullptr;
-    CallbackContext callback{};
+    struct p4_nano_audio86_callback_gate *callback_gate = nullptr;
     bool codec_acquired = false;
     bool pa_initialized = false;
     bool channel_created = false;
@@ -152,47 +147,77 @@ esp_err_t create_i2s(IdfBackend *backend)
 
 bool IRAM_ATTR on_sent(i2s_chan_handle_t, i2s_event_data_t *, void *opaque)
 {
-    auto *context = static_cast<CallbackContext *>(opaque);
-    p4_nano_audio86_physical_sink_on_sent(context->sink,
-                                           context->generation);
+    p4_nano_audio86_callback_gate_on_sent(
+        static_cast<p4_nano_audio86_callback_gate *>(opaque));
     return false;
 }
 
 bool IRAM_ATTR on_send_q_ovf(i2s_chan_handle_t, i2s_event_data_t *,
                              void *opaque)
 {
-    auto *context = static_cast<CallbackContext *>(opaque);
-    p4_nano_audio86_physical_sink_on_send_q_ovf(context->sink,
-                                                context->generation);
+    p4_nano_audio86_callback_gate_on_send_q_ovf(
+        static_cast<p4_nano_audio86_callback_gate *>(opaque));
     return false;
 }
 
-int prepare(void *opaque, struct p4_nano_audio86_physical_sink *sink,
+void rollback_prepare(IdfBackend *backend)
+{
+    if (backend->codec_acquired) (void)codec_mute(backend->codec, true);
+    if (backend->pa_initialized) (void)p4_nano_board::pa_service_disable();
+    if (backend->channel_enabled && backend->tx != nullptr) {
+        if (i2s_channel_disable(backend->tx) == ESP_OK)
+            backend->channel_enabled = false;
+    }
+    if (backend->channel_created && !backend->channel_enabled &&
+        backend->tx != nullptr) {
+        if (i2s_del_channel(backend->tx) == ESP_OK) {
+            backend->tx = nullptr;
+            backend->channel_created = false;
+            backend->callbacks_registered = false;
+            backend->callback_gate = nullptr;
+        }
+    }
+    if (backend->codec_acquired) {
+        (void)p4_nano_board::shared_i2c_release_device(&backend->codec);
+        backend->codec_acquired = false;
+        (void)p4_nano_board::shared_i2c_shutdown();
+    }
+    if (backend->pa_initialized) {
+        (void)p4_nano_board::pa_service_shutdown();
+        backend->pa_initialized = false;
+    }
+}
+
+int prepare(void *opaque, struct p4_nano_audio86_callback_gate *callback_gate,
             uint32_t generation)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
-    if (p4_nano_board::pa_service_init() != ESP_OK) return -1;
+    const auto fail_prepare = [backend]() {
+        rollback_prepare(backend);
+        return -1;
+    };
+    if (p4_nano_board::pa_service_init() != ESP_OK) return fail_prepare();
     backend->pa_initialized = true;
-    if (p4_nano_board::pa_service_disable() != ESP_OK) return -1;
+    if (p4_nano_board::pa_service_disable() != ESP_OK) return fail_prepare();
     if (p4_nano_board::shared_i2c_acquire_device(kCodecAddress,
                                                  &backend->codec) != ESP_OK)
-        return -1;
+        return fail_prepare();
     backend->codec_acquired = true;
     if (codec_configure(backend->codec) != ESP_OK ||
-        create_i2s(backend) != ESP_OK) return -1;
+        create_i2s(backend) != ESP_OK) return fail_prepare();
 
     /* Muted zero warm-up is outside semantic PCM.  No user callback is
      * registered for this generation, and disable resets the driver's free
      * buffer queue before semantic READY-state preload begins. */
-    if (i2s_channel_enable(backend->tx) != ESP_OK) return -1;
+    if (i2s_channel_enable(backend->tx) != ESP_OK) return fail_prepare();
     backend->channel_enabled = true;
-    if (p4_nano_board::pa_service_enable() != ESP_OK) return -1;
+    if (p4_nano_board::pa_service_enable() != ESP_OK) return fail_prepare();
     vTaskDelay(kPaSettleTicks);
-    if (i2s_channel_disable(backend->tx) != ESP_OK) return -1;
+    if (i2s_channel_disable(backend->tx) != ESP_OK) return fail_prepare();
     backend->channel_enabled = false;
 
-    backend->callback.sink = sink;
-    backend->callback.generation = generation;
+    (void)generation;
+    backend->callback_gate = callback_gate;
     const i2s_event_callbacks_t callbacks = {
         .on_recv = nullptr,
         .on_recv_q_ovf = nullptr,
@@ -200,8 +225,8 @@ int prepare(void *opaque, struct p4_nano_audio86_physical_sink *sink,
         .on_send_q_ovf = on_send_q_ovf,
     };
     if (i2s_channel_register_event_callback(backend->tx, &callbacks,
-                                            &backend->callback) != ESP_OK)
-        return -1;
+                                            backend->callback_gate) != ESP_OK)
+        return fail_prepare();
     backend->callbacks_registered = true;
     return 0;
 }
@@ -245,16 +270,15 @@ enum p4_nano_audio86_physical_io_result write(
 int mute(void *opaque)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
-    return backend->codec_acquired && codec_mute(backend->codec, true) == ESP_OK
-               ? 0 : -1;
+    if (!backend->codec_acquired) return 0;
+    return codec_mute(backend->codec, true) == ESP_OK ? 0 : -1;
 }
 
 int pa_low(void *opaque)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
-    return backend->pa_initialized &&
-                   p4_nano_board::pa_service_disable() == ESP_OK
-               ? 0 : -1;
+    if (!backend->pa_initialized) return 0;
+    return p4_nano_board::pa_service_disable() == ESP_OK ? 0 : -1;
 }
 
 int disable(void *opaque)
@@ -269,12 +293,18 @@ int disable(void *opaque)
 int unregister_callbacks(void *opaque)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
-    if (!backend->callbacks_registered) return 0;
-    const i2s_event_callbacks_t callbacks{};
-    if (i2s_channel_register_event_callback(backend->tx, &callbacks,
-                                            nullptr) != ESP_OK)
-        return -1;
+    /* i2s_channel_disable()/gdma_stop() alone is not an ISR-start barrier.
+     * i2s_del_channel() reaches gdma_del_channel()/esp_intr_free() on the
+     * interrupt-owning core; only after it returns may the embedded user_data
+     * gate be reclaimed once its portable in_flight count is also zero. */
+    if (backend->channel_created) {
+        if (backend->channel_enabled ||
+            i2s_del_channel(backend->tx) != ESP_OK) return -1;
+        backend->tx = nullptr;
+        backend->channel_created = false;
+    }
     backend->callbacks_registered = false;
+    backend->callback_gate = nullptr;
     return 0;
 }
 

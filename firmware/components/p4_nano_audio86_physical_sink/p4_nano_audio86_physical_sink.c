@@ -10,18 +10,29 @@
 #include <string.h>
 
 #if defined(ESP_PLATFORM)
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
+#define CALLBACK_IRAM IRAM_ATTR
+#else
+#define CALLBACK_IRAM
 #endif
+
+struct p4_nano_audio86_callback_gate {
+    _Atomic uint32_t in_flight;
+    _Atomic uint32_t armed;
+    _Atomic uint32_t registration_generation;
+    _Atomic uintptr_t target;
+    _Atomic uint32_t stale_count;
+};
 
 struct p4_nano_audio86_physical_sink {
     struct p4_nano_audio86_physical_backend backend;
     _Atomic uint32_t state;
     _Atomic uint32_t generation;
     _Atomic uint32_t callbacks_active;
-    _Atomic uint32_t callback_refcount;
+    struct p4_nano_audio86_callback_gate callback_gate;
     _Atomic uint32_t tx_eof_epoch;
     _Atomic uint32_t sticky_error;
-    _Atomic uint32_t stale_callback_count;
     _Atomic uint32_t running_queue_overflow_count;
     _Atomic uint32_t draining_queue_overflow_count;
     uint32_t preloaded_units;
@@ -107,10 +118,13 @@ int p4_nano_audio86_physical_sink_create(
     atomic_init(&sink->state, P4_NANO_AUDIO86_PHYSICAL_INITIAL);
     atomic_init(&sink->generation, 0U);
     atomic_init(&sink->callbacks_active, 0U);
-    atomic_init(&sink->callback_refcount, 0U);
+    atomic_init(&sink->callback_gate.in_flight, 0U);
+    atomic_init(&sink->callback_gate.armed, 0U);
+    atomic_init(&sink->callback_gate.registration_generation, 0U);
+    atomic_init(&sink->callback_gate.target, (uintptr_t)0U);
+    atomic_init(&sink->callback_gate.stale_count, 0U);
     atomic_init(&sink->tx_eof_epoch, 0U);
     atomic_init(&sink->sticky_error, 0U);
-    atomic_init(&sink->stale_callback_count, 0U);
     atomic_init(&sink->running_queue_overflow_count, 0U);
     atomic_init(&sink->draining_queue_overflow_count, 0U);
     *out = sink;
@@ -127,7 +141,7 @@ int p4_nano_audio86_physical_sink_destroy(
     state = load_state(sink);
     if ((state != P4_NANO_AUDIO86_PHYSICAL_INITIAL &&
          state != P4_NANO_AUDIO86_PHYSICAL_QUIESCENT) ||
-        atomic_load_explicit(&sink->callback_refcount,
+        atomic_load_explicit(&sink->callback_gate.in_flight,
                              memory_order_acquire) != 0U ||
         atomic_load_explicit(&sink->callbacks_active,
                              memory_order_acquire) != 0U) {
@@ -150,10 +164,17 @@ static enum np2_pcm_sink_result physical_start(void *opaque)
     }
     generation = atomic_fetch_add_explicit(&sink->generation, 1U,
                                             memory_order_acq_rel) + 1U;
-    if (sink->backend.prepare(sink->backend.opaque, sink, generation) != 0) {
+    atomic_store_explicit(&sink->callback_gate.registration_generation,
+                          generation, memory_order_release);
+    atomic_store_explicit(&sink->callback_gate.target, (uintptr_t)sink,
+                          memory_order_release);
+    if (sink->backend.prepare(sink->backend.opaque, &sink->callback_gate,
+                              generation) != 0) {
         mark_failed(sink);
         return NP2_PCM_SINK_FATAL;
     }
+    atomic_store_explicit(&sink->callback_gate.armed, 1U,
+                          memory_order_release);
     atomic_store_explicit(&sink->state,
                           P4_NANO_AUDIO86_PHYSICAL_PREPARED_ACCEPTING,
                           memory_order_release);
@@ -270,7 +291,7 @@ static bool wait_for_callbacks_zero(
     struct p4_nano_audio86_physical_sink *sink)
 {
     uint64_t start_ms = sink->backend.now_ms(sink->backend.opaque);
-    while (atomic_load_explicit(&sink->callback_refcount,
+    while (atomic_load_explicit(&sink->callback_gate.in_flight,
                                 memory_order_acquire) != 0U) {
         if (deadline_expired(sink, start_ms)) {
             return false;
@@ -280,11 +301,19 @@ static bool wait_for_callbacks_zero(
     return true;
 }
 
-static bool close_callbacks(struct p4_nano_audio86_physical_sink *sink)
+static void disarm_callbacks(struct p4_nano_audio86_physical_sink *sink)
 {
     atomic_store_explicit(&sink->callbacks_active, 0U,
                           memory_order_release);
+    atomic_store_explicit(&sink->callback_gate.armed, 0U,
+                          memory_order_release);
+    atomic_store_explicit(&sink->callback_gate.target, (uintptr_t)0U,
+                          memory_order_release);
     atomic_fetch_add_explicit(&sink->generation, 1U, memory_order_acq_rel);
+}
+
+static bool close_callbacks(struct p4_nano_audio86_physical_sink *sink)
+{
     if (sink->backend.unregister_callbacks(sink->backend.opaque) != 0) {
         return false;
     }
@@ -329,6 +358,7 @@ static enum np2_pcm_sink_result physical_finish(void *opaque)
     }
     sink->drain_completion_epoch = atomic_load_explicit(
         &sink->tx_eof_epoch, memory_order_acquire);
+    disarm_callbacks(sink);
     if (sink->backend.mute(sink->backend.opaque) != 0 ||
         sink->backend.pa_low(sink->backend.opaque) != 0 ||
         sink->backend.disable(sink->backend.opaque) != 0 ||
@@ -350,9 +380,7 @@ static enum np2_pcm_sink_result physical_abort(void *opaque)
     if (sink == NULL) return NP2_PCM_SINK_FATAL;
     atomic_store_explicit(&sink->state, P4_NANO_AUDIO86_PHYSICAL_ABORTING,
                           memory_order_release);
-    atomic_store_explicit(&sink->callbacks_active, 0U,
-                          memory_order_release);
-    atomic_fetch_add_explicit(&sink->generation, 1U, memory_order_acq_rel);
+    disarm_callbacks(sink);
     notify_waiter(sink, false);
     if (sink->backend.mute(sink->backend.opaque) != 0) ok = false;
     if (sink->backend.pa_low(sink->backend.opaque) != 0) ok = false;
@@ -399,45 +427,66 @@ bool p4_nano_audio86_physical_sink_retry_ready(
             state != P4_NANO_AUDIO86_PHYSICAL_STARTING);
 }
 
-void p4_nano_audio86_physical_sink_on_sent(
-    struct p4_nano_audio86_physical_sink *sink, uint32_t generation)
+static CALLBACK_IRAM struct p4_nano_audio86_physical_sink *callback_gate_enter(
+    struct p4_nano_audio86_callback_gate *gate, uint32_t generation,
+    bool generation_override)
 {
-    bool valid;
-    if (sink == NULL) return;
-    atomic_fetch_add_explicit(&sink->callback_refcount, 1U,
-                              memory_order_acq_rel);
-    valid = atomic_load_explicit(&sink->callbacks_active,
-                                 memory_order_acquire) != 0U &&
-            atomic_load_explicit(&sink->generation, memory_order_acquire) ==
-                generation;
-    if (valid) {
+    uintptr_t target;
+    uint32_t armed;
+    uint32_t registered_generation;
+    if (gate == NULL) return NULL;
+    /* This must remain the first meaningful callback action: the gate is the
+     * guaranteed-live IDF user_data object protecting every later pointer. */
+    atomic_fetch_add_explicit(&gate->in_flight, 1U, memory_order_acq_rel);
+    if (!generation_override) {
+        generation = atomic_load_explicit(&gate->registration_generation,
+                                          memory_order_acquire);
+    }
+    armed = atomic_load_explicit(&gate->armed, memory_order_acquire);
+    registered_generation = atomic_load_explicit(
+        &gate->registration_generation, memory_order_acquire);
+    target = (armed != 0U && registered_generation == generation)
+        ? atomic_load_explicit(&gate->target, memory_order_acquire)
+        : (uintptr_t)0U;
+    if (armed == 0U || registered_generation != generation ||
+        target == (uintptr_t)0U) {
+        atomic_fetch_add_explicit(&gate->stale_count, 1U,
+                                  memory_order_relaxed);
+        atomic_fetch_sub_explicit(&gate->in_flight, 1U,
+                                  memory_order_release);
+        return NULL;
+    }
+    return (struct p4_nano_audio86_physical_sink *)target;
+}
+
+static CALLBACK_IRAM void callback_gate_exit(
+    struct p4_nano_audio86_callback_gate *gate)
+{
+    atomic_fetch_sub_explicit(&gate->in_flight, 1U, memory_order_release);
+}
+
+static CALLBACK_IRAM void callback_on_sent(
+    struct p4_nano_audio86_callback_gate *gate, uint32_t generation,
+    bool generation_override)
+{
+    struct p4_nano_audio86_physical_sink *sink =
+        callback_gate_enter(gate, generation, generation_override);
+    if (sink != NULL) {
         atomic_fetch_add_explicit(&sink->tx_eof_epoch, 1U,
                                   memory_order_release);
         notify_waiter(sink, true);
-    } else {
-        atomic_fetch_add_explicit(&sink->stale_callback_count, 1U,
-                                  memory_order_relaxed);
+        callback_gate_exit(gate);
     }
-    atomic_fetch_sub_explicit(&sink->callback_refcount, 1U,
-                              memory_order_release);
 }
 
-void p4_nano_audio86_physical_sink_on_send_q_ovf(
-    struct p4_nano_audio86_physical_sink *sink, uint32_t generation)
+static CALLBACK_IRAM void callback_on_send_q_ovf(
+    struct p4_nano_audio86_callback_gate *gate, uint32_t generation,
+    bool generation_override)
 {
     enum p4_nano_audio86_physical_state state;
-    bool valid;
-    if (sink == NULL) return;
-    atomic_fetch_add_explicit(&sink->callback_refcount, 1U,
-                              memory_order_acq_rel);
-    valid = atomic_load_explicit(&sink->callbacks_active,
-                                 memory_order_acquire) != 0U &&
-            atomic_load_explicit(&sink->generation, memory_order_acquire) ==
-                generation;
-    if (!valid) {
-        atomic_fetch_add_explicit(&sink->stale_callback_count, 1U,
-                                  memory_order_relaxed);
-    } else {
+    struct p4_nano_audio86_physical_sink *sink =
+        callback_gate_enter(gate, generation, generation_override);
+    if (sink != NULL) {
         state = load_state(sink);
         if (state == P4_NANO_AUDIO86_PHYSICAL_DRAINING) {
             atomic_fetch_add_explicit(&sink->draining_queue_overflow_count, 1U,
@@ -450,9 +499,22 @@ void p4_nano_audio86_physical_sink_on_send_q_ovf(
                                   memory_order_release);
             notify_waiter(sink, true);
         }
+        callback_gate_exit(gate);
     }
-    atomic_fetch_sub_explicit(&sink->callback_refcount, 1U,
-                              memory_order_release);
+}
+
+void CALLBACK_IRAM p4_nano_audio86_callback_gate_on_sent(
+    struct p4_nano_audio86_callback_gate *gate)
+{
+    if (gate == NULL) return;
+    callback_on_sent(gate, 0U, false);
+}
+
+void CALLBACK_IRAM p4_nano_audio86_callback_gate_on_send_q_ovf(
+    struct p4_nano_audio86_callback_gate *gate)
+{
+    if (gate == NULL) return;
+    callback_on_send_q_ovf(gate, 0U, false);
 }
 
 void p4_nano_audio86_physical_sink_get_telemetry(
@@ -477,13 +539,13 @@ void p4_nano_audio86_physical_sink_get_telemetry(
     telemetry->generation = atomic_load_explicit(&sink->generation,
                                                   memory_order_acquire);
     telemetry->stale_callback_count = atomic_load_explicit(
-        &sink->stale_callback_count, memory_order_acquire);
+        &sink->callback_gate.stale_count, memory_order_acquire);
     telemetry->running_queue_overflow_count = atomic_load_explicit(
         &sink->running_queue_overflow_count, memory_order_acquire);
     telemetry->draining_queue_overflow_count = atomic_load_explicit(
         &sink->draining_queue_overflow_count, memory_order_acquire);
     telemetry->callback_refcount = atomic_load_explicit(
-        &sink->callback_refcount, memory_order_acquire);
+        &sink->callback_gate.in_flight, memory_order_acquire);
     telemetry->preloaded_units = sink->preloaded_units;
     telemetry->state = load_state(sink);
     telemetry->sticky_error = atomic_load_explicit(
@@ -497,8 +559,41 @@ void p4_nano_audio86_physical_sink_test_set_callback_refcount(
     struct p4_nano_audio86_physical_sink *sink, uint32_t count)
 {
     if (sink != NULL) {
-        atomic_store_explicit(&sink->callback_refcount, count,
+        atomic_store_explicit(&sink->callback_gate.in_flight, count,
                               memory_order_release);
     }
+}
+
+void p4_nano_audio86_physical_sink_test_on_sent_generation(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation)
+{
+    if (sink != NULL)
+        callback_on_sent(&sink->callback_gate, generation, true);
+}
+
+void p4_nano_audio86_physical_sink_test_on_send_q_ovf_generation(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation)
+{
+    if (sink != NULL)
+        callback_on_send_q_ovf(&sink->callback_gate, generation, true);
+}
+
+bool p4_nano_audio86_physical_sink_test_callback_enter(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t generation)
+{
+    return sink != NULL &&
+        callback_gate_enter(&sink->callback_gate, generation, true) != NULL;
+}
+
+void p4_nano_audio86_physical_sink_test_callback_exit(
+    struct p4_nano_audio86_physical_sink *sink)
+{
+    if (sink != NULL) callback_gate_exit(&sink->callback_gate);
+}
+
+void p4_nano_audio86_physical_sink_test_disarm_callbacks(
+    struct p4_nano_audio86_physical_sink *sink)
+{
+    if (sink != NULL) disarm_callbacks(sink);
 }
 #endif
