@@ -43,6 +43,9 @@ BRESULT iocore_build(void);
 #include "np2pcm_output.h"
 #include "np2runtime/np2runtime.hpp"
 #include "p4_nano_audio86_notifications/task_notification.hpp"
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+#include "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink_idf.hpp"
+#endif
 
 namespace p4_nano_audio86_guest_binding {
 namespace {
@@ -175,6 +178,9 @@ struct Runtime {
     SemaphoreHandle_t pcm_ready = nullptr;
     SemaphoreHandle_t pcm_done_semaphore = nullptr;
     TaskHandle_t pcm_consumer = nullptr;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    p4_nano_audio86_physical_sink *physical_sink = nullptr;
+#endif
     std::atomic<uint32_t> pcm_consumer_ready{0U};
     std::atomic<uint32_t> pcm_production_done{0U};
     std::atomic<uint32_t> pcm_consumer_quiescent{0U};
@@ -833,6 +839,11 @@ void pcm_consumer_task(void *opaque)
             break;
         }
         if (released && occupancy != 0U) {
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+            const uint32_t physical_retry_snapshot =
+                p4_nano_audio86_physical_sink_retry_snapshot(
+                    runtime->physical_sink);
+#endif
             const enum np2_pcm_output_status status =
                 np2_pcm_output_step(&runtime->pcm_controller);
             if (status == NP2_PCM_OUTPUT_RETRY) {
@@ -870,8 +881,13 @@ void pcm_consumer_task(void *opaque)
                  * level predicates before sleeping closes that lost-wake window. */
                 while (runtime->pcm_forced_abort_requested.load(
                            std::memory_order_acquire) == 0U &&
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+                       !p4_nano_audio86_physical_sink_retry_ready(
+                           runtime->physical_sink, physical_retry_snapshot)) {
+#else
                        runtime->pcm_sink_permission.load(
                            std::memory_order_acquire) == kPcmSinkPermissionHold) {
+#endif
                     (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
                     ++runtime->pcm_retry_wakes;
                 }
@@ -2483,8 +2499,16 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_eos_after_done = 0U;
     runtime->pcm_finish_after_empty = 0U;
     runtime->pcm_ack_after_finish = 0U;
+    np2_pcm_sink selected_sink = kPcmSink;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    if (p4_nano_audio86_physical::create_idf(
+            &runtime->physical_sink, &runtime->pcm_consumer) != ESP_OK)
+        return ESP_ERR_NO_MEM;
+    selected_sink = p4_nano_audio86_physical_sink_interface(
+        runtime->physical_sink);
+#endif
     if (np2_pcm_output_controller_init(&runtime->pcm_controller,
-                                       &runtime->pcm_ring, &kPcmSink) != 0)
+                                       &runtime->pcm_ring, &selected_sink) != 0)
         return ESP_FAIL;
     runtime->pcm_ready = xSemaphoreCreateBinaryStatic(&runtime->pcm_ready_storage);
     runtime->pcm_done_semaphore =
@@ -2596,6 +2620,14 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         runtime->pcm_consumer_deleted_after_suspended.store(1U,
                                                              std::memory_order_release);
     }
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    if (pcm_joined && runtime->physical_sink != nullptr) {
+        if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) != 0)
+            fail(runtime, kErrorWorker);
+        else
+            runtime->physical_sink = nullptr;
+    }
+#endif
 #endif
     const bool pressure_ok = kPressureScenario == kPressureNone ||
         (runtime->pressure_phase.load(std::memory_order_acquire) == 5U &&

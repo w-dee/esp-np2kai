@@ -250,6 +250,13 @@ NP2_PCM_OUTPUT_TEST_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test
 NP2_PCM_OUTPUT_ASAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_asan
 NP2_PCM_OUTPUT_UBSAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_ubsan
 NP2_PCM_OUTPUT_TSAN_OUTPUT := $(BUILD_DIR)/tests/np2pcm_output_test_tsan
+P4_NANO_AUDIO86_PHYSICAL_SINK_SOURCE := $(HOST_ROOT)/firmware/components/p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.c
+P4_NANO_AUDIO86_PHYSICAL_SINK_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_audio86_physical_sink/include
+P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_SOURCE := $(CURDIR)/tests/p4_nano_audio86_physical_sink_test.c
+P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test
+P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_asan
+P4_NANO_AUDIO86_PHYSICAL_SINK_UBSAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_ubsan
+P4_NANO_AUDIO86_PHYSICAL_SINK_TSAN_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_physical_sink_test_tsan
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
 OPNGEN_E1C_TEST_OUTPUT := $(BUILD_DIR)/tests/opngen_e1c_sustained_test
@@ -389,6 +396,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 .PHONY: test-p4-nano-board-static
 .PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
 .PHONY: build-np2pcm-output test-np2pcm-output test-np2pcm-output-stress build-np2pcm-output-asan test-np2pcm-output-asan build-np2pcm-output-ubsan test-np2pcm-output-ubsan build-np2pcm-output-tsan test-np2pcm-output-tsan
+.PHONY: build-p4-audio86-physical-sink test-p4-audio86-physical-sink build-p4-audio86-physical-sink-asan test-p4-audio86-physical-sink-asan build-p4-audio86-physical-sink-ubsan test-p4-audio86-physical-sink-ubsan build-p4-audio86-physical-sink-tsan test-p4-audio86-physical-sink-tsan
 
 test-audio86-guest-contract:
 	@$(PYTHON) "$(AUDIO86_GUEST_CONTRACT_SCRIPT)" \
@@ -1407,6 +1415,43 @@ build-np2pcm-output-tsan:
 
 test-np2pcm-output-tsan: build-np2pcm-output-tsan
 	@NP2_PCM_STRESS_ONLY=1 "$(NP2_PCM_OUTPUT_TSAN_OUTPUT)"
+
+define build_p4_audio86_physical_sink
+	@mkdir -p "$(dir $(1))"
+	@$(CC) -std=c11 -Wall -Wextra -Werror -pthread $(2) \
+		-DP4_NANO_AUDIO86_PHYSICAL_SINK_TESTING=1 \
+		-I"$(OPNGEN_SYNTH_EVENT_HEADER_DIR)" -I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		-I"$(P4_NANO_AUDIO86_PHYSICAL_SINK_HEADER_DIR)" \
+		"$(OPNGEN_PCM_RING_SOURCE)" "$(NP2_PCM_OUTPUT_SOURCE)" \
+		"$(P4_NANO_AUDIO86_PHYSICAL_SINK_SOURCE)" \
+		"$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_SOURCE)" $(3) -o "$(1)"
+endef
+
+p4_audio86_comma := ,
+
+build-p4-audio86-physical-sink:
+	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT),,)
+
+test-p4-audio86-physical-sink: build-p4-audio86-physical-sink
+	@"$(P4_NANO_AUDIO86_PHYSICAL_SINK_TEST_OUTPUT)"
+
+build-p4-audio86-physical-sink-asan:
+	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT),-O1 -g -fsanitize=address$(p4_audio86_comma)undefined -fno-omit-frame-pointer,-fsanitize=address$(p4_audio86_comma)undefined)
+
+test-p4-audio86-physical-sink-asan: build-p4-audio86-physical-sink-asan
+	@ASAN_OPTIONS=detect_leaks=0:halt_on_error=1 "$(P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT)" >/dev/null
+
+build-p4-audio86-physical-sink-ubsan:
+	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_UBSAN_OUTPUT),-O1 -g -fsanitize=undefined -fno-omit-frame-pointer,-fsanitize=undefined)
+
+test-p4-audio86-physical-sink-ubsan: build-p4-audio86-physical-sink-ubsan
+	@"$(P4_NANO_AUDIO86_PHYSICAL_SINK_UBSAN_OUTPUT)" >/dev/null
+
+build-p4-audio86-physical-sink-tsan:
+	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_TSAN_OUTPUT),-O1 -g -fsanitize=thread -fno-omit-frame-pointer,-fsanitize=thread)
+
+test-p4-audio86-physical-sink-tsan: build-p4-audio86-physical-sink-tsan
+	@"$(P4_NANO_AUDIO86_PHYSICAL_SINK_TSAN_OUTPUT)" >/dev/null
 
 test-opngen-e1b-formal: build-opngen-e1b
 	@$(PYTHON) "$(OPNGEN_E1B_FORMAL_RUNNER)" \

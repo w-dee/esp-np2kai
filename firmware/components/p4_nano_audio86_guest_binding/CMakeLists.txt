@@ -5,14 +5,17 @@ get_filename_component(P4_NANO_AUDIO86_BINDING_ROOT
 set(P4_NANO_AUDIO86_VENDOR_SRC
     "${P4_NANO_AUDIO86_BINDING_ROOT}/third_party/np2kai/src")
 
+set(P4_NANO_AUDIO86_BINDING_REQUIRES
+    np2core np2host np2runtime np2audio86_fixture np2audio86_guest_adapter np2opngen_fixture
+    np2pcm_output p4_nano_audio86_notifications
+    p4_nano_audio86_physical_sink freertos esp_system heap)
+
 idf_component_register(
     SRCS "p4_nano_audio86_guest_binding.cpp"
     INCLUDE_DIRS "include" "${P4_NANO_AUDIO86_VENDOR_SRC}"
                  "${P4_NANO_AUDIO86_VENDOR_SRC}/i286c"
                  "${P4_NANO_AUDIO86_BINDING_ROOT}/host/compat"
-    REQUIRES np2core np2host np2runtime np2audio86_fixture np2audio86_guest_adapter np2opngen_fixture
-             np2pcm_output
-             p4_nano_audio86_notifications freertos esp_system heap)
+    REQUIRES ${P4_NANO_AUDIO86_BINDING_REQUIRES})
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -std=gnu++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror
@@ -33,6 +36,10 @@ endif()
 if(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE=1)
+endif()
+if(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE=1)
 endif()
 if(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
