@@ -36,9 +36,14 @@ def main() -> int:
                         "intr_free_for_other_cpu"), "interrupt free path")
     require(ipc, ("IPC_WAIT_FOR_END", "esp_err_t esp_ipc_call_blocking",
                   "IPC_WAIT_FOR_END);"), "blocking IPC path")
-    print("CALLBACK_IDF_BARRIER_SOURCE_PROOF=PASS")
-    print("CALLBACK_IDF_PROOF_VERSION_PINNED=PASS")
-    print("CALLBACK_BARRIER_DUAL_EVIDENCE=PASS")
+    print(
+        "5D1_STATIC_EVIDENCE schema=1 property_id=idf_delete_barrier "
+        "evidence_class=STATIC_IDF_SOURCE "
+        "fields=version|i2s_del_channel|gdma_del_channel|esp_intr_free|blocking_ipc "
+        "predicate=PASS")
+    print(
+        "5D1_NON_ACCEPTANCE_SUMMARY schema=1 evidence_class=STATIC_IDF_SOURCE "
+        "name=CALLBACK_BARRIER_SOURCE_PROOF value=COMPLETE")
     return 0
 
 

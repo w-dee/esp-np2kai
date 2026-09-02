@@ -10,7 +10,9 @@ host_path=${PATH}
 
 # shellcheck source=tools/emu/activate-idf.sh
 source tools/emu/activate-idf.sh
-python3 tools/emu/check_p4_audio86_callback_idf_barrier.py
+idf_source_log="${work_dir}/idf-source.log"
+python3 tools/emu/check_p4_audio86_callback_idf_barrier.py >"${idf_source_log}"
+cat "${idf_source_log}"
 project_source_log="${work_dir}/project-source.log"
 python3 tools/emu/check_p4_audio86_project_source.py >"${project_source_log}"
 cat "${project_source_log}"
@@ -57,7 +59,9 @@ manifest_args=(--host-log "${host_log}" --require-all-exec)
 for log in "${esp_logs[@]}"; do
     manifest_args+=(--esp-log "${log}")
 done
-manifest_args+=(--static-log "${project_source_log}")
+manifest_args+=(--idf-static-log "${idf_source_log}" \
+    --static-log "${project_source_log}" \
+    --test-orphan-policy-change-sensitivity)
 python3 tools/emu/test_p4_audio86_physical_sink_manifest.py \
     "${manifest_args[@]}"
 
