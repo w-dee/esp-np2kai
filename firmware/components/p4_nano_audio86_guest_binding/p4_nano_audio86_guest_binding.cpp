@@ -67,10 +67,22 @@ constexpr uint32_t kErrorEventApply = 5U;
 constexpr uint32_t kEventOpnaRegister = 0x100U;
 constexpr uint32_t kEventOpnaCsm = 0x101U;
 constexpr uint32_t kEventPcmControl = 0x102U;
+#ifndef P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO
+#define P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO 0
+#endif
+constexpr size_t kS2ResetFrameOffset = 1920U;
 #if defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)
 constexpr size_t kRenderFrames = 13U;
 constexpr uint32_t kExpectedPcmSlots = 1U;
 constexpr uint32_t kExpectedPartialSlots = 1U;
+#elif P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO >= 9 && \
+      P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO <= 11
+/* RESET/full profiles shift the complete guest timeline by eight q240 slots.
+ * This preserves the guest ordering while making the pre-RESET durability
+ * boundary physically reachable with the frozen eight-slot ring. */
+constexpr size_t kRenderFrames = kS2ResetFrameOffset + 2400U;
+constexpr uint32_t kExpectedPcmSlots = 18U;
+constexpr uint32_t kExpectedPartialSlots = 0U;
 #else
 constexpr size_t kRenderFrames = 2400U;
 constexpr uint32_t kExpectedPcmSlots = 10U;
@@ -82,9 +94,6 @@ constexpr size_t kApplyRecordBytes = 40U;
 #endif
 #ifndef P4_NANO_AUDIO86_FAILURE_KIND
 #define P4_NANO_AUDIO86_FAILURE_KIND 0
-#endif
-#ifndef P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO
-#define P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO 0
 #endif
 enum : uint32_t { kPressureNone = 0U, kPressureEvent = 1U,
                   kPressureByte = 2U, kPressureHorizon = 3U,
@@ -101,12 +110,31 @@ enum : uint32_t { kPcmLifecycleNone = 0U, kPcmLifecycleStopFull = 1U,
                   kPcmLifecycleRetryStop = 5U,
                   kPcmLifecycleRetryFatal = 6U,
                   kPcmLifecycleRetryPrimaryFirst = 7U,
-                  kPcmLifecycleRetryConsumerFirst = 8U };
+                  kPcmLifecycleRetryConsumerFirst = 8U,
+                  kPcmLifecycleResetStop = 9U,
+                  kPcmLifecycleResetFatal = 10U,
+                  kPcmLifecycleResetConsumerFatal = 11U,
+                  kPcmLifecyclePartialStop = 12U,
+                  kPcmLifecyclePartialFatal = 13U,
+                  kPcmLifecyclePartialConsumerFatal = 14U,
+                  kPcmLifecyclePostDoneConsumerFatal = 15U,
+                  kPcmLifecycleFinishFatal = 16U };
 constexpr uint32_t kPcmLifecycleScenario =
     P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO;
 constexpr bool kPcmRetryLifecycle =
     kPcmLifecycleScenario >= kPcmLifecycleRetryStop &&
     kPcmLifecycleScenario <= kPcmLifecycleRetryConsumerFirst;
+constexpr bool kPcmS2ResetLifecycle =
+    kPcmLifecycleScenario >= kPcmLifecycleResetStop &&
+    kPcmLifecycleScenario <= kPcmLifecycleResetConsumerFatal;
+constexpr bool kPcmS2PartialLifecycle =
+    kPcmLifecycleScenario >= kPcmLifecyclePartialStop &&
+    kPcmLifecycleScenario <= kPcmLifecyclePartialConsumerFatal;
+constexpr bool kPcmS2Lifecycle =
+    kPcmLifecycleScenario >= kPcmLifecycleResetStop &&
+    kPcmLifecycleScenario <= kPcmLifecycleFinishFatal;
+constexpr bool kPcmPermissionLifecycle =
+    kPcmRetryLifecycle || kPcmS2ResetLifecycle;
 enum : uint32_t { kPcmSinkPermissionHold = 0U,
                   kPcmSinkPermissionAccept = 1U,
                   kPcmSinkPermissionFatal = 2U };
@@ -168,6 +196,12 @@ struct Runtime {
     std::atomic<uint32_t> pcm_retry_permission_before_wake{0U};
     std::atomic<uint32_t> pcm_post_done_retry_waiting{0U};
     std::atomic<uint32_t> pcm_post_done_permission_before_wake{0U};
+    std::atomic<uint32_t> pcm_s2_controller_driven{0U};
+    std::atomic<uint32_t> pcm_s2_reset_rendering{0U};
+    std::atomic<uint32_t> pcm_s2_final_rendering{0U};
+    std::atomic<uint32_t> pcm_s2_consumer_fault_ready{0U};
+    std::atomic<uint32_t> pcm_s2_reset_guest_linearized{0U};
+    std::atomic<uint32_t> pcm_s2_reset_abandoned{0U};
     uint32_t pcm_retry_slot_captured = 0U;
     uint32_t pcm_post_done_retry_slot_captured = 0U;
     uint32_t pcm_retry_attempts = 0U;
@@ -202,6 +236,17 @@ struct Runtime {
     uint64_t pcm_post_done_accepted_frames_before = 0U;
     uint64_t pcm_post_done_accepted_bytes_before = 0U;
     uint32_t pcm_post_done_retry_crc32 = 0U;
+    uint64_t pcm_semantic_rendered_frames = 0U;
+    uint32_t pcm_s2_cutpoint_occupancy = 0U;
+    uint16_t pcm_s2_cutpoint_partial = 0U;
+    uint32_t pcm_s2_cutpoint_rendered = 0U;
+    uint32_t pcm_s2_cutpoint_unappended = 0U;
+    uint32_t pcm_s2_reset_event_residual_before_cleanup = 0U;
+    uint32_t pcm_s2_reset_horizon_residual_before_cleanup = 0U;
+    uint32_t pcm_s2_reset_transport_residual_after_cleanup = 0U;
+    uint32_t pcm_s2_finish_calls = 0U;
+    uint32_t pcm_s2_finish_fatal_observed = 0U;
+    uint32_t pcm_s2_terminal_success = 0U;
     uint64_t pcm_produced_frames = 0U;
     uint64_t pcm_produced_bytes = 0U;
     uint32_t pcm_produced_slots = 0U;
@@ -228,11 +273,11 @@ struct Runtime {
     uint32_t pcm_eos_after_done = 0U;
     uint32_t pcm_finish_after_empty = 0U;
     uint32_t pcm_ack_after_finish = 0U;
-    uint64_t pcm_slot_offsets[10]{};
-    uint32_t pcm_slot_sequences[10]{};
-    uint16_t pcm_slot_frames[10]{};
-    uint16_t pcm_slot_flags[10]{};
-    uint32_t pcm_slot_crc32[10]{};
+    uint64_t pcm_slot_offsets[kExpectedPcmSlots]{};
+    uint32_t pcm_slot_sequences[kExpectedPcmSlots]{};
+    uint16_t pcm_slot_frames[kExpectedPcmSlots]{};
+    uint16_t pcm_slot_flags[kExpectedPcmSlots]{};
+    uint32_t pcm_slot_crc32[kExpectedPcmSlots]{};
 #endif
     ApplyRecord applied[32]{};
     np2audio86_guest_event_t trace_events[64]{};
@@ -390,18 +435,25 @@ enum np2_pcm_sink_result pcm_sink_submit(
 {
     auto *runtime = static_cast<Runtime *>(opaque);
     if (runtime == nullptr || view == nullptr || view->valid_frames == 0U ||
-        runtime->pcm_consumed_slots >= 10U ||
+        runtime->pcm_consumed_slots >= kExpectedPcmSlots ||
         view->valid_frames > NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES ||
         view->frame_offset > kRenderFrames ||
         view->valid_frames > kRenderFrames - view->frame_offset ||
         view->sequence != runtime->pcm_consumed_slots)
         return NP2_PCM_SINK_FATAL;
     const size_t bytes = static_cast<size_t>(view->valid_frames) * 4U;
-    const bool post_done_retry_slot = kPcmRetryLifecycle &&
-        (kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
-         kPcmLifecycleScenario == kPcmLifecycleRetryFatal) &&
-        view->sequence == kExpectedPcmSlots - 1U &&
-        runtime->pcm_retry_controller_driven.load(std::memory_order_acquire) != 0U;
+    const bool s2_post_done_fault =
+        kPcmLifecycleScenario == kPcmLifecyclePostDoneConsumerFatal &&
+        view->sequence == kExpectedPcmSlots - 1U;
+    if (s2_post_done_fault &&
+        runtime->pcm_post_done_retry_slot_captured == 0U)
+        runtime->pcm_sink_permission.store(kPcmSinkPermissionHold,
+                                           std::memory_order_release);
+    const bool post_done_retry_slot = view->sequence == kExpectedPcmSlots - 1U &&
+        (((kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+           kPcmLifecycleScenario == kPcmLifecycleRetryFatal) &&
+          runtime->pcm_retry_controller_driven.load(
+              std::memory_order_acquire) != 0U) || s2_post_done_fault);
     if (post_done_retry_slot &&
         (runtime->pcm_post_done_retry_slot_captured == 0U ||
          runtime->pcm_post_done_retry_waiting.load(
@@ -428,14 +480,17 @@ enum np2_pcm_sink_result pcm_sink_submit(
             ++runtime->pcm_post_done_retry_resubmits;
         }
         ++runtime->pcm_post_done_retry_attempts;
-        if (runtime->pcm_sink_permission.load(std::memory_order_acquire) ==
-            kPcmSinkPermissionHold) {
+        const uint32_t permission =
+            runtime->pcm_sink_permission.load(std::memory_order_acquire);
+        if (permission == kPcmSinkPermissionHold) {
             runtime->pcm_post_done_retry_waiting.store(
                 1U, std::memory_order_release);
             return NP2_PCM_SINK_RETRY;
         }
+        if (permission == kPcmSinkPermissionFatal)
+            return NP2_PCM_SINK_FATAL;
     }
-    if (kPcmRetryLifecycle &&
+    if (kPcmPermissionLifecycle &&
         (runtime->pcm_retry_slot_captured == 0U ||
          runtime->pcm_retry_waiting.load(std::memory_order_acquire) != 0U)) {
         const uint32_t permission =
@@ -477,6 +532,10 @@ enum np2_pcm_sink_result pcm_sink_submit(
         if (permission == kPcmSinkPermissionFatal)
             return NP2_PCM_SINK_FATAL;
     }
+    if (kPcmLifecycleScenario == kPcmLifecyclePartialConsumerFatal &&
+        runtime->pcm_s2_consumer_fault_ready.load(
+            std::memory_order_acquire) != 0U)
+        return NP2_PCM_SINK_FATAL;
     if (runtime->pcm_consumed_slots == 0U)
         runtime->pcm_first_submit_occupancy =
             np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
@@ -521,6 +580,70 @@ void drive_pcm_retry_controller(Runtime *runtime)
     notify_pcm_consumer(runtime);
 }
 
+void drive_pcm_s2_reset_controller(Runtime *runtime,
+                                   const size_t unappended_frames)
+{
+    if (!kPcmS2ResetLifecycle || unappended_frames == 0U ||
+        runtime->pcm_s2_reset_rendering.load(std::memory_order_acquire) == 0U ||
+        runtime->pcm_retry_waiting.load(std::memory_order_acquire) == 0U ||
+        runtime->pcm_worker_space_waiting.load(std::memory_order_acquire) == 0U ||
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) !=
+            NP2_OPNGEN_PCM_RING_CAPACITY ||
+        runtime->pcm_s2_controller_driven.exchange(
+            1U, std::memory_order_acq_rel) != 0U)
+        return;
+    runtime->pcm_s2_cutpoint_occupancy =
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+    runtime->pcm_s2_cutpoint_partial =
+        np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring);
+    runtime->pcm_s2_cutpoint_rendered = static_cast<uint32_t>(
+        runtime->pcm_produced_frames + unappended_frames);
+    runtime->pcm_s2_cutpoint_unappended =
+        static_cast<uint32_t>(unappended_frames);
+    runtime->pcm_lifecycle_triggered.store(1U, std::memory_order_release);
+    if (kPcmLifecycleScenario == kPcmLifecycleResetStop ||
+        kPcmLifecycleScenario == kPcmLifecycleResetFatal)
+        publish_failure(runtime);
+    const uint32_t permission =
+        kPcmLifecycleScenario == kPcmLifecycleResetConsumerFatal
+            ? kPcmSinkPermissionFatal : kPcmSinkPermissionAccept;
+    runtime->pcm_sink_permission.store(permission, std::memory_order_release);
+    runtime->pcm_retry_permission_before_wake.store(1U,
+                                                    std::memory_order_release);
+    notify_pcm_consumer(runtime);
+}
+
+void drive_pcm_s2_partial_controller(Runtime *runtime)
+{
+    constexpr uint32_t kPartialCutpointFrames = 253U;
+    constexpr uint16_t kPartialCutpointProducerFrames = 13U;
+    if (!kPcmS2PartialLifecycle ||
+        runtime->pcm_s2_final_rendering.load(std::memory_order_acquire) == 0U ||
+        runtime->pcm_produced_frames != kPartialCutpointFrames ||
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) != 1U ||
+        np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring) !=
+            kPartialCutpointProducerFrames ||
+        runtime->pcm_s2_controller_driven.exchange(
+            1U, std::memory_order_acq_rel) != 0U)
+        return;
+    runtime->pcm_s2_cutpoint_occupancy = 1U;
+    runtime->pcm_s2_cutpoint_partial = kPartialCutpointProducerFrames;
+    runtime->pcm_s2_cutpoint_rendered = kPartialCutpointFrames;
+    runtime->pcm_s2_cutpoint_unappended = 0U;
+    runtime->pcm_lifecycle_triggered.store(1U, std::memory_order_release);
+    if (kPcmLifecycleScenario == kPcmLifecyclePartialStop ||
+        kPcmLifecycleScenario == kPcmLifecyclePartialFatal) {
+        publish_failure(runtime);
+        return;
+    }
+    runtime->pcm_s2_consumer_fault_ready.store(1U,
+                                               std::memory_order_release);
+    notify_pcm_consumer(runtime);
+    while (runtime->pcm_forced_abort_requested.load(
+               std::memory_order_acquire) == 0U)
+        (void)p4_nano_audio86_notifications::wait_worker();
+}
+
 void resolve_post_done_retry(Runtime *runtime)
 {
     if (runtime->pcm_post_done_retry_waiting.load(
@@ -533,8 +656,21 @@ void resolve_post_done_retry(Runtime *runtime)
     runtime->pcm_post_done_retry_observed = occupancy;
     runtime->pcm_post_done_retry_not_eos = runtime->pcm_eos_after_done == 0U
         ? 1U : 0U;
-    runtime->pcm_sink_permission.store(kPcmSinkPermissionAccept,
-                                       std::memory_order_release);
+    if (kPcmLifecycleScenario == kPcmLifecyclePostDoneConsumerFatal &&
+        runtime->pcm_s2_controller_driven.exchange(
+            1U, std::memory_order_acq_rel) == 0U) {
+        runtime->pcm_lifecycle_triggered.store(1U, std::memory_order_release);
+        runtime->pcm_s2_cutpoint_occupancy = occupancy;
+        runtime->pcm_s2_cutpoint_partial =
+            np2opngen_pcm_ring_producer_partial_valid_frames(
+                &runtime->pcm_ring);
+        runtime->pcm_s2_cutpoint_rendered =
+            static_cast<uint32_t>(runtime->pcm_semantic_rendered_frames);
+    }
+    runtime->pcm_sink_permission.store(
+        kPcmLifecycleScenario == kPcmLifecyclePostDoneConsumerFatal
+            ? kPcmSinkPermissionFatal : kPcmSinkPermissionAccept,
+        std::memory_order_release);
     runtime->pcm_post_done_permission_before_wake.store(
         1U, std::memory_order_release);
     notify_pcm_consumer(runtime);
@@ -544,6 +680,11 @@ enum np2_pcm_sink_result pcm_sink_finish(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
     if (runtime == nullptr) return NP2_PCM_SINK_FATAL;
+    ++runtime->pcm_s2_finish_calls;
+    if (kPcmLifecycleScenario == kPcmLifecycleFinishFatal) {
+        runtime->pcm_s2_finish_fatal_observed = 1U;
+        return NP2_PCM_SINK_FATAL;
+    }
     runtime->pcm_sink_finished = 1U;
     return NP2_PCM_SINK_ACCEPTED;
 }
@@ -578,11 +719,16 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         runtime->pcm_produced_frames += consumed;
         runtime->pcm_produced_bytes += consumed * 4U;
         notify_pcm_consumer(runtime);
+        drive_pcm_s2_partial_controller(runtime);
+        if (runtime->pcm_forced_abort_requested.load(
+                std::memory_order_acquire) != 0U)
+            return false;
         if (status == NP2_OPNGEN_PCM_RING_OK) continue;
         if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
         runtime->pcm_worker_space_waiting.store(1U, std::memory_order_release);
         notify_pcm_consumer(runtime);
         drive_pcm_retry_controller(runtime);
+        drive_pcm_s2_reset_controller(runtime, frames - appended);
         if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
             runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
             runtime->pcm_abandoned_rendered_frames += frames - appended;
@@ -671,7 +817,15 @@ void pcm_consumer_task(void *opaque)
         if (!released && (occupancy >= kPcmPrefillSlots ||
                           (production_done && occupancy != 0U)))
             released = kPcmLifecycleScenario == kPcmLifecycleNone ||
-                       kPcmRetryLifecycle;
+                       kPcmPermissionLifecycle ||
+                       kPcmLifecycleScenario ==
+                           kPcmLifecyclePostDoneConsumerFatal ||
+                       kPcmLifecycleScenario == kPcmLifecycleFinishFatal ||
+                       (kPcmS2PartialLifecycle && production_done);
+        if (!released && occupancy != 0U &&
+            runtime->pcm_s2_consumer_fault_ready.load(
+                std::memory_order_acquire) != 0U)
+            released = true;
         if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
             if (np2_pcm_output_abort(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
                 fail(runtime, kErrorWorker);
@@ -730,6 +884,10 @@ void pcm_consumer_task(void *opaque)
                     runtime->pcm_ring.tail.load(std::memory_order_acquire);
                 publish_pcm_forced_abort(runtime, kErrorWorker);
                 if (kPcmLifecycleScenario ==
+                    kPcmLifecyclePostDoneConsumerFatal)
+                    runtime->pcm_post_done_retry_waiting.store(
+                        0U, std::memory_order_release);
+                if (kPcmLifecycleScenario ==
                     kPcmLifecycleRetryConsumerFirst)
                     publish_failure(runtime);
                 continue;
@@ -762,10 +920,28 @@ void pcm_consumer_task(void *opaque)
                     ? 1U : 0U;
             runtime->pcm_eos_after_done = 1U;
             runtime->pcm_finish_after_empty = 1U;
-            if (np2_pcm_output_finish(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
-                fail(runtime, kErrorWorker);
-            else {
+            const enum np2_pcm_output_status finish_status =
+                np2_pcm_output_finish(&runtime->pcm_controller);
+            if (finish_status != NP2_PCM_OUTPUT_OK) {
+                runtime->pcm_lifecycle_triggered.store(
+                    1U, std::memory_order_release);
+                runtime->pcm_s2_controller_driven.store(
+                    1U, std::memory_order_release);
+                runtime->pcm_s2_cutpoint_occupancy = occupancy;
+                runtime->pcm_s2_cutpoint_partial =
+                    np2opngen_pcm_ring_producer_partial_valid_frames(
+                        &runtime->pcm_ring);
+                runtime->pcm_s2_cutpoint_rendered = static_cast<uint32_t>(
+                    runtime->pcm_semantic_rendered_frames);
+                publish_pcm_forced_abort(runtime, kErrorWorker);
+                if (np2_pcm_output_abort(&runtime->pcm_controller) !=
+                    NP2_PCM_OUTPUT_OK)
+                    fail(runtime, kErrorWorker);
+                runtime->pcm_consumer_terminal_ack.store(
+                    1U, std::memory_order_release);
+            } else {
                 runtime->pcm_ack_after_finish = runtime->pcm_sink_finished;
+                runtime->pcm_s2_terminal_success = 1U;
                 runtime->pcm_consumer_terminal_ack.store(1U, std::memory_order_release);
             }
             break;
@@ -1212,6 +1388,11 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
     }
     notify_worker(runtime);
     if (reset) {
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        if (kPcmS2ResetLifecycle)
+            runtime->pcm_s2_reset_guest_linearized.store(
+                1U, std::memory_order_release);
+#endif
         const uint32_t ordinal = ++runtime->reset_ordinal;
         if (kPressureScenario == kPressureResetAck)
             pressure_capture_before(runtime);
@@ -1248,6 +1429,9 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
             np2opngen_pcm_canonicalize_s16le(runtime->mix, frames, 2U,
                                              runtime->canonical, frames * 4U,
                                              &stats) != 0) return false;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        runtime->pcm_semantic_rendered_frames += frames;
+#endif
         const size_t offset = static_cast<size_t>(runtime->rendered_frame) * 4U;
         std::memcpy(runtime->full_pcm + offset, runtime->canonical, frames * 4U);
         if (!runtime->reset_seen)
@@ -1257,6 +1441,12 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
             return false;
 #endif
         runtime->rendered_frame += frames;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+        if (kPcmS2PartialLifecycle &&
+            runtime->pcm_s2_controller_driven.load(
+                std::memory_order_acquire) != 0U && failed(runtime))
+            break;
+#endif
     }
     return true;
 }
@@ -1265,7 +1455,19 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
 {
     if (event == nullptr || runtime->applied_count.load(std::memory_order_relaxed) >= 32U)
         return false;
-    if (!render_until(runtime, event->frame_timestamp)) return false;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool s2_reset_event = kPcmS2ResetLifecycle &&
+        event->frame_timestamp == kS2ResetFrameOffset + 13U &&
+        !runtime->reset_seen;
+    if (s2_reset_event)
+        runtime->pcm_s2_reset_rendering.store(1U, std::memory_order_release);
+#endif
+    const bool rendered = render_until(runtime, event->frame_timestamp);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    if (s2_reset_event)
+        runtime->pcm_s2_reset_rendering.store(0U, std::memory_order_release);
+#endif
+    if (!rendered) return false;
     uint32_t opcode = event->opcode;
     uint32_t action = 0U;
     uint32_t action_payload = event->payload;
@@ -1343,6 +1545,16 @@ void worker_task(void *opaque)
     }
     runtime->worker_ready.store(1U, std::memory_order_release);
     (void)xSemaphoreGive(runtime->ready);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    /* S2 RESET profiles begin with exactly one full ring of durable pre-RESET
+     * PCM.  The first real guest event is timestamped at the same frame, so
+     * only the later 13-frame RESET boundary remains producer-local (R) when
+     * the held first sink submission closes the ring. */
+    if (kPcmS2ResetLifecycle &&
+        !render_until(runtime, kS2ResetFrameOffset)) {
+        fail(runtime, kErrorFinalRender);
+    }
+#endif
     for (;;) {
         /* The Core 0 worker is the smallest profile-only controller: it never
          * creates guest records; it releases only a controller-owned lease
@@ -1387,7 +1599,58 @@ void worker_task(void *opaque)
         if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK) notify_producer(runtime);
         if (peek == NP2_AUDIO86_TRANSPORT_OK && event != nullptr &&
             event->frame_timestamp <= runtime->consumer_clock.committed_frame_reconstructed) {
-            if (!apply_event(runtime, event)) { fail(runtime, kErrorEventApply); break; }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+            /* The register write immediately preceding RESET shares its
+             * timestamp.  Do not enter the full-ring cutpoint until the real
+             * RESET transaction has committed and guest semantics have
+             * linearized; commit_horizon supplies the level plus wake. */
+            if (kPcmS2ResetLifecycle && !runtime->reset_seen &&
+                event->frame_timestamp == kS2ResetFrameOffset + 13U &&
+                runtime->pcm_s2_reset_guest_linearized.load(
+                    std::memory_order_acquire) == 0U) {
+                (void)p4_nano_audio86_notifications::wait_worker();
+                continue;
+            }
+#endif
+            if (!apply_event(runtime, event)) {
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                if (kPcmS2ResetLifecycle &&
+                    event->frame_timestamp == kS2ResetFrameOffset + 13U &&
+                    runtime->pcm_forced_abort_requested.load(
+                        std::memory_order_acquire) != 0U) {
+                    runtime->pcm_s2_reset_event_residual_before_cleanup =
+                        np2audio86_event_ring_occupancy(&runtime->events);
+                    runtime->pcm_s2_reset_horizon_residual_before_cleanup =
+                        np2audio86_runtime_horizon_pending(&runtime->control)
+                            ? 1U : 0U;
+                    runtime->pcm_s2_reset_abandoned.store(
+                        1U, std::memory_order_release);
+                    runtime->event_lease.store(0U, std::memory_order_release);
+                    runtime->byte_lease.store(0U, std::memory_order_release);
+                    runtime->horizon_lease.store(0U, std::memory_order_release);
+                    runtime->reset_ack_held.store(0U,
+                                                  std::memory_order_release);
+                    while (np2audio86_event_ring_occupancy(&runtime->events) !=
+                           0U)
+                        (void)np2audio86_event_ring_consume(&runtime->events);
+                    runtime->failure_reset_closed.store(
+                        1U, std::memory_order_release);
+                    runtime->pcm_s2_reset_transport_residual_after_cleanup =
+                        np2audio86_event_ring_occupancy(&runtime->events) +
+                        np2audio86_byte_ring_occupancy(&runtime->bytes) +
+                        (np2audio86_runtime_horizon_pending(&runtime->control)
+                             ? 1U : 0U) +
+                        runtime->event_lease.load(std::memory_order_acquire) +
+                        runtime->byte_lease.load(std::memory_order_acquire) +
+                        runtime->horizon_lease.load(std::memory_order_acquire) +
+                        runtime->reset_ack_held.load(std::memory_order_acquire);
+                } else
+#endif
+                {
+                    fail(runtime, kErrorEventApply);
+                }
+                break;
+            }
             notify_producer(runtime);
             continue;
         }
@@ -1395,8 +1658,20 @@ void worker_task(void *opaque)
             np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
             np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
             !np2audio86_runtime_horizon_pending(&runtime->control)) {
-            if (!failed(runtime) && !render_until(runtime, kRenderFrames))
-                fail(runtime, kErrorFinalRender);
+            if (!failed(runtime)) {
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                if (kPcmS2PartialLifecycle)
+                    runtime->pcm_s2_final_rendering.store(
+                        1U, std::memory_order_release);
+#endif
+                const bool final_rendered = render_until(runtime, kRenderFrames);
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                if (kPcmS2PartialLifecycle)
+                    runtime->pcm_s2_final_rendering.store(
+                        0U, std::memory_order_release);
+#endif
+                if (!final_rendered) fail(runtime, kErrorFinalRender);
+            }
             break;
         }
         /* A failure stops further producer authorization but does not let the
@@ -1442,7 +1717,12 @@ bool execute_real_i286(Runtime *runtime)
     pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
+#if P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO >= 9 && \
+    P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO <= 11
+    np2audio86_guest_host_test_seed(kS2ResetFrameOffset, 0U);
+#else
     np2audio86_guest_host_test_seed(0U, 0U);
+#endif
     np2audio86_guest_host_trace_attach(&runtime->trace);
     np2audio86_guest_sink_bind(&kSink);
     const size_t program_size = np2audio86_guest_program_build(mem, 0x90000U);
@@ -1845,7 +2125,19 @@ void emit_summary(const Runtime *runtime, const bool ok)
         kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst
             ? "RETRY_PRIMARY_FIRST" :
         kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst
-            ? "RETRY_CONSUMER_FIRST" : "NONE";
+            ? "RETRY_CONSUMER_FIRST" :
+        kPcmLifecycleScenario == kPcmLifecycleResetStop ? "RESET_FULL_STOP" :
+        kPcmLifecycleScenario == kPcmLifecycleResetFatal ? "RESET_FULL_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecycleResetConsumerFatal
+            ? "RESET_FULL_CONSUMER_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecyclePartialStop ? "PARTIAL_STOP" :
+        kPcmLifecycleScenario == kPcmLifecyclePartialFatal ? "PARTIAL_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecyclePartialConsumerFatal
+            ? "PARTIAL_CONSUMER_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecyclePostDoneConsumerFatal
+            ? "POST_DONE_CONSUMER_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecycleFinishFatal
+            ? "FINISH_FATAL" : "NONE";
     std::printf("P4_AUDIO86_PCM_LIFECYCLE scenario=%s triggered=%" PRIu32
                 " forced_abort=%" PRIu32 " forced_before_wake=%" PRIu32
                 " ring_finished=%" PRIu32 " pcm_done=%" PRIu32
@@ -1886,6 +2178,67 @@ void emit_summary(const Runtime *runtime, const bool ok)
                 runtime->pcm_abandoned_partial_frames,
                 runtime->pcm_abandoned_rendered_frames,
                 runtime->first_error.load(), ok ? "PASS" : "FAIL");
+    if (kPcmS2Lifecycle) {
+        const uint64_t accounted = runtime->pcm_controller.accepted_frames +
+            runtime->pcm_abandoned_published_frames +
+            runtime->pcm_abandoned_partial_frames +
+            runtime->pcm_abandoned_rendered_frames;
+        std::printf("P4_AUDIO86_PCM_S2_CUTPOINT scenario=%s occupancy=%" PRIu32
+                    " partial=%u semantic_rendered=%" PRIu32
+                    " unappended=%" PRIu32 " pcm_done=%" PRIu32
+                    " ring_finished=%" PRIu32 " sink_finished=%" PRIu32
+                    " terminal_success=%" PRIu32 "\n",
+                    pcm_scenario, runtime->pcm_s2_cutpoint_occupancy,
+                    runtime->pcm_s2_cutpoint_partial,
+                    runtime->pcm_s2_cutpoint_rendered,
+                    runtime->pcm_s2_cutpoint_unappended,
+                    runtime->pcm_production_done.load(),
+                    runtime->pcm_ring_finished.load(),
+                    runtime->pcm_sink_finished,
+                    runtime->pcm_s2_terminal_success);
+        std::printf("P4_AUDIO86_PCM_ACCOUNTING semantic_rendered=%" PRIu64
+                    " accepted=%" PRIu64 " abandoned_published=%" PRIu64
+                    " abandoned_partial=%" PRIu64
+                    " abandoned_rendered=%" PRIu64
+                    " accounted=%" PRIu64 " semantic_bytes=%" PRIu64
+                    " accounted_bytes=%" PRIu64 " identity=%u\n",
+                    runtime->pcm_semantic_rendered_frames,
+                    runtime->pcm_controller.accepted_frames,
+                    runtime->pcm_abandoned_published_frames,
+                    runtime->pcm_abandoned_partial_frames,
+                    runtime->pcm_abandoned_rendered_frames, accounted,
+                    runtime->pcm_semantic_rendered_frames * 4U,
+                    accounted * 4U,
+                    accounted == runtime->pcm_semantic_rendered_frames
+                        ? 1U : 0U);
+        std::printf("P4_AUDIO86_PCM_RESET_TERMINAL guest_linearized=%" PRIu32
+                    " worker_applied=%" PRIu32 " ack_published=%u"
+                    " abandoned=%" PRIu32 " event_before_cleanup=%" PRIu32
+                    " horizon_before_cleanup=%" PRIu32
+                    " transport_after_cleanup=%" PRIu32 "\n",
+                    runtime->pcm_s2_reset_guest_linearized.load(),
+                    runtime->reset_applied_after_ring,
+                    np2audio86_runtime_reset_ack(&runtime->control) != 0U
+                        ? 1U : 0U,
+                    runtime->pcm_s2_reset_abandoned.load(),
+                    runtime->pcm_s2_reset_event_residual_before_cleanup,
+                    runtime->pcm_s2_reset_horizon_residual_before_cleanup,
+                    runtime->pcm_s2_reset_transport_residual_after_cleanup);
+        std::printf("P4_AUDIO86_PCM_FINISH_TERMINAL calls=%" PRIu32
+                    " fatal=%" PRIu32 " sink_finished=%" PRIu32
+                    " success_ack=%" PRIu32 " terminal_ack=%" PRIu32
+                    " forced_abort=%" PRIu32 " abort_calls=%" PRIu32
+                    " controller_state=%u\n",
+                    runtime->pcm_s2_finish_calls,
+                    runtime->pcm_s2_finish_fatal_observed,
+                    runtime->pcm_sink_finished,
+                    runtime->pcm_ack_after_finish,
+                    runtime->pcm_consumer_terminal_ack.load(),
+                    runtime->pcm_forced_abort,
+                    runtime->pcm_sink_abort_calls,
+                    static_cast<unsigned>(runtime->pcm_controller.state));
+        std::printf("5C3_I2S_ACTIVE=NO\n");
+    }
     if (kPcmRetryLifecycle) {
         std::printf("P4_AUDIO86_PCM_RETRY scenario=%s attempts=%" PRIu32
                     " wakes=%" PRIu32 " resubmits=%" PRIu32
@@ -2040,7 +2393,8 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_consumer_deleted_after_suspended.store(0U,
                                                         std::memory_order_relaxed);
     runtime->pcm_sink_permission.store(
-        kPcmRetryLifecycle ? kPcmSinkPermissionHold : kPcmSinkPermissionAccept,
+        kPcmPermissionLifecycle ? kPcmSinkPermissionHold
+                                : kPcmSinkPermissionAccept,
         std::memory_order_relaxed);
     runtime->pcm_retry_waiting.store(0U, std::memory_order_relaxed);
     runtime->pcm_retry_controller_driven.store(0U, std::memory_order_relaxed);
@@ -2050,6 +2404,14 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                                                std::memory_order_relaxed);
     runtime->pcm_post_done_permission_before_wake.store(
         0U, std::memory_order_relaxed);
+    runtime->pcm_s2_controller_driven.store(0U, std::memory_order_relaxed);
+    runtime->pcm_s2_reset_rendering.store(0U, std::memory_order_relaxed);
+    runtime->pcm_s2_final_rendering.store(0U, std::memory_order_relaxed);
+    runtime->pcm_s2_consumer_fault_ready.store(0U,
+                                               std::memory_order_relaxed);
+    runtime->pcm_s2_reset_guest_linearized.store(
+        0U, std::memory_order_relaxed);
+    runtime->pcm_s2_reset_abandoned.store(0U, std::memory_order_relaxed);
     runtime->pcm_retry_slot_captured = 0U;
     runtime->pcm_post_done_retry_slot_captured = 0U;
     runtime->pcm_retry_attempts = 0U;
@@ -2084,6 +2446,17 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_post_done_accepted_frames_before = 0U;
     runtime->pcm_post_done_accepted_bytes_before = 0U;
     runtime->pcm_post_done_retry_crc32 = 0U;
+    runtime->pcm_semantic_rendered_frames = 0U;
+    runtime->pcm_s2_cutpoint_occupancy = 0U;
+    runtime->pcm_s2_cutpoint_partial = 0U;
+    runtime->pcm_s2_cutpoint_rendered = 0U;
+    runtime->pcm_s2_cutpoint_unappended = 0U;
+    runtime->pcm_s2_reset_event_residual_before_cleanup = 0U;
+    runtime->pcm_s2_reset_horizon_residual_before_cleanup = 0U;
+    runtime->pcm_s2_reset_transport_residual_after_cleanup = 0U;
+    runtime->pcm_s2_finish_calls = 0U;
+    runtime->pcm_s2_finish_fatal_observed = 0U;
+    runtime->pcm_s2_terminal_success = 0U;
     runtime->pcm_produced_frames = 0U;
     runtime->pcm_produced_bytes = 0U;
     runtime->pcm_produced_slots = 0U;
@@ -2433,6 +2806,156 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
             runtime->pcm_abandoned_published_frames +
             runtime->pcm_abandoned_partial_frames &&
         (!kPcmRetryLifecycle || retry_dual_control_ok);
+    const uint64_t pcm_s2_accounted_frames =
+        runtime->pcm_controller.accepted_frames +
+        runtime->pcm_abandoned_published_frames +
+        runtime->pcm_abandoned_partial_frames +
+        runtime->pcm_abandoned_rendered_frames;
+    const bool pcm_s2_common_ok = !kPcmS2Lifecycle ||
+        (joined && pcm_joined &&
+         runtime->pcm_lifecycle_triggered.load(std::memory_order_acquire) == 1U &&
+         runtime->pcm_s2_controller_driven.load(std::memory_order_acquire) == 1U &&
+         runtime->pcm_semantic_rendered_frames == pcm_s2_accounted_frames &&
+         runtime->pcm_produced_bytes == runtime->pcm_produced_frames * 4U &&
+         runtime->pcm_controller.accepted_bytes ==
+             runtime->pcm_controller.accepted_frames * 4U &&
+         np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) == 0U &&
+         np2opngen_pcm_ring_producer_partial_valid_frames(
+             &runtime->pcm_ring) == 0U &&
+         runtime->pcm_consumer_terminal_ack.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_consumer_suspended_observed.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_worker_suspended_observed.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_consumer_deleted_after_suspended.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_worker_deleted_after_suspended.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_join_timeout == 0U &&
+         runtime->pcm_worker_join_timeout == 0U &&
+         runtime->event_lease.load(std::memory_order_acquire) == 0U &&
+         runtime->byte_lease.load(std::memory_order_acquire) == 0U &&
+         runtime->horizon_lease.load(std::memory_order_acquire) == 0U &&
+         runtime->reset_ack_held.load(std::memory_order_acquire) == 0U &&
+         np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
+         np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
+         !np2audio86_runtime_horizon_pending(&runtime->control));
+    const bool pcm_s2_healthy_common = pcm_s2_common_ok &&
+        runtime->pcm_forced_abort_requested.load(
+            std::memory_order_acquire) == 0U &&
+        runtime->pcm_forced_abort == 0U &&
+        runtime->pcm_sink_abort_calls == 0U &&
+        runtime->pcm_ring_finished.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_production_done.load(std::memory_order_acquire) == 1U &&
+        runtime->pcm_sink_finished == 1U &&
+        runtime->pcm_s2_terminal_success == 1U &&
+        runtime->pcm_abandoned_published_frames == 0U &&
+        runtime->pcm_abandoned_partial_frames == 0U &&
+        runtime->pcm_abandoned_rendered_frames == 0U &&
+        runtime->pcm_semantic_rendered_frames ==
+            runtime->pcm_controller.accepted_frames;
+    const bool pcm_s2_forced_common = pcm_s2_common_ok &&
+        runtime->pcm_forced_abort_requested.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->pcm_forced_abort_published_before_wake.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->pcm_forced_abort == 1U &&
+        runtime->pcm_sink_abort_calls == 1U &&
+        runtime->pcm_sink_finished == 0U &&
+        runtime->pcm_s2_terminal_success == 0U &&
+        runtime->first_error.load(std::memory_order_acquire) == kErrorWorker &&
+        lifecycle_runtime != nullptr &&
+        lifecycle_runtime->state() == np2runtime::State::Failed;
+    const bool pcm_s2_reset_cutpoint =
+        runtime->pcm_s2_cutpoint_occupancy == NP2_OPNGEN_PCM_RING_CAPACITY &&
+        runtime->pcm_s2_cutpoint_partial == 0U &&
+        runtime->pcm_s2_cutpoint_rendered == 1933U &&
+        runtime->pcm_s2_cutpoint_unappended == 13U &&
+        runtime->pcm_s2_reset_guest_linearized.load(
+            std::memory_order_acquire) == 1U;
+    const bool pcm_s2_partial_cutpoint =
+        runtime->pcm_s2_cutpoint_occupancy == 1U &&
+        runtime->pcm_s2_cutpoint_partial == 13U &&
+        runtime->pcm_s2_cutpoint_rendered == 253U &&
+        runtime->pcm_s2_cutpoint_unappended == 0U;
+    const bool pcm_s2_ok = !kPcmS2Lifecycle ||
+        ((kPcmLifecycleScenario == kPcmLifecycleResetStop ||
+          kPcmLifecycleScenario == kPcmLifecycleResetFatal) &&
+         pcm_s2_healthy_common && pcm_s2_reset_cutpoint &&
+         runtime->pcm_semantic_rendered_frames == 1933U &&
+         runtime->reset_ring_owned_frames == 1933U &&
+         runtime->reset_applied_after_ring == 1U &&
+         runtime->reset_ack_after_ring == 1U &&
+         runtime->pcm_s2_reset_abandoned.load(
+             std::memory_order_acquire) == 0U &&
+         ((kPcmLifecycleScenario == kPcmLifecycleResetStop &&
+           runtime->first_error.load(std::memory_order_acquire) == 0U &&
+           lifecycle_runtime != nullptr &&
+           lifecycle_runtime->state() == np2runtime::State::Stopped) ||
+          (kPcmLifecycleScenario == kPcmLifecycleResetFatal &&
+           runtime->first_error.load(std::memory_order_acquire) ==
+               kErrorInjectedFatal && lifecycle_runtime != nullptr &&
+           lifecycle_runtime->state() == np2runtime::State::Failed))) ||
+        (kPcmLifecycleScenario == kPcmLifecycleResetConsumerFatal &&
+         pcm_s2_forced_common && pcm_s2_reset_cutpoint &&
+         runtime->pcm_semantic_rendered_frames == 1933U &&
+         runtime->pcm_controller.accepted_frames == 0U &&
+         runtime->pcm_abandoned_published_frames == 1920U &&
+         runtime->pcm_abandoned_partial_frames == 0U &&
+         runtime->pcm_abandoned_rendered_frames == 13U &&
+         runtime->reset_applied_after_ring == 0U &&
+         runtime->reset_ack_after_ring == 0U &&
+         np2audio86_runtime_reset_ack(&runtime->control) == 0U &&
+         runtime->pcm_s2_reset_abandoned.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_s2_reset_event_residual_before_cleanup == 2U &&
+         runtime->pcm_s2_reset_horizon_residual_before_cleanup == 0U &&
+         runtime->pcm_s2_reset_transport_residual_after_cleanup == 0U) ||
+        ((kPcmLifecycleScenario == kPcmLifecyclePartialStop ||
+          kPcmLifecycleScenario == kPcmLifecyclePartialFatal) &&
+         pcm_s2_healthy_common && pcm_s2_partial_cutpoint &&
+         runtime->pcm_semantic_rendered_frames == 253U &&
+         runtime->pcm_controller.accepted_frames == 253U &&
+         ((kPcmLifecycleScenario == kPcmLifecyclePartialStop &&
+           runtime->first_error.load(std::memory_order_acquire) == 0U &&
+           lifecycle_runtime != nullptr &&
+           lifecycle_runtime->state() == np2runtime::State::Stopped) ||
+          (kPcmLifecycleScenario == kPcmLifecyclePartialFatal &&
+           runtime->first_error.load(std::memory_order_acquire) ==
+               kErrorInjectedFatal && lifecycle_runtime != nullptr &&
+           lifecycle_runtime->state() == np2runtime::State::Failed))) ||
+        (kPcmLifecycleScenario == kPcmLifecyclePartialConsumerFatal &&
+         pcm_s2_forced_common && pcm_s2_partial_cutpoint &&
+         runtime->pcm_semantic_rendered_frames == 253U &&
+         runtime->pcm_controller.accepted_frames == 0U &&
+         runtime->pcm_abandoned_published_frames == 240U &&
+         runtime->pcm_abandoned_partial_frames == 13U &&
+         runtime->pcm_abandoned_rendered_frames == 0U) ||
+        (kPcmLifecycleScenario == kPcmLifecyclePostDoneConsumerFatal &&
+         pcm_s2_forced_common &&
+         runtime->pcm_s2_cutpoint_occupancy == 1U &&
+         runtime->pcm_s2_cutpoint_partial == 0U &&
+         runtime->pcm_s2_cutpoint_rendered == 2400U &&
+         runtime->pcm_ring_finished.load(std::memory_order_acquire) == 1U &&
+         runtime->pcm_production_done.load(std::memory_order_acquire) == 1U &&
+         runtime->pcm_controller.accepted_frames == 2160U &&
+         runtime->pcm_abandoned_published_frames == 240U &&
+         runtime->pcm_abandoned_partial_frames == 0U &&
+         runtime->pcm_abandoned_rendered_frames == 0U) ||
+        (kPcmLifecycleScenario == kPcmLifecycleFinishFatal &&
+         pcm_s2_forced_common &&
+         runtime->pcm_s2_cutpoint_occupancy == 0U &&
+         runtime->pcm_s2_cutpoint_partial == 0U &&
+         runtime->pcm_s2_cutpoint_rendered == 2400U &&
+         runtime->pcm_controller.accepted_frames == 2400U &&
+         runtime->pcm_abandoned_published_frames == 0U &&
+         runtime->pcm_abandoned_partial_frames == 0U &&
+         runtime->pcm_abandoned_rendered_frames == 0U &&
+         runtime->pcm_s2_finish_calls == 1U &&
+         runtime->pcm_s2_finish_fatal_observed == 1U &&
+         runtime->pcm_ack_after_finish == 0U &&
+         runtime->pcm_controller.state == NP2_PCM_OUTPUT_ABORTED);
     const bool pcm_lifecycle_failure =
         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull ||
         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty ||
@@ -2440,12 +2963,16 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst;
 #else
     const bool retry_healthy_ok = true;
-    const bool forced_abort_ok = false;
-    const bool pcm_lifecycle_failure = false;
 #endif
-    const bool ok = pcm_lifecycle_failure ? forced_abort_ok :
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool ok = kPcmS2Lifecycle ? pcm_s2_ok :
+        (pcm_lifecycle_failure ? forced_abort_ok :
         (kFailureKind == kFailureNone ? normal_ok :
-         (failure_ok && byte_extend_failure_ok && retry_healthy_ok));
+         (failure_ok && byte_extend_failure_ok && retry_healthy_ok)));
+#else
+    const bool ok = kFailureKind == kFailureNone ? normal_ok :
+        (failure_ok && byte_extend_failure_ok && retry_healthy_ok);
+#endif
     if (kPressureScenario != kPressureNone && pressure_ok)
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
     emit_summary(runtime, ok);

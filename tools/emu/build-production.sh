@@ -7,7 +7,7 @@ readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 readonly REPOSITORY_GIT_SHA="$(git -C "${REPOSITORY_ROOT}" rev-parse HEAD)"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -227,6 +227,26 @@ while (($# > 0)); do
                     audio86_pcm_lifecycle_scenario=8
                     audio86_failure_kind=2
                     ;;
+                reset-full-stop)
+                    audio86_pcm_lifecycle_scenario=9
+                    audio86_failure_kind=1
+                    ;;
+                reset-full-fatal)
+                    audio86_pcm_lifecycle_scenario=10
+                    audio86_failure_kind=2
+                    ;;
+                reset-full-consumer-fatal) audio86_pcm_lifecycle_scenario=11;;
+                partial-stop)
+                    audio86_pcm_lifecycle_scenario=12
+                    audio86_failure_kind=1
+                    ;;
+                partial-fatal)
+                    audio86_pcm_lifecycle_scenario=13
+                    audio86_failure_kind=2
+                    ;;
+                partial-consumer-fatal) audio86_pcm_lifecycle_scenario=14;;
+                post-done-consumer-fatal) audio86_pcm_lifecycle_scenario=15;;
+                finish-fatal) audio86_pcm_lifecycle_scenario=16;;
                 *) echo "ERROR: invalid audio86 PCM lifecycle scenario: $2" >&2; exit 2;;
             esac
             audio86_real_guest=1
