@@ -11,6 +11,14 @@ BINDING = ROOT / "firmware/components/p4_nano_audio86_guest_binding/p4_nano_audi
 TEST_GUARD = "P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE"
 
 
+def evidence(property_id: str, required_fields: str) -> None:
+    print(
+        "5D1_STATIC_EVIDENCE schema=1 "
+        f"property_id={property_id} "
+        "evidence_class=STATIC_PROJECT_SOURCE "
+        f"fields={required_fields} predicate=PASS")
+
+
 def ordered(text: str, *tokens: str) -> bool:
     offset = 0
     for token in tokens:
@@ -77,11 +85,18 @@ def main() -> int:
     if not ordered(cleanup, "if (suspended && runtime->physical_sink != nullptr)",
                    "p4_nano_audio86_physical_sink_destroy"):
         raise SystemExit("owner destroy guard drift")
-    print("CALLBACK_PROJECT_SOURCE_INVARIANTS=PASS")
-    print("START_FATAL_COMMON_EPILOGUE=PASS")
-    print("START_FATAL_SELF_DELETE=NO")
-    print("OWNER_START_FAILURE_CLEANUP=PASS")
-    print("5D1_START_RUNTIME_FAULT_MATRIX=3/3_PASS evidence_class=STATIC_PROJECT_SOURCE")
+    evidence("callback_entry_first", "atomic_in_flight_before_target")
+    evidence("callback_object_graph", "gate_embedded|target_atomic")
+    evidence("callback_no_reuse", "initial_only_start")
+    evidence("start_epilogue", "ack|quiescent|done|suspend")
+    evidence("start_no_self_delete", "vTaskSuspend")
+    evidence("owner_cleanup_guards",
+             "terminal|quiescent|ack|wait_task_suspended")
+    evidence("owner_delete_order", "suspended_before_delete")
+    evidence("owner_destroy_order", "suspended_before_destroy")
+    evidence("production_projection", "baseline|test_guard_false")
+    print("5D1_NON_ACCEPTANCE_SUMMARY name=START_STATIC_GUARDS value=3/3_PASS")
+    print("START_RUNTIME_FAULT_INJECTION_REQUIRED_FOR_5D1=NO")
     print("PRODUCTION_BEHAVIOR_CHANGED=NO")
     return 0
 

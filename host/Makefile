@@ -1441,7 +1441,9 @@ test-p4-audio86-physical-sink: build-p4-audio86-physical-sink
 		cat "$$evidence"; \
 		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_VALIDATOR)" "$$evidence"; \
 		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MUTATIONS)"; \
-		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MANIFEST)"
+		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MANIFEST)"; \
+		$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_MANIFEST)" \
+			--self-test-orphan-policy
 
 build-p4-audio86-physical-sink-asan:
 	$(call build_p4_audio86_physical_sink,$(P4_NANO_AUDIO86_PHYSICAL_SINK_ASAN_OUTPUT),-O1 -g -fsanitize=address$(p4_audio86_comma)undefined -fno-omit-frame-pointer,-fsanitize=address$(p4_audio86_comma)undefined)

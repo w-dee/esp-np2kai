@@ -11,7 +11,9 @@ host_path=${PATH}
 # shellcheck source=tools/emu/activate-idf.sh
 source tools/emu/activate-idf.sh
 python3 tools/emu/check_p4_audio86_callback_idf_barrier.py
-python3 tools/emu/check_p4_audio86_project_source.py
+project_source_log="${work_dir}/project-source.log"
+python3 tools/emu/check_p4_audio86_project_source.py >"${project_source_log}"
+cat "${project_source_log}"
 
 merge_image() {
     local source_dir=$1 output=$2
@@ -55,6 +57,7 @@ manifest_args=(--host-log "${host_log}" --require-all-exec)
 for log in "${esp_logs[@]}"; do
     manifest_args+=(--esp-log "${log}")
 done
+manifest_args+=(--static-log "${project_source_log}")
 python3 tools/emu/test_p4_audio86_physical_sink_manifest.py \
     "${manifest_args[@]}"
 
