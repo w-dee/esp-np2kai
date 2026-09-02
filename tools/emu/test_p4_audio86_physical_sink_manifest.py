@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+
 MANIFEST = Path(__file__).with_name(
     "p4_audio86_physical_sink_acceptance_manifest.tsv")
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,15 +26,87 @@ ASSIGNMENT = re.compile(r"^([A-Z0-9][A-Z0-9_]*)=([^\s]+)")
 EXEC_ASSIGNMENT_SCHEMA = {
     "HOST_EXEC": {},
     "ESP_EMU_EXEC": {
-        "5D1_ESP_EMU_LIFECYCLE_RESULT": "VALIDATOR_PREDICATE",
-        "P4_NANO_AUDIO86_REAL_GUEST_STATUS": "VALIDATOR_PREDICATE",
-        "P4_AUDIO86_REAL_GUEST_RESULT": "NON_ACCEPTANCE_DIAGNOSTIC",
+        "5D1_ESP_EMU_LIFECYCLE_RESULT": {
+            "classification": "VALIDATOR_PREDICATE",
+            "value": "PASS",
+            "occurrences": 1,
+        },
+        "P4_NANO_AUDIO86_REAL_GUEST_STATUS": {
+            "classification": "VALIDATOR_PREDICATE",
+            "value": "PASS",
+            "occurrences": 1,
+        },
+        "P4_AUDIO86_REAL_GUEST_RESULT": {
+            "classification": "NON_ACCEPTANCE_DIAGNOSTIC",
+            "value": "FAIL",
+            "occurrences": 1,
+        },
     },
+}
+EXEC_MARKER_OCCURRENCES = {
+    "HOST_EXEC": {
+        "5D1_FULL_Q240": 1,
+        "5D1_FINAL_PARTIAL": 3,
+        "5D1_PARTIAL_PROGRESS": 3,
+        "5D1_QUEUE_OVF": 1,
+        "5D1_CONTROL_FAULTS": 1,
+    },
+    "ESP_EMU_EXEC": {},
+}
+STATIC_DIAGNOSTIC_SCHEMA = {
+    "STATIC_IDF_SOURCE": {
+        "CALLBACK_BARRIER_SOURCE_PROOF": {
+            "schema": "1",
+            "evidence_class": "STATIC_IDF_SOURCE",
+            "name": "CALLBACK_BARRIER_SOURCE_PROOF",
+            "value": "COMPLETE",
+        },
+    },
+    "STATIC_PROJECT_SOURCE": {
+        "START_STATIC_GUARDS": {
+            "name": "START_STATIC_GUARDS",
+            "value": "3/3_PASS",
+        },
+    },
+}
+ASSIGNMENT_CLASSIFICATIONS = {
+    "VALIDATOR_PREDICATE", "NON_ACCEPTANCE_DIAGNOSTIC",
 }
 
 
-def fields(line: str) -> dict[str, str]:
-    return dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
+def structured_fields(line: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for token in line.split()[1:]:
+        if "=" not in token:
+            raise SystemExit(f"malformed structured evidence field: {line}")
+        name, value = token.split("=", 1)
+        if not name or not value:
+            raise SystemExit(f"empty structured evidence field: {line}")
+        if name in result:
+            raise SystemExit(f"duplicate structured evidence field {name}: {line}")
+        result[name] = value
+    return result
+
+
+def marker_fields(line: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for token in line.split()[1:]:
+        if "=" not in token:
+            if token == "PASS":
+                continue
+            raise SystemExit(f"malformed marker evidence field: {line}")
+        name, value = token.split("=", 1)
+        if not name or not value or name in result:
+            raise SystemExit(f"malformed/duplicate marker field {name}: {line}")
+        result[name] = value
+    return result
+
+
+def integer_field(item: dict[str, str], name: str, line: str) -> int:
+    try:
+        return int(item[name], 0)
+    except (KeyError, ValueError) as error:
+        raise SystemExit(f"invalid diagnostic integer {name}: {line}") from error
 
 
 def acceptance_assignment(line: str) -> str | None:
@@ -47,62 +120,205 @@ def acceptance_assignment(line: str) -> str | None:
     return None
 
 
-def records(path: Path, evidence_class: str) -> tuple[
-        list[dict[str, str]], dict[str, list[dict[str, str]]]]:
+def validate_policy_schema(registered_markers: dict[str, set[str]]) -> None:
+    if set(EXEC_ASSIGNMENT_SCHEMA) != {"HOST_EXEC", "ESP_EMU_EXEC"}:
+        raise SystemExit("executable assignment schema classes mismatch")
+    if set(EXEC_MARKER_OCCURRENCES) != set(EXEC_ASSIGNMENT_SCHEMA):
+        raise SystemExit("executable marker schema classes mismatch")
+    for evidence_class, schema in EXEC_ASSIGNMENT_SCHEMA.items():
+        for name, item in schema.items():
+            if set(item) != {"classification", "value", "occurrences"}:
+                raise SystemExit(f"{name}: assignment schema fields mismatch")
+            if item["classification"] not in ASSIGNMENT_CLASSIFICATIONS:
+                raise SystemExit(f"{name}: assignment classification invalid")
+            if item["occurrences"] != 1:
+                raise SystemExit(f"{name}: assignment occurrence policy invalid")
+            if acceptance_assignment(f"{name}={item['value']}") != name:
+                raise SystemExit(f"{name}: assignment value is not acceptance-shaped")
+        marker_schema = EXEC_MARKER_OCCURRENCES[evidence_class]
+        if set(marker_schema) != registered_markers[evidence_class]:
+            raise SystemExit(f"{evidence_class}: marker schema/manifest mismatch")
+        if not all(isinstance(count, int) and count > 0
+                   for count in marker_schema.values()):
+            raise SystemExit(f"{evidence_class}: marker occurrence policy invalid")
+    if set(STATIC_DIAGNOSTIC_SCHEMA) != {
+            "STATIC_IDF_SOURCE", "STATIC_PROJECT_SOURCE"}:
+        raise SystemExit("static diagnostic schema classes mismatch")
+    for evidence_class, schema in STATIC_DIAGNOSTIC_SCHEMA.items():
+        for name, item in schema.items():
+            if item.get("name") != name:
+                raise SystemExit(
+                    f"{evidence_class}: diagnostic schema name mismatch")
+
+
+def classify_exec_assignment(line: str, evidence_class: str,
+                             counts: Counter[str]) -> bool:
+    assignment = ASSIGNMENT.match(line)
+    if not assignment:
+        return False
+    name, value = assignment.groups()
+    schema = EXEC_ASSIGNMENT_SCHEMA[evidence_class]
+    if name in schema:
+        expected = schema[name]["value"]
+        if value != expected or line != f"{name}={expected}":
+            raise SystemExit(f"{name}: executable assignment schema mismatch")
+        counts[name] += 1
+    elif name.startswith("5D1_") or acceptance_assignment(line):
+        raise SystemExit(f"orphan acceptance/control output: {line}")
+    return True
+
+
+def validate_history(line: str, evidence_class: str,
+                     identities: set[tuple[str, int]]) -> None:
+    item = structured_fields(line)
+    required = {"schema", "evidence_class", "scenario", "sequence",
+                "generation", "operation", "result", "bytes"}
+    if set(item) != required:
+        raise SystemExit(f"history diagnostic fields mismatch: {line}")
+    if item["schema"] != "2" or item["evidence_class"] != evidence_class:
+        raise SystemExit(f"history diagnostic schema/class mismatch: {line}")
+    if not item["scenario"] or not item["operation"]:
+        raise SystemExit(f"history diagnostic semantic field missing: {line}")
+    sequence = integer_field(item, "sequence", line)
+    integer_field(item, "generation", line)
+    integer_field(item, "result", line)
+    integer_field(item, "bytes", line)
+    identity = (item["scenario"], sequence)
+    if identity in identities:
+        raise SystemExit(f"duplicate history diagnostic: {identity!r}")
+    identities.add(identity)
+
+
+def validate_fake_backend(line: str, evidence_class: str,
+                          registered_scenarios: set[str],
+                          seen: set[str]) -> None:
+    item = structured_fields(line)
+    required = {"schema", "evidence_class", "scenario", "i2s", "callbacks",
+                "i2c", "codec", "pa_high", "released", "destroyed"}
+    if set(item) != required:
+        raise SystemExit(f"fake-backend diagnostic fields mismatch: {line}")
+    if (evidence_class != "ESP_EMU_EXEC" or item["schema"] != "2" or
+            item["evidence_class"] != evidence_class):
+        raise SystemExit(f"fake-backend diagnostic schema/class mismatch: {line}")
+    scenario = item["scenario"]
+    if scenario not in registered_scenarios:
+        raise SystemExit(f"fake-backend diagnostic scenario unknown: {scenario}")
+    if scenario in seen:
+        raise SystemExit(f"duplicate fake-backend diagnostic: {scenario}")
+    for name in required - {"schema", "evidence_class", "scenario"}:
+        integer_field(item, name, line)
+    seen.add(scenario)
+
+
+def records(path: Path, evidence_class: str,
+            registered_scenarios: set[str],
+            registered_markers: set[str]) -> tuple[
+                list[dict[str, str]], dict[str, list[dict[str, str]]]]:
     scenarios: list[dict[str, str]] = []
     markers: dict[str, list[dict[str, str]]] = {}
+    assignments: Counter[str] = Counter()
+    marker_counts: Counter[str] = Counter()
+    history_identities: set[tuple[str, int]] = set()
+    fake_backends: set[str] = set()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        assignment = acceptance_assignment(line)
-        if assignment and assignment not in EXEC_ASSIGNMENT_SCHEMA[evidence_class]:
-            raise SystemExit(f"orphan acceptance output: {line}")
-        if line.startswith("5D1_EVIDENCE "):
-            scenarios.append(fields(line))
-        elif line.startswith("5D1_"):
-            marker = line.split(maxsplit=1)[0]
-            markers.setdefault(marker, []).append(fields(line))
+        if classify_exec_assignment(line, evidence_class, assignments):
+            continue
+        if not line.startswith("5D1_"):
+            continue
+        kind = line.split(maxsplit=1)[0]
+        if kind == "5D1_EVIDENCE":
+            item = structured_fields(line)
+            scenario = item.get("scenario", "")
+            if (item.get("schema") != "2" or
+                    item.get("evidence_class") != evidence_class):
+                raise SystemExit(f"executable evidence schema/class mismatch: {line}")
+            if scenario not in registered_scenarios:
+                raise SystemExit(f"orphan executable scenario: {scenario or '?'}")
+            scenarios.append(item)
+        elif kind in registered_markers:
+            markers.setdefault(kind, []).append(marker_fields(line))
+            marker_counts[kind] += 1
+        elif kind == "5D1_HISTORY":
+            validate_history(line, evidence_class, history_identities)
+        elif kind == "5D1_FAKE_BACKEND":
+            validate_fake_backend(line, evidence_class, registered_scenarios,
+                                  fake_backends)
+        else:
+            raise SystemExit(f"unknown 5D1 evidence/control record: {line}")
+
+    for name, schema in EXEC_ASSIGNMENT_SCHEMA[evidence_class].items():
+        expected = schema["occurrences"]
+        if assignments[name] != expected:
+            raise SystemExit(
+                f"{name}: executable assignment occurrence mismatch "
+                f"{assignments[name]} != {expected}")
+    marker_schema = EXEC_MARKER_OCCURRENCES[evidence_class]
+    if set(marker_schema) != registered_markers:
+        raise SystemExit(f"{evidence_class}: marker schema/manifest mismatch")
+    for name, expected in marker_schema.items():
+        if marker_counts[name] != expected:
+            raise SystemExit(
+                f"{name}: marker occurrence mismatch "
+                f"{marker_counts[name]} != {expected}")
     return scenarios, markers
 
 
-def static_records(path: Path) -> list[dict[str, str]]:
+def validate_static_diagnostic(line: str, evidence_class: str,
+                               seen: set[str]) -> None:
+    item = structured_fields(line)
+    name = item.get("name", "")
+    schema = STATIC_DIAGNOSTIC_SCHEMA[evidence_class]
+    if name not in schema or item != schema[name]:
+        raise SystemExit(f"non-acceptance diagnostic schema mismatch: {line}")
+    if name in seen:
+        raise SystemExit(f"duplicate non-acceptance diagnostic: {name}")
+    seen.add(name)
+
+
+def static_records(path: Path, evidence_class: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
+    diagnostics: set[str] = set()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        assignment = ASSIGNMENT.match(line)
+        if assignment:
+            name = assignment.group(1)
+            if name.startswith("5D1_") or acceptance_assignment(line):
+                raise SystemExit(f"orphan acceptance/control output: {line}")
+            continue
         if line.startswith("5D1_STATIC_EVIDENCE "):
-            result.append(fields(line))
-            continue
-        if line.startswith("5D1_NON_ACCEPTANCE_SUMMARY "):
-            continue
-        if acceptance_assignment(line):
-            raise SystemExit(f"orphan acceptance output: {line}")
+            result.append(structured_fields(line))
+        elif line.startswith("5D1_NON_ACCEPTANCE_SUMMARY "):
+            validate_static_diagnostic(line, evidence_class, diagnostics)
+        elif line.startswith("5D1_"):
+            raise SystemExit(f"unknown 5D1 evidence/control record: {line}")
+    expected = set(STATIC_DIAGNOSTIC_SCHEMA[evidence_class])
+    if diagnostics != expected:
+        raise SystemExit(
+            f"{evidence_class}: diagnostic occurrence mismatch "
+            f"missing={sorted(expected - diagnostics)} "
+            f"extra={sorted(diagnostics - expected)}")
     return result
 
 
-def self_test_orphan_policy() -> None:
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as directory:
-        orphan_lines = (
-            "5D1_START_RUNTIME_FAULT_MATRIX=3/3_PASS "
-            "evidence_class=STATIC_PROJECT_SOURCE",
-            "5D1_START_RUNTIME_FAULT_MATRIX=0/0_PASS",
-            "5D1_START_RUNTIME_FAULT_MATRIX=NOT_RUN_PASS",
-            "UNMAPPED_STATIC_CHECK=PASS",
-        )
-        for evidence_class in ("HOST_EXEC", "ESP_EMU_EXEC",
-                               "STATIC_IDF_SOURCE", "STATIC_PROJECT_SOURCE"):
-            path = Path(directory) / f"{evidence_class}.log"
-            for line in orphan_lines:
-                path.write_text(line + "\n", encoding="utf-8")
-                try:
-                    if evidence_class in EXEC_ASSIGNMENT_SCHEMA:
-                        records(path, evidence_class)
-                    else:
-                        static_records(path)
-                except SystemExit as error:
-                    if "orphan acceptance output" not in str(error):
-                        raise
-                else:
-                    raise SystemExit(
-                        f"{evidence_class}: orphan acceptance output was accepted: {line}")
+def self_test_assignment_orphan_policy() -> None:
+    orphan_lines = (
+        "5D1_START_RUNTIME_FAULT_MATRIX=3/3_PASS",
+        "5D1_START_RUNTIME_FAULT_MATRIX=0/0_PASS",
+        "5D1_START_RUNTIME_FAULT_MATRIX=NOT_RUN_PASS",
+        "UNMAPPED_STATIC_CHECK=PASS",
+    )
+    for evidence_class in ("HOST_EXEC", "ESP_EMU_EXEC"):
+        for line in orphan_lines:
+            try:
+                classify_exec_assignment(line, evidence_class, Counter())
+            except SystemExit:
+                pass
+            else:
+                raise SystemExit(
+                    f"{evidence_class}: orphan assignment was accepted: {line}")
+    for line in orphan_lines:
+        if not acceptance_assignment(line):
+            raise SystemExit(f"static orphan assignment was not classified: {line}")
 
 
 def validator_command(host_log: Path, esp_logs: list[Path],
@@ -118,12 +334,17 @@ def validator_command(host_log: Path, esp_logs: list[Path],
 
 def require_rejected(command: list[str], label: str) -> None:
     result = subprocess.run(command, text=True, capture_output=True, check=False)
-    output = result.stdout + result.stderr
-    if result.returncode == 0 or "orphan acceptance output" not in output:
-        raise SystemExit(
-            f"{label}: mutation was not rejected as orphan acceptance output "
-            f"(exit={result.returncode})")
+    if result.returncode == 0:
+        raise SystemExit(f"{label}: mutation was accepted")
     print(f"{label}=PASS observed_exit={result.returncode}")
+
+
+def require_accepted(command: list[str], label: str) -> None:
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        raise SystemExit(
+            f"{label}: control was rejected (exit={result.returncode})")
+    print(f"{label}=PASS observed_exit=0")
 
 
 def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
@@ -147,15 +368,21 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
             esp_logs.append(destination)
 
         command = validator_command(host_log, esp_logs, idf_static_log, static_log)
-        canonical = subprocess.run(command, text=True, capture_output=True,
-                                   check=False)
-        if canonical.returncode != 0:
-            raise SystemExit(
-                f"canonical evidence rejected by change-sensitivity test: "
-                f"exit={canonical.returncode}")
-        print("F4_CANONICAL_ACCEPTED=PASS observed_exit=0")
+        require_accepted(command, "F5_CANONICAL_ACCEPTED")
+        print("LEGITIMATE_DIAGNOSTIC_SCHEMA_POSITIVE=PASS")
 
-        mutations = (
+        def mutate(label: str, path: Path, line: str, accepted: bool = False) -> None:
+            original = path.read_text(encoding="utf-8", errors="replace")
+            path.write_text(original + line + "\n", encoding="utf-8")
+            try:
+                if accepted:
+                    require_accepted(command, label)
+                else:
+                    require_rejected(command, label)
+            finally:
+                path.write_text(original, encoding="utf-8")
+
+        assignment_mutations = (
             ("F4_HOST_ORPHAN_PASS_REJECTED", host_log,
              "UNREGISTERED_HOST_ACCEPTANCE=PASS"),
             ("F4_HOST_ORPHAN_ZERO_PASS_REJECTED", host_log,
@@ -177,15 +404,60 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
             ("F4_PROJECT_STATIC_ORPHAN_REJECTED", static_log,
              "UNREGISTERED_PROJECT_STATIC_ACCEPTANCE=PASS"),
         )
-        for label, path, line in mutations:
-            original = path.read_text(encoding="utf-8", errors="replace")
-            path.write_text(original + line + "\n", encoding="utf-8")
-            try:
-                require_rejected(command, label)
-            finally:
-                path.write_text(original, encoding="utf-8")
-        print("F4_STATIC_ORPHAN_POLICY_NONREGRESSION=PASS")
-        print("ORPHAN_ACCEPTANCE_OUTPUT_POLICY_CHANGE_SENSITIVITY=PASS")
+        for mutation in assignment_mutations:
+            mutate(*mutation)
+
+        marker_mutations = (
+            ("HOST_5D1_UNKNOWN_MARKER_REJECTED", host_log,
+             "5D1_UNKNOWN_HOST_MARKER scenario=x result=PASS"),
+            ("UNKNOWN_MARKER_FAIL_RECORD_REJECTED", host_log,
+             "5D1_UNKNOWN_HOST_MARKER scenario=x result=FAIL"),
+            ("UNKNOWN_MARKER_REJECTED_RECORD_REJECTED", host_log,
+             "5D1_UNKNOWN_HOST_MARKER scenario=x result=REJECTED"),
+            ("ESP_5D1_UNKNOWN_MARKER_REJECTED", esp_logs[0],
+             "5D1_UNKNOWN_ESP_MARKER scenario=x result=PASS"),
+            ("IDF_STATIC_5D1_UNKNOWN_MARKER_REJECTED", idf_static_log,
+             "5D1_UNKNOWN_IDF_MARKER scenario=x result=PASS"),
+            ("PROJECT_STATIC_5D1_UNKNOWN_MARKER_REJECTED", static_log,
+             "5D1_UNKNOWN_PROJECT_MARKER scenario=x result=PASS"),
+        )
+        for mutation in marker_mutations:
+            mutate(*mutation)
+
+        mutate("ESP_LIFECYCLE_RESULT_VALUE_REJECTED", esp_logs[0],
+               "5D1_ESP_EMU_LIFECYCLE_RESULT=NOT_RUN_PASS")
+        mutate("ESP_GUEST_RESULT_VALUE_REJECTED", esp_logs[0],
+               "P4_AUDIO86_REAL_GUEST_RESULT=0/0_PASS")
+        mutate("ESP_GUEST_STATUS_VALUE_REJECTED", esp_logs[0],
+               "P4_NANO_AUDIO86_REAL_GUEST_STATUS=NOT_RUN_PASS")
+        print("EXEC_ASSIGNMENT_SCHEMA_VALUE_VALIDATION=PASS")
+
+        mutate("STATIC_FAKE_DIAGNOSTIC_SCHEMA_REJECTED", static_log,
+               "5D1_NON_ACCEPTANCE_SUMMARY arbitrary=1 hidden=PASS")
+        mutate("HOST_HISTORY_DIAGNOSTIC_SCHEMA_REJECTED", host_log,
+               "5D1_HISTORY arbitrary=1 hidden=PASS")
+        mutate("ESP_FAKE_BACKEND_DIAGNOSTIC_SCHEMA_REJECTED", esp_logs[0],
+               "5D1_FAKE_BACKEND arbitrary=1 hidden=PASS")
+        mutate("NON_ACCEPTANCE_DIAGNOSTIC_DUPLICATE_REJECTED", static_log,
+               "5D1_NON_ACCEPTANCE_SUMMARY name=START_STATIC_GUARDS "
+               "value=3/3_PASS")
+        print("NON_ACCEPTANCE_DIAGNOSTIC_SCHEMA_EXPLICIT=PASS")
+
+        mutate("EXEC_ASSIGNMENT_DUPLICATE_REJECTED", esp_logs[0],
+               "5D1_ESP_EMU_LIFECYCLE_RESULT=PASS")
+        print("EXEC_ASSIGNMENT_SCHEMA_DUPLICATE_POLICY=PASS")
+        marker = next(line for line in host_log.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+                      if line.startswith("5D1_FULL_Q240 "))
+        mutate("AUTHORITATIVE_MARKER_DUPLICATE_REJECTED", host_log, marker)
+        print("AUTHORITATIVE_EVIDENCE_DUPLICATE_POLICY=PASS")
+
+        mutate("HOST_BENIGN_TELEMETRY_NONREGRESSION", host_log,
+               "UNREGISTERED_HOST_TELEMETRY=42", accepted=True)
+        print("R5_MARKER_RECORD_SELECTION_ESCAPE=CLOSED")
+        print("ACCEPTANCE_CLASSIFICATION_BEFORE_RECORD_FILTER=PASS")
+        print("COMPLETE_ORPHAN_POLICY_CHANGE_SENSITIVITY=PASS")
+        print("COMPLETE_ORPHAN_POLICY_EXECUTABLE_PROOF=PASS")
 
 
 def main() -> int:
@@ -200,9 +472,10 @@ def main() -> int:
                         action="store_true")
     args = parser.parse_args()
     if args.self_test_orphan_policy:
-        self_test_orphan_policy()
-        print("ORPHAN_ACCEPTANCE_OUTPUT_POLICY=FAIL_CLOSED")
+        self_test_assignment_orphan_policy()
+        print("ASSIGNMENT_ORPHAN_POLICY_SELF_TEST=PASS")
         return 0
+
     rows: list[list[str]] = []
     for number, line in enumerate(MANIFEST.read_text(encoding="utf-8").splitlines(), 1):
         if not line or line.startswith("#"):
@@ -227,18 +500,33 @@ def main() -> int:
         if evidence_class in {"HOST_EXEC", "ESP_EMU_EXEC"} and not evidence_id:
             raise SystemExit(f"{prop}: executable producer id absent")
 
+    registered_scenarios = {
+        evidence_class: {row[4] for row in rows
+                         if row[2] == evidence_class and
+                         not row[4].startswith("marker:")}
+        for evidence_class in EXEC_ASSIGNMENT_SCHEMA
+    }
+    registered_markers = {
+        evidence_class: {row[4].removeprefix("marker:") for row in rows
+                         if row[2] == evidence_class and
+                         row[4].startswith("marker:")}
+        for evidence_class in EXEC_ASSIGNMENT_SCHEMA
+    }
+    validate_policy_schema(registered_markers)
+
     all_scenarios: list[dict[str, str]] = []
     all_markers: dict[str, list[dict[str, str]]] = {}
     input_logs = ([(args.host_log, "HOST_EXEC")] if args.host_log else [])
     input_logs.extend((path, "ESP_EMU_EXEC") for path in args.esp_log)
     for path, evidence_class in input_logs:
-        scenarios, markers = records(path, evidence_class)
+        scenarios, markers = records(
+            path, evidence_class, registered_scenarios[evidence_class],
+            registered_markers[evidence_class])
         all_scenarios.extend(scenarios)
         for marker, values in markers.items():
             all_markers.setdefault(marker, []).extend(values)
 
     if args.require_all_exec:
-        mapped: set[str] = set()
         for prop, _, evidence_class, _, evidence_id, required, _ in rows:
             if evidence_class not in {"HOST_EXEC", "ESP_EMU_EXEC"}:
                 continue
@@ -246,24 +534,20 @@ def main() -> int:
             if evidence_id.startswith("marker:"):
                 marker = evidence_id.removeprefix("marker:")
                 matches = all_markers.get(marker, [])
+                expected = EXEC_MARKER_OCCURRENCES[evidence_class][marker]
             else:
                 matches = [item for item in all_scenarios
                            if item.get("scenario") == evidence_id and
                            item.get("evidence_class") == evidence_class]
-            if not matches:
-                raise SystemExit(f"{prop}: evidence producer did not run")
+                expected = 1
+            if len(matches) != expected:
+                raise SystemExit(
+                    f"{prop}: evidence occurrence mismatch "
+                    f"{len(matches)} != {expected}")
             available = set().union(*(set(item) for item in matches))
             missing = required_fields - available
             if missing:
                 raise SystemExit(f"{prop}: missing raw fields {sorted(missing)}")
-            mapped.add(evidence_id)
-        produced = {item.get("scenario", "") for item in all_scenarios}
-        manifest_scenarios = {row[4] for row in rows
-                              if row[2] in {"HOST_EXEC", "ESP_EMU_EXEC"} and
-                              not row[4].startswith("marker:")}
-        orphaned = produced - manifest_scenarios
-        if orphaned:
-            raise SystemExit(f"orphan executable scenarios: {sorted(orphaned)}")
 
     if args.require_all_exec and (not args.idf_static_log or not args.static_log):
         raise SystemExit("complete evidence validation requires both static logs")
@@ -273,7 +557,7 @@ def main() -> int:
         if not static_path:
             continue
         static_rows = {row[0]: row for row in rows if row[2] == evidence_class}
-        static = static_records(static_path)
+        static = static_records(static_path, evidence_class)
         seen: set[str] = set()
         for item in static:
             prop = item.get("property_id", "")
@@ -307,7 +591,6 @@ def main() -> int:
                              args.idf_static_log and args.static_log and
                              args.require_all_exec)
     if complete_boundary:
-        print("ORPHAN_ACCEPTANCE_OUTPUT_POLICY=FAIL_CLOSED")
         print("ORPHAN_ACCEPTANCE_OUTPUTS=0")
         project_static_rows = {row[0] for row in rows
                                if row[2] == "STATIC_PROJECT_SOURCE"}
@@ -324,6 +607,8 @@ def main() -> int:
         print(f"5D1_ACCEPTANCE_MANIFEST_ROWS={len(rows)}")
     if args.test_orphan_policy_change_sensitivity:
         test_orphan_policy_change_sensitivity(args)
+        print("COMPLETE_ORPHAN_POLICY_SOURCE_PROOF=PASS")
+        print("ORPHAN_ACCEPTANCE_OUTPUT_POLICY=FAIL_CLOSED")
     return 0
 
 
