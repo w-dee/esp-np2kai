@@ -45,7 +45,7 @@ owner_delete_order	Delete follows suspension	STATIC_PROJECT_SOURCE	tools/emu/che
 owner_destroy_order	Destroy follows suspension	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_destroy_order	suspended_before_destroy	source_checker
 production_projection	Production guest binding unchanged	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	production_projection	baseline|test_guard_false	source_checker
 profile_isolation	Fake profile is esp-emu only	BUILD	tools/emu/build-production.sh	profile_isolation	p4_v3x|generic|esp_emu	exit_zero
-build_matrix	Eleven profiles build	BUILD	tools/emu/test-p4-audio86-physical-build-matrix.sh	build_matrix	profiles	exit_zero
+build_matrix	Twelve profiles build	BUILD	tools/emu/test-p4-audio86-physical-build-matrix.sh	build_matrix	profiles	exit_zero
 public_sink_unchanged	Public sink contract unchanged	INTEGRITY	git diff --quiet	public_sink_unchanged	path	diff_empty
 a2_ring_unchanged	A2 ring unchanged	INTEGRITY	git diff --quiet	a2_ring_unchanged	path	diff_empty
 pcm_goldens_unchanged	PCM goldens unchanged	INTEGRITY	git diff --quiet	pcm_goldens_unchanged	path	diff_empty

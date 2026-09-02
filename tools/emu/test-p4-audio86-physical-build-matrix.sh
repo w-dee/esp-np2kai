@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fresh configuration/build isolation matrix for 86R.5D.1-F2.
+# Fresh configuration/build isolation matrix for the physical Audio 86 profiles.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -26,6 +26,8 @@ build terminal --variant p4-v3x --board generic \
     --audio86-pcm-lifecycle finish-fatal --esp-emu-test
 build physical-i2s --variant p4-v1x --board p4-nano \
     --audio86-real-guest-physical-i2s
+build physical-i2s-short --variant p4-v1x --board p4-nano \
+    --audio86-real-guest-physical-i2s-short
 
 stages=(early post-i2s post-callback post-codec)
 for index in "${!stages[@]}"; do
@@ -33,4 +35,4 @@ for index in "${!stages[@]}"; do
         --audio86-physical-lifecycle-test "${stages[index]}" --esp-emu-test
 done
 
-printf '5D1F2_BUILD_MATRIX=11/11_PASS\n'
+printf '5D2_S1A_BUILD_MATRIX=12/12_PASS\n'
