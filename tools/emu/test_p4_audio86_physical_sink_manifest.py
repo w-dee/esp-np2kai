@@ -43,15 +43,123 @@ EXEC_ASSIGNMENT_SCHEMA = {
         },
     },
 }
-EXEC_MARKER_OCCURRENCES = {
+# Marker identities and values are the property/scenario invariants recomputed
+# independently by validate_p4_audio86_physical_sink_log.py: q240 is 240
+# stereo 16-bit frames (960 bytes); final-partial cases are 1/13/239 frames;
+# partial-progress cases exercise 4/480/956-byte low-level writes.
+MARKER_SCHEMAS = {
     "HOST_EXEC": {
-        "5D1_FULL_Q240": 1,
-        "5D1_FINAL_PARTIAL": 3,
-        "5D1_PARTIAL_PROGRESS": 3,
-        "5D1_QUEUE_OVF": 1,
-        "5D1_CONTROL_FAULTS": 1,
+        "5D1_FULL_Q240": {
+            "fields": {"semantic_frames", "semantic_bytes", "physical_bytes",
+                       "consume_calls", "result"},
+            "bare_tokens": (),
+            "identity_field": None,
+            "expected_identities": {None},
+        },
+        "5D1_FINAL_PARTIAL": {
+            "fields": {"frames", "semantic_bytes", "physical_bytes",
+                       "padding_frames", "padding_zero",
+                       "digest_excludes_padding", "result"},
+            "bare_tokens": (),
+            "identity_field": "frames",
+            "expected_identities": {"1", "13", "239"},
+        },
+        "5D1_PARTIAL_PROGRESS": {
+            "fields": {"bytes", "result", "ring_consumed", "rollback"},
+            "bare_tokens": ("PASS",),
+            "identity_field": "bytes",
+            "expected_identities": {"4", "480", "956"},
+        },
+        "5D1_QUEUE_OVF": {
+            "fields": {"running", "draining", "stale", "result"},
+            "bare_tokens": (),
+            "identity_field": None,
+            "expected_identities": {None},
+        },
+        "5D1_CONTROL_FAULTS": {
+            "fields": {"schema", "evidence_class", "model", "rejected",
+                       "total"},
+            "bare_tokens": (),
+            "identity_field": None,
+            "expected_identities": {None},
+        },
     },
     "ESP_EMU_EXEC": {},
+}
+EVIDENCE_BASE_FIELDS = {"schema", "evidence_class", "scenario"}
+CALLBACK_BASE_FIELDS = {
+    "dispatch_state", "delete_started", "delete_returned", "gate_active",
+    "gate_generation", "callback_generation", "in_flight_before",
+    "in_flight_peak", "in_flight_final", "target_accessed",
+    "eof_epoch_before", "eof_epoch_after", "stale_callback_count",
+    "reclaim_attempted", "reclaim_allowed", "timeout",
+}
+# Exact producer grammar for registered scenarios.  Values are typed here;
+# scenario semantics remain independently recomputed by the host/lifecycle
+# validators named by the manifest predicates.
+EXEC_EVIDENCE_FIELDS = {
+    "HOST_EXEC": {
+        "short_eos": {"preload_units", "enable_calls", "physical_units",
+                      "semantic_frames", "drain_eofs", "deadlock"},
+        "retry_before_arm": {"epoch_before", "epoch_after", "callbacks",
+                             "notification_only_ready", "tail_held",
+                             "accepted_once", "forced_abort"},
+        "retry_during_arm": {"epoch_before", "epoch_after", "callbacks",
+                             "notification_only_ready", "tail_held",
+                             "accepted_once", "forced_abort"},
+        "retry_coalesced": {"epoch_before", "epoch_after", "callbacks",
+                            "notification_only_ready", "tail_held",
+                            "accepted_once", "forced_abort"},
+        **{f"finish_eof_{count}": {"eof_snapshot", "eof_current", "finish",
+                                    "sticky", "stale"}
+           for count in range(5)},
+        "finish_wrong_generation": {"eof_snapshot", "eof_current", "finish",
+                                    "sticky", "stale"},
+        "finish_sticky_error": {"eof_snapshot", "eof_current", "finish",
+                                "sticky", "stale"},
+        "callback_entry_before_disarm": CALLBACK_BASE_FIELDS | {
+            "entered", "disarmed", "in_flight_during", "in_flight_after",
+            "target_touched_safely"},
+        "callback_entry_after_disarm": CALLBACK_BASE_FIELDS | {
+            "entered", "target_touched", "in_flight_after", "stale"},
+        "callback_zero_observation": CALLBACK_BASE_FIELDS | {
+            "delete_returned_while_pending", "observed_zero", "late_entry",
+            "target_touched", "eof_credit", "stale"},
+        "callback_inflight_teardown": CALLBACK_BASE_FIELDS | {
+            "held", "abort_while_held", "unsafe_free", "released",
+            "abort_after_release"},
+        "callback_stale_after_abort": CALLBACK_BASE_FIELDS | {
+            "target_touched", "eof_credit", "retry_authorized",
+            "finish_credit", "stale"},
+        "callback_quiescence_timeout": CALLBACK_BASE_FIELDS | {
+            "abort", "unsafe_free", "retry_abort"},
+        "healthy_stop": {"terminal", "first_error", "forced_abort",
+                         "finish_accepted", "abandonment", "pending_a",
+                         "quiescent"},
+        "healthy_primary_fatal": {"terminal", "first_error", "forced_abort",
+                                  "finish_accepted", "abandonment", "pending_a",
+                                  "quiescent"},
+        "physical_fatal": {"terminal", "first_error", "forced_abort",
+                           "semantic_a", "k", "p", "r", "discarded_a",
+                           "pending_a", "abort_calls"},
+        "dual_primary_then_physical": {"terminal", "first_error",
+                                       "forced_abort", "finish_accepted"},
+        "dual_physical_then_primary": {"terminal", "first_error",
+                                       "forced_abort", "finish_accepted"},
+        **{f"start_backend_rollback_{stage}": {
+            "start_fatal", "callback_in_flight", "residual_before",
+            "residual_after", "release_calls"}
+           for stage in range(1, 5)},
+    },
+    "ESP_EMU_EXEC": {
+        **{f"start_fatal_{stage}": {
+            "start_fatal", "ready_wait", "forced_abort", "first_error",
+            "terminal_ack", "consumer_quiescent", "terminal_wait",
+            "owner_suspended", "delete_performed", "sink_destroy_performed",
+            "callback_residual", "resource_residual", "pa_high",
+            "i2c_residual", "result"}
+           for stage in range(1, 5)},
+    },
 }
 STATIC_DIAGNOSTIC_SCHEMA = {
     "STATIC_IDF_SOURCE": {
@@ -88,18 +196,25 @@ def structured_fields(line: str) -> dict[str, str]:
     return result
 
 
-def marker_fields(line: str) -> dict[str, str]:
+def marker_fields(line: str) -> tuple[dict[str, str], tuple[str, ...]]:
     result: dict[str, str] = {}
+    bare_tokens: list[str] = []
     for token in line.split()[1:]:
         if "=" not in token:
-            if token == "PASS":
-                continue
-            raise SystemExit(f"malformed marker evidence field: {line}")
+            bare_tokens.append(token)
+            continue
         name, value = token.split("=", 1)
         if not name or not value or name in result:
             raise SystemExit(f"malformed/duplicate marker field {name}: {line}")
         result[name] = value
-    return result
+    return result, tuple(bare_tokens)
+
+
+def decimal_field(item: dict[str, str], name: str, line: str) -> int:
+    value = item.get(name, "")
+    if not re.fullmatch(r"[0-9]+", value):
+        raise SystemExit(f"invalid evidence decimal {name}: {line}")
+    return int(value)
 
 
 def integer_field(item: dict[str, str], name: str, line: str) -> int:
@@ -120,11 +235,38 @@ def acceptance_assignment(line: str) -> str | None:
     return None
 
 
-def validate_policy_schema(registered_markers: dict[str, set[str]]) -> None:
+def lexical_record(raw_line: str, evidence_class: str) -> str:
+    """Apply the column-0 authoritative-record policy, then trim line end."""
+    if raw_line[:1].isspace():
+        candidate = raw_line.lstrip()
+        assignment = ASSIGNMENT.match(candidate)
+        registered_assignment = bool(
+            assignment and
+            assignment.group(1) in EXEC_ASSIGNMENT_SCHEMA.get(
+                evidence_class, {}))
+        if (candidate.startswith("5D1_") or registered_assignment or
+                acceptance_assignment(candidate)):
+            raise SystemExit(
+                f"indented evidence/control record violates column-0 grammar: "
+                f"{raw_line}")
+    return raw_line.rstrip()
+
+
+def marker_expected_count(schema: dict[str, object]) -> int:
+    identities = schema["expected_identities"]
+    if not isinstance(identities, set):
+        raise SystemExit("marker identity schema is not a set")
+    return len(identities)
+
+
+def validate_policy_schema(registered_scenarios: dict[str, set[str]],
+                           registered_markers: dict[str, set[str]]) -> None:
     if set(EXEC_ASSIGNMENT_SCHEMA) != {"HOST_EXEC", "ESP_EMU_EXEC"}:
         raise SystemExit("executable assignment schema classes mismatch")
-    if set(EXEC_MARKER_OCCURRENCES) != set(EXEC_ASSIGNMENT_SCHEMA):
+    if set(MARKER_SCHEMAS) != set(EXEC_ASSIGNMENT_SCHEMA):
         raise SystemExit("executable marker schema classes mismatch")
+    if set(EXEC_EVIDENCE_FIELDS) != set(EXEC_ASSIGNMENT_SCHEMA):
+        raise SystemExit("structured evidence schema classes mismatch")
     for evidence_class, schema in EXEC_ASSIGNMENT_SCHEMA.items():
         for name, item in schema.items():
             if set(item) != {"classification", "value", "occurrences"}:
@@ -135,12 +277,25 @@ def validate_policy_schema(registered_markers: dict[str, set[str]]) -> None:
                 raise SystemExit(f"{name}: assignment occurrence policy invalid")
             if acceptance_assignment(f"{name}={item['value']}") != name:
                 raise SystemExit(f"{name}: assignment value is not acceptance-shaped")
-        marker_schema = EXEC_MARKER_OCCURRENCES[evidence_class]
+        marker_schema = MARKER_SCHEMAS[evidence_class]
         if set(marker_schema) != registered_markers[evidence_class]:
             raise SystemExit(f"{evidence_class}: marker schema/manifest mismatch")
-        if not all(isinstance(count, int) and count > 0
-                   for count in marker_schema.values()):
-            raise SystemExit(f"{evidence_class}: marker occurrence policy invalid")
+        for name, item in marker_schema.items():
+            if set(item) != {"fields", "bare_tokens", "identity_field",
+                             "expected_identities"}:
+                raise SystemExit(f"{name}: marker schema fields mismatch")
+            fields = item["fields"]
+            identity_field = item["identity_field"]
+            if not isinstance(fields, set) or not fields:
+                raise SystemExit(f"{name}: marker field schema invalid")
+            if identity_field is not None and identity_field not in fields:
+                raise SystemExit(f"{name}: marker identity field absent")
+            if marker_expected_count(item) < 1:
+                raise SystemExit(f"{name}: marker occurrence policy invalid")
+        if set(EXEC_EVIDENCE_FIELDS[evidence_class]) != registered_scenarios[
+                evidence_class]:
+            raise SystemExit(
+                f"{evidence_class}: structured schema/manifest mismatch")
     if set(STATIC_DIAGNOSTIC_SCHEMA) != {
             "STATIC_IDF_SOURCE", "STATIC_PROJECT_SOURCE"}:
         raise SystemExit("static diagnostic schema classes mismatch")
@@ -149,6 +304,83 @@ def validate_policy_schema(registered_markers: dict[str, set[str]]) -> None:
             if item.get("name") != name:
                 raise SystemExit(
                     f"{evidence_class}: diagnostic schema name mismatch")
+
+
+def validate_exec_evidence(line: str, evidence_class: str,
+                           registered_scenarios: set[str]) -> dict[str, str]:
+    item = structured_fields(line)
+    scenario = item.get("scenario", "")
+    if (item.get("schema") != "2" or
+            item.get("evidence_class") != evidence_class):
+        raise SystemExit(f"executable evidence schema/class mismatch: {line}")
+    if scenario not in registered_scenarios:
+        raise SystemExit(f"orphan executable scenario: {scenario or '?'}")
+    expected = EVIDENCE_BASE_FIELDS | EXEC_EVIDENCE_FIELDS[evidence_class][
+        scenario]
+    if set(item) != expected:
+        raise SystemExit(f"executable evidence fields mismatch: {line}")
+    for name in expected - EVIDENCE_BASE_FIELDS - {"dispatch_state", "terminal"}:
+        decimal_field(item, name, line)
+    if "dispatch_state" in item and item["dispatch_state"] not in {
+            "DISPATCHED_NOT_ENTERED", "ENTERED_IN_FLIGHT", "EXITED"}:
+        raise SystemExit(f"invalid callback dispatch state: {line}")
+    if "terminal" in item and item["terminal"] not in {
+            "STOP", "PRIMARY", "PHYSICAL", "DUAL"}:
+        raise SystemExit(f"invalid terminal evidence value: {line}")
+    return item
+
+
+def validate_marker(line: str, evidence_class: str, kind: str,
+                    identities: dict[str, set[object]]) -> dict[str, str]:
+    schema = MARKER_SCHEMAS[evidence_class][kind]
+    item, bare_tokens = marker_fields(line)
+    if set(item) != schema["fields"] or bare_tokens != schema["bare_tokens"]:
+        raise SystemExit(f"{kind}: marker field/token schema mismatch: {line}")
+
+    if kind == "5D1_FULL_Q240":
+        frames = decimal_field(item, "semantic_frames", line)
+        semantic = decimal_field(item, "semantic_bytes", line)
+        physical = decimal_field(item, "physical_bytes", line)
+        calls = decimal_field(item, "consume_calls", line)
+        valid = (frames == 240 and semantic == frames * 4 and
+                 physical == 960 and calls == 1 and item["result"] == "PASS")
+    elif kind == "5D1_FINAL_PARTIAL":
+        frames = decimal_field(item, "frames", line)
+        semantic = decimal_field(item, "semantic_bytes", line)
+        physical = decimal_field(item, "physical_bytes", line)
+        padding = decimal_field(item, "padding_frames", line)
+        zero = decimal_field(item, "padding_zero", line)
+        excluded = decimal_field(item, "digest_excludes_padding", line)
+        valid = (semantic == frames * 4 and physical == 960 and
+                 padding + frames == 240 and zero == 1 and excluded == 1 and
+                 item["result"] == "PASS")
+    elif kind == "5D1_PARTIAL_PROGRESS":
+        decimal_field(item, "bytes", line)
+        consumed = decimal_field(item, "ring_consumed", line)
+        rollback = decimal_field(item, "rollback", line)
+        valid = (item["result"] == "FATAL" and consumed == 0 and rollback == 0)
+    elif kind == "5D1_QUEUE_OVF":
+        valid = (item == {"running": "FATAL", "draining": "TELEMETRY_ONLY",
+                          "stale": "IGNORED", "result": "PASS"})
+    elif kind == "5D1_CONTROL_FAULTS":
+        rejected = decimal_field(item, "rejected", line)
+        total = decimal_field(item, "total", line)
+        valid = (item["schema"] == "2" and
+                 item["evidence_class"] == evidence_class and
+                 item["model"] == "callback" and rejected == 8 and total == 8)
+    else:
+        raise SystemExit(f"{kind}: marker semantic validator absent")
+    if not valid:
+        raise SystemExit(f"{kind}: marker semantic schema mismatch: {line}")
+
+    identity_field = schema["identity_field"]
+    identity = item[identity_field] if isinstance(identity_field, str) else None
+    if identity not in schema["expected_identities"]:
+        raise SystemExit(f"{kind}: unexpected marker identity {identity!r}")
+    if identity in identities.setdefault(kind, set()):
+        raise SystemExit(f"{kind}: duplicate marker identity {identity!r}")
+    identities[kind].add(identity)
+    return item
 
 
 def classify_exec_assignment(line: str, evidence_class: str,
@@ -218,25 +450,23 @@ def records(path: Path, evidence_class: str,
     markers: dict[str, list[dict[str, str]]] = {}
     assignments: Counter[str] = Counter()
     marker_counts: Counter[str] = Counter()
+    marker_identities: dict[str, set[object]] = {}
     history_identities: set[tuple[str, int]] = set()
     fake_backends: set[str] = set()
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in path.read_text(
+            encoding="utf-8", errors="replace").splitlines():
+        line = lexical_record(raw_line, evidence_class)
         if classify_exec_assignment(line, evidence_class, assignments):
             continue
         if not line.startswith("5D1_"):
             continue
         kind = line.split(maxsplit=1)[0]
         if kind == "5D1_EVIDENCE":
-            item = structured_fields(line)
-            scenario = item.get("scenario", "")
-            if (item.get("schema") != "2" or
-                    item.get("evidence_class") != evidence_class):
-                raise SystemExit(f"executable evidence schema/class mismatch: {line}")
-            if scenario not in registered_scenarios:
-                raise SystemExit(f"orphan executable scenario: {scenario or '?'}")
-            scenarios.append(item)
+            scenarios.append(validate_exec_evidence(
+                line, evidence_class, registered_scenarios))
         elif kind in registered_markers:
-            markers.setdefault(kind, []).append(marker_fields(line))
+            markers.setdefault(kind, []).append(validate_marker(
+                line, evidence_class, kind, marker_identities))
             marker_counts[kind] += 1
         elif kind == "5D1_HISTORY":
             validate_history(line, evidence_class, history_identities)
@@ -252,14 +482,17 @@ def records(path: Path, evidence_class: str,
             raise SystemExit(
                 f"{name}: executable assignment occurrence mismatch "
                 f"{assignments[name]} != {expected}")
-    marker_schema = EXEC_MARKER_OCCURRENCES[evidence_class]
+    marker_schema = MARKER_SCHEMAS[evidence_class]
     if set(marker_schema) != registered_markers:
         raise SystemExit(f"{evidence_class}: marker schema/manifest mismatch")
-    for name, expected in marker_schema.items():
+    for name, schema in marker_schema.items():
+        expected = marker_expected_count(schema)
         if marker_counts[name] != expected:
             raise SystemExit(
                 f"{name}: marker occurrence mismatch "
                 f"{marker_counts[name]} != {expected}")
+        if marker_identities.get(name, set()) != schema["expected_identities"]:
+            raise SystemExit(f"{name}: marker identity coverage mismatch")
     return scenarios, markers
 
 
@@ -278,7 +511,9 @@ def validate_static_diagnostic(line: str, evidence_class: str,
 def static_records(path: Path, evidence_class: str) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     diagnostics: set[str] = set()
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for raw_line in path.read_text(
+            encoding="utf-8", errors="replace").splitlines():
+        line = lexical_record(raw_line, evidence_class)
         assignment = ASSIGNMENT.match(line)
         if assignment:
             name = assignment.group(1)
@@ -347,7 +582,7 @@ def require_accepted(command: list[str], label: str) -> None:
     print(f"{label}=PASS observed_exit=0")
 
 
-def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
+def test_evidence_grammar_change_sensitivity(args: argparse.Namespace) -> None:
     import tempfile
 
     if not (args.host_log and args.esp_log and args.idf_static_log and
@@ -368,12 +603,15 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
             esp_logs.append(destination)
 
         command = validator_command(host_log, esp_logs, idf_static_log, static_log)
-        require_accepted(command, "F5_CANONICAL_ACCEPTED")
+        require_accepted(command, "F6_CANONICAL_ACCEPTED")
         print("LEGITIMATE_DIAGNOSTIC_SCHEMA_POSITIVE=PASS")
 
-        def mutate(label: str, path: Path, line: str, accepted: bool = False) -> None:
+        def mutate_text(label: str, path: Path, mutated: str,
+                        accepted: bool = False) -> None:
             original = path.read_text(encoding="utf-8", errors="replace")
-            path.write_text(original + line + "\n", encoding="utf-8")
+            if mutated == original:
+                raise SystemExit(f"{label}: mutation did not change input")
+            path.write_text(mutated, encoding="utf-8")
             try:
                 if accepted:
                     require_accepted(command, label)
@@ -381,6 +619,19 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
                     require_rejected(command, label)
             finally:
                 path.write_text(original, encoding="utf-8")
+
+        def append_line(label: str, path: Path, line: str,
+                        accepted: bool = False) -> None:
+            original = path.read_text(encoding="utf-8", errors="replace")
+            mutate_text(label, path, original + line + "\n", accepted)
+
+        def replace_once(label: str, path: Path, old: str, new: str,
+                         accepted: bool = False) -> None:
+            original = path.read_text(encoding="utf-8", errors="replace")
+            if original.count(old) != 1:
+                raise SystemExit(
+                    f"{label}: expected exactly one mutation target")
+            mutate_text(label, path, original.replace(old, new, 1), accepted)
 
         assignment_mutations = (
             ("F4_HOST_ORPHAN_PASS_REJECTED", host_log,
@@ -405,7 +656,7 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
              "UNREGISTERED_PROJECT_STATIC_ACCEPTANCE=PASS"),
         )
         for mutation in assignment_mutations:
-            mutate(*mutation)
+            append_line(*mutation)
 
         marker_mutations = (
             ("HOST_5D1_UNKNOWN_MARKER_REJECTED", host_log,
@@ -422,42 +673,110 @@ def test_orphan_policy_change_sensitivity(args: argparse.Namespace) -> None:
              "5D1_UNKNOWN_PROJECT_MARKER scenario=x result=PASS"),
         )
         for mutation in marker_mutations:
-            mutate(*mutation)
+            append_line(*mutation)
 
-        mutate("ESP_LIFECYCLE_RESULT_VALUE_REJECTED", esp_logs[0],
-               "5D1_ESP_EMU_LIFECYCLE_RESULT=NOT_RUN_PASS")
-        mutate("ESP_GUEST_RESULT_VALUE_REJECTED", esp_logs[0],
-               "P4_AUDIO86_REAL_GUEST_RESULT=0/0_PASS")
-        mutate("ESP_GUEST_STATUS_VALUE_REJECTED", esp_logs[0],
-               "P4_NANO_AUDIO86_REAL_GUEST_STATUS=NOT_RUN_PASS")
+        append_line("ESP_LIFECYCLE_RESULT_VALUE_REJECTED", esp_logs[0],
+                    "5D1_ESP_EMU_LIFECYCLE_RESULT=NOT_RUN_PASS")
+        append_line("ESP_GUEST_RESULT_VALUE_REJECTED", esp_logs[0],
+                    "P4_AUDIO86_REAL_GUEST_RESULT=0/0_PASS")
+        append_line("ESP_GUEST_STATUS_VALUE_REJECTED", esp_logs[0],
+                    "P4_NANO_AUDIO86_REAL_GUEST_STATUS=NOT_RUN_PASS")
         print("EXEC_ASSIGNMENT_SCHEMA_VALUE_VALIDATION=PASS")
 
-        mutate("STATIC_FAKE_DIAGNOSTIC_SCHEMA_REJECTED", static_log,
-               "5D1_NON_ACCEPTANCE_SUMMARY arbitrary=1 hidden=PASS")
-        mutate("HOST_HISTORY_DIAGNOSTIC_SCHEMA_REJECTED", host_log,
-               "5D1_HISTORY arbitrary=1 hidden=PASS")
-        mutate("ESP_FAKE_BACKEND_DIAGNOSTIC_SCHEMA_REJECTED", esp_logs[0],
-               "5D1_FAKE_BACKEND arbitrary=1 hidden=PASS")
-        mutate("NON_ACCEPTANCE_DIAGNOSTIC_DUPLICATE_REJECTED", static_log,
-               "5D1_NON_ACCEPTANCE_SUMMARY name=START_STATIC_GUARDS "
-               "value=3/3_PASS")
+        append_line("STATIC_FAKE_DIAGNOSTIC_SCHEMA_REJECTED", static_log,
+                    "5D1_NON_ACCEPTANCE_SUMMARY arbitrary=1 hidden=PASS")
+        append_line("HOST_HISTORY_DIAGNOSTIC_SCHEMA_REJECTED", host_log,
+                    "5D1_HISTORY arbitrary=1 hidden=PASS")
+        append_line("ESP_FAKE_BACKEND_DIAGNOSTIC_SCHEMA_REJECTED", esp_logs[0],
+                    "5D1_FAKE_BACKEND arbitrary=1 hidden=PASS")
+        append_line("NON_ACCEPTANCE_DIAGNOSTIC_DUPLICATE_REJECTED", static_log,
+                    "5D1_NON_ACCEPTANCE_SUMMARY name=START_STATIC_GUARDS "
+                    "value=3/3_PASS")
         print("NON_ACCEPTANCE_DIAGNOSTIC_SCHEMA_EXPLICIT=PASS")
 
-        mutate("EXEC_ASSIGNMENT_DUPLICATE_REJECTED", esp_logs[0],
-               "5D1_ESP_EMU_LIFECYCLE_RESULT=PASS")
+        append_line("EXEC_ASSIGNMENT_DUPLICATE_REJECTED", esp_logs[0],
+                    "5D1_ESP_EMU_LIFECYCLE_RESULT=PASS")
         print("EXEC_ASSIGNMENT_SCHEMA_DUPLICATE_POLICY=PASS")
-        marker = next(line for line in host_log.read_text(
+        full_marker = next(line for line in host_log.read_text(
             encoding="utf-8", errors="replace").splitlines()
                       if line.startswith("5D1_FULL_Q240 "))
-        mutate("AUTHORITATIVE_MARKER_DUPLICATE_REJECTED", host_log, marker)
+        append_line("AUTHORITATIVE_MARKER_DUPLICATE_REJECTED", host_log,
+                    full_marker)
         print("AUTHORITATIVE_EVIDENCE_DUPLICATE_POLICY=PASS")
 
-        mutate("HOST_BENIGN_TELEMETRY_NONREGRESSION", host_log,
-               "UNREGISTERED_HOST_TELEMETRY=42", accepted=True)
+        append_line("LEADING_WHITESPACE_ACCEPTANCE_REJECTED", host_log,
+                    " UNREGISTERED_HOST_ACCEPTANCE=PASS")
+        append_line("LEADING_WHITESPACE_5D1_REJECTED", host_log,
+                    " 5D1_UNKNOWN_HOST_MARKER scenario=x result=PASS")
+        print("LEADING_WHITESPACE_EVIDENCE_ESCAPE=CLOSED")
+
+        replace_once("MARKER_INVALID_SEMANTIC_VALUE_REJECTED", host_log,
+                     full_marker,
+                     full_marker.replace("semantic_frames=240",
+                                         "semantic_frames=241"))
+        replace_once("MARKER_UNEXPECTED_FIELD_REJECTED", host_log,
+                     full_marker, full_marker + " unexpected_semantic=PASS")
+        replace_once("MARKER_INVALID_RESULT_REJECTED", host_log,
+                     full_marker,
+                     full_marker.replace("result=PASS",
+                                         "result=NOT_RUN_PASS"))
+        replace_once("MARKER_MISSING_FIELD_REJECTED", host_log,
+                     full_marker,
+                     full_marker.replace(" consume_calls=1", ""))
+        replace_once("MARKER_DUPLICATE_FIELD_REJECTED", host_log,
+                     full_marker, full_marker + " result=PASS")
+        print("REGISTERED_MARKER_SCHEMA_VALIDATION=PASS")
+
+        evidence_line = next(line for line in host_log.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+                             if line.startswith("5D1_EVIDENCE "))
+        replace_once("STRUCTURED_ACCEPTANCE_FIELD_REJECTED", host_log,
+                     evidence_line, evidence_line + " acceptance=PASS")
+        replace_once("STRUCTURED_NEUTRAL_FIELD_REJECTED", host_log,
+                     evidence_line, evidence_line + " note=extra")
+        print("STRUCTURED_EVIDENCE_EXACT_FIELD_SCHEMA=PASS")
+        print("STRUCTURED_EVIDENCE_UNEXPECTED_FIELD_REJECTED=PASS")
+
+        partials = [line for line in host_log.read_text(
+            encoding="utf-8", errors="replace").splitlines()
+                    if line.startswith("5D1_FINAL_PARTIAL ")]
+        if len(partials) != 3:
+            raise SystemExit("repeatable marker control count mismatch")
+        original = host_log.read_text(encoding="utf-8", errors="replace")
+        duplicate_partials = original
+        for line in partials[1:]:
+            duplicate_partials = duplicate_partials.replace(line, partials[0], 1)
+        mutate_text("REPEATABLE_MARKER_SEMANTIC_DUPLICATE_REJECTED",
+                    host_log, duplicate_partials)
+        print("REPEATABLE_MARKER_SEMANTIC_UNIQUENESS=PASS")
+        print("REPEATABLE_MARKER_BOUNDED_COVERAGE=PASS")
+
+        replace_once("PARSER_TRAILING_WHITESPACE_ACCEPTED", host_log,
+                     full_marker, full_marker + "   ", accepted=True)
+        spaced_marker = "  ".join(full_marker.split())
+        replace_once("PARSER_MULTIPLE_FIELD_SPACES_ACCEPTED", host_log,
+                     full_marker, spaced_marker, accepted=True)
+        marker_tokens = full_marker.split()
+        reordered_marker = " ".join(
+            [marker_tokens[0], *reversed(marker_tokens[1:])])
+        replace_once("PARSER_FIELD_REORDERING_ACCEPTED", host_log,
+                     full_marker, reordered_marker, accepted=True)
+        replace_once("PARSER_MALFORMED_TOKEN_REJECTED", host_log,
+                     full_marker, full_marker + " malformed")
+        print("EVIDENCE_PARSER_BOUNDARY_AUDIT=PASS")
+
+        append_line("HOST_BENIGN_TELEMETRY_NONREGRESSION", host_log,
+                    "UNREGISTERED_HOST_TELEMETRY=42", accepted=True)
+        append_line("HOST_FREEFORM_INFORMATION_NONREGRESSION", host_log,
+                    "informational host test output", accepted=True)
         print("R5_MARKER_RECORD_SELECTION_ESCAPE=CLOSED")
         print("ACCEPTANCE_CLASSIFICATION_BEFORE_RECORD_FILTER=PASS")
-        print("COMPLETE_ORPHAN_POLICY_CHANGE_SENSITIVITY=PASS")
-        print("COMPLETE_ORPHAN_POLICY_EXECUTABLE_PROOF=PASS")
+        print("RAW_RECORD_CLASSIFICATION_TOTALITY=PASS")
+        print("EVIDENCE_RECORD_SILENT_DROP_PATHS=0")
+        print("RAW_RECORD_CLASSIFICATION_UNAMBIGUOUS=PASS")
+        print("TELEMETRY_FALLBACK_CANNOT_HIDE_EVIDENCE=PASS")
+        print("COMPLETE_EVIDENCE_GRAMMAR_CHANGE_SENSITIVITY=PASS")
+        print("COMPLETE_EVIDENCE_GRAMMAR_EXECUTABLE_PROOF=PASS")
 
 
 def main() -> int:
@@ -468,8 +787,11 @@ def main() -> int:
     parser.add_argument("--static-log", type=Path)
     parser.add_argument("--require-all-exec", action="store_true")
     parser.add_argument("--self-test-orphan-policy", action="store_true")
-    parser.add_argument("--test-orphan-policy-change-sensitivity",
-                        action="store_true")
+    parser.add_argument(
+        "--test-evidence-grammar-change-sensitivity",
+        "--test-orphan-policy-change-sensitivity",
+        dest="test_evidence_grammar_change_sensitivity",
+        action="store_true")
     args = parser.parse_args()
     if args.self_test_orphan_policy:
         self_test_assignment_orphan_policy()
@@ -512,7 +834,7 @@ def main() -> int:
                          row[4].startswith("marker:")}
         for evidence_class in EXEC_ASSIGNMENT_SCHEMA
     }
-    validate_policy_schema(registered_markers)
+    validate_policy_schema(registered_scenarios, registered_markers)
 
     all_scenarios: list[dict[str, str]] = []
     all_markers: dict[str, list[dict[str, str]]] = {}
@@ -534,7 +856,8 @@ def main() -> int:
             if evidence_id.startswith("marker:"):
                 marker = evidence_id.removeprefix("marker:")
                 matches = all_markers.get(marker, [])
-                expected = EXEC_MARKER_OCCURRENCES[evidence_class][marker]
+                expected = marker_expected_count(
+                    MARKER_SCHEMAS[evidence_class][marker])
             else:
                 matches = [item for item in all_scenarios
                            if item.get("scenario") == evidence_id and
@@ -605,9 +928,11 @@ def main() -> int:
         print(f"86R5D1_MATRIX={len(rows)}/{len(rows)}_PASS")
     else:
         print(f"5D1_ACCEPTANCE_MANIFEST_ROWS={len(rows)}")
-    if args.test_orphan_policy_change_sensitivity:
-        test_orphan_policy_change_sensitivity(args)
-        print("COMPLETE_ORPHAN_POLICY_SOURCE_PROOF=PASS")
+    if args.test_evidence_grammar_change_sensitivity:
+        test_evidence_grammar_change_sensitivity(args)
+        print("EVIDENCE_LEXICAL_WHITESPACE_POLICY=COLUMN_0_REQUIRED")
+        print("MARKER_SCHEMA_CONSTRAINTS_SEMANTICALLY_GROUNDED=PASS")
+        print("COMPLETE_EVIDENCE_GRAMMAR_SOURCE_PROOF=PASS")
         print("ORPHAN_ACCEPTANCE_OUTPUT_POLICY=FAIL_CLOSED")
     return 0
 
