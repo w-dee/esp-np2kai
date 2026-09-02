@@ -97,9 +97,19 @@ constexpr uint32_t kErrorInjectedFatal = 86U;
 enum : uint32_t { kPcmLifecycleNone = 0U, kPcmLifecycleStopFull = 1U,
                   kPcmLifecycleFatalFull = 2U,
                   kPcmLifecycleConsumerFailureFull = 3U,
-                  kPcmLifecycleConsumerFailureEmpty = 4U };
+                  kPcmLifecycleConsumerFailureEmpty = 4U,
+                  kPcmLifecycleRetryStop = 5U,
+                  kPcmLifecycleRetryFatal = 6U,
+                  kPcmLifecycleRetryPrimaryFirst = 7U,
+                  kPcmLifecycleRetryConsumerFirst = 8U };
 constexpr uint32_t kPcmLifecycleScenario =
     P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO;
+constexpr bool kPcmRetryLifecycle =
+    kPcmLifecycleScenario >= kPcmLifecycleRetryStop &&
+    kPcmLifecycleScenario <= kPcmLifecycleRetryConsumerFirst;
+enum : uint32_t { kPcmSinkPermissionHold = 0U,
+                  kPcmSinkPermissionAccept = 1U,
+                  kPcmSinkPermissionFatal = 2U };
 #endif
 
 struct ApplyRecord {
@@ -150,6 +160,48 @@ struct Runtime {
     std::atomic<uint32_t> pcm_consumer_suspended_observed{0U};
     std::atomic<uint32_t> pcm_worker_deleted_after_suspended{0U};
     std::atomic<uint32_t> pcm_consumer_deleted_after_suspended{0U};
+    /* Test-profile permission is authoritative; counters below are evidence
+     * only and never control production RETRY correctness. */
+    std::atomic<uint32_t> pcm_sink_permission{kPcmSinkPermissionAccept};
+    std::atomic<uint32_t> pcm_retry_waiting{0U};
+    std::atomic<uint32_t> pcm_retry_controller_driven{0U};
+    std::atomic<uint32_t> pcm_retry_permission_before_wake{0U};
+    std::atomic<uint32_t> pcm_post_done_retry_waiting{0U};
+    std::atomic<uint32_t> pcm_post_done_permission_before_wake{0U};
+    uint32_t pcm_retry_slot_captured = 0U;
+    uint32_t pcm_post_done_retry_slot_captured = 0U;
+    uint32_t pcm_retry_attempts = 0U;
+    uint32_t pcm_retry_wakes = 0U;
+    uint32_t pcm_retry_resubmits = 0U;
+    uint32_t pcm_retry_identity = 1U;
+    uint32_t pcm_retry_tail_held = 0U;
+    uint32_t pcm_retry_accepted_held = 0U;
+    uint32_t pcm_retry_full_occupancy = 0U;
+    uint32_t pcm_retry_worker_resumed = 0U;
+    uint32_t pcm_retry_wait_skipped_ready = 0U;
+    uint32_t pcm_retry_done_only_after_empty = 0U;
+    uint32_t pcm_retry_tail_before = 0U;
+    uint32_t pcm_retry_tail_after = 0U;
+    uint64_t pcm_retry_accepted_frames_before = 0U;
+    uint64_t pcm_retry_accepted_bytes_before = 0U;
+    uint64_t pcm_retry_frame_offset = 0U;
+    uint32_t pcm_retry_sequence = 0U;
+    uint16_t pcm_retry_valid_frames = 0U;
+    uint16_t pcm_retry_flags = 0U;
+    uint32_t pcm_retry_crc32 = 0U;
+    uint8_t pcm_retry_pcm[NP2_OPNGEN_PCM_RING_SLOT_BYTES]{};
+    uint32_t pcm_post_done_retry_attempts = 0U;
+    uint32_t pcm_post_done_retry_resubmits = 0U;
+    uint32_t pcm_post_done_retry_identity = 1U;
+    uint32_t pcm_post_done_retry_tail_held = 0U;
+    uint32_t pcm_post_done_retry_accepted_held = 0U;
+    uint32_t pcm_post_done_retry_observed = 0U;
+    uint32_t pcm_post_done_retry_not_eos = 0U;
+    uint32_t pcm_post_done_tail_before = 0U;
+    uint32_t pcm_post_done_tail_after = 0U;
+    uint64_t pcm_post_done_accepted_frames_before = 0U;
+    uint64_t pcm_post_done_accepted_bytes_before = 0U;
+    uint32_t pcm_post_done_retry_crc32 = 0U;
     uint64_t pcm_produced_frames = 0U;
     uint64_t pcm_produced_bytes = 0U;
     uint32_t pcm_produced_slots = 0U;
@@ -345,6 +397,86 @@ enum np2_pcm_sink_result pcm_sink_submit(
         view->sequence != runtime->pcm_consumed_slots)
         return NP2_PCM_SINK_FATAL;
     const size_t bytes = static_cast<size_t>(view->valid_frames) * 4U;
+    const bool post_done_retry_slot = kPcmRetryLifecycle &&
+        (kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+         kPcmLifecycleScenario == kPcmLifecycleRetryFatal) &&
+        view->sequence == kExpectedPcmSlots - 1U &&
+        runtime->pcm_retry_controller_driven.load(std::memory_order_acquire) != 0U;
+    if (post_done_retry_slot &&
+        (runtime->pcm_post_done_retry_slot_captured == 0U ||
+         runtime->pcm_post_done_retry_waiting.load(
+             std::memory_order_acquire) != 0U)) {
+        if (runtime->pcm_post_done_retry_slot_captured == 0U) {
+            runtime->pcm_post_done_tail_before =
+                runtime->pcm_ring.tail.load(std::memory_order_acquire);
+            runtime->pcm_post_done_accepted_frames_before =
+                runtime->pcm_controller.accepted_frames;
+            runtime->pcm_post_done_accepted_bytes_before =
+                runtime->pcm_controller.accepted_bytes;
+            runtime->pcm_post_done_retry_crc32 = np2_crc32_iso_hdlc_finish(
+                np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(),
+                                          view->pcm, bytes));
+            std::memcpy(runtime->pcm_retry_pcm, view->pcm, bytes);
+            runtime->pcm_post_done_retry_slot_captured = 1U;
+        } else {
+            const uint32_t crc = np2_crc32_iso_hdlc_finish(
+                np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(),
+                                          view->pcm, bytes));
+            if (runtime->pcm_post_done_retry_crc32 != crc ||
+                std::memcmp(runtime->pcm_retry_pcm, view->pcm, bytes) != 0)
+                runtime->pcm_post_done_retry_identity = 0U;
+            ++runtime->pcm_post_done_retry_resubmits;
+        }
+        ++runtime->pcm_post_done_retry_attempts;
+        if (runtime->pcm_sink_permission.load(std::memory_order_acquire) ==
+            kPcmSinkPermissionHold) {
+            runtime->pcm_post_done_retry_waiting.store(
+                1U, std::memory_order_release);
+            return NP2_PCM_SINK_RETRY;
+        }
+    }
+    if (kPcmRetryLifecycle &&
+        (runtime->pcm_retry_slot_captured == 0U ||
+         runtime->pcm_retry_waiting.load(std::memory_order_acquire) != 0U)) {
+        const uint32_t permission =
+            runtime->pcm_sink_permission.load(std::memory_order_acquire);
+        if (runtime->pcm_retry_slot_captured == 0U) {
+            runtime->pcm_retry_tail_before =
+                runtime->pcm_ring.tail.load(std::memory_order_acquire);
+            runtime->pcm_retry_accepted_frames_before =
+                runtime->pcm_controller.accepted_frames;
+            runtime->pcm_retry_accepted_bytes_before =
+                runtime->pcm_controller.accepted_bytes;
+            runtime->pcm_retry_frame_offset = view->frame_offset;
+            runtime->pcm_retry_sequence = view->sequence;
+            runtime->pcm_retry_valid_frames = view->valid_frames;
+            runtime->pcm_retry_flags = view->flags;
+            runtime->pcm_retry_crc32 = np2_crc32_iso_hdlc_finish(
+                np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(),
+                                          view->pcm, bytes));
+            std::memcpy(runtime->pcm_retry_pcm, view->pcm, bytes);
+            runtime->pcm_retry_slot_captured = 1U;
+        } else {
+            const uint32_t crc = np2_crc32_iso_hdlc_finish(
+                np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(),
+                                          view->pcm, bytes));
+            if (runtime->pcm_retry_frame_offset != view->frame_offset ||
+                runtime->pcm_retry_sequence != view->sequence ||
+                runtime->pcm_retry_valid_frames != view->valid_frames ||
+                runtime->pcm_retry_flags != view->flags ||
+                runtime->pcm_retry_crc32 != crc ||
+                std::memcmp(runtime->pcm_retry_pcm, view->pcm, bytes) != 0)
+                runtime->pcm_retry_identity = 0U;
+            ++runtime->pcm_retry_resubmits;
+        }
+        ++runtime->pcm_retry_attempts;
+        if (permission == kPcmSinkPermissionHold) {
+            runtime->pcm_retry_waiting.store(1U, std::memory_order_release);
+            return NP2_PCM_SINK_RETRY;
+        }
+        if (permission == kPcmSinkPermissionFatal)
+            return NP2_PCM_SINK_FATAL;
+    }
     if (runtime->pcm_consumed_slots == 0U)
         runtime->pcm_first_submit_occupancy =
             np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
@@ -361,6 +493,51 @@ enum np2_pcm_sink_result pcm_sink_submit(
     if (view->valid_frames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES)
         ++runtime->pcm_partial_slots;
     return NP2_PCM_SINK_ACCEPTED;
+}
+
+void drive_pcm_retry_controller(Runtime *runtime)
+{
+    /* Profile-only rendezvous: level state is published before the wake hint. */
+    if (!kPcmRetryLifecycle ||
+        runtime->pcm_retry_waiting.load(std::memory_order_acquire) == 0U ||
+        runtime->pcm_worker_space_waiting.load(std::memory_order_acquire) == 0U ||
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) !=
+            NP2_OPNGEN_PCM_RING_CAPACITY ||
+        runtime->pcm_retry_controller_driven.exchange(
+            1U, std::memory_order_acq_rel) != 0U)
+        return;
+    runtime->pcm_retry_full_occupancy =
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+    runtime->pcm_lifecycle_triggered.store(1U, std::memory_order_release);
+    if (kPcmLifecycleScenario != kPcmLifecycleRetryConsumerFirst)
+        publish_failure(runtime);
+    const uint32_t permission =
+        kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+        kPcmLifecycleScenario == kPcmLifecycleRetryFatal
+            ? kPcmSinkPermissionAccept : kPcmSinkPermissionFatal;
+    runtime->pcm_sink_permission.store(permission, std::memory_order_release);
+    runtime->pcm_retry_permission_before_wake.store(1U,
+                                                    std::memory_order_release);
+    notify_pcm_consumer(runtime);
+}
+
+void resolve_post_done_retry(Runtime *runtime)
+{
+    if (runtime->pcm_post_done_retry_waiting.load(
+            std::memory_order_acquire) == 0U ||
+        runtime->pcm_production_done.load(std::memory_order_acquire) == 0U)
+        return;
+    const uint32_t occupancy =
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+    if (occupancy == 0U) return;
+    runtime->pcm_post_done_retry_observed = occupancy;
+    runtime->pcm_post_done_retry_not_eos = runtime->pcm_eos_after_done == 0U
+        ? 1U : 0U;
+    runtime->pcm_sink_permission.store(kPcmSinkPermissionAccept,
+                                       std::memory_order_release);
+    runtime->pcm_post_done_permission_before_wake.store(
+        1U, std::memory_order_release);
+    notify_pcm_consumer(runtime);
 }
 
 enum np2_pcm_sink_result pcm_sink_finish(void *opaque)
@@ -405,6 +582,7 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
         runtime->pcm_worker_space_waiting.store(1U, std::memory_order_release);
         notify_pcm_consumer(runtime);
+        drive_pcm_retry_controller(runtime);
         if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
             runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
             runtime->pcm_abandoned_rendered_frames += frames - appended;
@@ -413,6 +591,10 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         if (np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) ==
             NP2_OPNGEN_PCM_RING_CAPACITY)
             (void)p4_nano_audio86_notifications::wait_worker();
+        if (kPcmRetryLifecycle &&
+            runtime->pcm_forced_abort_requested.load(
+                std::memory_order_acquire) == 0U)
+            runtime->pcm_retry_worker_resumed = 1U;
         runtime->pcm_worker_space_waiting.store(0U, std::memory_order_release);
     }
     runtime->pcm_produced_slots =
@@ -435,6 +617,7 @@ bool finish_pcm(Runtime *runtime)
             runtime->pcm_ring_finished.store(1U, std::memory_order_release);
             runtime->pcm_ring_before_done = 1U;
             runtime->pcm_production_done.store(1U, std::memory_order_release);
+            resolve_post_done_retry(runtime);
             notify_pcm_consumer(runtime);
             return true;
         }
@@ -487,7 +670,8 @@ void pcm_consumer_task(void *opaque)
         }
         if (!released && (occupancy >= kPcmPrefillSlots ||
                           (production_done && occupancy != 0U)))
-            released = kPcmLifecycleScenario == kPcmLifecycleNone;
+            released = kPcmLifecycleScenario == kPcmLifecycleNone ||
+                       kPcmRetryLifecycle;
         if (runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U) {
             if (np2_pcm_output_abort(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
                 fail(runtime, kErrorWorker);
@@ -497,14 +681,85 @@ void pcm_consumer_task(void *opaque)
         if (released && occupancy != 0U) {
             const enum np2_pcm_output_status status =
                 np2_pcm_output_step(&runtime->pcm_controller);
-            if (status != NP2_PCM_OUTPUT_CONSUMED) {
-                publish_pcm_forced_abort(runtime, kErrorWorker);
+            if (status == NP2_PCM_OUTPUT_RETRY) {
+                const bool post_done_retry =
+                    runtime->pcm_post_done_retry_waiting.load(
+                        std::memory_order_acquire) != 0U;
+                if (post_done_retry) {
+                    runtime->pcm_post_done_retry_tail_held =
+                        runtime->pcm_ring.tail.load(std::memory_order_acquire) ==
+                                runtime->pcm_post_done_tail_before
+                            ? 1U : 0U;
+                    runtime->pcm_post_done_retry_accepted_held =
+                        runtime->pcm_controller.accepted_frames ==
+                                runtime->pcm_post_done_accepted_frames_before &&
+                            runtime->pcm_controller.accepted_bytes ==
+                                runtime->pcm_post_done_accepted_bytes_before
+                            ? 1U : 0U;
+                    resolve_post_done_retry(runtime);
+                } else {
+                    runtime->pcm_retry_tail_held =
+                        runtime->pcm_ring.tail.load(std::memory_order_acquire) ==
+                                runtime->pcm_retry_tail_before
+                            ? 1U : 0U;
+                    runtime->pcm_retry_accepted_held =
+                        runtime->pcm_controller.accepted_frames ==
+                                runtime->pcm_retry_accepted_frames_before &&
+                            runtime->pcm_controller.accepted_bytes ==
+                                runtime->pcm_retry_accepted_bytes_before
+                            ? 1U : 0U;
+                    runtime->pcm_retry_waiting.store(
+                        1U, std::memory_order_release);
+                }
+                notify_worker(runtime);
+                /* A notification may arrive before this loop.  Rechecking the
+                 * level predicates before sleeping closes that lost-wake window. */
+                while (runtime->pcm_forced_abort_requested.load(
+                           std::memory_order_acquire) == 0U &&
+                       runtime->pcm_sink_permission.load(
+                           std::memory_order_acquire) == kPcmSinkPermissionHold) {
+                    (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
+                    ++runtime->pcm_retry_wakes;
+                }
+                if (runtime->pcm_retry_wakes == 0U)
+                    runtime->pcm_retry_wait_skipped_ready = 1U;
                 continue;
+            }
+            if (status != NP2_PCM_OUTPUT_CONSUMED) {
+                runtime->pcm_retry_tail_after =
+                    runtime->pcm_ring.tail.load(std::memory_order_acquire);
+                publish_pcm_forced_abort(runtime, kErrorWorker);
+                if (kPcmLifecycleScenario ==
+                    kPcmLifecycleRetryConsumerFirst)
+                    publish_failure(runtime);
+                continue;
+            }
+            if (kPcmRetryLifecycle &&
+                runtime->pcm_retry_waiting.load(
+                    std::memory_order_acquire) != 0U) {
+                runtime->pcm_retry_tail_after =
+                    runtime->pcm_ring.tail.load(std::memory_order_acquire);
+                runtime->pcm_retry_waiting.store(0U,
+                                                 std::memory_order_release);
+                if (kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+                    kPcmLifecycleScenario == kPcmLifecycleRetryFatal)
+                    runtime->pcm_sink_permission.store(
+                        kPcmSinkPermissionHold, std::memory_order_release);
+            }
+            if (runtime->pcm_post_done_retry_waiting.load(
+                    std::memory_order_acquire) != 0U) {
+                runtime->pcm_post_done_tail_after =
+                    runtime->pcm_ring.tail.load(std::memory_order_acquire);
+                runtime->pcm_post_done_retry_waiting.store(
+                    0U, std::memory_order_release);
             }
             notify_worker(runtime);
             continue;
         }
         if (production_done && occupancy == 0U) {
+            runtime->pcm_retry_done_only_after_empty =
+                runtime->pcm_retry_waiting.load(std::memory_order_acquire) == 0U
+                    ? 1U : 0U;
             runtime->pcm_eos_after_done = 1U;
             runtime->pcm_finish_after_empty = 1U;
             if (np2_pcm_output_finish(&runtime->pcm_controller) != NP2_PCM_OUTPUT_OK)
@@ -1584,7 +1839,13 @@ void emit_summary(const Runtime *runtime, const bool ok)
         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull
             ? "CONSUMER_FAILURE_FULL" :
         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty
-            ? "CONSUMER_FAILURE_EMPTY" : "NONE";
+            ? "CONSUMER_FAILURE_EMPTY" :
+        kPcmLifecycleScenario == kPcmLifecycleRetryStop ? "RETRY_STOP" :
+        kPcmLifecycleScenario == kPcmLifecycleRetryFatal ? "RETRY_FATAL" :
+        kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst
+            ? "RETRY_PRIMARY_FIRST" :
+        kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst
+            ? "RETRY_CONSUMER_FIRST" : "NONE";
     std::printf("P4_AUDIO86_PCM_LIFECYCLE scenario=%s triggered=%" PRIu32
                 " forced_abort=%" PRIu32 " forced_before_wake=%" PRIu32
                 " ring_finished=%" PRIu32 " pcm_done=%" PRIu32
@@ -1625,6 +1886,69 @@ void emit_summary(const Runtime *runtime, const bool ok)
                 runtime->pcm_abandoned_partial_frames,
                 runtime->pcm_abandoned_rendered_frames,
                 runtime->first_error.load(), ok ? "PASS" : "FAIL");
+    if (kPcmRetryLifecycle) {
+        std::printf("P4_AUDIO86_PCM_RETRY scenario=%s attempts=%" PRIu32
+                    " wakes=%" PRIu32 " resubmits=%" PRIu32
+                    " identity=%" PRIu32 " tail_held=%" PRIu32
+                    " accepted_held=%" PRIu32
+                    " full_occupancy=%" PRIu32
+                    " worker_resumed=%" PRIu32 " permission_before_wake=%" PRIu32
+                    " wait_skipped_ready=%" PRIu32
+                    " done_only_after_empty=%" PRIu32
+                    " tail_before=%" PRIu32 " tail_after=%" PRIu32
+                    " accepted_frames_before=%" PRIu64
+                    " accepted_frames_after=%" PRIu64
+                    " accepted_bytes_before=%" PRIu64
+                    " accepted_bytes_after=%" PRIu64
+                    " sequence=%" PRIu32 " frame_offset=%" PRIu64
+                    " valid_frames=%u flags=%u crc32=%08" PRIx32
+                    " forced_abort=%" PRIu32 " first_error=%" PRIu32
+                    " result=%s\n",
+                    pcm_scenario, runtime->pcm_retry_attempts,
+                    runtime->pcm_retry_wakes, runtime->pcm_retry_resubmits,
+                    runtime->pcm_retry_identity,
+                    runtime->pcm_retry_tail_held,
+                    runtime->pcm_retry_accepted_held,
+                    runtime->pcm_retry_full_occupancy,
+                    runtime->pcm_retry_worker_resumed,
+                    runtime->pcm_retry_permission_before_wake.load(),
+                    runtime->pcm_retry_wait_skipped_ready,
+                    runtime->pcm_retry_done_only_after_empty,
+                    runtime->pcm_retry_tail_before, runtime->pcm_retry_tail_after,
+                    runtime->pcm_retry_accepted_frames_before,
+                    runtime->pcm_controller.accepted_frames,
+                    runtime->pcm_retry_accepted_bytes_before,
+                    runtime->pcm_controller.accepted_bytes,
+                    runtime->pcm_retry_sequence, runtime->pcm_retry_frame_offset,
+                    runtime->pcm_retry_valid_frames, runtime->pcm_retry_flags,
+                    runtime->pcm_retry_crc32, runtime->pcm_forced_abort,
+                    runtime->first_error.load(), ok ? "PASS" : "FAIL");
+        if (kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+            kPcmLifecycleScenario == kPcmLifecycleRetryFatal)
+            std::printf("P4_AUDIO86_PCM_POST_DONE_RETRY scenario=%s"
+                        " attempts=%" PRIu32 " resubmits=%" PRIu32
+                        " identity=%" PRIu32 " tail_held=%" PRIu32
+                        " accepted_held=%" PRIu32 " observed_occupancy=%" PRIu32
+                        " not_eos=%" PRIu32 " permission_before_wake=%" PRIu32
+                        " tail_before=%" PRIu32 " tail_after=%" PRIu32
+                        " accepted_frames_before=%" PRIu64
+                        " accepted_bytes_before=%" PRIu64
+                        " crc32=%08" PRIx32 " result=%s\n",
+                        pcm_scenario, runtime->pcm_post_done_retry_attempts,
+                        runtime->pcm_post_done_retry_resubmits,
+                        runtime->pcm_post_done_retry_identity,
+                        runtime->pcm_post_done_retry_tail_held,
+                        runtime->pcm_post_done_retry_accepted_held,
+                        runtime->pcm_post_done_retry_observed,
+                        runtime->pcm_post_done_retry_not_eos,
+                        runtime->pcm_post_done_permission_before_wake.load(),
+                        runtime->pcm_post_done_tail_before,
+                        runtime->pcm_post_done_tail_after,
+                        runtime->pcm_post_done_accepted_frames_before,
+                        runtime->pcm_post_done_accepted_bytes_before,
+                        runtime->pcm_post_done_retry_crc32,
+                        ok ? "PASS" : "FAIL");
+    }
 #endif
     std::printf("P4_AUDIO86_REAL_GUEST_RESULT=%s\n", ok ? "PASS" : "FAIL");
 }
@@ -1715,6 +2039,51 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_worker_deleted_after_suspended.store(0U, std::memory_order_relaxed);
     runtime->pcm_consumer_deleted_after_suspended.store(0U,
                                                         std::memory_order_relaxed);
+    runtime->pcm_sink_permission.store(
+        kPcmRetryLifecycle ? kPcmSinkPermissionHold : kPcmSinkPermissionAccept,
+        std::memory_order_relaxed);
+    runtime->pcm_retry_waiting.store(0U, std::memory_order_relaxed);
+    runtime->pcm_retry_controller_driven.store(0U, std::memory_order_relaxed);
+    runtime->pcm_retry_permission_before_wake.store(0U,
+                                                    std::memory_order_relaxed);
+    runtime->pcm_post_done_retry_waiting.store(0U,
+                                               std::memory_order_relaxed);
+    runtime->pcm_post_done_permission_before_wake.store(
+        0U, std::memory_order_relaxed);
+    runtime->pcm_retry_slot_captured = 0U;
+    runtime->pcm_post_done_retry_slot_captured = 0U;
+    runtime->pcm_retry_attempts = 0U;
+    runtime->pcm_retry_wakes = 0U;
+    runtime->pcm_retry_resubmits = 0U;
+    runtime->pcm_retry_identity = 1U;
+    runtime->pcm_retry_tail_held = 0U;
+    runtime->pcm_retry_accepted_held = 0U;
+    runtime->pcm_retry_full_occupancy = 0U;
+    runtime->pcm_retry_worker_resumed = 0U;
+    runtime->pcm_retry_wait_skipped_ready = 0U;
+    runtime->pcm_retry_done_only_after_empty = 0U;
+    runtime->pcm_retry_tail_before = 0U;
+    runtime->pcm_retry_tail_after = 0U;
+    runtime->pcm_retry_accepted_frames_before = 0U;
+    runtime->pcm_retry_accepted_bytes_before = 0U;
+    runtime->pcm_retry_frame_offset = 0U;
+    runtime->pcm_retry_sequence = 0U;
+    runtime->pcm_retry_valid_frames = 0U;
+    runtime->pcm_retry_flags = 0U;
+    runtime->pcm_retry_crc32 = 0U;
+    std::memset(runtime->pcm_retry_pcm, 0, sizeof(runtime->pcm_retry_pcm));
+    runtime->pcm_post_done_retry_attempts = 0U;
+    runtime->pcm_post_done_retry_resubmits = 0U;
+    runtime->pcm_post_done_retry_identity = 1U;
+    runtime->pcm_post_done_retry_tail_held = 0U;
+    runtime->pcm_post_done_retry_accepted_held = 0U;
+    runtime->pcm_post_done_retry_observed = 0U;
+    runtime->pcm_post_done_retry_not_eos = 0U;
+    runtime->pcm_post_done_tail_before = 0U;
+    runtime->pcm_post_done_tail_after = 0U;
+    runtime->pcm_post_done_accepted_frames_before = 0U;
+    runtime->pcm_post_done_accepted_bytes_before = 0U;
+    runtime->pcm_post_done_retry_crc32 = 0U;
     runtime->pcm_produced_frames = 0U;
     runtime->pcm_produced_bytes = 0U;
     runtime->pcm_produced_slots = 0U;
@@ -1994,11 +2363,56 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
          runtime->byte_extend_done_after_close == 1U &&
          !runtime->transaction_active);
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    const bool retry_common_ok = !kPcmRetryLifecycle ||
+        (runtime->pcm_lifecycle_triggered.load(std::memory_order_acquire) == 1U &&
+         runtime->pcm_retry_identity == 1U &&
+         runtime->pcm_retry_tail_held == 1U &&
+         runtime->pcm_retry_accepted_held == 1U &&
+         runtime->pcm_retry_full_occupancy == NP2_OPNGEN_PCM_RING_CAPACITY &&
+         runtime->pcm_retry_permission_before_wake.load(
+             std::memory_order_acquire) == 1U);
+    const bool retry_healthy_ok = !kPcmRetryLifecycle ||
+        ((kPcmLifecycleScenario == kPcmLifecycleRetryStop ||
+          kPcmLifecycleScenario == kPcmLifecycleRetryFatal) &&
+         retry_common_ok && runtime->pcm_retry_worker_resumed == 1U &&
+         runtime->pcm_retry_done_only_after_empty == 1U &&
+         runtime->pcm_retry_tail_after ==
+             (runtime->pcm_retry_tail_before + 1U) %
+                 NP2_OPNGEN_PCM_RING_CAPACITY &&
+         runtime->pcm_post_done_retry_identity == 1U &&
+         runtime->pcm_post_done_retry_tail_held == 1U &&
+         runtime->pcm_post_done_retry_accepted_held == 1U &&
+         runtime->pcm_post_done_retry_observed != 0U &&
+         runtime->pcm_post_done_retry_not_eos == 1U &&
+         runtime->pcm_post_done_permission_before_wake.load(
+             std::memory_order_acquire) == 1U &&
+         runtime->pcm_post_done_tail_after ==
+             runtime->pcm_post_done_tail_before + 1U);
+    const bool retry_dual_control_ok =
+        (kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst ||
+         kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst) &&
+        retry_common_ok &&
+        runtime->failure_injected.load(std::memory_order_acquire) == 1U &&
+        runtime->failure_wait_confirmed.load(std::memory_order_acquire) == 1U &&
+        runtime->failure_predicate_published.load(std::memory_order_acquire) == 1U &&
+        runtime->failure_producer_wake.load(std::memory_order_acquire) == 1U &&
+        runtime->failure_worker_wake.load(std::memory_order_acquire) == 1U &&
+        runtime->failure_sequence.load(std::memory_order_acquire) == 3U &&
+        runtime->failure_first_error_after_cleanup.load(
+            std::memory_order_acquire) ==
+            (kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst
+                 ? kErrorInjectedFatal : kErrorWorker) &&
+        runtime->pcm_retry_tail_after == runtime->pcm_retry_tail_before &&
+        runtime->pcm_retry_worker_resumed == 0U;
     const bool forced_abort_ok =
         (kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull ||
-         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty) &&
+         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty ||
+         kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst ||
+         kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst) &&
         joined && pcm_joined &&
-        runtime->first_error.load(std::memory_order_acquire) == kErrorWorker &&
+        runtime->first_error.load(std::memory_order_acquire) ==
+            (kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst
+                 ? kErrorInjectedFatal : kErrorWorker) &&
         lifecycle_runtime != nullptr &&
         lifecycle_runtime->state() == np2runtime::State::Failed &&
         runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) == 1U &&
@@ -2017,17 +2431,21 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         np2opngen_pcm_ring_producer_partial_valid_frames(&runtime->pcm_ring) == 0U &&
         runtime->pcm_produced_frames == runtime->pcm_controller.accepted_frames +
             runtime->pcm_abandoned_published_frames +
-            runtime->pcm_abandoned_partial_frames;
+            runtime->pcm_abandoned_partial_frames &&
+        (!kPcmRetryLifecycle || retry_dual_control_ok);
     const bool pcm_lifecycle_failure =
         kPcmLifecycleScenario == kPcmLifecycleConsumerFailureFull ||
-        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty;
+        kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty ||
+        kPcmLifecycleScenario == kPcmLifecycleRetryPrimaryFirst ||
+        kPcmLifecycleScenario == kPcmLifecycleRetryConsumerFirst;
 #else
+    const bool retry_healthy_ok = true;
     const bool forced_abort_ok = false;
     const bool pcm_lifecycle_failure = false;
 #endif
     const bool ok = pcm_lifecycle_failure ? forced_abort_ok :
         (kFailureKind == kFailureNone ? normal_ok :
-         (failure_ok && byte_extend_failure_ok));
+         (failure_ok && byte_extend_failure_ok && retry_healthy_ok));
     if (kPressureScenario != kPressureNone && pressure_ok)
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
     emit_summary(runtime, ok);
