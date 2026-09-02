@@ -17,4 +17,12 @@ namespace p4_nano_audio86_physical {
 esp_err_t create_idf(struct p4_nano_audio86_physical_sink **sink,
                      TaskHandle_t *waiter_slot) noexcept;
 
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+esp_err_t create_lifecycle_test(
+    struct p4_nano_audio86_physical_sink **sink,
+    TaskHandle_t *waiter_slot) noexcept;
+bool lifecycle_test_evidence_valid() noexcept;
+void emit_lifecycle_test_backend_evidence() noexcept;
+#endif
+
 } // namespace p4_nano_audio86_physical

@@ -7,7 +7,7 @@ readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 readonly REPOSITORY_GIT_SHA="$(git -C "${REPOSITORY_ROOT}" rev-parse HEAD)"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-physical-i2s | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-physical-i2s | --audio86-physical-lifecycle-test early|post-i2s|post-callback|post-codec | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -32,6 +32,7 @@ audio86_runtime_foundation=0
 audio86_real_guest=0
 audio86_pcm_output=0
 audio86_physical_i2s=0
+audio86_physical_lifecycle_stage=0
 audio86_pcm_partial_eos=0
 audio86_pcm_lifecycle_scenario=0
 audio86_async=0
@@ -204,6 +205,20 @@ while (($# > 0)); do
             audio86_physical_i2s=1
             audio86_async=1
             shift
+            ;;
+        --audio86-physical-lifecycle-test)
+            (($# >= 2)) || { usage >&2; exit 2; }
+            case "$2" in
+                early) audio86_physical_lifecycle_stage=1;;
+                post-i2s) audio86_physical_lifecycle_stage=2;;
+                post-callback) audio86_physical_lifecycle_stage=3;;
+                post-codec) audio86_physical_lifecycle_stage=4;;
+                *) usage >&2; exit 2;;
+            esac
+            audio86_real_guest=1
+            audio86_pcm_output=1
+            audio86_async=1
+            shift 2
             ;;
         --audio86-real-guest-pcm-output-partial)
             audio86_real_guest=1
@@ -899,6 +914,12 @@ if (( audio86_physical_i2s )) &&
     printf 'ERROR: --audio86-real-guest-physical-i2s requires physical p4-v1x/p4-nano\n' >&2
     exit 2
 fi
+if (( audio86_physical_lifecycle_stage )) &&
+   [[ "${variant}" != "p4-v3x" || "${board}" != "generic" ||
+      "${esp_emu_test}" != "1" ]]; then
+    printf 'ERROR: --audio86-physical-lifecycle-test requires generic p4-v3x --esp-emu-test\n' >&2
+    exit 2
+fi
 
 if (( audio_i2s_tone )) &&
    [[ "${variant}" != "p4-v1x" || "${board}" != "p4-nano" ]]; then
@@ -1010,6 +1031,8 @@ if [[ -z "${build_dir}" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-capacity"
     elif (( audio86_runtime_foundation )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-runtime-foundation"
+    elif (( audio86_physical_lifecycle_stage )); then
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-physical-lifecycle-${audio86_physical_lifecycle_stage}"
     elif (( audio86_physical_i2s )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-physical-i2s"
     elif (( audio86_pcm_output )); then
@@ -1177,6 +1200,7 @@ cmake_args=(
     -D "P4_NANO_AUDIO86_REAL_GUEST_PROFILE=${audio86_real_guest}"
     -D "P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE=${audio86_pcm_output}"
     -D "P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE=${audio86_physical_i2s}"
+    -D "P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE=${audio86_physical_lifecycle_stage}"
     -D "P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE=${audio86_pcm_partial_eos}"
     -D "P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO=${audio86_pcm_lifecycle_scenario}"
     -D "P4_NANO_AUDIO86_PRESSURE_SCENARIO=${audio86_pressure_scenario}"
@@ -1526,8 +1550,8 @@ for artifact in \
     }
 done
 
-printf 'PRODUCTION_BUILD variant=%s board=%s audio_i2s_opngen=%s audio_i2s_tone=%s audio_only_benchmark=%s audio86_capacity=%s audio86_runtime_foundation=%s audio86_real_guest=%s audio86_pcm_output=%s audio86_physical_i2s=%s audio86_pcm_partial_eos=%s audio86_pcm_lifecycle=%s audio_opt=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
-    "${variant}" "${board}" "${audio_i2s_opngen}" "${audio_i2s_tone}" "${audio_only_benchmark}" "${audio86_capacity}" "${audio86_runtime_foundation}" "${audio86_real_guest}" "${audio86_pcm_output}" "${audio86_physical_i2s}" "${audio86_pcm_partial_eos}" "${audio86_pcm_lifecycle_scenario}" "${audio_opt}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
+printf 'PRODUCTION_BUILD variant=%s board=%s audio_i2s_opngen=%s audio_i2s_tone=%s audio_only_benchmark=%s audio86_capacity=%s audio86_runtime_foundation=%s audio86_real_guest=%s audio86_pcm_output=%s audio86_physical_i2s=%s audio86_physical_lifecycle=%s audio86_pcm_partial_eos=%s audio86_pcm_lifecycle=%s audio_opt=%s esp_emu_test=%s i286_inline_mem_fastpath=%s transform_opt=%s refresh_visual=%s benchmark_display_refresh=%s display_foundation=%s display_transform_diagnostic=%s live_display=%s live_display_motion_validation=%s live_display_benchmark=%s live_display_transform_isolated_benchmark=%s transform_isolated_compute_control_benchmark=%s transform_isolated_psram_read_control_benchmark=%s ppa_rotation_benchmark=%s ppa_internal_tile_benchmark=%s exact2x_internal_source_benchmark=%s exact2x_grouped_store_benchmark=%s ppa_pie_overlap_benchmark=%s ppa_pie_burst_benchmark=%s pie_preemption_correctness=%s real_runtime=%s runtime_validation=%s keyboard_validation=%s rotation=%s build_dir=%s sdkconfig=%s\n' \
+    "${variant}" "${board}" "${audio_i2s_opngen}" "${audio_i2s_tone}" "${audio_only_benchmark}" "${audio86_capacity}" "${audio86_runtime_foundation}" "${audio86_real_guest}" "${audio86_pcm_output}" "${audio86_physical_i2s}" "${audio86_physical_lifecycle_stage}" "${audio86_pcm_partial_eos}" "${audio86_pcm_lifecycle_scenario}" "${audio_opt}" "${esp_emu_test}" "${i286_inline_mem_fastpath}" "${transform_opt}" "${refresh_visual_profile}" "${benchmark_display_refresh_profile}" "${display_foundation}" \
     "${display_transform_diagnostic}" "${live_display}" "${live_display_motion_validation}" "${live_display_benchmark}" \
     "${live_display_transform_isolated_benchmark}" "${transform_isolated_compute_control_benchmark}" "${transform_isolated_psram_read_control_benchmark}" "${ppa_rotation_benchmark}" "${ppa_internal_tile_benchmark}" "${exact2x_internal_source_benchmark}" "${exact2x_grouped_store_benchmark}" "${ppa_pie_overlap_benchmark}" "${ppa_pie_burst_benchmark}" "${pie_preemption_correctness}" "${real_runtime}" "${runtime_validation}" "${keyboard_validation}" "${display_transform_diagnostic_rotation}" \
     "${build_dir}" "${SDKCONFIG_PATH}"

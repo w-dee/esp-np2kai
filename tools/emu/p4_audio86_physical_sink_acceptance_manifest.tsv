@@ -1,86 +1,55 @@
-# id	kind	evidence
-q240_full_copy	host	5D1_FULL_Q240
-partial_1_copy	host	5D1_FINAL_PARTIAL frames=1
-partial_13_copy	host	5D1_FINAL_PARTIAL frames=13
-partial_239_copy	host	5D1_FINAL_PARTIAL frames=239
-partial_staging_rezero	static	prepare_physical_unit memset-before-copy
-padding_semantic_exclusion	host	partial semantic_bytes/padding cross-check
-retry_zero_progress	host	retry_before_arm tail_held
-partial_progress_4_fatal	host	5D1_PARTIAL_PROGRESS bytes=4
-partial_progress_480_fatal	host	5D1_PARTIAL_PROGRESS bytes=480
-partial_progress_956_fatal	host	5D1_PARTIAL_PROGRESS bytes=956
-retry_before_arm	host	retry_before_arm
-retry_during_arm	host	retry_during_arm
-retry_coalesced	host	retry_coalesced
-retry_notification_hint_only	host	notification_only_ready=0
-eof_epoch_wrap	static	retry_ready inequality and unsigned drain delta
-finish_zero_eof	host	finish_eof_0
-finish_one_eof	host	finish_eof_1
-finish_two_eof	host	finish_eof_2
-finish_three_eof	host	finish_eof_3
-finish_four_eof	host	finish_eof_4
-finish_wrong_generation	host	finish_wrong_generation
-finish_sticky_error	host	finish_sticky_error
-qovf_running_fatal	host	5D1_QUEUE_OVF running=FATAL
-qovf_draining_telemetry	host	5D1_QUEUE_OVF draining=TELEMETRY_ONLY
-qovf_stale_ignored	host	5D1_QUEUE_OVF stale=IGNORED
-callback_entry_before_disarm	host	callback_entry_before_disarm
-callback_entry_after_disarm	host	callback_entry_after_disarm
-callback_zero_observation	host	callback_zero_observation
-callback_inflight_teardown	host	callback_inflight_teardown
-callback_stale_after_abort	host	callback_stale_after_abort
-callback_timeout_fail_closed	host	callback_quiescence_timeout
-callback_gate_entry_first	static	callback_gate_enter first atomic in_flight increment
-callback_no_new_barrier	static	i2s_del_channel to gdma_del_channel to esp_intr_free
-callback_target_lifetime	static	disarm then barrier then in_flight zero
-callback_gate_no_reuse	static	gate embedded in one sink session
-start_fatal_early	host	start_fatal_1
-start_fatal_after_i2s	host	start_fatal_2
-start_fatal_after_callback	host	start_fatal_3
-start_fatal_after_codec_pa	host	start_fatal_4
-start_fatal_common_epilogue	static	pcm_consumer_task start failure branch
-start_fatal_no_self_delete	static	pcm_consumer_task vTaskSuspend
-owner_start_failure_cleanup	static	cleanup_pcm_start_failure
-start_partial_resource_rollback	static	rollback_prepare and idempotent abort
-physical_fatal_terminal	host	physical_fatal
-healthy_stop_terminal	host	healthy_stop
-healthy_primary_terminal	host	healthy_primary_fatal
-dual_primary_then_physical	host	dual_primary_then_physical
-dual_physical_then_primary	host	dual_physical_then_primary
-semantic_a_definition	host	physical_fatal semantic_a
-pending_discarded_a	host	physical_fatal pending_a/discarded_a
-accepted_not_kpr	host	physical_fatal k/p/r
-short_eos	host	short_eos
-preload_ready_state	static	i2s_channel_preload_data in PREPARED_ACCEPTING
-preload_caller_copy	static	IDF i2s_channel_preload_data DMA memcpy
-running_write_nonblocking	static	i2s_channel_write timeout_ms=0
-preload_accept_linearization	static	counter update after exact copy
-running_accept_linearization	static	counter update after exact copy
-staging_internal	static	sink internal allocation and embedded staging
-adapter_state_machine	static	INITIAL through QUIESCENT transitions
-physical_profile_isolation	build	P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE opt-in
-virtual_sink_retained	static	kPcmSink default
-public_output_api_immutable	integrity	np2pcm_output diff absent
-a2_ring_immutable	integrity	np2opngen_pcm_ring diff absent
-failure_s1_matrix	regression	86R5C3S1 4/4
-failure_s2_matrix	regression	86R5C3S2 8/8
-lifecycle_5c2_matrix	regression	5C2 16/16
-ring_pcm_full_exact	regression	RING_PCM_FULL_EXACT
-ring_pcm_pre_reset_exact	regression	RING_PCM_PRE_RESET_EXACT
-direct_vs_ring_exact	regression	DIRECT_PCM_VS_RING_PCM
-c2_pressure	regression	C2_PRESSURE_NONREGRESSION
-c3_failure	regression	C3_FAILURE_NONREGRESSION
-failure_wake_matrix	regression	FAILURE_WAKE_MATRIX 8/8
-pcm86_partial	regression	PCM86_PARTIAL_RUN_NONREGRESSION
-host_audio	regression	HOST_AUDIO_REGRESSION
-p4_foundation	regression	P4_AUDIO86_FOUNDATION_NONREGRESSION
-n1_notifications	regression	N1_NOTIFICATION_NONREGRESSION
-asan	sanitizer	test-p4-audio86-physical-sink-asan
-ubsan	sanitizer	test-p4-audio86-physical-sink-ubsan
-controlled_tsan	sanitizer	setarch x86_64 -R physical sink tsan
-build_matrix	build	seven production selectors
-vendor_snapshot	integrity	verify_np2kai 306 files
-privacy	integrity	privacy_lint --tracked
-diff_check	integrity	git diff --check
-atomic8_absent	integrity	AUDIO86_ATOMIC8_PATH_CLEAN
-hardware_boundary	boundary	5D1_HARDWARE_ACCESS=NONE
+# property_id	description	evidence_class	command	evidence_id	required_fields	predicate
+full_q240	Exact full q240 transfer	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_FULL_Q240	semantic_frames|semantic_bytes|physical_bytes|consume_calls	host_validator
+partial_matrix	Final partial padding matrix	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_FINAL_PARTIAL	frames|semantic_bytes|physical_bytes|padding_frames|padding_zero|digest_excludes_padding	host_validator
+partial_progress	Partial low-level progress fails closed	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_PARTIAL_PROGRESS	bytes|ring_consumed|rollback	host_validator
+queue_overflow_policy	Queue overflow state policy	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_QUEUE_OVF	running|draining|stale	host_validator
+short_eos	Short EOS drain	HOST_EXEC	make -C host test-p4-audio86-physical-sink	short_eos	preload_units|enable_calls|physical_units|semantic_frames|drain_eofs|deadlock	host_validator
+retry_before_arm	EOF before retry arm	HOST_EXEC	make -C host test-p4-audio86-physical-sink	retry_before_arm	epoch_before|epoch_after|callbacks|notification_only_ready|tail_held|accepted_once	host_validator
+retry_during_arm	EOF during retry arm	HOST_EXEC	make -C host test-p4-audio86-physical-sink	retry_during_arm	epoch_before|epoch_after|callbacks|notification_only_ready|tail_held|accepted_once	host_validator
+retry_coalesced	Coalesced retry callbacks	HOST_EXEC	make -C host test-p4-audio86-physical-sink	retry_coalesced	epoch_before|epoch_after|callbacks|notification_only_ready|tail_held|accepted_once	host_validator
+finish_eof_0	Finish zero EOF	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_eof_0	eof_snapshot|eof_current|finish|sticky	host_validator
+finish_eof_1	Finish one EOF	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_eof_1	eof_snapshot|eof_current|finish|sticky	host_validator
+finish_eof_2	Finish two EOF	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_eof_2	eof_snapshot|eof_current|finish|sticky	host_validator
+finish_eof_3	Finish three EOF	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_eof_3	eof_snapshot|eof_current|finish|sticky	host_validator
+finish_eof_4	Finish four EOF	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_eof_4	eof_snapshot|eof_current|finish|sticky	host_validator
+finish_wrong_generation	Wrong generation lacks drain credit	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_wrong_generation	eof_current|finish|stale	host_validator
+finish_sticky_error	Sticky error blocks finish	HOST_EXEC	make -C host test-p4-audio86-physical-sink	finish_sticky_error	eof_current|finish|sticky	host_validator
+callback_before_disarm	Entered callback lifetime	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_entry_before_disarm	dispatch_state|in_flight_peak|in_flight_final|target_accessed|reclaim_allowed	host_validator
+callback_after_disarm	Inactive callback denied	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_entry_after_disarm	dispatch_state|in_flight_peak|target_accessed|stale_callback_count	host_validator
+callback_zero_observation	Dispatched-not-entered barrier	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_zero_observation	dispatch_state|delete_started|delete_returned|delete_returned_while_pending|in_flight_before|in_flight_peak|in_flight_final|reclaim_allowed	host_validator
+callback_inflight	In-flight callback prevents reclaim	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_inflight_teardown	in_flight_before|in_flight_final|reclaim_allowed|timeout	host_validator
+callback_stale	Stale callback lacks target	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_stale_after_abort	target_accessed|eof_epoch_before|eof_epoch_after|stale_callback_count	host_validator
+callback_timeout	Quiescence timeout fails closed	HOST_EXEC	make -C host test-p4-audio86-physical-sink	callback_quiescence_timeout	in_flight_final|reclaim_allowed|timeout	host_validator
+callback_control_faults	Eight control faults rejected	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_CONTROL_FAULTS	rejected|total	host_validator
+healthy_stop	Healthy STOP terminal	HOST_EXEC	make -C host test-p4-audio86-physical-sink	healthy_stop	first_error|forced_abort|finish_accepted|quiescent	host_validator
+healthy_primary	Primary fatal healthy drain	HOST_EXEC	make -C host test-p4-audio86-physical-sink	healthy_primary_fatal	first_error|forced_abort|finish_accepted|quiescent	host_validator
+physical_fatal	Physical fatal forced abort	HOST_EXEC	make -C host test-p4-audio86-physical-sink	physical_fatal	first_error|forced_abort|semantic_a|k|p|r|discarded_a|pending_a	host_validator
+dual_primary_physical	Primary then physical	HOST_EXEC	make -C host test-p4-audio86-physical-sink	dual_primary_then_physical	first_error|forced_abort|finish_accepted	host_validator
+dual_physical_primary	Physical then primary	HOST_EXEC	make -C host test-p4-audio86-physical-sink	dual_physical_then_primary	first_error|forced_abort|finish_accepted	host_validator
+backend_rollback_early	Host early rollback	HOST_EXEC	make -C host test-p4-audio86-physical-sink	start_backend_rollback_1	start_fatal|callback_in_flight|residual_before|residual_after|release_calls	host_validator
+backend_rollback_i2s	Host I2S rollback	HOST_EXEC	make -C host test-p4-audio86-physical-sink	start_backend_rollback_2	start_fatal|callback_in_flight|residual_before|residual_after|release_calls	host_validator
+backend_rollback_callback	Host callback rollback	HOST_EXEC	make -C host test-p4-audio86-physical-sink	start_backend_rollback_3	start_fatal|callback_in_flight|residual_before|residual_after|release_calls	host_validator
+backend_rollback_codec	Host codec rollback	HOST_EXEC	make -C host test-p4-audio86-physical-sink	start_backend_rollback_4	start_fatal|callback_in_flight|residual_before|residual_after|release_calls	host_validator
+start_fatal_early	Real FreeRTOS early failure	ESP_EMU_EXEC	tools/emu/test-p4-audio86-physical-lifecycle.sh	start_fatal_1	ready_wait|forced_abort|first_error|terminal_ack|consumer_quiescent|terminal_wait|owner_suspended|delete_performed|sink_destroy_performed|resource_residual	lifecycle_validator
+start_fatal_i2s	Real FreeRTOS post-I2S failure	ESP_EMU_EXEC	tools/emu/test-p4-audio86-physical-lifecycle.sh	start_fatal_2	ready_wait|forced_abort|first_error|terminal_ack|consumer_quiescent|terminal_wait|owner_suspended|delete_performed|sink_destroy_performed|resource_residual	lifecycle_validator
+start_fatal_callback	Real FreeRTOS post-callback failure	ESP_EMU_EXEC	tools/emu/test-p4-audio86-physical-lifecycle.sh	start_fatal_3	ready_wait|forced_abort|first_error|terminal_ack|consumer_quiescent|terminal_wait|owner_suspended|delete_performed|sink_destroy_performed|callback_residual|resource_residual	lifecycle_validator
+start_fatal_codec	Real FreeRTOS post-codec failure	ESP_EMU_EXEC	tools/emu/test-p4-audio86-physical-lifecycle.sh	start_fatal_4	ready_wait|forced_abort|first_error|terminal_ack|consumer_quiescent|terminal_wait|owner_suspended|delete_performed|sink_destroy_performed|pa_high|i2c_residual|resource_residual	lifecycle_validator
+idf_delete_barrier	ESP-IDF 5.5.4 callback barrier	STATIC_IDF_SOURCE	tools/emu/check_p4_audio86_callback_idf_barrier.py	idf_delete_barrier	version|i2s_del_channel|gdma_del_channel|esp_intr_free|blocking_ipc	source_checker
+callback_entry_first	Callback owns gate before target	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	callback_entry_first	atomic_in_flight_before_target	source_checker
+callback_object_graph	Embedded gate target graph	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	callback_object_graph	gate_embedded|target_atomic	source_checker
+callback_no_reuse	Gate has one sink lifetime	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	callback_no_reuse	initial_only_start	source_checker
+start_epilogue	Start fatal terminal epilogue	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	start_epilogue	ack|quiescent|done|suspend	source_checker
+start_no_self_delete	Start fatal never self deletes	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	start_no_self_delete	vTaskSuspend	source_checker
+owner_cleanup_guards	Owner cleanup guards	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_cleanup_guards	terminal|quiescent|ack|wait_task_suspended	source_checker
+owner_delete_order	Delete follows suspension	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_delete_order	suspended_before_delete	source_checker
+owner_destroy_order	Destroy follows suspension	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	owner_destroy_order	suspended_before_destroy	source_checker
+production_projection	Production guest binding unchanged	STATIC_PROJECT_SOURCE	tools/emu/check_p4_audio86_project_source.py	production_projection	baseline|test_guard_false	source_checker
+profile_isolation	Fake profile is esp-emu only	BUILD	tools/emu/build-production.sh	profile_isolation	p4_v3x|generic|esp_emu	exit_zero
+build_matrix	Eleven profiles build	BUILD	tools/emu/test-p4-audio86-physical-build-matrix.sh	build_matrix	profiles	exit_zero
+public_sink_unchanged	Public sink contract unchanged	INTEGRITY	git diff --quiet	public_sink_unchanged	path	diff_empty
+a2_ring_unchanged	A2 ring unchanged	INTEGRITY	git diff --quiet	a2_ring_unchanged	path	diff_empty
+pcm_goldens_unchanged	PCM goldens unchanged	INTEGRITY	git diff --quiet	pcm_goldens_unchanged	path	diff_empty
+vendor_snapshot	Vendor snapshot verified	INTEGRITY	python3 tools/np2kai/verify_np2kai.py	vendor_snapshot	files	exit_zero
+privacy	Privacy lint	INTEGRITY	python3 tools/privacy_lint.py --tracked	privacy	tracked_files	exit_zero
+diff_check	Patch whitespace check	INTEGRITY	git diff --check	diff_check	patch	exit_zero
+atomic8_absent	Atomic8 absent	INTEGRITY	rg atomic8	atomic8_absent	paths	absent

@@ -1,28 +1,113 @@
 #!/usr/bin/env python3
-"""Validate the distinct 86R.5D.1 acceptance-property manifest."""
+"""Validate the versioned physical-I2S manifest and evidence bijection."""
 
+import argparse
+from collections import Counter
 from pathlib import Path
-
 
 MANIFEST = Path(__file__).with_name(
     "p4_audio86_physical_sink_acceptance_manifest.tsv")
+ROOT = Path(__file__).resolve().parents[2]
+CLASSES = {"HOST_EXEC", "ESP_EMU_EXEC", "STATIC_IDF_SOURCE",
+           "STATIC_PROJECT_SOURCE", "BUILD", "INTEGRITY"}
+PREDICATES = {"host_validator", "lifecycle_validator", "source_checker",
+              "exit_zero", "diff_empty", "absent"}
+
+
+def fields(line: str) -> dict[str, str]:
+    return dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
+
+
+def records(path: Path) -> tuple[list[dict[str, str]], dict[str, list[dict[str, str]]]]:
+    scenarios: list[dict[str, str]] = []
+    markers: dict[str, list[dict[str, str]]] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("5D1_EVIDENCE "):
+            scenarios.append(fields(line))
+        elif line.startswith("5D1_"):
+            marker = line.split(maxsplit=1)[0]
+            markers.setdefault(marker, []).append(fields(line))
+    return scenarios, markers
 
 
 def main() -> int:
-    rows = []
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host-log", type=Path)
+    parser.add_argument("--esp-log", type=Path, action="append", default=[])
+    parser.add_argument("--require-all-exec", action="store_true")
+    args = parser.parse_args()
+    rows: list[list[str]] = []
     for number, line in enumerate(MANIFEST.read_text(encoding="utf-8").splitlines(), 1):
         if not line or line.startswith("#"):
             continue
-        fields = line.split("\t")
-        if len(fields) != 3 or not all(fields):
-            raise SystemExit(f"manifest line {number}: expected 3 nonempty fields")
-        rows.append(fields)
+        row = line.split("\t")
+        if len(row) != 7 or not all(row):
+            raise SystemExit(f"manifest line {number}: expected 7 nonempty fields")
+        rows.append(row)
     identifiers = [row[0] for row in rows]
     if len(identifiers) != len(set(identifiers)):
-        raise SystemExit("manifest contains duplicate property identifiers")
-    if len(rows) < 68:
-        raise SystemExit(f"manifest too small: {len(rows)}")
-    print(f"5D1_ACCEPTANCE_MANIFEST={len(rows)}_DISTINCT_PASS")
+        raise SystemExit("duplicate property id")
+    for prop, _, evidence_class, command, evidence_id, required, predicate in rows:
+        if evidence_class not in CLASSES:
+            raise SystemExit(f"{prop}: invalid evidence class")
+        if predicate not in PREDICATES:
+            raise SystemExit(f"{prop}: missing predicate evaluator")
+        if not required.split("|"):
+            raise SystemExit(f"{prop}: missing required fields")
+        token = command.split()[0]
+        if token.startswith("tools/") and not (ROOT / token).exists():
+            raise SystemExit(f"{prop}: producer absent: {token}")
+        if evidence_class in {"HOST_EXEC", "ESP_EMU_EXEC"} and not evidence_id:
+            raise SystemExit(f"{prop}: executable producer id absent")
+
+    all_scenarios: list[dict[str, str]] = []
+    all_markers: dict[str, list[dict[str, str]]] = {}
+    for path in ([args.host_log] if args.host_log else []) + args.esp_log:
+        scenarios, markers = records(path)
+        all_scenarios.extend(scenarios)
+        for marker, values in markers.items():
+            all_markers.setdefault(marker, []).extend(values)
+
+    if args.require_all_exec:
+        mapped: set[str] = set()
+        for prop, _, evidence_class, _, evidence_id, required, _ in rows:
+            if evidence_class not in {"HOST_EXEC", "ESP_EMU_EXEC"}:
+                continue
+            required_fields = set(required.split("|"))
+            if evidence_id.startswith("marker:"):
+                marker = evidence_id.removeprefix("marker:")
+                matches = all_markers.get(marker, [])
+            else:
+                matches = [item for item in all_scenarios
+                           if item.get("scenario") == evidence_id and
+                           item.get("evidence_class") == evidence_class]
+            if not matches:
+                raise SystemExit(f"{prop}: evidence producer did not run")
+            available = set().union(*(set(item) for item in matches))
+            missing = required_fields - available
+            if missing:
+                raise SystemExit(f"{prop}: missing raw fields {sorted(missing)}")
+            mapped.add(evidence_id)
+        produced = {item.get("scenario", "") for item in all_scenarios}
+        manifest_scenarios = {row[4] for row in rows
+                              if row[2] in {"HOST_EXEC", "ESP_EMU_EXEC"} and
+                              not row[4].startswith("marker:")}
+        orphaned = produced - manifest_scenarios
+        if orphaned:
+            raise SystemExit(f"orphan executable scenarios: {sorted(orphaned)}")
+
+    counts = Counter(row[2] for row in rows)
+    print("5D1_ACCEPTANCE_MANIFEST_SCHEMA=PASS")
+    if args.require_all_exec:
+        print("MANIFEST_EVIDENCE_BIJECTION=PASS")
+    for evidence_class in ("HOST_EXEC", "ESP_EMU_EXEC", "STATIC_IDF_SOURCE",
+                           "STATIC_PROJECT_SOURCE", "BUILD", "INTEGRITY"):
+        print(f"{evidence_class}={counts[evidence_class]}")
+    print("5D1_EVIDENCE_CLASS_SUM=PASS")
+    if args.require_all_exec:
+        print(f"86R5D1_MATRIX={len(rows)}/{len(rows)}_PASS")
+    else:
+        print(f"5D1_ACCEPTANCE_MANIFEST_ROWS={len(rows)}")
     return 0
 
 

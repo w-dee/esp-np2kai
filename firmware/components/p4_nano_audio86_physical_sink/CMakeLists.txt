@@ -8,3 +8,10 @@ idf_component_register(
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wall -Wextra -Werror
     $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20;-fno-exceptions;-fno-rtti>)
+
+if(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+    target_sources(${COMPONENT_LIB} PRIVATE
+        "p4_nano_audio86_physical_sink_lifecycle_test.cpp")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE=${P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE})
+endif()

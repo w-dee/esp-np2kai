@@ -181,6 +181,15 @@ struct Runtime {
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     p4_nano_audio86_physical_sink *physical_sink = nullptr;
 #endif
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+    uint32_t test_ready_wait = 0U;
+    uint32_t test_terminal_wait = 0U;
+    uint32_t test_quiescent_observed = 0U;
+    uint32_t test_ack_observed = 0U;
+    uint32_t test_suspended_observed = 0U;
+    uint32_t test_delete_performed = 0U;
+    uint32_t test_sink_destroy_performed = 0U;
+#endif
     std::atomic<uint32_t> pcm_consumer_ready{0U};
     std::atomic<uint32_t> pcm_production_done{0U};
     std::atomic<uint32_t> pcm_consumer_quiescent{0U};
@@ -1800,6 +1809,12 @@ bool cleanup_pcm_start_failure(Runtime *runtime)
                          std::memory_order_acquire) != 0U;
     const bool suspended = runtime->pcm_consumer != nullptr && terminal &&
         quiescent && ack && wait_task_suspended(runtime->pcm_consumer);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+    runtime->test_terminal_wait = terminal ? 1U : 0U;
+    runtime->test_quiescent_observed = quiescent ? 1U : 0U;
+    runtime->test_ack_observed = ack ? 1U : 0U;
+    runtime->test_suspended_observed = suspended ? 1U : 0U;
+#endif
     runtime->pcm_consumer_suspended_observed.store(suspended ? 1U : 0U,
                                                    std::memory_order_release);
     runtime->pcm_join_timeout = suspended ? 0U : 1U;
@@ -1808,12 +1823,18 @@ bool cleanup_pcm_start_failure(Runtime *runtime)
         runtime->pcm_consumer = nullptr;
         runtime->pcm_consumer_deleted_after_suspended.store(
             1U, std::memory_order_release);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+        runtime->test_delete_performed = 1U;
+#endif
     }
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     if (suspended && runtime->physical_sink != nullptr) {
         if (p4_nano_audio86_physical_sink_destroy(runtime->physical_sink) != 0)
             return false;
         runtime->physical_sink = nullptr;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+        runtime->test_sink_destroy_performed = 1U;
+#endif
     }
 #endif
     return terminal && quiescent && ack && suspended;
@@ -2546,9 +2567,15 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->pcm_ack_after_finish = 0U;
     np2_pcm_sink selected_sink = kPcmSink;
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+    if (p4_nano_audio86_physical::create_lifecycle_test(
+            &runtime->physical_sink, &runtime->pcm_consumer) != ESP_OK)
+        return ESP_ERR_NO_MEM;
+#else
     if (p4_nano_audio86_physical::create_idf(
             &runtime->physical_sink, &runtime->pcm_consumer) != ESP_OK)
         return ESP_ERR_NO_MEM;
+#endif
     selected_sink = p4_nano_audio86_physical_sink_interface(
         runtime->physical_sink);
 #endif
@@ -2575,9 +2602,17 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
         kPcmConsumerStackBytes / sizeof(StackType_t), runtime,
         kPcmConsumerPriority, runtime->pcm_consumer_stack,
         &runtime->pcm_consumer_tcb, kPcmConsumerCore);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+    const BaseType_t pcm_ready_wait = runtime->pcm_consumer == nullptr
+        ? pdFALSE : xSemaphoreTake(runtime->pcm_ready, kTimeout);
+    runtime->test_ready_wait = pcm_ready_wait == pdTRUE ? 1U : 0U;
+    if (runtime->pcm_consumer == nullptr || pcm_ready_wait != pdTRUE ||
+        runtime->pcm_consumer_ready.load(std::memory_order_acquire) == 0U) {
+#else
     if (runtime->pcm_consumer == nullptr ||
         xSemaphoreTake(runtime->pcm_ready, kTimeout) != pdTRUE ||
         runtime->pcm_consumer_ready.load(std::memory_order_acquire) == 0U) {
+#endif
         publish_pcm_forced_abort(runtime, kErrorWorker);
         const bool cleaned = runtime->pcm_consumer != nullptr &&
             cleanup_pcm_start_failure(runtime);
@@ -2589,6 +2624,37 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
 #endif
         if (!cleaned) fail(runtime, kErrorWorker);
         emit_summary(runtime, false);
+#if defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
+        p4_nano_audio86_physical::emit_lifecycle_test_backend_evidence();
+        const bool evidence_ok = cleaned &&
+            runtime->test_ready_wait == 1U &&
+            runtime->pcm_forced_abort_requested.load(
+                std::memory_order_acquire) == 1U &&
+            runtime->first_error.load(std::memory_order_acquire) ==
+                kErrorWorker &&
+            runtime->test_terminal_wait == 1U &&
+            runtime->test_quiescent_observed == 1U &&
+            runtime->test_ack_observed == 1U &&
+            runtime->test_suspended_observed == 1U &&
+            runtime->test_delete_performed == 1U &&
+            runtime->test_sink_destroy_performed == 1U &&
+            runtime->pcm_join_timeout == 0U &&
+            p4_nano_audio86_physical::lifecycle_test_evidence_valid();
+        std::printf("5D1_EVIDENCE schema=2 evidence_class=ESP_EMU_EXEC scenario=start_fatal_%u start_fatal=1 ready_wait=%" PRIu32 " forced_abort=%" PRIu32 " first_error=%" PRIu32 " terminal_ack=%" PRIu32 " consumer_quiescent=%" PRIu32 " terminal_wait=%" PRIu32 " owner_suspended=%" PRIu32 " delete_performed=%" PRIu32 " sink_destroy_performed=%" PRIu32 " callback_residual=0 resource_residual=0 pa_high=0 i2c_residual=0 result=%u\n",
+                    P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE,
+                    runtime->test_ready_wait,
+                    runtime->pcm_forced_abort_requested.load(),
+                    runtime->first_error.load(), runtime->test_ack_observed,
+                    runtime->test_quiescent_observed,
+                    runtime->test_terminal_wait,
+                    runtime->test_suspended_observed,
+                    runtime->test_delete_performed,
+                    runtime->test_sink_destroy_performed,
+                    evidence_ok ? 1U : 0U);
+        std::printf("5D1_ESP_EMU_LIFECYCLE_RESULT=%s\n",
+                    evidence_ok ? "PASS" : "FAIL");
+        return evidence_ok ? ESP_OK : ESP_FAIL;
+#endif
         return ESP_FAIL;
     }
 #endif

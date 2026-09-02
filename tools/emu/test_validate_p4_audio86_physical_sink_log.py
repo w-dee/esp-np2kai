@@ -31,25 +31,19 @@ MUTATIONS = (
     ("evidence", "discarded_a=960", "discarded_a=0"),
     ("evidence", "preload_units=1 enable_calls=1", "preload_units=1 enable_calls=0"),
     ("evidence", "running=FATAL", "running=IGNORED"),
-    ("callback", "scenario=callback_entry_before_disarm entered=1", "scenario=callback_entry_before_disarm entered=0"),
+    ("callback", "entered=1 disarmed=1", "entered=0 disarmed=1"),
     ("callback", "target_touched_safely=1", "target_touched_safely=0"),
-    ("callback", "scenario=callback_entry_after_disarm entered=0", "scenario=callback_entry_after_disarm entered=1"),
-    ("callback", "scenario=callback_zero_observation observed_zero=1 late_entry=1 target_touched=0", "scenario=callback_zero_observation observed_zero=1 late_entry=1 target_touched=1"),
-    ("callback", "scenario=callback_inflight_teardown held=1 abort_while_held=2 unsafe_free=0", "scenario=callback_inflight_teardown held=1 abort_while_held=2 unsafe_free=1"),
-    ("callback", "scenario=callback_stale_after_abort target_touched=0", "scenario=callback_stale_after_abort target_touched=1"),
+    ("callback", "entered=0 target_touched=0", "entered=1 target_touched=0"),
+    ("callback", "observed_zero=1 late_entry=1 target_touched=0", "observed_zero=1 late_entry=1 target_touched=1"),
+    ("callback", "held=1 abort_while_held=2 unsafe_free=0", "held=1 abort_while_held=2 unsafe_free=1"),
+    ("callback", "target_touched=0 eof_credit=0 retry_authorized=0", "target_touched=1 eof_credit=0 retry_authorized=0"),
     ("callback", "finish_credit=0", "finish_credit=1"),
-    ("callback", "scenario=callback_quiescence_timeout timeout=1 abort=2 unsafe_free=0", "scenario=callback_quiescence_timeout timeout=1 abort=2 unsafe_free=1"),
-    ("start", "scenario=start_fatal_1 start_fatal=1", "scenario=start_fatal_1 start_fatal=0"),
-    ("start", "scenario=start_fatal_2 start_fatal=1 forced_abort=1", "scenario=start_fatal_2 start_fatal=1 forced_abort=0"),
-    ("start", "scenario=start_fatal_3 start_fatal=1 forced_abort=1 self_delete=0", "scenario=start_fatal_3 start_fatal=1 forced_abort=1 self_delete=1"),
-    ("start", "scenario=start_fatal_4 start_fatal=1 forced_abort=1 self_delete=0 terminal_ack=1", "scenario=start_fatal_4 start_fatal=1 forced_abort=1 self_delete=0 terminal_ack=0"),
-    ("start", "consumer_quiescent=1", "consumer_quiescent=0"),
-    ("start", "owner_suspended=1", "owner_suspended=0"),
-    ("start", "callback_in_flight=0", "callback_in_flight=1"),
-    ("start", "residual_after=0", "residual_after=1"),
-    ("start", "residual_after=0 abort_calls=1", "residual_after=0 abort_calls=0"),
-    ("start", "first_error=2 history=PMADUR", "first_error=86 history=PMADUR"),
-    ("start", "history=PMADUR", "history=PMADR"),
+    ("callback", "timeout=1 abort=2 unsafe_free=0", "timeout=1 abort=2 unsafe_free=1"),
+    ("history", "scenario=callback_zero_observation sequence=11 generation=1 operation=DELETE_BEGIN", "scenario=callback_zero_observation sequence=11 generation=1 operation=DELETE_END"),
+    ("history", "scenario=full_q240_history sequence=30 generation=1 operation=DESTROY", "scenario=full_q240_history sequence=30 generation=1 operation=DELETE_END"),
+    ("history", "scenario=full_q240_history sequence=6 generation=1 operation=PRELOAD", "scenario=full_q240_history sequence=6 generation=1 operation=NOOP"),
+    ("history", "scenario=retry_before_arm_history sequence=11 generation=1 operation=WRITE", "scenario=retry_before_arm_history sequence=11 generation=1 operation=ABORT"),
+    ("history", "scenario=full_q240_history sequence=10 generation=1 operation=TX_EOF", "scenario=full_q240_history sequence=10 generation=1 operation=NOOP"),
 )
 
 
@@ -67,7 +61,7 @@ def main() -> int:
         if not accepted(path):
             print("canonical evidence rejected", file=sys.stderr)
             return 1
-        counts = {"evidence": 0, "callback": 0, "start": 0}
+        counts = {"evidence": 0, "callback": 0, "history": 0}
         for index, (category, old, new) in enumerate(MUTATIONS, 1):
             mutated = canonical.replace(old, new, 1)
             if mutated == canonical:
@@ -79,8 +73,8 @@ def main() -> int:
                 return 1
             counts[category] += 1
     print(f"5D1_PHYSICAL_EVIDENCE_MUTATIONS={counts['evidence']}_ALL_REJECTED")
-    print(f"5D1_CALLBACK_MUTATIONS={counts['callback']}_ALL_REJECTED")
-    print(f"5D1_START_FAILURE_MUTATIONS={counts['start']}_ALL_REJECTED")
+    print(f"5D1_CALLBACK_RECORD_MUTATIONS={counts['callback']}_ALL_REJECTED")
+    print(f"5D1_OPERATION_HISTORY_MUTATIONS={counts['history']}_ALL_REJECTED")
     return 0
 
 

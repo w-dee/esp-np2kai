@@ -33,6 +33,10 @@ def validate(text: str) -> list[str]:
         if not line.startswith("5D1_EVIDENCE "):
             continue
         fields = parse_fields(line)
+        require(errors, fields.get("schema") == "2",
+                "evidence record schema mismatch")
+        require(errors, fields.get("evidence_class") == "HOST_EXEC",
+                "evidence record class mismatch")
         scenario = fields.get("scenario", "")
         require(errors, bool(scenario), "evidence record missing scenario")
         require(errors, scenario not in records, f"duplicate scenario {scenario}")
@@ -145,6 +149,24 @@ def validate(text: str) -> list[str]:
             if fields:
                 require(errors, as_int(fields, key, errors) == value,
                         f"{scenario}.{key} mismatch")
+        if fields:
+            for key in ("dispatch_state", "delete_started", "delete_returned",
+                        "gate_active", "gate_generation", "callback_generation",
+                        "in_flight_before", "in_flight_peak", "in_flight_final",
+                        "target_accessed", "eof_epoch_before", "eof_epoch_after",
+                        "stale_callback_count", "reclaim_attempted",
+                        "reclaim_allowed", "timeout"):
+                require(errors, key in fields, f"{scenario}.{key} missing")
+
+    zero = records.get("callback_zero_observation", {})
+    if zero:
+        require(errors, zero.get("dispatch_state") == "DISPATCHED_NOT_ENTERED" and
+                as_int(zero, "delete_returned_while_pending", errors) == 0 and
+                as_int(zero, "in_flight_before", errors) == 0 and
+                as_int(zero, "in_flight_peak", errors) == 1 and
+                as_int(zero, "in_flight_final", errors) == 0 and
+                as_int(zero, "reclaim_allowed", errors) == 1,
+                "callback zero-observation barrier mismatch")
 
     terminal_expected = {
         "healthy_stop": (0, 0, 1),
@@ -174,21 +196,16 @@ def validate(text: str) -> list[str]:
                 "physical fatal A/K/P/R mismatch")
 
     for stage in range(1, 5):
-        scenario = f"start_fatal_{stage}"
+        scenario = f"start_backend_rollback_{stage}"
         fields = records.get(scenario, {})
         require(errors, bool(fields), f"missing {scenario}")
         if fields:
-            for key in ("start_fatal", "forced_abort", "terminal_ack",
-                        "consumer_quiescent", "owner_suspended", "abort_calls"):
+            for key in ("start_fatal", "release_calls"):
                 require(errors, as_int(fields, key, errors) == 1,
                         f"{scenario}.{key} mismatch")
-            for key in ("self_delete", "callback_in_flight", "residual_after"):
+            for key in ("callback_in_flight", "residual_after"):
                 require(errors, as_int(fields, key, errors) == 0,
                         f"{scenario}.{key} mismatch")
-            require(errors, fields.get("history") == "PMADUR",
-                    f"{scenario} operation history mismatch")
-            require(errors, as_int(fields, "first_error", errors) == 2,
-                    f"{scenario}.first_error mismatch")
 
     short = records.get("short_eos", {})
     require(errors, bool(short), "missing short-EOS evidence")
@@ -200,10 +217,73 @@ def validate(text: str) -> list[str]:
             require(errors, as_int(short, key, errors) == value,
                     f"short_eos.{key} mismatch")
 
-    require(errors, lines.count("5D1_PHYSICAL_SINK_RESULT=PASS") == 1,
-            "missing/duplicate final process result")
+    control = [parse_fields(line) for line in lines
+               if line.startswith("5D1_CONTROL_FAULTS ")]
+    require(errors, len(control) == 1 and
+            as_int(control[0], "rejected", errors) == 8 and
+            as_int(control[0], "total", errors) == 8,
+            "callback control-fault matrix mismatch")
+
+    histories: dict[str, list[dict[str, str]]] = {}
+    for line in lines:
+        if line.startswith("5D1_HISTORY "):
+            fields = parse_fields(line)
+            histories.setdefault(fields.get("scenario", ""), []).append(fields)
+    history = histories.get("callback_zero_observation", [])
+    operations = [item.get("operation") for item in history]
+    require(errors, operations == [
+        "PREPARE_BEGIN", "I2S_CREATE", "CALLBACK_REGISTER", "I2C_ACQUIRE",
+        "CODEC_CONFIG", "PA_HIGH", "CALLBACK_DISPATCH", "ABORT",
+        "CODEC_MUTE", "PA_LOW", "DISABLE", "DELETE_BEGIN",
+        "CALLBACK_ENTRY", "CALLBACK_EXIT", "DELETE_END", "I2C_RELEASE",
+        "DESTROY"], "callback operation history mismatch")
+    for scenario, history in histories.items():
+        for sequence, item in enumerate(history):
+            require(errors, as_int(item, "sequence", errors) == sequence,
+                    f"{scenario} history sequence mismatch")
+            for key in ("generation", "operation", "result", "bytes"):
+                require(errors, key in item, f"{scenario} history {key} missing")
+        operations = [item.get("operation") for item in history]
+        require(errors, "DELETE_END" in operations and "DESTROY" in operations,
+                f"{scenario} cleanup history incomplete")
+        if "DELETE_END" in operations and "DESTROY" in operations:
+            require(errors, operations.index("DELETE_END") <
+                    operations.index("DESTROY"),
+                    f"{scenario} destroy precedes delete end")
+        if "CALLBACK_DISPATCH" in operations:
+            require(errors, operations.index("CALLBACK_EXIT") <
+                    operations.index("DELETE_END"),
+                    f"{scenario} delete end precedes callback exit")
+        if "ENABLE" in operations:
+            require(errors, "PRELOAD" in operations and
+                    operations.index("PRELOAD") < operations.index("ENABLE"),
+                    f"{scenario} enable precedes required preload")
+        if "ABORT" in operations and "WRITE" in operations:
+            require(errors, max(i for i, operation in enumerate(operations)
+                                if operation == "WRITE") <
+                    operations.index("ABORT"),
+                    f"{scenario} write occurs after abort")
+    full_history = [item.get("operation") for item in
+                    histories.get("full_q240_history", [])]
+    require(errors, full_history.count("TX_EOF") == 4 and
+            "DISABLE" in full_history and
+            max(i for i, operation in enumerate(full_history)
+                if operation == "TX_EOF") < full_history.index("DISABLE"),
+            "normal finish lacks required EOF barrier")
+    retry_history = [item.get("operation") for item in
+                     histories.get("retry_before_arm_history", [])]
+    require(errors, retry_history.count("WRITE") >= 2,
+            "retry operation history missing writes")
+    sticky_history = [item.get("operation") for item in
+                      histories.get("finish_sticky_error_history", [])]
+    require(errors, "QUEUE_OVF" in sticky_history and
+            "ABORT" in sticky_history,
+            "sticky-error history missing overflow/abort")
     require(errors, not any("result=FAIL" in line for line in lines),
             "failure marker present")
+    require(errors, not any(line == "5D1_PHYSICAL_SINK_RESULT=PASS"
+                            for line in lines),
+            "fixed unasserted process PASS marker present")
     return errors
 
 
@@ -218,6 +298,11 @@ def main() -> int:
         return 1
     print("5D1_PHYSICAL_VALIDATOR_RECOMPUTES=PASS")
     print("5D1_VALIDATOR_INDEPENDENCE=PASS")
+    print("FAKE_OPERATION_ORDER_VALIDATOR=PASS")
+    print("CALLBACK_STRUCTURED_EVIDENCE=PASS")
+    print("5D1_CALLBACK_CONTROL_FAULTS=8/8_REJECTED")
+    print("5D1_EVIDENCE_SCHEMA_VERSIONED=PASS")
+    print("FIXED_UNASSERTED_PASS_LINES=0")
     return 0
 
 

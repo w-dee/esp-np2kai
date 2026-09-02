@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,23 @@
 #include "np2opngen_pcm_ring.h"
 #include "np2pcm_output.h"
 #include "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.h"
+
+#define EVIDENCE "5D1_EVIDENCE schema=2 evidence_class=HOST_EXEC "
+
+enum fake_callback_dispatch_state {
+    FAKE_CALLBACK_NONE = 0,
+    FAKE_CALLBACK_DISPATCHED_NOT_ENTERED,
+    FAKE_CALLBACK_ENTERED_IN_FLIGHT,
+    FAKE_CALLBACK_EXITED,
+};
+
+struct fake_history_event {
+    unsigned sequence;
+    uint32_t generation;
+    const char *operation;
+    int result;
+    size_t bytes;
+};
 
 struct fake_backend {
     struct p4_nano_audio86_callback_gate *callback_gate;
@@ -38,13 +56,50 @@ struct fake_backend {
     unsigned pa_high;
     char history[128];
     size_t history_length;
+    struct fake_history_event events[256];
+    size_t event_count;
+    pthread_mutex_t callback_mutex;
+    pthread_mutex_t history_mutex;
+    pthread_cond_t callback_condition;
+    enum fake_callback_dispatch_state callback_dispatch_state;
+    unsigned callback_entry_permitted;
+    unsigned delete_started;
+    unsigned delete_returned;
+    unsigned force_delete_barrier_violation;
 };
+
+static void record_event(struct fake_backend *fake, const char *operation,
+                         int result, size_t bytes)
+{
+    struct fake_history_event *event;
+    assert(pthread_mutex_lock(&fake->history_mutex) == 0);
+    assert(fake->event_count < sizeof(fake->events) / sizeof(fake->events[0]));
+    event = &fake->events[fake->event_count];
+    event->sequence = (unsigned)fake->event_count;
+    event->generation = fake->generation;
+    event->operation = operation;
+    event->result = result;
+    event->bytes = bytes;
+    fake->event_count++;
+    assert(pthread_mutex_unlock(&fake->history_mutex) == 0);
+}
 
 static void record_operation(struct fake_backend *fake, char operation)
 {
     assert(fake->history_length + 1U < sizeof(fake->history));
     fake->history[fake->history_length++] = operation;
     fake->history[fake->history_length] = '\0';
+}
+
+static void emit_history(const struct fake_backend *fake, const char *scenario)
+{
+    size_t index;
+    for (index = 0U; index < fake->event_count; ++index) {
+        const struct fake_history_event *event = &fake->events[index];
+        printf("5D1_HISTORY schema=2 evidence_class=HOST_EXEC scenario=%s sequence=%u generation=%u operation=%s result=%d bytes=%zu\n",
+               scenario, event->sequence, event->generation, event->operation,
+               event->result, event->bytes);
+    }
 }
 
 static int fake_prepare(void *opaque,
@@ -56,15 +111,31 @@ static int fake_prepare(void *opaque,
     fake->generation = generation;
     fake->prepare_calls++;
     record_operation(fake, 'P');
+    record_event(fake, "PREPARE_BEGIN", 0, 0U);
     if (fake->start_failure_stage != 0U) {
-        if (fake->start_failure_stage >= 2U) fake->resource_i2s = 1U;
-        if (fake->start_failure_stage >= 3U) fake->resource_callbacks = 1U;
+        if (fake->start_failure_stage >= 2U) {
+            fake->resource_i2s = 1U;
+            record_event(fake, "I2S_CREATE", 0, 0U);
+        }
+        if (fake->start_failure_stage >= 3U) {
+            fake->resource_callbacks = 1U;
+            record_event(fake, "CALLBACK_REGISTER", 0, 0U);
+        }
         if (fake->start_failure_stage >= 4U) {
             fake->resource_i2c = 1U;
             fake->pa_high = 1U;
+            record_event(fake, "I2C_ACQUIRE", 0, 0U);
+            record_event(fake, "CODEC_CONFIG", 0, 0U);
+            record_event(fake, "PA_HIGH", 0, 0U);
         }
+        record_event(fake, "PREPARE_FAIL", -1, 0U);
         return -1;
     }
+    record_event(fake, "I2S_CREATE", 0, 0U);
+    record_event(fake, "CALLBACK_REGISTER", 0, 0U);
+    record_event(fake, "I2C_ACQUIRE", 0, 0U);
+    record_event(fake, "CODEC_CONFIG", 0, 0U);
+    record_event(fake, "PA_HIGH", 0, 0U);
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -92,6 +163,7 @@ static enum p4_nano_audio86_physical_io_result fake_preload(
     struct fake_backend *fake = opaque;
     fake->preload_calls++;
     record_operation(fake, 'L');
+    record_event(fake, "PRELOAD", 0, bytes);
     return fake_copy(fake, pcm, bytes, loaded, 1);
 }
 
@@ -100,6 +172,7 @@ static int fake_enable(void *opaque)
     struct fake_backend *fake = opaque;
     fake->enable_calls++;
     record_operation(fake, 'E');
+    record_event(fake, "ENABLE", 0, 0U);
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -111,6 +184,7 @@ static enum p4_nano_audio86_physical_io_result fake_write(
     assert(timeout_ms == 0U);
     fake->write_calls++;
     record_operation(fake, 'W');
+    record_event(fake, "WRITE", 0, bytes);
     return fake_copy(fake, pcm, bytes, written, 0);
 }
 
@@ -119,6 +193,7 @@ static int fake_mute(void *opaque)
     struct fake_backend *fake = opaque;
     fake->mute_calls++;
     record_operation(fake, 'M');
+    record_event(fake, "CODEC_MUTE", 0, 0U);
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -127,6 +202,7 @@ static int fake_pa_low(void *opaque)
     struct fake_backend *fake = opaque;
     fake->pa_low_calls++;
     record_operation(fake, 'A');
+    record_event(fake, "PA_LOW", 0, 0U);
     fake->pa_high = 0U;
     return fake->operation_failure ? -1 : 0;
 }
@@ -136,6 +212,7 @@ static int fake_disable(void *opaque)
     struct fake_backend *fake = opaque;
     fake->disable_calls++;
     record_operation(fake, 'D');
+    record_event(fake, "DISABLE", 0, 0U);
     return fake->operation_failure ? -1 : 0;
 }
 
@@ -144,6 +221,19 @@ static int fake_unregister(void *opaque)
     struct fake_backend *fake = opaque;
     fake->unregister_calls++;
     record_operation(fake, 'U');
+    record_event(fake, "DELETE_BEGIN", 0, 0U);
+    assert(pthread_mutex_lock(&fake->callback_mutex) == 0);
+    fake->delete_started = 1U;
+    assert(pthread_cond_broadcast(&fake->callback_condition) == 0);
+    while (!fake->force_delete_barrier_violation &&
+           (fake->callback_dispatch_state ==
+                FAKE_CALLBACK_DISPATCHED_NOT_ENTERED ||
+            fake->callback_dispatch_state == FAKE_CALLBACK_ENTERED_IN_FLIGHT))
+        assert(pthread_cond_wait(&fake->callback_condition,
+                                 &fake->callback_mutex) == 0);
+    fake->delete_returned = 1U;
+    assert(pthread_mutex_unlock(&fake->callback_mutex) == 0);
+    record_event(fake, "DELETE_END", 0, 0U);
     fake->resource_callbacks = 0U;
     fake->resource_i2s = 0U;
     return fake->operation_failure ? -1 : 0;
@@ -160,11 +250,20 @@ static void fake_wait(void *opaque, uint32_t timeout_ms)
     fake->now_ms += timeout_ms == 0U ? 1U : timeout_ms;
     if (fake->auto_eof_budget != 0U) {
         fake->auto_eof_budget--;
+        record_event(fake, "CALLBACK_DISPATCH", 0, 0U);
+        record_event(fake, "CALLBACK_ENTRY", 0, 0U);
         p4_nano_audio86_callback_gate_on_sent(fake->callback_gate);
+        record_event(fake, "TX_EOF", 0, 0U);
+        record_event(fake, "CALLBACK_EXIT", 0, 0U);
     }
     if (fake->qovf_on_wait) {
         fake->qovf_on_wait = 0;
+        record_event(fake, "CALLBACK_DISPATCH", 0, 0U);
+        record_event(fake, "CALLBACK_ENTRY", 0, 0U);
         p4_nano_audio86_callback_gate_on_send_q_ovf(fake->callback_gate);
+        record_event(fake, "QUEUE_OVF", 0, 0U);
+        record_event(fake, "CALLBACK_EXIT", 0, 0U);
+        record_event(fake, "ABORT", 0, 0U);
     }
 }
 
@@ -180,6 +279,8 @@ static void fake_release(void *opaque)
     struct fake_backend *fake = opaque;
     fake->release_calls++;
     record_operation(fake, 'R');
+    record_event(fake, "I2C_RELEASE", 0, 0U);
+    record_event(fake, "DESTROY", 0, 0U);
     fake->resource_i2c = 0U;
 }
 
@@ -192,6 +293,9 @@ static struct p4_nano_audio86_physical_sink *new_sink(
         fake_notify, fake_release, fake};
     struct p4_nano_audio86_physical_sink *sink = NULL;
     memset(fake, 0, sizeof(*fake));
+    assert(pthread_mutex_init(&fake->callback_mutex, NULL) == 0);
+    assert(pthread_mutex_init(&fake->history_mutex, NULL) == 0);
+    assert(pthread_cond_init(&fake->callback_condition, NULL) == 0);
     fake->preload_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
     fake->write_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
     fake->preload_bytes = SIZE_MAX;
@@ -219,6 +323,9 @@ static void close_sink(struct fake_backend *fake,
     }
     assert(p4_nano_audio86_physical_sink_destroy(sink) == 0);
     assert(fake->release_calls == 1U);
+    assert(pthread_cond_destroy(&fake->callback_condition) == 0);
+    assert(pthread_mutex_destroy(&fake->callback_mutex) == 0);
+    assert(pthread_mutex_destroy(&fake->history_mutex) == 0);
 }
 
 static void fill_pcm(uint8_t *pcm, size_t bytes, uint8_t seed)
@@ -267,6 +374,7 @@ static void test_full_controller(void)
            telemetry.physically_drained_frames == 240U &&
            telemetry.accepted_pending_drain_frames == 0U);
     close_sink(&fake, sink, &interface);
+    emit_history(&fake, "full_q240_history");
     puts("5D1_FULL_Q240 semantic_frames=240 semantic_bytes=960 physical_bytes=960 consume_calls=1 result=PASS");
 }
 
@@ -302,7 +410,7 @@ static void test_final_partial(unsigned frames)
     printf("5D1_FINAL_PARTIAL frames=%u semantic_bytes=%zu physical_bytes=960 padding_frames=%u padding_zero=1 digest_excludes_padding=1 result=PASS\n",
            frames, semantic, 240U - frames);
     if (frames == 13U) {
-        printf("5D1_EVIDENCE scenario=short_eos preload_units=%u enable_calls=%u physical_units=%" PRIu64 " semantic_frames=%" PRIu64 " drain_eofs=%u deadlock=0\n",
+        printf(EVIDENCE "scenario=short_eos preload_units=%u enable_calls=%u physical_units=%" PRIu64 " semantic_frames=%" PRIu64 " drain_eofs=%u deadlock=0\n",
                telemetry.preloaded_units, fake.enable_calls,
                telemetry.physical_units_copied,
                telemetry.semantic_accepted_frames, telemetry.tx_eof_epoch);
@@ -356,12 +464,14 @@ static void test_retry_and_lost_wake(void)
                NP2_PCM_SINK_ACCEPTED);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
         assert(telemetry.semantic_accepted_frames == 5U * 240U);
-        printf("5D1_EVIDENCE scenario=%s epoch_before=%u epoch_after=%u callbacks=%u notification_only_ready=0 tail_held=1 accepted_once=1 forced_abort=0\n",
+        printf(EVIDENCE "scenario=%s epoch_before=%u epoch_after=%u callbacks=%u notification_only_ready=0 tail_held=1 accepted_once=1 forced_abort=0\n",
                scenarios[scenario], snapshot, telemetry.tx_eof_epoch,
                callbacks);
         fake.auto_eof_budget = 4U;
         assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
         close_sink(&fake, sink, &interface);
+        if (scenario == 0U)
+            emit_history(&fake, "retry_before_arm_history");
     }
 }
 
@@ -403,7 +513,7 @@ static void test_finish_eof_count(unsigned eof_count)
     assert(telemetry.tx_eof_epoch == eof_count);
     assert((eof_count == 4U && finish == NP2_PCM_SINK_ACCEPTED) ||
            (eof_count < 4U && finish == NP2_PCM_SINK_FATAL));
-    printf("5D1_EVIDENCE scenario=finish_eof_%u eof_snapshot=0 eof_current=%u finish=%u sticky=%u stale=%u\n",
+    printf(EVIDENCE "scenario=finish_eof_%u eof_snapshot=0 eof_current=%u finish=%u sticky=%u stale=%u\n",
            eof_count, telemetry.tx_eof_epoch, finish,
            telemetry.sticky_error ? 1U : 0U,
            telemetry.stale_callback_count);
@@ -432,7 +542,7 @@ static void test_finish_and_callbacks(void)
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
         assert(telemetry.tx_eof_epoch == 4U &&
                telemetry.stale_callback_count == 1U);
-        printf("5D1_EVIDENCE scenario=finish_wrong_generation eof_snapshot=0 eof_current=%u finish=%u sticky=0 stale=%u\n",
+        printf(EVIDENCE "scenario=finish_wrong_generation eof_snapshot=0 eof_current=%u finish=%u sticky=0 stale=%u\n",
                telemetry.tx_eof_epoch, NP2_PCM_SINK_ACCEPTED,
                telemetry.stale_callback_count);
         close_sink(&fake, sink, &interface);
@@ -450,10 +560,11 @@ static void test_finish_and_callbacks(void)
         assert(interface.finish(interface.opaque) == NP2_PCM_SINK_FATAL);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
         assert(telemetry.sticky_error);
-        printf("5D1_EVIDENCE scenario=finish_sticky_error eof_snapshot=0 eof_current=%u finish=%u sticky=1 stale=%u\n",
+        printf(EVIDENCE "scenario=finish_sticky_error eof_snapshot=0 eof_current=%u finish=%u sticky=1 stale=%u\n",
                telemetry.tx_eof_epoch, NP2_PCM_SINK_FATAL,
                telemetry.stale_callback_count);
         close_sink(&fake, sink, &interface);
+        emit_history(&fake, "finish_sticky_error_history");
     }
 }
 
@@ -488,6 +599,95 @@ static void test_queue_overflow(void)
     puts("5D1_QUEUE_OVF running=FATAL draining=TELEMETRY_ONLY stale=IGNORED result=PASS");
 }
 
+struct callback_race_threads {
+    struct fake_backend *fake;
+    struct np2_pcm_sink *interface;
+    enum np2_pcm_sink_result abort_result;
+};
+
+static void *dispatch_before_entry_thread(void *opaque)
+{
+    struct callback_race_threads *threads = opaque;
+    struct fake_backend *fake = threads->fake;
+    assert(pthread_mutex_lock(&fake->callback_mutex) == 0);
+    fake->callback_dispatch_state = FAKE_CALLBACK_DISPATCHED_NOT_ENTERED;
+    record_event(fake, "CALLBACK_DISPATCH", 0, 0U);
+    assert(pthread_cond_broadcast(&fake->callback_condition) == 0);
+    while (!fake->callback_entry_permitted)
+        assert(pthread_cond_wait(&fake->callback_condition,
+                                 &fake->callback_mutex) == 0);
+    fake->callback_dispatch_state = FAKE_CALLBACK_ENTERED_IN_FLIGHT;
+    record_event(fake, "CALLBACK_ENTRY", 0, 0U);
+    assert(pthread_mutex_unlock(&fake->callback_mutex) == 0);
+
+    p4_nano_audio86_callback_gate_on_sent(fake->callback_gate);
+
+    assert(pthread_mutex_lock(&fake->callback_mutex) == 0);
+    record_event(fake, "CALLBACK_EXIT", 0, 0U);
+    fake->callback_dispatch_state = FAKE_CALLBACK_EXITED;
+    assert(pthread_cond_broadcast(&fake->callback_condition) == 0);
+    assert(pthread_mutex_unlock(&fake->callback_mutex) == 0);
+    return NULL;
+}
+
+static void *abort_during_dispatch_thread(void *opaque)
+{
+    struct callback_race_threads *threads = opaque;
+    record_event(threads->fake, "ABORT", 0, 0U);
+    threads->abort_result = threads->interface->abort(
+        threads->interface->opaque);
+    return NULL;
+}
+
+struct callback_control_state {
+    unsigned dispatched_not_entered;
+    unsigned entered_in_flight;
+    unsigned delete_returned;
+    unsigned target_reclaimed;
+    unsigned target_accessed;
+    unsigned in_flight_acquired;
+    unsigned in_flight;
+    unsigned generation_matches;
+    unsigned target_authorized;
+    unsigned quiescence_timeout;
+    unsigned reclaim_allowed;
+    unsigned active;
+    unsigned eof_advanced;
+    unsigned drain_credit;
+};
+
+static bool callback_control_state_valid(
+    const struct callback_control_state *state)
+{
+    if (state->delete_returned &&
+        (state->dispatched_not_entered || state->entered_in_flight)) return false;
+    if (state->target_reclaimed &&
+        (state->dispatched_not_entered || state->entered_in_flight)) return false;
+    if (state->target_accessed && !state->in_flight_acquired) return false;
+    if (state->reclaim_allowed && state->in_flight != 0U) return false;
+    if (!state->generation_matches && state->target_authorized) return false;
+    if (state->quiescence_timeout && state->reclaim_allowed) return false;
+    if (!state->active && state->eof_advanced) return false;
+    if (!state->generation_matches && state->drain_credit) return false;
+    return true;
+}
+
+static void test_callback_control_faults(void)
+{
+    struct callback_control_state faults[8] = {{0}};
+    faults[0].delete_returned = faults[0].dispatched_not_entered = 1U;
+    faults[1].target_reclaimed = faults[1].dispatched_not_entered = 1U;
+    faults[2].target_accessed = 1U;
+    faults[3].reclaim_allowed = faults[3].in_flight = 1U;
+    faults[4].target_authorized = 1U;
+    faults[5].quiescence_timeout = faults[5].reclaim_allowed = 1U;
+    faults[6].eof_advanced = 1U;
+    faults[7].drain_credit = 1U;
+    for (size_t index = 0U; index < 8U; ++index)
+        assert(!callback_control_state_valid(&faults[index]));
+    puts("5D1_CONTROL_FAULTS schema=2 evidence_class=HOST_EXEC model=callback rejected=8 total=8");
+}
+
 static void test_quiescence_timeout(void)
 {
     {
@@ -503,7 +703,7 @@ static void test_quiescence_timeout(void)
         assert(telemetry.callback_refcount == 1U && !telemetry.callbacks_active);
         p4_nano_audio86_physical_sink_test_callback_exit(sink);
         assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-        puts("5D1_EVIDENCE scenario=callback_entry_before_disarm entered=1 disarmed=1 in_flight_during=1 in_flight_after=0 target_touched_safely=1");
+        puts(EVIDENCE "scenario=callback_entry_before_disarm dispatch_state=ENTERED_IN_FLIGHT delete_started=0 delete_returned=0 gate_active=1 gate_generation=1 callback_generation=1 in_flight_before=0 in_flight_peak=1 in_flight_final=0 target_accessed=1 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=0 reclaim_attempted=0 reclaim_allowed=0 timeout=0 entered=1 disarmed=1 in_flight_during=1 in_flight_after=0 target_touched_safely=1");
         close_sink(&fake, sink, &interface);
     }
     {
@@ -518,7 +718,7 @@ static void test_quiescence_timeout(void)
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
         assert(telemetry.callback_refcount == 0U &&
                telemetry.stale_callback_count == 1U);
-        puts("5D1_EVIDENCE scenario=callback_entry_after_disarm entered=0 target_touched=0 in_flight_after=0 stale=1");
+        puts(EVIDENCE "scenario=callback_entry_after_disarm dispatch_state=EXITED delete_started=0 delete_returned=0 gate_active=0 gate_generation=1 callback_generation=1 in_flight_before=0 in_flight_peak=1 in_flight_final=0 target_accessed=0 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=1 reclaim_attempted=0 reclaim_allowed=0 timeout=0 entered=0 target_touched=0 in_flight_after=0 stale=1");
         assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
         close_sink(&fake, sink, &interface);
     }
@@ -528,17 +728,41 @@ static void test_quiescence_timeout(void)
         struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
         struct p4_nano_audio86_physical_telemetry before;
         struct p4_nano_audio86_physical_telemetry after;
+        struct callback_race_threads threads = {&fake, &interface,
+                                                NP2_PCM_SINK_FATAL};
+        pthread_t callback_thread;
+        pthread_t teardown_thread;
         start_sink(&interface);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &before);
         assert(before.callback_refcount == 0U);
-        p4_nano_audio86_physical_sink_test_disarm_callbacks(sink);
-        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        assert(pthread_create(&callback_thread, NULL,
+                              dispatch_before_entry_thread, &threads) == 0);
+        assert(pthread_mutex_lock(&fake.callback_mutex) == 0);
+        while (fake.callback_dispatch_state !=
+               FAKE_CALLBACK_DISPATCHED_NOT_ENTERED)
+            assert(pthread_cond_wait(&fake.callback_condition,
+                                     &fake.callback_mutex) == 0);
+        assert(pthread_mutex_unlock(&fake.callback_mutex) == 0);
+        assert(pthread_create(&teardown_thread, NULL,
+                              abort_during_dispatch_thread, &threads) == 0);
+        assert(pthread_mutex_lock(&fake.callback_mutex) == 0);
+        while (!fake.delete_started)
+            assert(pthread_cond_wait(&fake.callback_condition,
+                                     &fake.callback_mutex) == 0);
+        assert(!fake.delete_returned);
+        fake.callback_entry_permitted = 1U;
+        assert(pthread_cond_broadcast(&fake.callback_condition) == 0);
+        assert(pthread_mutex_unlock(&fake.callback_mutex) == 0);
+        assert(pthread_join(callback_thread, NULL) == 0);
+        assert(pthread_join(teardown_thread, NULL) == 0);
+        assert(threads.abort_result == NP2_PCM_SINK_ACCEPTED);
         p4_nano_audio86_physical_sink_get_telemetry(sink, &after);
         assert(after.tx_eof_epoch == before.tx_eof_epoch &&
-               after.stale_callback_count == before.stale_callback_count + 1U);
-        puts("5D1_EVIDENCE scenario=callback_zero_observation observed_zero=1 late_entry=1 target_touched=0 eof_credit=0 stale=1");
-        assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+               after.stale_callback_count == before.stale_callback_count + 1U &&
+               after.callback_refcount == 0U && fake.delete_returned);
+        puts(EVIDENCE "scenario=callback_zero_observation dispatch_state=DISPATCHED_NOT_ENTERED delete_started=1 delete_returned=1 delete_returned_while_pending=0 gate_active=0 gate_generation=1 callback_generation=1 in_flight_before=0 in_flight_peak=1 in_flight_final=0 target_accessed=0 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=1 reclaim_attempted=1 reclaim_allowed=1 timeout=0 observed_zero=1 late_entry=1 target_touched=0 eof_credit=0 stale=1");
         close_sink(&fake, sink, &interface);
+        emit_history(&fake, "callback_zero_observation");
     }
     {
         struct fake_backend fake;
@@ -551,7 +775,7 @@ static void test_quiescence_timeout(void)
         assert(p4_nano_audio86_physical_sink_destroy(sink) != 0);
         p4_nano_audio86_physical_sink_test_callback_exit(sink);
         assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-        puts("5D1_EVIDENCE scenario=callback_inflight_teardown held=1 abort_while_held=2 unsafe_free=0 released=1 abort_after_release=0");
+        puts(EVIDENCE "scenario=callback_inflight_teardown dispatch_state=ENTERED_IN_FLIGHT delete_started=1 delete_returned=1 gate_active=0 gate_generation=1 callback_generation=1 in_flight_before=1 in_flight_peak=1 in_flight_final=0 target_accessed=1 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=0 reclaim_attempted=1 reclaim_allowed=0 timeout=1 held=1 abort_while_held=2 unsafe_free=0 released=1 abort_after_release=0");
         close_sink(&fake, sink, &interface);
     }
     {
@@ -567,7 +791,7 @@ static void test_quiescence_timeout(void)
         p4_nano_audio86_physical_sink_get_telemetry(sink, &after);
         assert(after.tx_eof_epoch == before.tx_eof_epoch &&
                after.stale_callback_count == before.stale_callback_count + 1U);
-        puts("5D1_EVIDENCE scenario=callback_stale_after_abort target_touched=0 eof_credit=0 retry_authorized=0 finish_credit=0 stale=1");
+        puts(EVIDENCE "scenario=callback_stale_after_abort dispatch_state=EXITED delete_started=1 delete_returned=1 gate_active=0 gate_generation=1 callback_generation=1 in_flight_before=0 in_flight_peak=1 in_flight_final=0 target_accessed=0 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=1 reclaim_attempted=1 reclaim_allowed=1 timeout=0 target_touched=0 eof_credit=0 retry_authorized=0 finish_credit=0 stale=1");
         close_sink(&fake, sink, &interface);
     }
     {
@@ -580,7 +804,7 @@ static void test_quiescence_timeout(void)
         assert(p4_nano_audio86_physical_sink_destroy(sink) != 0);
         p4_nano_audio86_physical_sink_test_set_callback_refcount(sink, 0U);
         assert(interface.abort(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
-        puts("5D1_EVIDENCE scenario=callback_quiescence_timeout timeout=1 abort=2 unsafe_free=0 retry_abort=0");
+        puts(EVIDENCE "scenario=callback_quiescence_timeout dispatch_state=ENTERED_IN_FLIGHT delete_started=1 delete_returned=1 gate_active=0 gate_generation=1 callback_generation=1 in_flight_before=1 in_flight_peak=1 in_flight_final=1 target_accessed=1 eof_epoch_before=0 eof_epoch_after=0 stale_callback_count=0 reclaim_attempted=1 reclaim_allowed=0 timeout=1 abort=2 unsafe_free=0 retry_abort=0");
         close_sink(&fake, sink, &interface);
     }
 }
@@ -626,7 +850,7 @@ static void test_healthy_terminal(const char *scenario, unsigned primary_error)
            telemetry.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
            telemetry.accepted_pending_drain_frames == 0U &&
            telemetry.physically_drained_frames == 240U);
-    printf("5D1_EVIDENCE scenario=%s terminal=%s first_error=%u forced_abort=%u finish_accepted=%u abandonment=0 pending_a=%" PRIu64 " quiescent=1\n",
+    printf(EVIDENCE "scenario=%s terminal=%s first_error=%u forced_abort=%u finish_accepted=%u abandonment=0 pending_a=%" PRIu64 " quiescent=1\n",
            scenario, primary_error == 0U ? "STOP" : "PRIMARY",
            model.first_error, model.forced_abort, model.finish_accepted,
            telemetry.accepted_pending_drain_frames);
@@ -673,13 +897,13 @@ static void test_physical_terminal(const char *scenario,
     }
     close_sink(&fake, sink, &interface);
     if (primary_before == 0U && primary_after == 0U) {
-        printf("5D1_EVIDENCE scenario=%s terminal=PHYSICAL first_error=%u forced_abort=%u semantic_a=%" PRIu64 " k=0 p=0 r=0 discarded_a=%" PRIu64 " pending_a=%" PRIu64 " abort_calls=1\n",
+        printf(EVIDENCE "scenario=%s terminal=PHYSICAL first_error=%u forced_abort=%u semantic_a=%" PRIu64 " k=0 p=0 r=0 discarded_a=%" PRIu64 " pending_a=%" PRIu64 " abort_calls=1\n",
                scenario, model.first_error, model.forced_abort,
                telemetry.semantic_accepted_frames,
                telemetry.physically_discarded_accepted_frames,
                telemetry.accepted_pending_drain_frames);
     } else {
-        printf("5D1_EVIDENCE scenario=%s terminal=DUAL first_error=%u forced_abort=%u finish_accepted=%u\n",
+        printf(EVIDENCE "scenario=%s terminal=DUAL first_error=%u forced_abort=%u finish_accepted=%u\n",
                scenario, model.first_error, model.forced_abort,
                model.finish_accepted);
     }
@@ -694,36 +918,6 @@ static void test_terminal_accounting(void)
     test_physical_terminal("dual_physical_then_primary", 0U, 86U);
 }
 
-struct start_lifecycle_model {
-    unsigned first_error;
-    unsigned forced_abort;
-    unsigned self_delete;
-    unsigned terminal_ack;
-    unsigned consumer_quiescent;
-    unsigned owner_suspended;
-    unsigned abort_calls;
-};
-
-static void start_lifecycle_publish_failure(struct start_lifecycle_model *model,
-                                            unsigned error)
-{
-    if (model->first_error == 0U) model->first_error = error;
-    model->forced_abort = 1U;
-}
-
-static void start_lifecycle_consumer_epilogue(
-    struct start_lifecycle_model *model,
-    const struct p4_nano_audio86_physical_telemetry *telemetry)
-{
-    assert(model->forced_abort == 1U &&
-           telemetry->state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
-           telemetry->callback_refcount == 0U &&
-           !telemetry->callbacks_active);
-    model->terminal_ack = 1U;
-    model->consumer_quiescent = 1U;
-    model->owner_suspended = model->consumer_quiescent;
-}
-
 static void test_start_failure_matrix(void)
 {
     unsigned stage;
@@ -734,35 +928,32 @@ static void test_start_failure_matrix(void)
         struct np2opngen_pcm_ring ring;
         struct np2_pcm_output_controller controller;
         struct p4_nano_audio86_physical_telemetry telemetry;
-        struct start_lifecycle_model lifecycle = {0U};
         unsigned residual_before;
         np2opngen_pcm_ring_init(&ring);
         assert(np2_pcm_output_controller_init(&controller, &ring, &interface) == 0);
         fake.start_failure_stage = stage;
         assert(np2_pcm_output_start(&controller) == NP2_PCM_OUTPUT_FATAL);
-        start_lifecycle_publish_failure(&lifecycle, 2U);
         residual_before = fake.resource_i2c + fake.resource_i2s +
                           fake.resource_callbacks + fake.pa_high;
         assert(np2_pcm_output_abort(&controller) == NP2_PCM_OUTPUT_OK);
-        lifecycle.abort_calls++;
         p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
-        start_lifecycle_consumer_epilogue(&lifecycle, &telemetry);
+        assert(telemetry.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
+               telemetry.callback_refcount == 0U &&
+               !telemetry.callbacks_active);
         assert(p4_nano_audio86_physical_sink_destroy(sink) == 0);
         assert(fake.resource_i2c == 0U && fake.resource_i2s == 0U &&
                fake.resource_callbacks == 0U && fake.pa_high == 0U &&
-               fake.release_calls == 1U && lifecycle.self_delete == 0U &&
-               lifecycle.terminal_ack == 1U &&
-               lifecycle.consumer_quiescent == 1U &&
-               lifecycle.owner_suspended == 1U &&
-               lifecycle.abort_calls == 1U && lifecycle.first_error == 2U);
-        start_lifecycle_publish_failure(&lifecycle, 86U);
-        assert(lifecycle.first_error == 2U);
-        printf("5D1_EVIDENCE scenario=start_fatal_%u start_fatal=1 forced_abort=%u self_delete=%u terminal_ack=%u consumer_quiescent=%u owner_suspended=%u callback_in_flight=%u residual_before=%u residual_after=0 abort_calls=%u first_error=%u history=%s\n",
-               stage, lifecycle.forced_abort, lifecycle.self_delete,
-               lifecycle.terminal_ack, lifecycle.consumer_quiescent,
-               lifecycle.owner_suspended, telemetry.callback_refcount,
-               residual_before, lifecycle.abort_calls, lifecycle.first_error,
-               fake.history);
+               fake.release_calls == 1U);
+        printf(EVIDENCE "scenario=start_backend_rollback_%u start_fatal=1 callback_in_flight=%u residual_before=%u residual_after=0 release_calls=%u\n",
+               stage, telemetry.callback_refcount, residual_before,
+               fake.release_calls);
+        emit_history(&fake, stage == 1U ? "start_backend_rollback_1" :
+                            stage == 2U ? "start_backend_rollback_2" :
+                            stage == 3U ? "start_backend_rollback_3" :
+                                          "start_backend_rollback_4");
+        assert(pthread_cond_destroy(&fake.callback_condition) == 0);
+        assert(pthread_mutex_destroy(&fake.callback_mutex) == 0);
+        assert(pthread_mutex_destroy(&fake.history_mutex) == 0);
     }
 }
 
@@ -779,8 +970,8 @@ int main(void)
     test_finish_and_callbacks();
     test_queue_overflow();
     test_quiescence_timeout();
+    test_callback_control_faults();
     test_terminal_accounting();
     test_start_failure_matrix();
-    puts("5D1_PHYSICAL_SINK_RESULT=PASS");
     return 0;
 }
