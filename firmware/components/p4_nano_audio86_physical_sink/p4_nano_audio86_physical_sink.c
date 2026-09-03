@@ -41,6 +41,7 @@ struct p4_nano_audio86_physical_sink {
     uint32_t final_valid_frames;
     uint32_t drain_snapshot_epoch;
     uint32_t drain_completion_epoch;
+    uint32_t quiescent_eof_epoch;
     uint64_t submit_attempts;
     uint64_t retry_count;
     uint64_t drain_duration_ms;
@@ -420,6 +421,11 @@ static enum np2_pcm_sink_result physical_finish(void *opaque)
         mark_failed(sink);
         return NP2_PCM_SINK_FATAL;
     }
+    /* unregister_callbacks() is the IDF interrupt-delivery barrier and
+     * close_callbacks() additionally observes in_flight == 0.  The valid
+     * generation EOF writer is therefore permanently quiescent here. */
+    sink->quiescent_eof_epoch = atomic_load_explicit(
+        &sink->tx_eof_epoch, memory_order_acquire);
     sink->i2s_created = false;
     sink->physically_drained_frames += sink->accepted_pending_drain_frames;
     sink->accepted_pending_drain_frames = 0U;
@@ -604,6 +610,7 @@ void p4_nano_audio86_physical_sink_get_telemetry(
         &sink->tx_eof_epoch, memory_order_acquire);
     telemetry->drain_snapshot_epoch = sink->drain_snapshot_epoch;
     telemetry->drain_completion_epoch = sink->drain_completion_epoch;
+    telemetry->quiescent_eof_epoch = sink->quiescent_eof_epoch;
     telemetry->registered_generation = atomic_load_explicit(
         &sink->callback_gate.registration_generation, memory_order_acquire);
     telemetry->generation = atomic_load_explicit(&sink->generation,

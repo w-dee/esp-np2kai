@@ -2113,17 +2113,19 @@ void emit_physical_s1_evidence(const Runtime *runtime)
     const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
     if (!snapshot.captured) return;
     const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
-    const uint32_t post_snapshot_eofs =
+    const uint32_t drain_post_snapshot_eofs =
         sink.drain_completion_epoch - sink.drain_snapshot_epoch;
+    const uint32_t quiescent_post_snapshot_eofs =
+        sink.quiescent_eof_epoch - sink.drain_snapshot_epoch;
     const uint64_t padding_bytes = sink.physical_padding_frames *
         P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME;
-    std::printf("5D2_S1_IDENTITY schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D2_S1_IDENTITY schema=2 evidence_class=PHYSICAL_EXEC"
                 " source_git_sha=%s"
                 " profile=AUDIO86_REAL_GUEST_PHYSICAL_I2S_SHORT"
                 " board=P4_NANO_P4_V1X backend=IDF_I2S0_ES8311"
                 " stimulus=PRE_RESET_PCM display=DISABLED\n",
                 P4_AUDIO86_GIT_SHA);
-    std::printf("5D2_S1_START schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D2_S1_START schema=2 evidence_class=PHYSICAL_EXEC"
                 " rate_hz=48000 channels=2 sample_bits=16 encoding=S16LE"
                 " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
                 " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
@@ -2145,7 +2147,7 @@ void emit_physical_s1_evidence(const Runtime *runtime)
                 sink.callbacks_registered ? 1U : 0U,
                 sink.stream_started ? 1U : 0U,
                 sink.codec_unmute_completed ? 1U : 0U);
-    std::printf("5D2_S1_PCM schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D2_S1_PCM schema=2 evidence_class=PHYSICAL_EXEC"
                 " semantic_frames=%" PRIu64 " semantic_bytes=%" PRIu64
                 " semantic_crc32=%08" PRIx32 " semantic_sha256=",
                 snapshot.semantic_frames, snapshot.semantic_bytes,
@@ -2168,11 +2170,13 @@ void emit_physical_s1_evidence(const Runtime *runtime)
                 sink.final_valid_frames, sink.physical_units_copied,
                 sink.physical_bytes_copied, sink.physical_padding_frames,
                 padding_bytes, sink.submit_attempts, sink.retry_count);
-    std::printf("5D2_S1_FINISH schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D2_S1_FINISH schema=2 evidence_class=PHYSICAL_EXEC"
                 " controller_state=%s sink_state=%s"
                 " final_copy_eof_epoch=%" PRIu32
-                " finish_eof_epoch=%" PRIu32
-                " post_snapshot_eofs=%" PRIu32
+                " drain_completion_eof_epoch=%" PRIu32
+                " quiescent_eof_epoch=%" PRIu32
+                " drain_post_snapshot_eofs=%" PRIu32
+                " quiescent_post_snapshot_eofs=%" PRIu32
                 " drain_duration_ms=%" PRIu64 " finish_completed=%u"
                 " pending_frames=%" PRIu64 " drained_frames=%" PRIu64
                 " discarded_frames=%" PRIu64
@@ -2188,7 +2192,8 @@ void emit_physical_s1_evidence(const Runtime *runtime)
                 physical_s1_controller_state_name(snapshot.controller_state),
                 physical_s1_sink_state_name(sink.state),
                 sink.drain_snapshot_epoch, sink.drain_completion_epoch,
-                post_snapshot_eofs, sink.drain_duration_ms,
+                sink.quiescent_eof_epoch, drain_post_snapshot_eofs,
+                quiescent_post_snapshot_eofs, sink.drain_duration_ms,
                 sink.finish_completed ? 1U : 0U,
                 sink.accepted_pending_drain_frames,
                 sink.physically_drained_frames,
@@ -2211,8 +2216,10 @@ bool physical_s1_snapshot_healthy(const Runtime *runtime)
 {
     const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
     const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
-    const uint32_t post_snapshot_eofs =
+    const uint32_t drain_post_snapshot_eofs =
         sink.drain_completion_epoch - sink.drain_snapshot_epoch;
+    const uint32_t quiescent_post_snapshot_eofs =
+        sink.quiescent_eof_epoch - sink.drain_snapshot_epoch;
     return snapshot.captured && snapshot.sink_destroyed == 1U &&
         snapshot.controller_state == NP2_PCM_OUTPUT_FINISHED &&
         sink.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
@@ -2227,8 +2234,13 @@ bool physical_s1_snapshot_healthy(const Runtime *runtime)
         sink.physically_drained_frames == kRenderFrames &&
         sink.physically_discarded_accepted_frames == 0U &&
         sink.running_queue_overflow_count == 0U &&
-        post_snapshot_eofs >= P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
-        sink.draining_queue_overflow_count <= post_snapshot_eofs &&
+        drain_post_snapshot_eofs >=
+            P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
+        drain_post_snapshot_eofs < 0x80000000U &&
+        quiescent_post_snapshot_eofs < 0x80000000U &&
+        quiescent_post_snapshot_eofs >= drain_post_snapshot_eofs &&
+        sink.draining_queue_overflow_count <=
+            quiescent_post_snapshot_eofs &&
         !sink.sticky_error && sink.callback_refcount == 0U &&
         !sink.callbacks_active && sink.codec_final_muted &&
         sink.pa_final_low && !sink.i2s_enabled && !sink.i2s_created &&

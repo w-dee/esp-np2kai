@@ -41,6 +41,7 @@ struct fake_backend {
     unsigned release_calls;
     unsigned notifications;
     unsigned auto_eof_budget;
+    unsigned post_completion_eof_qovf_budget;
     int qovf_on_wait;
     enum p4_nano_audio86_physical_io_result preload_result;
     enum p4_nano_audio86_physical_io_result write_result;
@@ -241,7 +242,16 @@ static int fake_unregister(void *opaque)
 
 static uint64_t fake_now(void *opaque)
 {
-    return ((struct fake_backend *)opaque)->now_ms;
+    struct fake_backend *fake = opaque;
+    while (fake->auto_eof_budget == 0U &&
+           fake->post_completion_eof_qovf_budget != 0U) {
+        fake->post_completion_eof_qovf_budget--;
+        record_event(fake, "POST_COMPLETION_CALLBACK_ENTRY", 0, 0U);
+        p4_nano_audio86_callback_gate_on_sent(fake->callback_gate);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake->callback_gate);
+        record_event(fake, "POST_COMPLETION_CALLBACK_EXIT", 0, 0U);
+    }
+    return fake->now_ms;
 }
 
 static void fake_wait(void *opaque, uint32_t timeout_ms)
@@ -378,6 +388,7 @@ static void test_full_controller(void)
            telemetry.drain_completion_epoch -
                    telemetry.drain_snapshot_epoch ==
                P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
+           telemetry.quiescent_eof_epoch == telemetry.tx_eof_epoch &&
            telemetry.drain_duration_ms == 4U &&
            telemetry.physically_drained_frames == 240U &&
            telemetry.accepted_pending_drain_frames == 0U &&
@@ -621,6 +632,28 @@ static void test_queue_overflow(void)
     p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
     assert(!telemetry.sticky_error &&
            telemetry.draining_queue_overflow_count == 1U);
+    close_sink(&fake, sink, &interface);
+
+    sink = new_sink(&fake, &interface);
+    start_sink(&interface);
+    enter_running(&fake, &interface, pcm);
+    fake.auto_eof_budget = 4U;
+    fake.post_completion_eof_qovf_budget = 1U;
+    assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+    assert(telemetry.drain_completion_epoch -
+               telemetry.drain_snapshot_epoch == 4U &&
+           telemetry.quiescent_eof_epoch -
+               telemetry.drain_snapshot_epoch == 5U &&
+           telemetry.tx_eof_epoch == telemetry.quiescent_eof_epoch &&
+           telemetry.draining_queue_overflow_count == 1U &&
+           !telemetry.sticky_error);
+    printf(EVIDENCE "scenario=finish_post_completion_callback eof_snapshot=%u drain_completion=%u quiescent_eof=%u draining_q_ovf=%u finish=%u\n",
+           telemetry.drain_snapshot_epoch,
+           telemetry.drain_completion_epoch,
+           telemetry.quiescent_eof_epoch,
+           telemetry.draining_queue_overflow_count,
+           NP2_PCM_SINK_ACCEPTED);
     close_sink(&fake, sink, &interface);
     puts("5D1_QUEUE_OVF running=FATAL draining=TELEMETRY_ONLY stale=IGNORED result=PASS");
 }

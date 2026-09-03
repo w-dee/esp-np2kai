@@ -16,6 +16,7 @@ CHECKER = ROOT / "tools/emu/check_p4_audio86_callback_idf_barrier.py"
 REQUIRED_FILES = (
     "tools/cmake/version.cmake",
     "components/esp_driver_i2s/i2s_common.c",
+    "components/esp_driver_i2s/i2s_std.c",
     "components/esp_hw_support/dma/gdma.c",
     "components/esp_hw_support/intr_alloc.c",
     "components/esp_system/esp_ipc.c",

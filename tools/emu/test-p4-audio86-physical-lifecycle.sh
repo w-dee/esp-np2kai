@@ -15,6 +15,7 @@ python3 tools/emu/check_p4_audio86_callback_idf_barrier.py >"${idf_source_log}"
 cat "${idf_source_log}"
 project_source_log="${work_dir}/project-source.log"
 python3 tools/emu/check_p4_audio86_project_source.py >"${project_source_log}"
+python3 tools/emu/check_p4_audio86_project_interval.py >>"${project_source_log}"
 cat "${project_source_log}"
 
 merge_image() {

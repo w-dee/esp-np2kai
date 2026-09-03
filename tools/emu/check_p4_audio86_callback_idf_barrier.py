@@ -29,6 +29,16 @@ def extract_braced(text: str, opening: int) -> str:
     raise SystemExit("unterminated ESP-IDF function/block")
 
 
+def function_body(text: str, signature: str) -> str:
+    start = text.index(signature)
+    while True:
+        opening = text.index("{", start)
+        terminator = text.find(";", start, opening)
+        if terminator < 0:
+            return extract_braced(text, opening)
+        start = text.index(signature, terminator + 1)
+
+
 def tx_callback_bodies(i2s: str) -> list[str]:
     signature = re.compile(
         r"static\s+(?:bool|void)\s+IRAM_ATTR\s+"
@@ -90,6 +100,8 @@ def main() -> int:
     check_exact_idf_version(version)
     i2s = (root / "components/esp_driver_i2s/i2s_common.c").read_text(
         encoding="utf-8")
+    i2s_std = (root / "components/esp_driver_i2s/i2s_std.c").read_text(
+        encoding="utf-8")
     gdma = (root / "components/esp_hw_support/dma/gdma.c").read_text(
         encoding="utf-8")
     interrupt = (root / "components/esp_hw_support/intr_alloc.c").read_text(
@@ -106,6 +118,29 @@ def main() -> int:
     require(ipc, ("IPC_WAIT_FOR_END", "esp_err_t esp_ipc_call_blocking",
                   "IPC_WAIT_FOR_END);"), "blocking IPC path")
     check_drain_qovf_to_eof(i2s)
+    std_init = function_body(i2s_std, "esp_err_t i2s_channel_init_std_mode")
+    dma_init = function_body(i2s, "esp_err_t i2s_init_dma_intr")
+    register_tx = function_body(
+        gdma, "esp_err_t gdma_register_tx_event_callbacks")
+    install_tx = function_body(
+        gdma, "static esp_err_t gdma_install_tx_interrupt")
+    alloc_wrapper = function_body(
+        interrupt, "esp_err_t esp_intr_alloc_intrstatus(")
+    alloc_bind = function_body(
+        interrupt, "esp_err_t esp_intr_alloc_intrstatus_bind(")
+    require_condition("i2s_init_dma_intr(handle" in std_init,
+                      "standard-mode initialization no longer installs DMA")
+    require_condition("gdma_register_tx_event_callbacks" in dma_init,
+                      "I2S TX no longer registers the GDMA EOF callback")
+    require_condition("gdma_install_tx_interrupt(tx_chan)" in register_tx,
+                      "GDMA TX callback registration no longer installs ISR")
+    require_condition("esp_intr_alloc_intrstatus(" in install_tx,
+                      "GDMA TX ISR allocation path drifted")
+    require_condition("esp_intr_alloc_intrstatus_bind" in alloc_wrapper and
+                      "NULL, ret_handle" in alloc_wrapper,
+                      "interrupt allocation wrapper binding drifted")
+    require_condition("uint32_t cpu = esp_cpu_get_core_id();" in alloc_bind,
+                      "interrupt allocation is no longer bound to caller core")
     print(
         "5D1_STATIC_EVIDENCE schema=1 property_id=idf_delete_barrier "
         "evidence_class=STATIC_IDF_SOURCE "
@@ -116,6 +151,12 @@ def main() -> int:
         "property_id=idf_drain_qovf_eof_order "
         "evidence_class=STATIC_IDF_SOURCE "
         "fields=version|tx_dma_eof|on_sent_before_q_ovf|one_q_ovf_per_eof "
+        "predicate=PASS")
+    print(
+        "5D1_STATIC_EVIDENCE schema=1 "
+        "property_id=idf_i2s_interrupt_core_binding "
+        "evidence_class=STATIC_IDF_SOURCE "
+        "fields=std_init|dma_init|gdma_tx_registration|caller_core "
         "predicate=PASS")
     print(
         "5D1_NON_ACCEPTANCE_SUMMARY schema=1 evidence_class=STATIC_IDF_SOURCE "

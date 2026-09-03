@@ -83,6 +83,7 @@ struct p4_nano_audio86_physical_telemetry {
     uint32_t tx_eof_epoch;
     uint32_t drain_snapshot_epoch;
     uint32_t drain_completion_epoch;
+    uint32_t quiescent_eof_epoch;
     uint32_t registered_generation;
     uint32_t generation;
     uint32_t stale_callback_count;

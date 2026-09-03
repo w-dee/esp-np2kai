@@ -120,6 +120,9 @@ EXEC_EVIDENCE_FIELDS = {
                                     "sticky", "stale"},
         "finish_sticky_error": {"eof_snapshot", "eof_current", "finish",
                                 "sticky", "stale"},
+        "finish_post_completion_callback": {
+            "eof_snapshot", "drain_completion", "quiescent_eof",
+            "draining_q_ovf", "finish"},
         "callback_entry_before_disarm": CALLBACK_BASE_FIELDS | {
             "entered", "disarmed", "in_flight_during", "in_flight_after",
             "target_touched_safely"},

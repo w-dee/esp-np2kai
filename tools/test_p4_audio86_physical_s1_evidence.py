@@ -78,6 +78,7 @@ def main() -> int:
         "sink->backend.pa_low",
         "sink->backend.disable",
         "close_callbacks(sink)",
+        "sink->quiescent_eof_epoch",
         "sink->accepted_pending_drain_frames = 0U",
         "P4_NANO_AUDIO86_PHYSICAL_QUIESCENT",
         "sink->finish_completed = true",
@@ -134,10 +135,14 @@ def main() -> int:
 
     healthy = body(binding, "bool physical_s1_snapshot_healthy(", "#endif")
     require("sink.drain_completion_epoch - sink.drain_snapshot_epoch" in healthy and
-            "post_snapshot_eofs >= P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS" in healthy,
+            "sink.quiescent_eof_epoch - sink.drain_snapshot_epoch" in healthy and
+            "drain_post_snapshot_eofs >=" in healthy and
+            "P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS" in healthy and
+            "quiescent_post_snapshot_eofs >= drain_post_snapshot_eofs" in healthy,
             "physical-short EOF drain predicate weakened")
     require("sink.running_queue_overflow_count == 0U" in healthy and
-            "sink.draining_queue_overflow_count <= post_snapshot_eofs" in healthy and
+            "sink.draining_queue_overflow_count <=" in healthy and
+            "quiescent_post_snapshot_eofs" in healthy and
             "sink.draining_queue_overflow_count == 0U" not in healthy,
             "physical-short drain q_ovf predicate is not semantic")
 
@@ -169,6 +174,10 @@ def main() -> int:
     print("VIRTUAL_NORMAL_OK_SEMANTICS_UNCHANGED=PASS")
     print("PHYSICAL_SHORT_SUCCESS_PREDICATE_TRUTHFUL=PASS")
     print("PHYSICAL_SHORT_DRAIN_Q_OVF_PREDICATE_CORRECTED=PASS")
+    print("PHYSICAL_SHORT_Q_OVF_INTERVAL_PREDICATE_CORRECTED=PASS")
+    print("DRAIN_COMPLETION_EPOCH_SEMANTICS_PRESERVED=PASS")
+    print("QUIESCENT_EOF_EPOCH_OBSERVABLE=PASS")
+    print("DRAIN_AND_QUIESCENT_EOF_INTERVALS_DISTINCT=PASS")
     print("RUNNING_Q_OVF_SEMANTICS_UNCHANGED=PASS")
     print("DRAINING_Q_OVF_ACCEPTANCE_CLASS=TELEMETRY_ONLY")
     print("GLOBAL_Q_OVF_SEMANTICS_WEAKENED=NO")

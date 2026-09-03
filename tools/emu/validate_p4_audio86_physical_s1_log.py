@@ -36,8 +36,10 @@ RECORD_FIELDS = {
     ),
     "5D2_S1_FINISH": (
         "schema", "evidence_class", "controller_state", "sink_state",
-        "final_copy_eof_epoch", "finish_eof_epoch", "post_snapshot_eofs",
-        "drain_duration_ms", "finish_completed", "pending_frames",
+        "final_copy_eof_epoch", "drain_completion_eof_epoch",
+        "quiescent_eof_epoch", "drain_post_snapshot_eofs",
+        "quiescent_post_snapshot_eofs", "drain_duration_ms",
+        "finish_completed", "pending_frames",
         "drained_frames", "discarded_frames", "running_q_ovf",
         "draining_q_ovf", "sticky_error", "registered_generation",
         "terminal_generation", "stale_callbacks", "callback_in_flight",
@@ -50,6 +52,7 @@ DECIMAL = re.compile(r"0|[1-9][0-9]*")
 SHA1 = re.compile(r"[0-9a-f]{40}")
 CRC32 = re.compile(r"[0-9a-f]{8}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+UINT32_HALF_RANGE = 1 << 31
 PASS_LINE = b"P4_AUDIO86_PHYSICAL_S1_TERMINAL=COMPLETE"
 FAIL_LINE = b"P4_AUDIO86_PHYSICAL_S1_TERMINAL=FAILED"
 
@@ -183,14 +186,14 @@ def validate(raw_path: Path, status_path: Path,
     pcm = records["5D2_S1_PCM"]
     finish = records["5D2_S1_FINISH"]
     for name, fields in records.items():
-        require(errors, fields["schema"] == "1", f"{name}: schema mismatch")
+        require(errors, fields["schema"] == "2", f"{name}: schema mismatch")
         require(errors, fields["evidence_class"] == "PHYSICAL_EXEC",
                 f"{name}: evidence class mismatch")
     require(errors, SHA1.fullmatch(identity["source_git_sha"]) is not None and
             identity["source_git_sha"] == expected_source_sha,
             "source Git SHA mismatch")
     require(errors, identity == {
-        "schema": "1", "evidence_class": "PHYSICAL_EXEC",
+        "schema": "2", "evidence_class": "PHYSICAL_EXEC",
         "source_git_sha": expected_source_sha,
         "profile": "AUDIO86_REAL_GUEST_PHYSICAL_I2S_SHORT",
         "board": "P4_NANO_P4_V1X", "backend": "IDF_I2S0_ES8311",
@@ -258,13 +261,29 @@ def validate(raw_path: Path, status_path: Path,
             numeric["pcm.retry_count"] == 0,
             "short physical unit/submission mismatch")
     final_epoch = numeric["finish.final_copy_eof_epoch"]
-    finish_epoch = numeric["finish.finish_eof_epoch"]
-    eof_delta = (finish_epoch - final_epoch) & 0xFFFFFFFF
+    drain_epoch = numeric["finish.drain_completion_eof_epoch"]
+    quiescent_epoch = numeric["finish.quiescent_eof_epoch"]
+    drain_delta = (drain_epoch - final_epoch) & 0xFFFFFFFF
+    quiescent_delta = (quiescent_epoch - final_epoch) & 0xFFFFFFFF
     require(errors, 0 <= final_epoch <= 0xFFFFFFFF and
-            0 <= finish_epoch <= 0xFFFFFFFF and
-            numeric["finish.post_snapshot_eofs"] == eof_delta and
-            eof_delta >= numeric["start.dma_desc"],
+            0 <= drain_epoch <= 0xFFFFFFFF and
+            0 <= quiescent_epoch <= 0xFFFFFFFF,
+            "EOF epoch outside uint32 range")
+    require(errors,
+            numeric["finish.drain_post_snapshot_eofs"] == drain_delta and
+            numeric["finish.quiescent_post_snapshot_eofs"] ==
+                quiescent_delta,
+            "reported EOF interval delta mismatch")
+    # S1 is bounded by a short drain timeout and is many orders of magnitude
+    # below half the uint32 range.  Constraining both modular distances first
+    # makes the following ordinary integer ordering unambiguous.
+    require(errors, drain_delta < UINT32_HALF_RANGE and
+            quiescent_delta < UINT32_HALF_RANGE,
+            "EOF interval exceeds bounded S1 modular range")
+    require(errors, drain_delta >= numeric["start.dma_desc"],
             "four-EOF drain proof mismatch")
+    require(errors, quiescent_delta >= drain_delta,
+            "quiescent EOF observation precedes drain completion")
     require(errors, finish["controller_state"] == "FINISHED" and
             finish["sink_state"] == "QUIESCENT",
             "terminal state mismatch")
@@ -282,8 +301,8 @@ def validate(raw_path: Path, status_path: Path,
                         for key, value in required_finish.items()),
             "finish/quiescence mismatch")
     require(errors, numeric["finish.draining_q_ovf"] <=
-            numeric["finish.post_snapshot_eofs"],
-            "drain q_ovf exceeds post-snapshot EOFs")
+            quiescent_delta,
+            "drain q_ovf exceeds quiescent post-snapshot EOFs")
     require(errors, numeric["finish.registered_generation"] > 0 and
             numeric["finish.terminal_generation"] ==
                 numeric["finish.registered_generation"] + 1,
@@ -305,6 +324,7 @@ def main() -> int:
     print("S1_PHYSICAL_EVIDENCE_VALIDATION=PASS")
     print("S1B_REUSES_EXISTING_PCM_GOLDEN=PASS")
     print("S1_PHYSICAL_DRAIN_PROOF_IMPLEMENTED=PASS")
+    print("S1_VALIDATOR_EOF_INTERVALS_RECOMPUTED=PASS")
     return 0
 
 
