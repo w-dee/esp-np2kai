@@ -2872,7 +2872,8 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
                 " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
                 " physical_unit_bytes=%u dma_desc=%u dma_frames=%u"
-                " ring_capacity=%u prefill=%u semantic_duration_ms=2000"
+                " ring_capacity=%u prefill=%" PRIu32
+                " semantic_duration_ms=2000"
                 " expected_units=400 prepare_completed=%u pa_initial_low=%u"
                 " codec_initialized_muted=%u i2s_initialized=%u"
                 " muted_warmup_completed=%u callbacks_registered=%u"
