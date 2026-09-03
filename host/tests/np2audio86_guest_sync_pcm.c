@@ -13,6 +13,9 @@
 #include "np2audio86_guest_runtime_capture.h"
 #if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
 #include "np2audio86_sustained_evidence.h"
+#include "np2audio86_runtime_transport.h"
+#include "np2opngen_pcm_ring.h"
+#include "np2pcm_output.h"
 #endif
 #include "np2_crc32.h"
 #include "np2_sha256.h"
@@ -788,6 +791,308 @@ static size_t serialize_apply(const struct sync_apply_record *records,
     return count * SYNC_TRACE_RECORD_BYTES;
 }
 
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+struct sustained_ring_sink {
+    np2audio86_sustained_evidence *evidence;
+    uint32_t accepted_units;
+    uint32_t start_calls;
+    uint32_t finish_calls;
+    uint32_t abort_calls;
+    uint64_t now_ms;
+};
+
+static enum np2_pcm_sink_result sustained_ring_start(void *opaque)
+{
+    struct sustained_ring_sink *sink = opaque;
+    if (sink == NULL || sink->evidence == NULL) return NP2_PCM_SINK_FATAL;
+    ++sink->start_calls;
+    np2audio86_sustained_stream_start(sink->evidence, sink->now_ms);
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_ring_submit(
+    void *opaque, const struct np2_pcm_sink_view *view)
+{
+    struct sustained_ring_sink *sink = opaque;
+    if (sink == NULL || view == NULL || view->flags != 0U)
+        return NP2_PCM_SINK_FATAL;
+    sink->now_ms += NP2_AUDIO86_SUSTAINED_QUANTUM_MS;
+    if (np2audio86_sustained_submit(
+            sink->evidence, NP2_AUDIO86_SUSTAINED_ACCEPTED,
+            view->sequence, view->frame_offset, view->pcm,
+            view->valid_frames, 1U, sink->now_ms) != 0)
+        return NP2_PCM_SINK_FATAL;
+    ++sink->accepted_units;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_ring_finish(void *opaque)
+{
+    struct sustained_ring_sink *sink = opaque;
+    if (sink == NULL || sink->evidence == NULL) return NP2_PCM_SINK_FATAL;
+    ++sink->finish_calls;
+    np2audio86_sustained_drain_complete(sink->evidence, sink->now_ms);
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_ring_abort(void *opaque)
+{
+    struct sustained_ring_sink *sink = opaque;
+    if (sink == NULL) return NP2_PCM_SINK_FATAL;
+    ++sink->abort_calls;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static int sustained_digest_matches(
+    const np2audio86_sustained_digest *digest, const uint8_t *bytes,
+    size_t length, uint64_t records)
+{
+    uint32_t crc32;
+    uint8_t actual_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t expected_sha[NP2_SHA256_DIGEST_SIZE];
+    np2audio86_sustained_digest_snapshot(digest, &crc32, actual_sha);
+    sha_digest(bytes, length, expected_sha);
+    return digest->bytes == length && digest->records == records &&
+           crc32 == np2_crc32_iso_hdlc(bytes, length) &&
+           memcmp(actual_sha, expected_sha, sizeof(actual_sha)) == 0;
+}
+
+static int sustained_trace_integrate(
+    np2audio86_sustained_evidence *evidence,
+    const np2audio86_guest_trace_t *trace,
+    const struct sync_pcm_result *result,
+    const np2audio86_guest_state_snapshot_t *state)
+{
+    uint8_t canonical[SYNC_TRACE_RECORD_BYTES];
+    uint8_t event_bytes[18U * 24U];
+    uint8_t run_bytes[1U * 32U];
+    uint8_t timer_bytes[20U * 28U];
+    uint8_t io_bytes[246U * 24U];
+    uint8_t apply_bytes[19U * SYNC_TRACE_RECORD_BYTES];
+    uint8_t state_bytes[128U];
+    size_t event_count_bytes;
+    size_t run_count_bytes;
+    size_t timer_count_bytes;
+    size_t io_count_bytes;
+    size_t apply_count_bytes;
+    size_t state_count_bytes;
+    size_t i;
+    if (trace->event_count != 18U || trace->data_run_count != 1U ||
+        trace->timer_count != 20U || trace->io_count != 246U ||
+        trace->pcm_count != 8U || result->apply_count != 19U)
+        return 0;
+    for (i = 0U; i < trace->event_count; ++i) {
+        const size_t bytes = np2audio86_guest_evidence_serialize_event_record(
+            &trace->events[i], canonical);
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_EVENT, canonical, bytes);
+    }
+    for (i = 0U; i < trace->data_run_count; ++i) {
+        const size_t bytes = np2audio86_guest_evidence_serialize_run_record(
+            &trace->data_runs[i], canonical);
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_RUN, canonical, bytes);
+    }
+    for (i = 0U; i < trace->timer_count; ++i) {
+        const size_t bytes = np2audio86_guest_evidence_serialize_timer_record(
+            &trace->timers[i], canonical);
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_TIMER, canonical, bytes);
+    }
+    for (i = 0U; i < trace->io_count; ++i) {
+        const size_t bytes = np2audio86_guest_evidence_serialize_io_record(
+            &trace->io[i], canonical);
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_IO, canonical, bytes);
+    }
+    for (i = 0U; i < trace->pcm_count; ++i) {
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_PCM_BYTES,
+            &trace->pcm_bytes[i], 1U);
+    }
+    for (i = 0U; i < result->apply_count; ++i) {
+        (void)serialize_apply(&result->apply[i], 1U, canonical);
+        np2audio86_sustained_trace_record(
+            evidence, NP2_AUDIO86_SUSTAINED_TRACE_APPLY,
+            canonical, sizeof(canonical));
+    }
+    state_count_bytes = np2audio86_guest_evidence_serialize_state(
+        state, state_bytes);
+    np2audio86_sustained_trace_record(
+        evidence, NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE,
+        state_bytes, state_count_bytes);
+
+    event_count_bytes = np2audio86_guest_evidence_serialize_events(
+        trace, event_bytes);
+    run_count_bytes = np2audio86_guest_evidence_serialize_runs(trace, run_bytes);
+    timer_count_bytes = np2audio86_guest_evidence_serialize_timers(
+        trace, timer_bytes);
+    io_count_bytes = np2audio86_guest_evidence_serialize_io(trace, io_bytes);
+    apply_count_bytes = serialize_apply(
+        result->apply, result->apply_count, apply_bytes);
+    return sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT],
+               event_bytes, event_count_bytes, trace->event_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_RUN],
+               run_bytes, run_count_bytes, trace->data_run_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER],
+               timer_bytes, timer_count_bytes, trace->timer_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_IO],
+               io_bytes, io_count_bytes, trace->io_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_PCM_BYTES],
+               trace->pcm_bytes, trace->pcm_count, trace->pcm_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY],
+               apply_bytes, apply_count_bytes, result->apply_count) &&
+           sustained_digest_matches(
+               &evidence->trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE],
+               state_bytes, state_count_bytes, 1U);
+}
+
+static int run_sustained_ring_integration(
+    const struct sync_pcm_result *result,
+    const np2audio86_guest_trace_t *trace,
+    const np2audio86_guest_state_snapshot_t *state)
+{
+    static const uint8_t expected_pcm_sha[NP2_SHA256_DIGEST_SIZE] = {
+        0xb3, 0x15, 0xa9, 0x47, 0x6e, 0x4f, 0xc3, 0x0c,
+        0xbb, 0x7a, 0xea, 0x0c, 0x7a, 0x1b, 0xfa, 0x9c,
+        0xd4, 0xaa, 0x31, 0xa0, 0x33, 0xc9, 0x22, 0x3e,
+        0xb2, 0x25, 0x00, 0x60, 0x4f, 0xff, 0x62, 0xa0};
+    struct np2opngen_pcm_ring ring;
+    struct np2_pcm_output_controller controller;
+    struct np2audio86_event_ring reset_events;
+    struct np2audio86_runtime_control control;
+    np2audio86_sustained_evidence evidence;
+    struct sustained_ring_sink sink_state;
+    const struct np2_pcm_sink sink = {
+        &sink_state, sustained_ring_start, sustained_ring_submit,
+        sustained_ring_finish, sustained_ring_abort};
+    const np2audio86_guest_event_t *reset;
+    const struct np2audio86_event *published_reset = NULL;
+    uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t accepted_sha[NP2_SHA256_DIGEST_SIZE];
+    uint8_t pre_reset_sha[NP2_SHA256_DIGEST_SIZE];
+    uint32_t generated_crc;
+    uint32_t accepted_crc;
+    uint32_t producer_reset_ordinal = 0U;
+    uint32_t produced_units = 0U;
+    uint32_t sequence;
+    np2audio86_sustained_evidence_init(&evidence);
+    np2opngen_pcm_ring_init(&ring);
+    np2audio86_event_ring_init(&reset_events);
+    np2audio86_runtime_control_init(&control);
+    memset(&sink_state, 0, sizeof(sink_state));
+    sink_state.evidence = &evidence;
+    if (trace->event_count == 0U) return -1;
+    reset = &trace->events[trace->event_count - 1U];
+    if (reset->frame_timestamp != 95761U || reset->sequence != 18U ||
+        reset->opcode != NP2AUDIO86_TRACE_RESET_BARRIER ||
+        reset->payload != 0U ||
+        !sustained_trace_integrate(&evidence, trace, result, state) ||
+        np2_pcm_output_controller_init(&controller, &ring, &sink) != 0 ||
+        np2_pcm_output_start(&controller) != NP2_PCM_OUTPUT_OK)
+        return -1;
+    for (sequence = 0U; sequence < 400U; ++sequence) {
+        const uint64_t offset = (uint64_t)sequence * 240U;
+        const uint8_t *pcm = result->full_pcm + offset * 4U;
+        size_t consumed = 0U;
+        if (sequence == 399U) {
+            const struct np2audio86_event event = {
+                reset->frame_timestamp, reset->sequence,
+                NP2_AUDIO86_EVENT_RESET_BARRIER, 0U};
+            if (np2audio86_sustained_generated(
+                    &evidence, sequence, offset, pcm, 1U) != 0 ||
+                np2opngen_pcm_ring_append(
+                    &ring, pcm, 1U, offset, &consumed) !=
+                    NP2_OPNGEN_PCM_RING_OK || consumed != 1U ||
+                np2opngen_pcm_ring_occupancy(&ring) != 0U ||
+                ring.next_frame_offset != reset->frame_timestamp ||
+                np2audio86_reset_event_ring_enqueue(
+                    &reset_events, &event, &producer_reset_ordinal) !=
+                    NP2_AUDIO86_TRANSPORT_OK ||
+                np2audio86_event_ring_peek(
+                    &reset_events, &published_reset) !=
+                    NP2_AUDIO86_TRANSPORT_OK || published_reset == NULL ||
+                published_reset->payload != 1U)
+                return -1;
+            np2audio86_sustained_freeze_reset(
+                &evidence, published_reset->frame_timestamp,
+                (uint32_t)published_reset->sequence,
+                published_reset->payload, ring.next_frame_offset, 1U, 1U);
+            np2audio86_runtime_reset_ack_publish(
+                &control, published_reset->payload);
+            if (np2audio86_runtime_reset_ack(&control) !=
+                    published_reset->payload ||
+                np2audio86_event_ring_consume(&reset_events) !=
+                    NP2_AUDIO86_TRANSPORT_OK ||
+                np2audio86_sustained_generated(
+                    &evidence, sequence, offset + 1U, pcm + 4U, 239U) != 0 ||
+                np2opngen_pcm_ring_append(
+                    &ring, pcm + 4U, 239U, offset + 1U, &consumed) !=
+                    NP2_OPNGEN_PCM_RING_OK || consumed != 239U)
+                return -1;
+        } else if (np2audio86_sustained_generated(
+                       &evidence, sequence, offset, pcm, 240U) != 0 ||
+                   np2opngen_pcm_ring_append(
+                       &ring, pcm, 240U, offset, &consumed) !=
+                       NP2_OPNGEN_PCM_RING_OK || consumed != 240U)
+            return -1;
+        ++produced_units;
+        np2audio86_sustained_observe_ring(
+            &evidence, np2opngen_pcm_ring_occupancy(&ring));
+        if (np2_pcm_output_step(&controller) != NP2_PCM_OUTPUT_CONSUMED)
+            return -1;
+    }
+    if (np2opngen_pcm_ring_finish(&ring, 96000U) !=
+            NP2_OPNGEN_PCM_RING_OK ||
+        np2opngen_pcm_ring_occupancy(&ring) != 0U ||
+        np2opngen_pcm_ring_producer_partial_valid_frames(&ring) != 0U ||
+        np2_pcm_output_finish(&controller) != NP2_PCM_OUTPUT_OK)
+        return -1;
+    np2audio86_sustained_digest_snapshot(
+        &evidence.generated, &generated_crc, generated_sha);
+    np2audio86_sustained_digest_snapshot(
+        &evidence.accepted, &accepted_crc, accepted_sha);
+    sha_digest(result->pre_pcm, result->pre_bytes, pre_reset_sha);
+    if (generated_crc != UINT32_C(0x5bb15277) ||
+        accepted_crc != generated_crc ||
+        memcmp(generated_sha, expected_pcm_sha, sizeof(generated_sha)) != 0 ||
+        memcmp(accepted_sha, expected_pcm_sha, sizeof(accepted_sha)) != 0 ||
+        produced_units != 400U || sink_state.accepted_units != 400U ||
+        evidence.generated.records != 400U ||
+        evidence.accepted.records != 400U ||
+        evidence.generated.bytes != 384000U ||
+        evidence.accepted.bytes != 384000U ||
+        evidence.next_generated_frame_offset != 96000U ||
+        evidence.next_accepted_frame_offset != 96000U ||
+        controller.accepted_frames != 96000U ||
+        controller.accepted_bytes != 384000U ||
+        controller.expected_sequence != 400U ||
+        controller.state != NP2_PCM_OUTPUT_FINISHED ||
+        sink_state.start_calls != 1U || sink_state.finish_calls != 1U ||
+        sink_state.abort_calls != 0U || !ring.finalized ||
+        np2audio86_event_ring_occupancy(&reset_events) != 0U ||
+        !evidence.reset.frozen || evidence.reset.frames != 95761U ||
+        evidence.reset.bytes != 383044U ||
+        evidence.reset.reset_event_frame != 95761U ||
+        evidence.reset.reset_event_sequence != 18U ||
+        evidence.reset.reset_ordinal != 1U ||
+        evidence.reset.ring_next_frame_offset != 95761U ||
+        !evidence.reset.applied_after_ring || !evidence.reset.ack_after_apply ||
+        evidence.reset.crc32 != np2_crc32_iso_hdlc(
+            result->pre_pcm, result->pre_bytes) ||
+        memcmp(evidence.reset.sha256, pre_reset_sha,
+               sizeof(pre_reset_sha)) != 0)
+        return -1;
+    return 0;
+}
+#endif
+
 static int compare_pcm_results(const struct sync_pcm_result *left,
                                const struct sync_pcm_result *right)
 {
@@ -1377,6 +1682,8 @@ int main(void)
                                                              timer_serialized);
     state_bytes = np2audio86_guest_evidence_serialize_state(&guest_state,
                                                             state_serialized);
+    if (run_sustained_ring_integration(&direct, &trace, &guest_state) != 0)
+        return 1;
     printf("WORKLOAD_ID=FULL_REPLAY_PCM_SUSTAINED_2S_V1\n");
     printf("SEMANTIC_DURATION_MS=2000\nSUSTAINED_Q240_UNITS=%u\n",
            NP2_AUDIO86_GUEST_SUSTAINED_2S_QUANTA_240);
@@ -1422,7 +1729,11 @@ int main(void)
     printf("SUSTAINED_GUEST_ACTIVITY_DISTRIBUTED=PASS\n");
     printf("SUSTAINED_FINAL_Q240_AUDIO_ACTIVITY=PASS\n");
     printf("SUSTAINED_RENDER_QUANTUM_EQUIVALENCE=120_240_PASS\n");
+    printf("SUSTAINED_HOST_400_Q240_EVIDENCE_API=PASS\n");
     printf("SUSTAINED_HOST_400_Q240_EVIDENCE=PASS\n");
+    printf("SUSTAINED_HOST_400_Q240_RING_CONTROLLER_INTEGRATION=PASS\n");
+    printf("SUSTAINED_HOST_RESET_RING_INTEGRATION=PASS\n");
+    printf("SUSTAINED_HOST_TRACE_RING_INTEGRATION=PASS\n");
     printf("SUSTAINED_HOST_RETRY_DIGEST_NONREGRESSION=PASS\n");
     printf("SUSTAINED_FIXTURE_AUDIO_PATHS=FM,PSG,RHYTHM\n");
     printf("PCM86_SEMANTIC_WAVEFORM=NOT_EXERCISED\n");

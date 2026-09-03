@@ -1032,7 +1032,37 @@ int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,
     }
 #endif
     atomic_store_explicit(&ring->head, head + 1U, memory_order_release);
+#if defined(NP2_AUDIO86_RESET_ORDINAL_TEST)
+    if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
+        np2audio86_reset_ordinal_after_publish_test_hook(event->payload);
+    }
+#endif
     return NP2_AUDIO86_TRANSPORT_OK;
+}
+
+int np2audio86_reset_event_ring_enqueue(
+    struct np2audio86_event_ring *ring,
+    const struct np2audio86_event *event,
+    uint32_t *producer_reset_ordinal)
+{
+    struct np2audio86_event published;
+    uint32_t ordinal;
+    int status;
+    if (ring == NULL || event == NULL || producer_reset_ordinal == NULL ||
+        event->opcode != NP2_AUDIO86_EVENT_RESET_BARRIER ||
+        *producer_reset_ordinal == UINT32_MAX) {
+        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
+    }
+    ordinal = *producer_reset_ordinal + 1U;
+    published = *event;
+    /* The ordinal is immutable event-owned data before the ring head release. */
+    published.payload = ordinal;
+    status = np2audio86_event_ring_enqueue(ring, &published);
+    if (status == NP2_AUDIO86_TRANSPORT_OK) {
+        /* Producer-only state is committed after successful publication. */
+        *producer_reset_ordinal = ordinal;
+    }
+    return status;
 }
 
 int np2audio86_event_ring_dequeue(struct np2audio86_event_ring *ring,

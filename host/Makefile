@@ -535,6 +535,7 @@ build-audio86-guest-sync-pcm:
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_guest_adapter/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2audio86_fixture/include" \
 		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
+		-I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
 	"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/board86.c" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/pcm86io.c" \
@@ -585,7 +586,7 @@ build-audio86-guest-sustained-2s:
 	@$(MAKE) --no-print-directory \
 		NP2_AUDIO86_SYNC_PCM_OUTPUT="$(NP2_AUDIO86_SUSTAINED_2S_OUTPUT)" \
 		NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS="-DNP2AUDIO86_GUEST_SUSTAINED_2S=1" \
-		NP2_AUDIO86_SYNC_PCM_EXTRA_SOURCES="$(NP2_AUDIO86_SUSTAINED_EVIDENCE_SOURCE)" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_SOURCES="$(NP2_AUDIO86_SUSTAINED_EVIDENCE_SOURCE) $(OPNGEN_PCM_RING_SOURCE) $(NP2_PCM_OUTPUT_SOURCE) $(NP2_AUDIO86_RUNTIME_TRANSPORT_SOURCE)" \
 		build-audio86-guest-sync-pcm
 
 test-audio86-guest-sustained-2s: build-audio86-guest-sustained-2s
@@ -1090,7 +1091,8 @@ test-np2audio86-fixture:
 
 test-np2audio86-runtime-transport:
 	@mkdir -p "$(dir $(NP2_AUDIO86_RUNTIME_TRANSPORT_TEST_OUTPUT))"
-	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration \
+	@$(CC) -std=c11 -Wall -Wextra -Werror=implicit-function-declaration -pthread \
+		-DNP2_AUDIO86_RESET_ORDINAL_TEST=1 \
 		-DDISABLE_SOUND -DBYTESEX_LITTLE -DOSLANG_UTF8 -DSUPPORT_UTF8 \
 		-ffunction-sections -fdata-sections \
 		-I"$(CURDIR)/compat" -I"$(VENDOR_SRC)" -I"$(VENDOR_SRC)/i286c" \

@@ -202,6 +202,11 @@ int np2audio86_guest_async_hardening_cutpoint(
 void np2audio86_guest_async_hardening_event_wrap(uint32_t head_before);
 #endif
 
+#if defined(NP2_AUDIO86_RESET_ORDINAL_TEST)
+/* Host-only deterministic seam after the reset event head release-store. */
+void np2audio86_reset_ordinal_after_publish_test_hook(uint32_t ordinal);
+#endif
+
 struct np2audio86_event_ring {
     struct np2audio86_event slots[NP2_AUDIO86_ASYNC_EVENT_CAPACITY];
     NP2_AUDIO86_ASYNC_ATOMIC(uint32_t) head;
@@ -229,6 +234,10 @@ NP2_AUDIO86_STATIC_ASSERT(
 void np2audio86_event_ring_init(struct np2audio86_event_ring *ring);
 int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,
                                    const struct np2audio86_event *event);
+int np2audio86_reset_event_ring_enqueue(
+    struct np2audio86_event_ring *ring,
+    const struct np2audio86_event *event,
+    uint32_t *producer_reset_ordinal);
 int np2audio86_event_ring_dequeue(struct np2audio86_event_ring *ring,
                                    struct np2audio86_event *event);
 int np2audio86_event_ring_peek(

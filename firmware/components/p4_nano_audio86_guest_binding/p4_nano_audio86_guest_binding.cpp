@@ -401,6 +401,7 @@ struct Runtime {
     std::atomic<uint32_t> byte_lease{0U};
     std::atomic<uint32_t> horizon_lease{0U};
     std::atomic<uint32_t> reset_ack_held{0U};
+    uint32_t reset_ack_held_ordinal = 0U;
     std::atomic<uint32_t> pressure_resume_count{0U};
     std::atomic<uint32_t> pressure_index0_isolated{0U};
     std::atomic<uint32_t> pressure_released{0U};
@@ -1212,7 +1213,7 @@ void publish_failure(Runtime *runtime)
     runtime->horizon_lease.store(0U, std::memory_order_release);
     if (runtime->reset_ack_held.exchange(0U, std::memory_order_acq_rel) != 0U) {
         np2audio86_runtime_reset_ack_publish(&runtime->control,
-                                             runtime->reset_ordinal + 1U);
+                                             runtime->reset_ack_held_ordinal);
         runtime->pressure_ack_published.store(1U, std::memory_order_release);
     }
     runtime->pressure_released.store(1U, std::memory_order_release);
@@ -1549,7 +1550,12 @@ void commit_event(void *opaque, np2audio86_guest_transaction_t *token,
     else if (opcode == NP2AUDIO86_TRACE_PCM_CONTROL) opcode = kEventPcmControl;
     const np2audio86_event event{guest->frame_timestamp, guest->sequence,
                                   opcode, guest->payload};
-    if (np2audio86_event_ring_enqueue(&runtime->events, &event) != NP2_AUDIO86_TRANSPORT_OK) {
+    const bool reset = opcode == NP2_AUDIO86_EVENT_RESET_BARRIER;
+    const int enqueue = reset
+        ? np2audio86_reset_event_ring_enqueue(
+              &runtime->events, &event, &runtime->reset_ordinal)
+        : np2audio86_event_ring_enqueue(&runtime->events, &event);
+    if (enqueue != NP2_AUDIO86_TRANSPORT_OK) {
         fail(runtime, kErrorTransport); return;
     }
     runtime->reserved_events = 0U;
@@ -1591,7 +1597,7 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
             runtime->pcm_s2_reset_guest_linearized.store(
                 1U, std::memory_order_release);
 #endif
-        const uint32_t ordinal = ++runtime->reset_ordinal;
+        const uint32_t ordinal = runtime->reset_ordinal;
         if (kPressureScenario == kPressureResetAck)
             pressure_capture_before(runtime);
         while (!failed(runtime) && np2audio86_runtime_reset_ack(&runtime->control) < ordinal) {
@@ -1717,7 +1723,8 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
     } else if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
         opcode = NP2AUDIO86_TRACE_RESET_BARRIER;
         action = NP2_AUDIO86_GUEST_ACTION_RESET;
-        if (runtime->reset_seen) return false;
+        action_payload = 0U;
+        if (runtime->reset_seen || event->payload == 0U) return false;
         runtime->pre_reset_frame = event->frame_timestamp;
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         runtime->reset_ring_owned_frames =
@@ -1750,6 +1757,7 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
 #endif
     if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
         if (kPressureScenario == kPressureResetAck) {
+            runtime->reset_ack_held_ordinal = event->payload;
             runtime->reset_ack_held.store(1U, std::memory_order_release);
             runtime->pressure_phase.store(3U, std::memory_order_release);
             notify_worker(runtime);
@@ -1760,13 +1768,14 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
             if (event->sequence > UINT32_MAX) return false;
             np2audio86_sustained_freeze_reset(
                 &runtime->sustained, event->frame_timestamp,
-                static_cast<uint32_t>(event->sequence), runtime->reset_ordinal,
+                static_cast<uint32_t>(event->sequence), event->payload,
                 runtime->pcm_ring.next_frame_offset,
                 runtime->reset_applied_after_ring ? 1U : 0U,
                 runtime->reset_ack_after_ring ? 1U : 0U);
 #endif
 #endif
-            np2audio86_runtime_reset_ack_publish(&runtime->control, runtime->reset_ordinal + 1U);
+            np2audio86_runtime_reset_ack_publish(&runtime->control,
+                                                 event->payload);
             notify_producer(runtime);
         }
     }
@@ -1805,7 +1814,8 @@ void worker_task(void *opaque)
                  * indexed wait and the normal lease release has not occurred. */
                 publish_failure(runtime);
             } else if (runtime->reset_ack_held.exchange(0U, std::memory_order_acq_rel) != 0U) {
-                np2audio86_runtime_reset_ack_publish(&runtime->control, runtime->reset_ordinal + 1U);
+                np2audio86_runtime_reset_ack_publish(
+                    &runtime->control, runtime->reset_ack_held_ordinal);
                 runtime->pressure_ack_published.store(1U, std::memory_order_release);
                 runtime->pressure_released.store(1U, std::memory_order_release);
                 runtime->pressure_phase.store(4U, std::memory_order_release);
@@ -3195,6 +3205,7 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->byte_lease.store(0U, std::memory_order_relaxed);
     runtime->horizon_lease.store(0U, std::memory_order_relaxed);
     runtime->reset_ack_held.store(0U, std::memory_order_relaxed);
+    runtime->reset_ack_held_ordinal = 0U;
     runtime->pressure_resume_count.store(0U, std::memory_order_relaxed);
     runtime->pressure_index0_isolated.store(0U, std::memory_order_relaxed);
     runtime->pressure_released.store(0U, std::memory_order_relaxed);
