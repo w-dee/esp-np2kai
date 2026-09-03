@@ -227,6 +227,9 @@ void p4_nano_audio86_physical_sink_publish_wait_resume(
     struct p4_nano_audio86_physical_sink *sink,
     enum p4_nano_audio86_consumer_wait_reason reason,
     uint32_t consumer_next_sequence, uint32_t relative_us);
+void p4_nano_audio86_physical_sink_publish_runnable(
+    struct p4_nano_audio86_physical_sink *sink,
+    uint32_t consumer_next_sequence);
 size_t p4_nano_audio86_physical_sink_diagnostic_storage_bytes(void);
 
 void p4_nano_audio86_physical_sink_get_telemetry(

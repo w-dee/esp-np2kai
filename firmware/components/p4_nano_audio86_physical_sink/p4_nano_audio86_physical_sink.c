@@ -418,6 +418,20 @@ void p4_nano_audio86_physical_sink_publish_wait_resume(
                           memory_order_release);
 }
 
+void p4_nano_audio86_physical_sink_publish_runnable(
+    struct p4_nano_audio86_physical_sink *sink,
+    uint32_t consumer_next_sequence)
+{
+    if (sink == NULL ||
+        consumer_next_sequence > DIAGNOSTIC_WAIT_SEQUENCE_MASK)
+        return;
+    atomic_store_explicit(&sink->callback_gate.diagnostic.wait_context_word,
+                          diagnostic_wait_context_word(
+                              P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE,
+                              consumer_next_sequence),
+                          memory_order_release);
+}
+
 size_t p4_nano_audio86_physical_sink_diagnostic_storage_bytes(void)
 {
     return sizeof(struct p4_nano_audio86_diagnostic_publication);

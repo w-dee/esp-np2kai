@@ -964,6 +964,46 @@ static void test_final_boundary_diagnostics(void)
         start_sink(&interface);
         enter_running(&fake, &interface, pcm);
         p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 720U, 3U, 3U, false);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL,
+            0U, 450U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL &&
+               telemetry.first_qovf_ring_occupancy == 3U &&
+               telemetry.first_qovf_ring_wait_enter_count == 1U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 96000U, 400U, 0U, true);
+        p4_nano_audio86_physical_sink_publish_runnable(sink, 400U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE &&
+               telemetry.first_qovf_consumer_next_sequence == 400U &&
+               telemetry.first_qovf_next_published_sequence == 400U &&
+               telemetry.first_qovf_ring_occupancy == 0U &&
+               telemetry.first_qovf_production_done == 1U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
             sink, 96000U, 400U, 0U, true);
         p4_nano_audio86_physical_sink_publish_wait_enter(
             sink, P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL,

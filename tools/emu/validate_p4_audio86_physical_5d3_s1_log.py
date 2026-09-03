@@ -575,7 +575,10 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
                 last_wait_enter >= last_wait_resume,
                 "RETRY EOF wait tuple is impossible")
     elif wait_reason in {"PCM_RING_EMPTY_WAIT", "PCM_PREFILL_WAIT"}:
-        require(errors, ring_occupancy == 0 and
+        occupancy_matches_reason = (ring_occupancy == 0
+            if wait_reason == "PCM_RING_EMPTY_WAIT"
+            else ring_occupancy < numeric["start.prefill"])
+        require(errors, occupancy_matches_reason and production_done == 0 and
                 ring_enter == ring_resume + 1 and
                 retry_enter == retry_resume and
                 last_wait_enter >= last_wait_resume,

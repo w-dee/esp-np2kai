@@ -287,12 +287,22 @@ def main() -> int:
             base, "first_qovf_wait_reason=RUNNABLE",
             "first_qovf_wait_reason=UNKNOWN"),
         "I_retry_eof_impossible_sequence": replace_once(
-            base, "first_qovf_wait_reason=RUNNABLE",
-            "first_qovf_wait_reason=RETRY_EOF_WAIT"),
+            replace_once(base, "first_qovf_wait_reason=RUNNABLE",
+                         "first_qovf_wait_reason=RETRY_EOF_WAIT"),
+            "first_qovf_consumer_next_sequence=0",
+            "first_qovf_consumer_next_sequence=400"),
         "I_ring_empty_impossible_occupancy": replace_once(
             replace_once(base, "first_qovf_wait_reason=RUNNABLE",
                          "first_qovf_wait_reason=PCM_RING_EMPTY_WAIT"),
             "first_qovf_ring_occupancy=0", "first_qovf_ring_occupancy=1"),
+        "I_prefill_impossible_occupancy": replace_once(
+            replace_once(
+                replace_once(base, "first_qovf_wait_reason=RUNNABLE",
+                             "first_qovf_wait_reason=PCM_PREFILL_WAIT"),
+                "first_qovf_ring_occupancy=0",
+                "first_qovf_ring_occupancy=4"),
+            "first_qovf_ring_wait_enter_count=0",
+            "first_qovf_ring_wait_enter_count=1"),
         "I_q399_publish_inconsistency": replace_once(
             base, "first_qovf_q399_published=0",
             "first_qovf_q399_published=1"),
@@ -347,6 +357,23 @@ def main() -> int:
             if line.startswith("5D3_S1_") else line for line in base
         ],
     }
+    diagnostic_expectations = {
+        "I_invalid_wait_reason": "first q_ovf wait reason invalid",
+        "I_retry_eof_impossible_sequence": "RETRY EOF wait tuple is impossible",
+        "I_ring_empty_impossible_occupancy": "PCM ring wait tuple is impossible",
+        "I_prefill_impossible_occupancy": "PCM ring wait tuple is impossible",
+        "I_q399_publish_inconsistency": "q399 derived-state inconsistency",
+        "I_production_done_inconsistency":
+            "production-done publication inconsistency",
+        "I_hpwoken_exceeds_eof":
+            "higher-priority-woken count exceeds EOF notifications",
+        "I_resume_exceeds_waits": "wait resume count exceeds wait entry count",
+        "I_resume_before_enter":
+            "RUNNABLE snapshot resumes before latest wait entry",
+        "I_qovf_snapshot_missing_new_field": "field set/order mismatch",
+        "I_impossible_final_tuple": "q399 derived-state inconsistency",
+        "M_schema2_as_schema3": "schema mismatch",
+    }
     with tempfile.TemporaryDirectory(prefix="f3-validator-") as tmp:
         directory = Path(tmp)
         if run_case(directory, base):
@@ -356,8 +383,14 @@ def main() -> int:
         if not run_case(directory, base, fixture=False):
             raise AssertionError("validator fixture masqueraded as PHYSICAL_EXEC")
         for label, lines in mutations.items():
-            if not run_case(directory, lines):
+            mutation_errors = run_case(directory, lines)
+            if not mutation_errors:
                 raise AssertionError(f"mutation accepted: {label}")
+            expected = diagnostic_expectations.get(label)
+            if expected is not None and not any(
+                    expected in error for error in mutation_errors):
+                raise AssertionError(
+                    f"mutation {label} missed expected diagnostic: {expected}")
         if not run_case(directory, base, status_changes={"schema_version": 1}):
             raise AssertionError("status v1 accepted")
         if not run_case(directory, base, status_changes={"terminal_line_start_offset": 0}):

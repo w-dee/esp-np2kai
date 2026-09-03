@@ -166,6 +166,7 @@ def main() -> int:
         "retry_episode_units", "direct_running_accept_units",
         "max_downstream_submit_us", "max_post_accept_evidence_us",
         "publish_physical_wait_enter", "publish_physical_wait_resume",
+        "publish_physical_runnable",
         "publish_physical_ring_context", "first_qovf_wait_reason",
         "first_qovf_q399_rendered", "first_qovf_q399_published",
         "first_qovf_q399_available", "first_qovf_eof_notify_count",

@@ -885,6 +885,12 @@ void publish_physical_wait_resume(
         physical_diagnostic_relative_us(runtime, physical_diagnostic_now_us()));
     publish_physical_ring_context(runtime);
 }
+
+void publish_physical_runnable(Runtime *runtime, const uint32_t sequence)
+{
+    p4_nano_audio86_physical_sink_publish_runnable(
+        runtime->physical_sink, sequence);
+}
 #endif
 
 enum np2_pcm_sink_result sustained_sink_start(void *opaque)
@@ -1163,6 +1169,10 @@ void pcm_consumer_task(void *opaque)
     (void)xSemaphoreGive(runtime->pcm_ready);
     bool released = false;
     for (;;) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        publish_physical_runnable(
+            runtime, runtime->sustained.next_accepted_sequence);
+#endif
         const uint32_t occupancy = np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
         const bool production_done =
             runtime->pcm_production_done.load(std::memory_order_acquire) != 0U;
@@ -1333,6 +1343,8 @@ void pcm_consumer_task(void *opaque)
                     0U, std::memory_order_release);
             }
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            publish_physical_runnable(
+                runtime, runtime->sustained.next_accepted_sequence);
             publish_physical_ring_context(runtime);
 #endif
             notify_worker(runtime);
