@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import signal
 import time
@@ -115,6 +116,7 @@ class RawSink:
         self.fd = os.open(path, flags, 0o644)
         self.bytes_written = 0
         self.digest = hashlib.sha256()
+        self.last_byte: Optional[int] = None
         self.closed = False
 
     def write(self, data: bytes) -> None:
@@ -125,6 +127,7 @@ class RawSink:
         _write_all(self.fd, data)
         self.bytes_written += len(data)
         self.digest.update(data)
+        self.last_byte = data[-1]
         os.fdatasync(self.fd)
 
     def sync(self) -> None:
@@ -140,6 +143,11 @@ class RawSink:
     def sha256(self) -> str:
         return self.digest.hexdigest()
 
+    @property
+    def final_line_complete(self) -> bool:
+        """Describe the physical raw EOF, independently of parser state."""
+        return self.last_byte is None or self.last_byte == 0x0A
+
 
 class TerminalLineDetector:
     """Incrementally detect only complete LF/CRLF terminal lines."""
@@ -153,39 +161,63 @@ class TerminalLineDetector:
             pass_marker, fail_marker
         )
         self._line = bytearray()
+        self._line_start_offset = 0
+        self._next_raw_offset = 0
         self.terminal_marker: Optional[str] = None
+        self.terminal_line_start_offset: Optional[int] = None
+        self.terminal_line_end_offset: Optional[int] = None
 
     @property
-    def final_line_complete(self) -> bool:
-        return not self._line
+    def terminal_line_complete(self) -> bool:
+        return (
+            self.terminal_marker is not None
+            and self.terminal_line_start_offset is not None
+            and self.terminal_line_end_offset is not None
+        )
 
-    def reset_epoch(self) -> None:
+    def reset_epoch(self, raw_offset: int) -> None:
         """Discard parser-only state at the canonical reset boundary.
 
         The bytes remain in the raw artifact; setup output must not be able to
         complete or terminate a post-reset benchmark line.
         """
+        if isinstance(raw_offset, bool) or not isinstance(raw_offset, int) or raw_offset < 0:
+            raise ValueError("raw reset offset must be a non-negative integer")
         self._line.clear()
+        self._line_start_offset = raw_offset
+        self._next_raw_offset = raw_offset
         self.terminal_marker = None
+        self.terminal_line_start_offset = None
+        self.terminal_line_end_offset = None
 
-    def feed(self, data: bytes) -> Optional[str]:
+    def feed(self, data: bytes, raw_start_offset: int) -> Optional[str]:
         if self.terminal_marker is not None:
             return self.terminal_marker
+        if raw_start_offset != self._next_raw_offset:
+            raise CaptureStateError("terminal parser/raw offset discontinuity")
         self._line.extend(data)
+        self._next_raw_offset += len(data)
         while True:
             try:
                 newline = self._line.index(0x0A)
             except ValueError:
                 return None
+            line_start_offset = self._line_start_offset
+            line_end_offset = line_start_offset + newline + 1
             line = bytes(self._line[:newline])
             del self._line[: newline + 1]
+            self._line_start_offset = line_end_offset
             if line.endswith(b"\r"):
                 line = line[:-1]
             if line == self._pass_marker:
                 self.terminal_marker = "PASS"
+                self.terminal_line_start_offset = line_start_offset
+                self.terminal_line_end_offset = line_end_offset
                 return self.terminal_marker
             if line == self._fail_marker:
                 self.terminal_marker = "FAIL"
+                self.terminal_line_start_offset = line_start_offset
+                self.terminal_line_end_offset = line_end_offset
                 return self.terminal_marker
 
 
@@ -205,12 +237,16 @@ class CaptureSession:
         status_path: Path,
         *,
         hard_timeout_seconds: float = DEFAULT_HARD_TIMEOUT_SECONDS,
+        post_terminal_drain_seconds: float = DEFAULT_POST_TERMINAL_DRAIN_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         terminal_pass_marker: str | bytes = PASS_MARKER,
         terminal_fail_marker: str | bytes = FAIL_MARKER,
     ) -> None:
-        if hard_timeout_seconds <= 0:
+        if not math.isfinite(hard_timeout_seconds) or hard_timeout_seconds <= 0:
             raise ValueError("hard timeout must be positive")
+        if (not math.isfinite(post_terminal_drain_seconds) or
+                post_terminal_drain_seconds < 0):
+            raise ValueError("post-terminal drain must be finite and non-negative")
         (
             self.terminal_pass_marker,
             self.terminal_fail_marker,
@@ -220,6 +256,7 @@ class CaptureSession:
         self.raw_path = raw_path
         self.status_path = status_path
         self.hard_timeout_seconds = hard_timeout_seconds
+        self.post_terminal_drain_seconds = post_terminal_drain_seconds
         self.clock = clock
         self.state = CaptureState.PREPARED
         self.raw: Optional[RawSink] = None
@@ -261,8 +298,14 @@ class CaptureSession:
             return self.detector.terminal_marker
         # Persist before parsing.  A parser exception can therefore never
         # erase the bytes which caused it.
+        raw_start_offset = self.raw.bytes_written
         self.raw.write(data)
-        marker = self.detector.feed(data)
+        if self.terminal_marker is None:
+            marker = self.detector.feed(data, raw_start_offset)
+        else:
+            # The canonical boundary is already fixed.  Preserve all drain
+            # bytes without extending semantic parser state into the tail.
+            marker = self.detector.terminal_marker
         if (
             marker is not None
             and self.state == CaptureState.BENCHMARK_RUNNING
@@ -286,7 +329,7 @@ class CaptureSession:
         self.reset_monotonic = self.clock()
         self.reset_count = 1
         self.state = CaptureState.RESET_ISSUED
-        self.detector.reset_epoch()
+        self.detector.reset_epoch(self.raw.bytes_written)
         try:
             reset_action()
         except BaseException as error:
@@ -362,7 +405,7 @@ class CaptureSession:
         raw_bytes = self.raw.bytes_written if self.raw is not None else 0
         raw_sha = self.raw.sha256 if self.raw is not None else hashlib.sha256(b"").hexdigest()
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "raw_path": str(self.raw_path),
             "raw_bytes": raw_bytes,
             "raw_sha256": raw_sha,
@@ -373,14 +416,20 @@ class CaptureSession:
             "reset_count": self.reset_count,
             "terminal_status": self.terminal_status,
             "terminal_marker": self.terminal_marker,
+            "terminal_line_start_offset": self.detector.terminal_line_start_offset,
+            "terminal_line_end_offset": self.detector.terminal_line_end_offset,
+            "terminal_line_complete": self.detector.terminal_line_complete,
             "terminal_pass_marker_config": self.terminal_pass_marker_config,
             "terminal_fail_marker_config": self.terminal_fail_marker_config,
             "exit_reason": self.exit_reason.value if self.exit_reason else None,
             "state": self.state.value,
             "hard_timeout_seconds": self.hard_timeout_seconds,
+            "post_terminal_drain_seconds": self.post_terminal_drain_seconds,
             "idle_timeout_enabled": False,
             "serial_error": self.serial_error,
-            "final_line_complete": self.detector.final_line_complete,
+            "raw_final_line_complete": (
+                self.raw.final_line_complete if self.raw is not None else True
+            ),
         }
 
 
@@ -429,8 +478,9 @@ def run_serial_capture(
     terminal_fail_marker: str | bytes = FAIL_MARKER,
 ) -> int:
     """Run one physical capture; return zero for either observed terminal."""
-    if post_terminal_drain_seconds < 0:
-        raise ValueError("post-terminal drain must not be negative")
+    if (not math.isfinite(post_terminal_drain_seconds) or
+            post_terminal_drain_seconds < 0):
+        raise ValueError("post-terminal drain must be finite and non-negative")
     pass_bytes, fail_bytes, _, _ = validate_terminal_markers(
         terminal_pass_marker, terminal_fail_marker
     )
@@ -438,6 +488,7 @@ def run_serial_capture(
         raw_path,
         status_path,
         hard_timeout_seconds=hard_timeout_seconds,
+        post_terminal_drain_seconds=post_terminal_drain_seconds,
         terminal_pass_marker=pass_bytes,
         terminal_fail_marker=fail_bytes,
     )
@@ -582,7 +633,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    if args.hard_timeout <= 0 or args.read_timeout <= 0:
+    if (not math.isfinite(args.hard_timeout) or args.hard_timeout <= 0 or
+            not math.isfinite(args.read_timeout) or args.read_timeout <= 0):
         raise SystemExit("timeouts must be positive")
     try:
         validate_terminal_markers(args.terminal_pass_marker, args.terminal_fail_marker)

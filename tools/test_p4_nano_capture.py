@@ -73,6 +73,7 @@ def make_session(
     clock: FakeClock,
     timeout: float = 360.0,
     *,
+    post_terminal_drain: float = CAPTURE.DEFAULT_POST_TERMINAL_DRAIN_SECONDS,
     pass_marker: str | bytes = CAPTURE.PASS_MARKER,
     fail_marker: str | bytes = CAPTURE.FAIL_MARKER,
 ):
@@ -80,12 +81,26 @@ def make_session(
         root / "capture.raw",
         root / "capture.status.json",
         hard_timeout_seconds=timeout,
+        post_terminal_drain_seconds=post_terminal_drain,
         clock=clock,
         terminal_pass_marker=pass_marker,
         terminal_fail_marker=fail_marker,
     )
     session.prepare()
     return session
+
+
+def wait_for_raw_prefix(path: Path, prefix: bytes, timeout: float = 5.0) -> None:
+    """Wait until the child has armed capture and durably written its prefix."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if path.read_bytes() == prefix:
+                return
+        except FileNotFoundError:
+            pass
+        time.sleep(0.01)
+    raise AssertionError("capture child did not durably write the expected prefix")
 
 
 class CaptureHarnessTests(unittest.TestCase):
@@ -160,6 +175,65 @@ class CaptureHarnessTests(unittest.TestCase):
             self.assertEqual(status["exit_reason"], "TERMINAL_PASS")
             self.assertEqual(status["reset_count"], 1)
             self.assertEqual(status["reset_byte_offset"], len(pre_reset))
+            terminal_start = len(pre_reset) + source.index(
+                b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS"
+            )
+            self.assertEqual(status["schema_version"], 2)
+            self.assertEqual(status["terminal_line_start_offset"], terminal_start)
+            self.assertEqual(status["terminal_line_end_offset"], len(pre_reset + source))
+            self.assertTrue(status["terminal_line_complete"])
+            self.assertTrue(status["raw_final_line_complete"])
+
+    def test_terminal_offsets_are_chunk_boundary_invariant(self) -> None:
+        marker = b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS"
+        pre_reset = b"pre-reset\r\n"
+        before = b"diagnostic\r\n"
+        tail = b"post-terminal " + b"x" * 8192 + b"\r\n"
+        source = before + marker + b"\r\n" + tail
+        marker_start = len(before)
+        marker_end = marker_start + len(marker) + 2
+        variants = (
+            (source,),
+            (source[: marker_start + len(marker)],
+             source[marker_start + len(marker) :]),
+            (source[: marker_end - 1], source[marker_end - 1 :]),
+            (source[:marker_end], source[marker_end:]),
+            tuple(source[index : index + 1] for index in range(len(source))),
+        )
+        observed: set[tuple[object, ...]] = set()
+        for chunks in variants:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = make_session(root, FakeClock())
+                session.feed(pre_reset)
+                session.issue_reset(lambda: None)
+                for chunk in chunks:
+                    session.feed(chunk)
+                status = session.finish()
+                self.assertEqual((root / "capture.raw").read_bytes(), pre_reset + source)
+                observed.add((
+                    status["terminal_marker"],
+                    status["terminal_line_start_offset"],
+                    status["terminal_line_end_offset"],
+                    status["terminal_line_complete"],
+                ))
+        self.assertEqual(observed, {
+            ("PASS", len(pre_reset) + marker_start,
+             len(pre_reset) + marker_end, True),
+        })
+
+    def test_terminal_complete_is_independent_of_partial_raw_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = make_session(root, FakeClock())
+            session.issue_reset(lambda: None)
+            marker = b"P4_AUDIO_ONLY_BENCHMARK_RESULT=PASS\r\n"
+            session.feed(marker + b"partial benign tail")
+            status = session.finish()
+            self.assertTrue(status["terminal_line_complete"])
+            self.assertEqual(status["terminal_line_end_offset"], len(marker))
+            self.assertFalse(status["raw_final_line_complete"])
+            self.assertNotIn("final_line_complete", status)
 
     def test_crlf_lf_nul_ansi_and_intermediate_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -351,7 +425,10 @@ class CaptureHarnessTests(unittest.TestCase):
             self.assertEqual(raw, prefix)
             self.assertGreater(len(raw), 0)
             self.assertEqual(status["raw_sha256"], hashlib.sha256(prefix).hexdigest())
-            self.assertFalse(status["final_line_complete"])
+            self.assertFalse(status["terminal_line_complete"])
+            self.assertFalse(status["raw_final_line_complete"])
+            self.assertIsNone(status["terminal_line_start_offset"])
+            self.assertIsNone(status["terminal_line_end_offset"])
             self.assertEqual(status["exit_reason"], "HARD_TIMEOUT")
 
     def test_abrupt_source_termination_preserves_prefix(self) -> None:
@@ -375,7 +452,7 @@ class CaptureHarnessTests(unittest.TestCase):
             session.issue_reset(lambda: None)
             prefix = b"parser-prefix\x00"
 
-            def fail_parser(_data: bytes) -> None:
+            def fail_parser(_data: bytes, _raw_start_offset: int) -> None:
                 raise ValueError("synthetic parser failure")
 
             session.detector.feed = fail_parser  # type: ignore[method-assign]
@@ -437,7 +514,7 @@ class CaptureHarnessTests(unittest.TestCase):
             ])
             process = subprocess.Popen([sys.executable, "-c", code])
             try:
-                time.sleep(0.2)
+                wait_for_raw_prefix(raw, prefix)
                 process.send_signal(signal.SIGTERM)
                 self.assertEqual(process.wait(timeout=5), 2)
             finally:
@@ -472,7 +549,7 @@ class CaptureHarnessTests(unittest.TestCase):
             ])
             process = subprocess.Popen([sys.executable, "-c", code])
             try:
-                time.sleep(0.2)
+                wait_for_raw_prefix(raw, prefix)
                 process.kill()
                 process.wait(timeout=5)
             finally:
@@ -509,6 +586,12 @@ def main() -> int:
     print("P4_NANO_CAPTURE_RESET_FINAL_STATE_TEST=PASS")
     print("P4_NANO_CAPTURE_DTR_BOOTSTRAP_GUARD_TEST=PASS")
     print("P4_AUDIO_CAPTURE_CHUNK_TEST=PASS")
+    print("CAPTURE_CHUNK_BOUNDARY_INVARIANCE=PASS")
+    print("TERMINAL_BYTE_OFFSETS_RAW_RELATIVE=PASS")
+    print("CAPTURE_STATUS_V2_SEMANTICS_EXPLICIT=PASS")
+    print("TERMINAL_LINE_COMPLETE_BEFORE_CANONICAL_CLOSE=YES")
+    print("FULL_RAW_CAPTURE_PRESERVED=YES")
+    print("CAPTURE_HELPER_SEMANTIC_SCOPE=TRANSPORT_ONLY")
     print("P4_AUDIO_CAPTURE_CRLF_NUL_ANSI_TEST=PASS")
     print("P4_AUDIO_CAPTURE_INTERMEDIATE_MARKER_TEST=PASS")
     print("P4_AUDIO_CAPTURE_TERMINAL_PASS_TEST=PASS")

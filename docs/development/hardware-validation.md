@@ -223,6 +223,19 @@ parser error, and SIGTERM/SIGINT preserve the raw prefix and emit a separate
 status file where cleanup is possible; SIGKILL may leave status absent but
 already-synced raw bytes remain valid.
 
+Capture status schema v2 records raw-relative `terminal_line_start_offset` and
+`terminal_line_end_offset`; the latter is the byte immediately after the
+complete terminal LF/CRLF. The terminal bounds the canonical evidence prefix,
+not the physical UART stream: every byte already returned with the terminal
+and every byte received during the bounded drain remains in the full raw
+artifact. `terminal_line_complete` describes the matched terminal line, while
+`raw_final_line_complete` truthfully describes raw EOF. An incomplete benign
+post-terminal fragment is not by itself an acceptance failure, but the host
+validator still rejects post-terminal terminal ambiguity, authoritative S1
+records, fatal signatures, and reset/boot signatures. Status v1 is not valid
+for a new formal acceptance; missing v2 offsets may be reconstructed only for
+explicit diagnostic replay of retained evidence.
+
 The helper's control-line sequence is equivalent to the successful ESP-IDF
 Monitor hard reset: after opening, RTS and DTR are deasserted; the canonical
 reset asserts RTS for exactly 5 ms, releases RTS, and keeps DTR deasserted.

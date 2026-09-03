@@ -5,6 +5,11 @@ import argparse
 import re
 from pathlib import Path
 
+try:
+    from .p4_log_safety import FATAL_PATTERNS
+except ImportError:  # Direct script execution.
+    from p4_log_safety import FATAL_PATTERNS
+
 
 SCENARIOS = {
     "normal",
@@ -39,20 +44,6 @@ SCENARIOS = {
     "completion_recheck_reset",
 }
 EXPECTED_SHA = "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
-FATAL_PATTERNS = (
-    re.compile(r"Guru Meditation Error", re.IGNORECASE),
-    re.compile(r"panic'ed", re.IGNORECASE),
-    re.compile(r"^\s*panic\s*:", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"assert failed", re.IGNORECASE),
-    re.compile(r"abort\(\) was called", re.IGNORECASE),
-    re.compile(r"Stack (?:overflow|smashing)", re.IGNORECASE),
-    re.compile(r"(?:Task watchdog got triggered|Interrupt wdt timeout)",
-               re.IGNORECASE),
-    re.compile(r"ESP_ERROR_CHECK failed", re.IGNORECASE),
-    re.compile(r"unhandled (?:fatal )?exception", re.IGNORECASE),
-)
-
-
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"ERROR: {message}")

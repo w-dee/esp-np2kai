@@ -5,18 +5,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from validate_p4_audio86_physical_s1_log import raw_lines, validate
+
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from tools.dev import p4_nano_capture as CAPTURE  # noqa: E402
+
+
 VALIDATOR = ROOT / "tools/emu/validate_p4_audio86_physical_s1_log.py"
 GOLDEN = ROOT / "host/probe/audio86_guest_sync_pcm_golden.json"
 EXPECTED_SHA = "0123456789abcdef0123456789abcdef01234567"
 PASS_MARKER = "P4_AUDIO86_PHYSICAL_S1_TERMINAL=COMPLETE"
 FAIL_MARKER = "P4_AUDIO86_PHYSICAL_S1_TERMINAL=FAILED"
+BOOT_LINES = (
+    "I (25) boot: ESP-IDF v5.5.4 2nd stage bootloader",
+    "I (1558) main_task: Calling app_main()",
+)
 
 
 def canonical_lines() -> list[str]:
@@ -56,6 +67,7 @@ def canonical_lines() -> list[str]:
         "callback_in_flight=0 callbacks_active=0 codec_final_muted=1 "
         "pa_final_low=1 i2s_enabled=0 i2s_created=0 first_error=0 "
         "forced_abort=0 sink_destroyed=1",
+        "P4_AUDIO86_REAL_GUEST_RESULT=PASS",
         PASS_MARKER,
     ]
 
@@ -68,39 +80,164 @@ def replace_once(lines: list[str], old: str, new: str) -> list[str]:
     return changed.split("\n")
 
 
-def accepted(directory: Path, lines: list[str]) -> bool:
-    prefix = b"setup boot\r\n"
-    canonical = ("\n".join(lines) + "\n").encode("ascii")
-    raw = prefix + canonical
-    raw_path = directory / "capture.raw"
-    status_path = directory / "capture.status.json"
-    raw_path.write_bytes(raw)
-    status = {
-        "schema_version": 1,
+def capture_status_v2(raw: bytes, raw_path: Path,
+                      reset_offset: int) -> dict[str, object]:
+    pass_bytes = PASS_MARKER.encode("ascii")
+    fail_bytes = FAIL_MARKER.encode("ascii")
+    occurrences: list[tuple[int, int, str]] = []
+    for line in raw_lines(raw, reset_offset):
+        if line.complete and line.content in {pass_bytes, fail_bytes}:
+            occurrences.append((
+                line.start,
+                line.end,
+                "PASS" if line.content == pass_bytes else "FAIL",
+            ))
+    if occurrences:
+        terminal_start, terminal_end, terminal_kind = occurrences[0]
+        terminal_complete = True
+        terminal_status = terminal_kind
+        terminal_marker = terminal_kind
+        exit_reason = f"TERMINAL_{terminal_kind}"
+        state = exit_reason
+    else:
+        terminal_start = None
+        terminal_end = None
+        terminal_complete = False
+        terminal_status = "NOT_OBSERVED"
+        terminal_marker = None
+        exit_reason = "HARD_TIMEOUT"
+        state = "HARD_TIMEOUT"
+    return {
+        "schema_version": 2,
         "raw_path": str(raw_path),
         "raw_bytes": len(raw),
         "raw_sha256": hashlib.sha256(raw).hexdigest(),
-        "reset_byte_offset": len(prefix),
+        "reset_byte_offset": reset_offset,
         "reset_count": 1,
-        "terminal_status": "PASS",
-        "terminal_marker": "PASS",
+        "terminal_status": terminal_status,
+        "terminal_marker": terminal_marker,
+        "terminal_line_start_offset": terminal_start,
+        "terminal_line_end_offset": terminal_end,
+        "terminal_line_complete": terminal_complete,
         "terminal_pass_marker_config": PASS_MARKER,
         "terminal_fail_marker_config": FAIL_MARKER,
-        "exit_reason": "TERMINAL_PASS",
-        "state": "TERMINAL_PASS",
+        "exit_reason": exit_reason,
+        "state": state,
+        "post_terminal_drain_seconds": 0.5,
         "idle_timeout_enabled": False,
         "serial_error": None,
-        "final_line_complete": True,
+        "raw_final_line_complete": not raw or raw.endswith(b"\n"),
     }
+
+
+def validate_raw(
+    directory: Path,
+    raw: bytes,
+    *,
+    expected_sha: str = EXPECTED_SHA,
+    reset_offset: int = len(b"setup boot\r\n"),
+    status_overrides: dict[str, object] | None = None,
+) -> bool:
+    raw_path = directory / "capture.raw"
+    status_path = directory / "capture.status.json"
+    raw_path.write_bytes(raw)
+    status = capture_status_v2(raw, raw_path, reset_offset)
+    if status_overrides:
+        status.update(status_overrides)
     status_path.write_text(json.dumps(status), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), str(raw_path), "--status",
-         str(status_path), "--expected-source-sha", EXPECTED_SHA],
+         str(status_path), "--expected-source-sha", expected_sha],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
     )
     return result.returncode == 0
+
+
+def accepted(
+    directory: Path,
+    lines: list[str],
+    *,
+    boot_lines: tuple[str, ...] = BOOT_LINES,
+    tail: bytes = b"",
+    terminal_delimiter: bytes = b"\r\n",
+    status_overrides: dict[str, object] | None = None,
+) -> bool:
+    prefix = b"setup boot\r\n"
+    before_terminal = [*boot_lines, *lines[:-1]]
+    raw = prefix + ("\r\n".join(before_terminal) + "\r\n").encode("ascii")
+    raw += lines[-1].encode("ascii") + terminal_delimiter + tail
+    return validate_raw(
+        directory, raw, status_overrides=status_overrides
+    )
+
+
+def replay_historical_bundle(directory: Path, bundle: Path) -> list[str]:
+    """Reconstruct status v2 in a temp dir; never alter retained evidence."""
+    raw = (bundle / "s1-canonical.raw").read_bytes()
+    old_status = json.loads(
+        (bundle / "s1-canonical.status.json").read_text(encoding="utf-8")
+    )
+    source_shas = set(re.findall(rb"source_git_sha=([0-9a-f]{40})", raw))
+    if len(source_shas) != 1:
+        raise AssertionError(f"historical source SHA is ambiguous: {bundle}")
+    expected_sha = next(iter(source_shas)).decode("ascii")
+    raw_path = directory / "historical.raw"
+    status_path = directory / "historical.status.json"
+    raw_path.write_bytes(raw)
+    status = capture_status_v2(
+        raw, raw_path, int(old_status["reset_byte_offset"])
+    )
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    return validate(raw_path, status_path, expected_sha)
+
+
+def capture_chunking_matrix(directory: Path, lines: list[str]) -> bool:
+    pre_reset = b"setup boot\r\n"
+    body = ("\r\n".join((*BOOT_LINES, *lines)) + "\r\n").encode("ascii")
+    tail = b"ARBITRARY_DIAGNOSTIC key=value\r\n"
+    stream = body + tail
+    marker = PASS_MARKER.encode("ascii")
+    marker_start = stream.index(marker)
+    terminal_end = marker_start + len(marker) + 2
+    variants = (
+        (stream,),
+        (stream[:marker_start], stream[marker_start:]),
+        (stream[:terminal_end - 2], stream[terminal_end - 2:]),
+        (stream[:terminal_end - 1], stream[terminal_end - 1:]),
+        (stream[:terminal_end], stream[terminal_end:]),
+    )
+    observed: set[tuple[object, ...]] = set()
+    for index, chunks in enumerate(variants):
+        root = directory / f"capture-chunks-{index}"
+        root.mkdir()
+        raw_path = root / "capture.raw"
+        status_path = root / "capture.status.json"
+        session = CAPTURE.CaptureSession(
+            raw_path,
+            status_path,
+            terminal_pass_marker=PASS_MARKER,
+            terminal_fail_marker=FAIL_MARKER,
+        )
+        session.prepare()
+        session.feed(pre_reset)
+        session.issue_reset(lambda: None)
+        for chunk in chunks:
+            session.feed(chunk)
+        status = session.finish()
+        errors = validate(raw_path, status_path, EXPECTED_SHA)
+        if errors:
+            print(f"chunking variant rejected: {index}: {errors!r}",
+                  file=sys.stderr)
+            return False
+        observed.add((
+            status["terminal_marker"],
+            status["terminal_line_start_offset"],
+            status["terminal_line_end_offset"],
+            raw_path.read_bytes()[:status["terminal_line_end_offset"]],
+        ))
+    return len(observed) == 1
 
 
 def main() -> int:
@@ -138,7 +275,8 @@ def main() -> int:
                       canonical[1:]))
     mutations.append(("record_reorder", [canonical[1], canonical[0], *canonical[2:]]))
     mutations.append(("leading_space_record", [" " + canonical[0], *canonical[1:]]))
-    mutations.append(("terminal_not_last", [*canonical, "post-terminal diagnostic"]))
+    mutations.append(("real_guest_before_records",
+                      [canonical[-2], *canonical[:-2], canonical[-1]]))
     replacements = (
         ("source_sha_mismatch", f"source_git_sha={EXPECTED_SHA}",
          "source_git_sha=1123456789abcdef0123456789abcdef01234567"),
@@ -229,22 +367,157 @@ def main() -> int:
     ))
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
+        if not capture_chunking_matrix(directory, canonical):
+            print("capture/validator chunking integration mismatch", file=sys.stderr)
+            return 1
         for name, boundary in accepted_boundaries:
             if not accepted(directory, boundary):
                 print(f"valid S1 boundary rejected: {name}", file=sys.stderr)
                 return 1
+        accepted_tail_cases = (
+            ("terminal_raw_eof", b""),
+            ("benign_same_chunk_tail", b"I cleanup: complete\r\n"),
+            ("benign_later_chunk_tail", b"I cleanup: complete\r\n"),
+            ("non_authoritative_telemetry",
+             b"ARBITRARY_DIAGNOSTIC key=value count=7\r\n"),
+            ("incomplete_benign_tail_fragment", b"partial diagnostic"),
+        )
+        for name, tail in accepted_tail_cases:
+            if not accepted(directory, canonical, tail=tail):
+                print(f"valid terminal/tail boundary rejected: {name}",
+                      file=sys.stderr)
+                return 1
+        if not accepted(directory, canonical, terminal_delimiter=b"\n"):
+            print("valid LF terminal boundary rejected", file=sys.stderr)
+            return 1
         for name, mutated in mutations:
             if accepted(directory, mutated):
                 print(f"mutation accepted: {name}", file=sys.stderr)
                 return 1
+
+        rejected_boundary_cases = (
+            ("terminal_without_delimiter",
+             accepted(directory, canonical, terminal_delimiter=b"")),
+            ("panic_tail",
+             accepted(directory, canonical, tail=b"Guru Meditation Error\r\n")),
+            ("watchdog_tail",
+             accepted(directory, canonical,
+                      tail=b"Task watchdog got triggered\r\n")),
+            ("second_boot_tail",
+             accepted(directory, canonical,
+                      tail=b"I (25) boot: ESP-IDF v5.5.4 2nd stage bootloader\r\n")),
+            ("second_boot_inside_canonical",
+             accepted(
+                 directory,
+                 canonical,
+                 boot_lines=(*BOOT_LINES,
+                             "I (25) boot: ESP-IDF v5.5.4 2nd stage bootloader"),
+             )),
+            ("missing_canonical_boot",
+             accepted(directory, canonical, boot_lines=(BOOT_LINES[1],))),
+            ("duplicate_app_main_start",
+             accepted(directory, canonical,
+                      boot_lines=(*BOOT_LINES, BOOT_LINES[1]))),
+            ("complete_then_failed",
+             accepted(directory, canonical,
+                      tail=FAIL_MARKER.encode("ascii") + b"\r\n")),
+            ("duplicate_complete",
+             accepted(directory, canonical,
+                      tail=PASS_MARKER.encode("ascii") + b"\r\n")),
+            ("failed_only",
+             accepted(directory, [*canonical[:-1], FAIL_MARKER])),
+            ("missing_terminal", accepted(directory, canonical[:-1])),
+            ("additional_5d2",
+             accepted(directory, canonical,
+                      tail=b"5D2_S1_UNKNOWN schema=2\r\n")),
+            ("additional_real_guest_result",
+             accepted(directory, canonical,
+                      tail=b"P4_AUDIO86_REAL_GUEST_RESULT=PASS\r\n")),
+            ("post_terminal_outer_fail",
+             accepted(directory, canonical,
+                      tail=b"P4_NANO_AUDIO86_REAL_GUEST_STATUS=FAIL\r\n")),
+            ("forged_terminal_offset",
+             accepted(directory, canonical,
+                      status_overrides={"terminal_line_start_offset": 0})),
+            ("forged_terminal_end_offset",
+             accepted(directory, canonical,
+                      status_overrides={"terminal_line_end_offset": 0})),
+            ("terminal_type_metadata_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"terminal_marker": "FAIL"})),
+            ("terminal_completion_metadata_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"terminal_line_complete": False})),
+            ("reset_count_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"reset_count": 2})),
+            ("raw_byte_count_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"raw_bytes": 0})),
+            ("raw_hash_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"raw_sha256": "0" * 64})),
+            ("raw_final_line_metadata_mismatch",
+             accepted(directory, canonical,
+                      status_overrides={"raw_final_line_complete": False})),
+            ("short_post_terminal_drain",
+             accepted(directory, canonical,
+                      status_overrides={"post_terminal_drain_seconds": 0.49})),
+            ("status_v1_rejected",
+             accepted(directory, canonical,
+                      status_overrides={"schema_version": 1})),
+        )
+        for name, was_accepted in rejected_boundary_cases:
+            if was_accepted:
+                print(f"terminal boundary mutation accepted: {name}",
+                      file=sys.stderr)
+                return 1
+
+        first_errors = replay_historical_bundle(
+            directory, ROOT / "docs/work/p4-audio86-s1-hw-20260903-19de7a51"
+        )
+        second_errors = replay_historical_bundle(
+            directory,
+            ROOT / "docs/work/p4-audio86-s1-rerun-r4-20260903-043f506a",
+        )
+        third_errors = replay_historical_bundle(
+            directory,
+            ROOT / "docs/work/p4-audio86-s1-r6-20260903-d8f4106d",
+        )
+        if not first_errors or "FAILED terminal line present" not in first_errors:
+            print("first historical failure was not preserved", file=sys.stderr)
+            return 1
+        if not second_errors or "FAILED terminal line present" not in second_errors:
+            print("second historical failure was not preserved", file=sys.stderr)
+            return 1
+        if third_errors:
+            print(f"R6 diagnostic replay rejected: {third_errors!r}", file=sys.stderr)
+            return 1
     print("S1_DRAIN_Q_OVF_ACCEPTANCE_BOUNDARY_TEST=PASS "
           "accepted=drain4_quiescent4,5,6 rejected=qovf7_quiescent6")
     print("S1_Q_OVF_INTERVAL_CHANGE_SENSITIVITY=PASS")
     print("S1_FINISH_RECORD_SCHEMA_VERSIONING=PASS schema=2 old_schema=REJECTED")
     print("S1_VALIDATOR_DRAIN_Q_OVF_RULE_SEMANTIC=PASS")
-    print(f"S1_PHYSICAL_VALIDATOR_MUTATIONS={len(mutations)}_ALL_REJECTED")
+    print("S1_PHYSICAL_VALIDATOR_MUTATIONS=ALL_REJECTED")
     print("S1_PHYSICAL_VALIDATOR_CHANGE_SENSITIVITY=PASS")
     print("S1_TERMINAL_COMPLETE_ACCEPTANCE_AUTHORITY=NO")
+    print("CAPTURE_TERMINAL_BOUNDARY_MATRIX=PASS")
+    print("RAW_CANONICAL_TAIL_BOUNDARY_MODEL=PASS")
+    print("POST_TERMINAL_TAIL_POLICY=STRUCTURAL_FAIL_CLOSED")
+    print("MULTIPLE_TERMINAL_POLICY=EXACTLY_ONE_COMPLETE_FOR_SUCCESS")
+    print("FAILED_TERMINAL_REMAINS_FAILURE=PASS")
+    print("POST_TERMINAL_RESET_DETECTION_PRESERVED=PASS")
+    print("POST_TERMINAL_FATAL_DETECTION_PRESERVED=PASS")
+    print("S1_VALIDATOR_USES_TERMINAL_BOUNDED_CANONICAL_PREFIX=PASS")
+    print("S1_VALIDATOR_TAIL_VALIDATED_SEPARATELY=PASS")
+    print("CAPTURE_STATUS_RAW_BIJECTION=PASS")
+    print("CAPTURE_VALIDATOR_RESPONSIBILITY_SPLIT=PASS")
+    print("RAW_TAIL_FINAL_FRAGMENT_POLICY=PERMIT_NONAUTHORITATIVE_FRAGMENT")
+    print("CAPTURE_STATUS_V1_COMPATIBILITY_POLICY=DIAGNOSTIC_RECONSTRUCTION_ONLY")
+    print("R6_CAPTURE_COUNTERFACTUAL_REVALIDATION=PASS_DIAGNOSTIC_ONLY")
+    print("FIRST_HISTORICAL_RESULT_PRESERVED=PASS")
+    print("SECOND_HISTORICAL_RESULT_PRESERVED=PASS")
+    print("THIRD_HISTORICAL_RESULT_PRESERVED=PASS")
     return 0
 
 
