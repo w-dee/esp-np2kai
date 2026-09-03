@@ -67,6 +67,13 @@ BRESULT iocore_build(void);
     !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 #error "terminal post-PCM producer failure test requires sustained profile"
 #endif
+#ifndef P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST
+#define P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST 0
+#endif
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0 && \
+    !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+#error "terminal publication test requires sustained profile"
+#endif
 
 namespace p4_nano_audio86_guest_binding {
 namespace {
@@ -424,12 +431,41 @@ struct Runtime {
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     /* Producer-owned until the terminal mailbox release publication. */
     bool terminal_horizon_armed = false;
+    /* Producer-owned transaction state.  The final RESET event is already
+     * release-visible while this is true, but its ordinary event-side wake is
+     * deferred until the matching terminal mailbox is release-visible. */
+    bool terminal_reset_notify_deferred = false;
+    uint32_t terminal_reset_transaction_ordinal = 0U;
+    /* Fail-safe worker authority for the sole case where the RESET head is
+     * visible but the matching terminal mailbox publication cannot complete. */
+    std::atomic<uint32_t> terminal_reset_publication_failed_ordinal{0U};
     /* Worker-owned; read only after task join outside the worker. */
     uint32_t terminal_reset_applied_ordinal = 0U;
     std::atomic<uint32_t> terminal_horizon_published{0U};
     std::atomic<uint32_t> terminal_horizon_observed{0U};
     std::atomic<uint32_t> terminal_pcm_ready{0U};
     std::atomic<uint32_t> terminal_pcm_before_guest_done{0U};
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    std::atomic<uint32_t> terminal_test_worker_hold{0U};
+    std::atomic<uint32_t> terminal_test_worker_hold_ack{0U};
+    std::atomic<uint32_t> terminal_test_phase{0U};
+    std::atomic<uint32_t> terminal_test_worker_notify_count{0U};
+    std::atomic<uint32_t> terminal_test_q398_accepted{0U};
+    std::atomic<uint32_t> terminal_test_q399_ring_visible{0U};
+    std::atomic<uint32_t> terminal_test_q399_accepted{0U};
+    uint32_t terminal_test_notify_before_event = 0U;
+    uint32_t terminal_test_notify_after_event = 0U;
+    uint32_t terminal_test_event_before_terminal = 0U;
+    uint32_t terminal_test_terminal_absent_before_release = 0U;
+    uint32_t terminal_test_pre_ack_state = 0U;
+    uint32_t terminal_test_worker_observed_pair = 0U;
+    uint32_t terminal_test_reset_before_remainder = 0U;
+    uint32_t terminal_test_retained_until_pcm_done = 0U;
+    uint32_t terminal_test_q399_before_producer_continuation = 0U;
+    uint32_t terminal_test_partial_failure_event_visible = 0U;
+    uint32_t terminal_test_partial_failure_wake_issued = 0U;
+    uint32_t terminal_test_deadline_virtual_gap_ms = UINT32_MAX;
+#endif
 #endif
     uint64_t next_sequence = 0U;
     uint32_t reset_ordinal = 0U;
@@ -513,6 +549,11 @@ void notify_producer(Runtime *runtime)
 
 void notify_worker(Runtime *runtime)
 {
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    if (runtime != nullptr)
+        runtime->terminal_test_worker_notify_count.fetch_add(
+            1U, std::memory_order_relaxed);
+#endif
     if (runtime->worker != nullptr)
         (void)p4_nano_audio86_notifications::notify_worker(runtime->worker);
 }
@@ -994,6 +1035,16 @@ enum np2_pcm_sink_result sustained_sink_submit(
             &runtime->sustained, evidence_result, view->sequence,
             view->frame_offset, view->pcm, view->valid_frames, running,
             evidence_started_us / 1000U);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    if (evidence_status == 0 && result == NP2_PCM_SINK_ACCEPTED) {
+        if (view->sequence == kExpectedPcmSlots - 2U)
+            runtime->terminal_test_q398_accepted.store(
+                1U, std::memory_order_release);
+        if (view->sequence == kExpectedPcmSlots - 1U)
+            runtime->terminal_test_q399_accepted.store(
+                1U, std::memory_order_release);
+    }
+#endif
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
     const uint64_t evidence_completed_us = physical_diagnostic_now_us();
     if (result == NP2_PCM_SINK_ACCEPTED && running) {
@@ -1839,6 +1890,30 @@ void commit_event(void *opaque, np2audio86_guest_transaction_t *token,
     const np2audio86_event event{guest->frame_timestamp, guest->sequence,
                                   opcode, guest->payload};
     const bool reset = opcode == NP2_AUDIO86_EVENT_RESET_BARRIER;
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    const bool terminal_reset_test = reset && runtime->terminal_horizon_armed;
+    if (terminal_reset_test) {
+        /* Test-only rendezvous: park the real worker before publishing the
+         * final event, so the producer can inspect both release boundaries
+         * without consuming either production transport object. */
+        runtime->terminal_test_worker_hold.store(1U,
+                                                  std::memory_order_release);
+        notify_worker(runtime);
+        const TickType_t start = xTaskGetTickCount();
+        while (runtime->terminal_test_worker_hold_ack.load(
+                   std::memory_order_acquire) == 0U &&
+               xTaskGetTickCount() - start < kTimeout)
+            vTaskDelay(1U);
+        if (runtime->terminal_test_worker_hold_ack.load(
+                std::memory_order_acquire) == 0U) {
+            fail(runtime, kErrorTransport);
+            return;
+        }
+        runtime->terminal_test_notify_before_event =
+            runtime->terminal_test_worker_notify_count.load(
+                std::memory_order_acquire);
+    }
+#endif
     const int enqueue = reset
         ? np2audio86_reset_event_ring_enqueue(
               &runtime->events, &event, &runtime->reset_ordinal)
@@ -1849,6 +1924,36 @@ void commit_event(void *opaque, np2audio86_guest_transaction_t *token,
     runtime->reserved_events = 0U;
     runtime->event_committed = true;
     ++runtime->next_sequence;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    const bool defer_worker_notify = reset && runtime->terminal_horizon_armed;
+    if (defer_worker_notify) {
+        /* np2audio86_reset_event_ring_enqueue() freezes the ordinal in the
+         * event payload before publishing the ring head.  Preserve that same
+         * transaction-owned identity for the following terminal mailbox. */
+        runtime->terminal_reset_notify_deferred = true;
+        runtime->terminal_reset_transaction_ordinal = runtime->reset_ordinal;
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+        const np2audio86_event *published_event = nullptr;
+        runtime->terminal_test_phase.store(1U, std::memory_order_release);
+        vTaskDelay(1U); /* force a scheduling opportunity in the R9 window */
+        runtime->terminal_test_notify_after_event =
+            runtime->terminal_test_worker_notify_count.load(
+                std::memory_order_acquire);
+        runtime->terminal_test_event_before_terminal =
+            np2audio86_event_ring_peek(&runtime->events, &published_event) ==
+                    NP2_AUDIO86_TRANSPORT_OK &&
+                published_event != nullptr &&
+                published_event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+                published_event->payload ==
+                    runtime->terminal_reset_transaction_ordinal
+                ? 1U
+                : 0U;
+        runtime->terminal_test_terminal_absent_before_release =
+            !np2audio86_runtime_horizon_pending(&runtime->control) ? 1U : 0U;
+#endif
+    }
+    if (!defer_worker_notify)
+#endif
     notify_worker(runtime);
 }
 
@@ -1865,25 +1970,108 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
     const bool reset = runtime->transaction_kind == NP2AUDIO86_GUEST_TRANSACTION_RESET;
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     const bool terminal = reset && runtime->terminal_horizon_armed;
+    const uint32_t terminal_reset_ordinal =
+        runtime->terminal_reset_transaction_ordinal;
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST == 2
+    const int publish_status = terminal
+        ? NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT
+        : np2audio86_runtime_horizon_publish(
+              &runtime->control, &runtime->producer_clock, frame);
+#else
     const int publish_status = terminal
         ? ((frame == kSustainedTerminalResetFrame &&
-            runtime->reset_ordinal != 0U)
+            runtime->terminal_reset_notify_deferred &&
+            terminal_reset_ordinal != 0U)
                ? np2audio86_runtime_terminal_horizon_publish(
                      &runtime->control, &runtime->producer_clock,
-                     kRenderFrames, kRenderFrames, runtime->reset_ordinal)
+                     kRenderFrames, kRenderFrames, terminal_reset_ordinal)
                : NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT)
         : np2audio86_runtime_horizon_publish(
               &runtime->control, &runtime->producer_clock, frame);
+#endif
 #else
     const int publish_status = np2audio86_runtime_horizon_publish(
         &runtime->control, &runtime->producer_clock, frame);
 #endif
     if (publish_status != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (terminal && runtime->terminal_reset_notify_deferred) {
+            /* The RESET ring head cannot be rolled back.  Close producer-only
+             * ownership, latch the failure, and issue a wake even if another
+             * failure won the first-error race so visible work is never
+             * stranded behind the deferred hint. */
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+            const np2audio86_event *published_event = nullptr;
+            runtime->terminal_test_partial_failure_event_visible =
+                np2audio86_event_ring_peek(&runtime->events,
+                                            &published_event) ==
+                        NP2_AUDIO86_TRANSPORT_OK &&
+                    published_event != nullptr &&
+                    published_event->opcode ==
+                        NP2_AUDIO86_EVENT_RESET_BARRIER
+                    ? 1U
+                    : 0U;
+            runtime->terminal_test_worker_hold.store(
+                0U, std::memory_order_release);
+#endif
+            runtime->transaction_active = false;
+            runtime->horizon_owned = false;
+            runtime->transaction_kind = 0U;
+            runtime->event_committed = false;
+            runtime->run_committed = false;
+            runtime->terminal_horizon_armed = false;
+            runtime->terminal_reset_publication_failed_ordinal.store(
+                terminal_reset_ordinal, std::memory_order_release);
+            runtime->terminal_reset_notify_deferred = false;
+            runtime->terminal_reset_transaction_ordinal = 0U;
+            fail(runtime, kErrorTransport);
+            notify_worker(runtime);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+            runtime->terminal_test_partial_failure_wake_issued = 1U;
+            runtime->terminal_test_phase.store(4U,
+                                                std::memory_order_release);
+#endif
+            return;
+        }
+#endif
         fail(runtime, kErrorTransport); return;
     }
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     if (terminal) {
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+        const np2audio86_event *published_event = nullptr;
+        const bool event_visible =
+            np2audio86_event_ring_peek(&runtime->events, &published_event) ==
+                NP2_AUDIO86_TRANSPORT_OK &&
+            published_event != nullptr &&
+            published_event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+            published_event->frame_timestamp == kSustainedTerminalResetFrame &&
+            published_event->payload == terminal_reset_ordinal;
+        const bool terminal_visible =
+            runtime->control.horizon.horizon_state.load(
+                std::memory_order_acquire) ==
+                NP2_AUDIO86_RUNTIME_HORIZON_FULL &&
+            runtime->control.horizon.horizon_frame_lo ==
+                static_cast<uint32_t>(kRenderFrames) &&
+            runtime->control.horizon.horizon_frame_hi == 0U &&
+            runtime->control.horizon.horizon_flags ==
+                NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL &&
+            runtime->control.horizon.terminal_reset_ordinal ==
+                terminal_reset_ordinal &&
+            runtime->producer_clock.terminal_published_owner == 1U;
+        runtime->terminal_test_pre_ack_state =
+            event_visible && terminal_visible &&
+                np2audio86_runtime_reset_ack(&runtime->control) == 0U &&
+                runtime->producer_done.load(std::memory_order_acquire) == 0U
+                ? 1U
+                : 0U;
+        runtime->terminal_test_phase.store(2U, std::memory_order_release);
+        runtime->terminal_test_worker_hold.store(0U,
+                                                  std::memory_order_release);
+#endif
         runtime->terminal_horizon_armed = false;
+        runtime->terminal_reset_notify_deferred = false;
+        runtime->terminal_reset_transaction_ordinal = 0U;
         runtime->terminal_horizon_published.store(1U,
                                                    std::memory_order_release);
     }
@@ -1929,6 +2117,21 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
                 runtime->producer_waiting.store(0U,
                                                 std::memory_order_release);
             }
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+            runtime->terminal_test_q399_before_producer_continuation =
+                runtime->terminal_pcm_ready.load(std::memory_order_acquire) !=
+                        0U &&
+                    runtime->producer_done.load(std::memory_order_acquire) ==
+                        0U &&
+                    runtime->rendered_frame_published.load(
+                        std::memory_order_acquire) == kRenderFrames &&
+                    runtime->terminal_test_q399_ring_visible.load(
+                        std::memory_order_acquire) != 0U &&
+                    runtime->pcm_production_done.load(
+                        std::memory_order_acquire) != 0U
+                    ? 1U
+                    : 0U;
+#endif
         }
 #endif
         if (kPressureScenario == kPressureResetAck) {
@@ -1989,6 +2192,17 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
         runtime->rendered_frame_published.store(runtime->rendered_frame,
                                                 std::memory_order_release);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+        if (runtime->rendered_frame == kRenderFrames &&
+            runtime->sustained.next_generated_sequence == kExpectedPcmSlots) {
+            runtime->terminal_test_q399_ring_visible.store(
+                1U, std::memory_order_release);
+            if (runtime->terminal_test_q398_accepted.load(
+                    std::memory_order_acquire) != 0U)
+                runtime->terminal_test_deadline_virtual_gap_ms =
+                    NP2_AUDIO86_SUSTAINED_QUANTUM_MS;
+        }
+#endif
 #endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         if (kPcmS2PartialLifecycle &&
@@ -2120,8 +2334,13 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
         NP2_AUDIO86_TRANSPORT_OK)
         return false;
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
-    if (reset_event)
+    if (reset_event) {
         runtime->terminal_reset_applied_ordinal = reset_event_ordinal;
+        if (runtime->terminal_reset_publication_failed_ordinal.load(
+                std::memory_order_acquire) == reset_event_ordinal)
+            runtime->terminal_reset_publication_failed_ordinal.store(
+                0U, std::memory_order_release);
+    }
 #endif
     return true;
 }
@@ -2156,6 +2375,15 @@ void worker_task(void *opaque)
     uint32_t terminal_reset_ordinal = 0U;
 #endif
     for (;;) {
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+        if (runtime->terminal_test_worker_hold.load(
+                std::memory_order_acquire) != 0U) {
+            runtime->terminal_test_worker_hold_ack.store(
+                1U, std::memory_order_release);
+            (void)p4_nano_audio86_notifications::wait_worker();
+            continue;
+        }
+#endif
         /* The Core 0 worker is the smallest profile-only controller: it never
          * creates guest records; it releases only a controller-owned lease
          * after the real Core 1 producer has entered its indexed wait. */
@@ -2214,6 +2442,15 @@ void worker_task(void *opaque)
                         horizon_observation.terminal_reset_ordinal;
                     runtime->terminal_horizon_observed.store(
                         1U, std::memory_order_release);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+                    runtime->terminal_test_worker_observed_pair =
+                        peek == NP2_AUDIO86_TRANSPORT_OK && event != nullptr &&
+                                event->opcode ==
+                                    NP2_AUDIO86_EVENT_RESET_BARRIER &&
+                                event->payload == terminal_reset_ordinal
+                            ? 1U
+                            : 0U;
+#endif
                 }
             } else if (horizon_observation.flags !=
                            NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE ||
@@ -2227,8 +2464,22 @@ void worker_task(void *opaque)
 #endif
             notify_producer(runtime);
         }
+        const bool terminal_reset_failure_recovery =
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+            failed(runtime) && peek == NP2_AUDIO86_TRANSPORT_OK &&
+            event != nullptr &&
+            event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+            event->payload != 0U &&
+            event->payload ==
+                runtime->terminal_reset_publication_failed_ordinal.load(
+                    std::memory_order_acquire);
+#else
+            false;
+#endif
         if (peek == NP2_AUDIO86_TRANSPORT_OK && event != nullptr &&
-            event->frame_timestamp <= runtime->consumer_clock.committed_frame_reconstructed) {
+            (event->frame_timestamp <=
+                 runtime->consumer_clock.committed_frame_reconstructed ||
+             terminal_reset_failure_recovery)) {
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
             /* The register write immediately preceding RESET shares its
              * timestamp.  Do not enter the full-ring cutpoint until the real
@@ -2241,6 +2492,13 @@ void worker_task(void *opaque)
                 (void)p4_nano_audio86_notifications::wait_worker();
                 continue;
             }
+#endif
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+            const bool terminal_reset_event =
+                event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+                terminal_horizon_observed;
+            const uint64_t before_terminal_reset_frame =
+                runtime->rendered_frame;
 #endif
             if (!apply_event(runtime, event)) {
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
@@ -2281,6 +2539,18 @@ void worker_task(void *opaque)
                 }
                 break;
             }
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+            if (terminal_reset_event)
+                runtime->terminal_test_reset_before_remainder =
+                    before_terminal_reset_frame <=
+                                kSustainedTerminalResetFrame &&
+                            runtime->rendered_frame ==
+                                kSustainedTerminalResetFrame &&
+                            runtime->terminal_reset_applied_ordinal ==
+                                terminal_reset_ordinal
+                        ? 1U
+                        : 0U;
+#endif
             notify_producer(runtime);
             continue;
         }
@@ -2317,6 +2587,21 @@ void worker_task(void *opaque)
                     std::memory_order_release);
                 runtime->terminal_pcm_ready.store(1U,
                                                    std::memory_order_release);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+                runtime->terminal_test_retained_until_pcm_done =
+                    terminal_horizon_observed &&
+                            terminal_reset_ordinal ==
+                                runtime->terminal_reset_applied_ordinal &&
+                            runtime->rendered_frame == terminal_horizon &&
+                            runtime->terminal_test_q399_ring_visible.load(
+                                std::memory_order_acquire) != 0U &&
+                            runtime->pcm_production_done.load(
+                                std::memory_order_acquire) != 0U
+                        ? 1U
+                        : 0U;
+                runtime->terminal_test_phase.store(3U,
+                                                    std::memory_order_release);
+#endif
                 notify_producer(runtime);
                 continue;
             }
@@ -4183,6 +4468,10 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->consumer_clock = {};
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     runtime->terminal_horizon_armed = false;
+    runtime->terminal_reset_notify_deferred = false;
+    runtime->terminal_reset_transaction_ordinal = 0U;
+    runtime->terminal_reset_publication_failed_ordinal.store(
+        0U, std::memory_order_relaxed);
     runtime->terminal_reset_applied_ordinal = 0U;
     runtime->terminal_horizon_published.store(0U,
                                                std::memory_order_relaxed);
@@ -4191,6 +4480,33 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->terminal_pcm_ready.store(0U, std::memory_order_relaxed);
     runtime->terminal_pcm_before_guest_done.store(
         0U, std::memory_order_relaxed);
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    runtime->terminal_test_worker_hold.store(0U,
+                                              std::memory_order_relaxed);
+    runtime->terminal_test_worker_hold_ack.store(0U,
+                                                  std::memory_order_relaxed);
+    runtime->terminal_test_phase.store(0U, std::memory_order_relaxed);
+    runtime->terminal_test_worker_notify_count.store(
+        0U, std::memory_order_relaxed);
+    runtime->terminal_test_q398_accepted.store(0U,
+                                               std::memory_order_relaxed);
+    runtime->terminal_test_q399_ring_visible.store(
+        0U, std::memory_order_relaxed);
+    runtime->terminal_test_q399_accepted.store(0U,
+                                               std::memory_order_relaxed);
+    runtime->terminal_test_notify_before_event = 0U;
+    runtime->terminal_test_notify_after_event = 0U;
+    runtime->terminal_test_event_before_terminal = 0U;
+    runtime->terminal_test_terminal_absent_before_release = 0U;
+    runtime->terminal_test_pre_ack_state = 0U;
+    runtime->terminal_test_worker_observed_pair = 0U;
+    runtime->terminal_test_reset_before_remainder = 0U;
+    runtime->terminal_test_retained_until_pcm_done = 0U;
+    runtime->terminal_test_q399_before_producer_continuation = 0U;
+    runtime->terminal_test_partial_failure_event_visible = 0U;
+    runtime->terminal_test_partial_failure_wake_issued = 0U;
+    runtime->terminal_test_deadline_virtual_gap_ms = UINT32_MAX;
+#endif
 #endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     np2opngen_pcm_ring_init(&runtime->pcm_ring);
@@ -4543,6 +4859,28 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     }
 #endif
 #endif
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST == 1
+    const bool terminal_publication_test_ok =
+        runtime->terminal_test_notify_before_event ==
+            runtime->terminal_test_notify_after_event &&
+        runtime->terminal_test_event_before_terminal == 1U &&
+        runtime->terminal_test_terminal_absent_before_release == 1U &&
+        runtime->terminal_test_pre_ack_state == 1U &&
+        runtime->terminal_test_worker_observed_pair == 1U &&
+        runtime->terminal_test_reset_before_remainder == 1U &&
+        runtime->terminal_test_retained_until_pcm_done == 1U &&
+        runtime->terminal_test_q399_before_producer_continuation == 1U &&
+        runtime->terminal_test_q398_accepted.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->terminal_test_q399_ring_visible.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->terminal_test_q399_accepted.load(
+            std::memory_order_acquire) == 1U &&
+        runtime->terminal_test_deadline_virtual_gap_ms < 20U &&
+        runtime->terminal_test_phase.load(std::memory_order_acquire) == 3U;
+#else
+    const bool terminal_publication_test_ok = true;
+#endif
     const bool pressure_ok = kPressureScenario == kPressureNone ||
         (runtime->pressure_phase.load(std::memory_order_acquire) == 5U &&
          runtime->pressure_resume_count.load(std::memory_order_acquire) == 1U &&
@@ -4558,7 +4896,8 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
           runtime->pressure_index0_isolated.load(std::memory_order_acquire) != 0U) &&
          (kPressureScenario != kPressureResetAck ||
           runtime->pressure_ack_published.load(std::memory_order_acquire) != 0U));
-    const bool common_ok = guest_ok && joined && pcm_joined && pressure_ok && !failed(runtime) &&
+    const bool common_ok = guest_ok && joined && pcm_joined && pressure_ok &&
+                    terminal_publication_test_ok && !failed(runtime) &&
                     np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
                     np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
                     !np2audio86_runtime_horizon_pending(&runtime->control)
@@ -4984,6 +5323,67 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
 #endif
     if (kPressureScenario != kPressureNone && pressure_ok)
         runtime->pressure_phase.store(6U, std::memory_order_release); /* COMPLETE */
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST != 0
+    const bool terminal_test_success =
+#if P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST == 1
+        ok && terminal_publication_test_ok;
+#else
+        !ok &&
+        runtime->terminal_test_partial_failure_event_visible == 1U &&
+        runtime->terminal_test_partial_failure_wake_issued == 1U &&
+        runtime->terminal_test_phase.load(std::memory_order_acquire) == 4U &&
+        runtime->first_error.load(std::memory_order_acquire) ==
+            kErrorTransport &&
+        !runtime->transaction_active && !runtime->horizon_owned &&
+        !runtime->terminal_horizon_armed &&
+        !runtime->terminal_reset_notify_deferred &&
+        runtime->terminal_reset_transaction_ordinal == 0U &&
+        runtime->terminal_reset_publication_failed_ordinal.load(
+            std::memory_order_acquire) == 0U &&
+        np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
+        np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
+        !np2audio86_runtime_horizon_pending(&runtime->control) &&
+        runtime->producer_done.load(std::memory_order_acquire) == 1U;
+#endif
+    std::printf(
+        "P4_AUDIO86_TERMINAL_PUBLICATION_TEST mode=%u"
+        " actual_path=HLT_BOARD86_RESET_ADAPTER_BINDING_WORKER_RING_CONTROLLER"
+        " hold_ack=%" PRIu32 " event_visible=%" PRIu32
+        " terminal_absent_before_release=%" PRIu32
+        " notify_before_event=%" PRIu32 " notify_after_event=%" PRIu32
+        " pre_ack_pair=%" PRIu32 " worker_pair=%" PRIu32
+        " reset_before_remainder=%" PRIu32 " retained=%" PRIu32
+        " q399_before_continuation=%" PRIu32
+        " q398_accepted=%" PRIu32 " q399_visible=%" PRIu32
+        " q399_accepted=%" PRIu32 " virtual_gap_ms=%" PRIu32
+        " service_horizon_ms=20 partial_event=%" PRIu32
+        " partial_wake=%" PRIu32 " producer_done=%" PRIu32
+        " transport_residual=%" PRIu32 " first_error=%" PRIu32
+        " result=%s\n",
+        P4_NANO_AUDIO86_TERMINAL_PUBLICATION_TEST,
+        runtime->terminal_test_worker_hold_ack.load(),
+        runtime->terminal_test_event_before_terminal,
+        runtime->terminal_test_terminal_absent_before_release,
+        runtime->terminal_test_notify_before_event,
+        runtime->terminal_test_notify_after_event,
+        runtime->terminal_test_pre_ack_state,
+        runtime->terminal_test_worker_observed_pair,
+        runtime->terminal_test_reset_before_remainder,
+        runtime->terminal_test_retained_until_pcm_done,
+        runtime->terminal_test_q399_before_producer_continuation,
+        runtime->terminal_test_q398_accepted.load(),
+        runtime->terminal_test_q399_ring_visible.load(),
+        runtime->terminal_test_q399_accepted.load(),
+        runtime->terminal_test_deadline_virtual_gap_ms,
+        runtime->terminal_test_partial_failure_event_visible,
+        runtime->terminal_test_partial_failure_wake_issued,
+        runtime->producer_done.load(),
+        np2audio86_event_ring_occupancy(&runtime->events) +
+            np2audio86_byte_ring_occupancy(&runtime->bytes) +
+            (np2audio86_runtime_horizon_pending(&runtime->control) ? 1U : 0U),
+        runtime->first_error.load(),
+        terminal_test_success ? "PASS" : "FAIL");
+#endif
     emit_summary(runtime, ok);
     return ok ? ESP_OK : ESP_FAIL;
 }
