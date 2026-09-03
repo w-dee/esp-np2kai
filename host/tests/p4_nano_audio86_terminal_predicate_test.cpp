@@ -41,6 +41,7 @@ struct VirtualObserver {
 
 PhysicalSnapshot healthy_snapshot()
 {
+    /* Predicate projection of the retained second schema=2 physical run. */
     PhysicalSnapshot snapshot{};
     snapshot.captured = true;
     snapshot.sink_destroyed = 1U;
@@ -57,9 +58,9 @@ PhysicalSnapshot healthy_snapshot()
     snapshot.sink.physically_drained_frames = kExpectedFrames;
     snapshot.sink.physically_discarded_accepted_frames = 0U;
     snapshot.sink.running_queue_overflow_count = 0U;
-    snapshot.sink.drain_snapshot_epoch = UINT32_MAX - 1U;
-    snapshot.sink.drain_completion_epoch = 2U;
-    snapshot.sink.quiescent_eof_epoch = 2U;
+    snapshot.sink.drain_snapshot_epoch = 0U;
+    snapshot.sink.drain_completion_epoch = 4U;
+    snapshot.sink.quiescent_eof_epoch = 4U;
     snapshot.sink.draining_queue_overflow_count = 4U;
     snapshot.sink.sticky_error = false;
     snapshot.sink.callback_refcount = 0U;
