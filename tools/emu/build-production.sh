@@ -1042,7 +1042,7 @@ if [[ "${transform_opt}" == "o2" ]] && (( ! transform_profile )); then
 fi
 
 repository_git_sha="$(git -C "${REPOSITORY_ROOT}" rev-parse --verify 'HEAD^{commit}')"
-if (( audio86_physical_short )); then
+if (( audio86_physical_i2s )); then
     repository_git_sha="$(
         "${SCRIPT_DIR}/resolve-clean-source-git-sha.sh" "${REPOSITORY_ROOT}"
     )"
@@ -1572,12 +1572,12 @@ idf.py "${cmake_args[@]}" reconfigure
 check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
 idf.py "${cmake_args[@]}" build
 check_firmware_sdkconfig "${SDKCONFIG_PATH}" "${variant}" "${board}"
-if (( audio86_physical_short )); then
+if (( audio86_physical_i2s )); then
     post_build_git_sha="$(
         "${SCRIPT_DIR}/resolve-clean-source-git-sha.sh" "${REPOSITORY_ROOT}"
     )"
     if [[ "${post_build_git_sha}" != "${REPOSITORY_GIT_SHA}" ]]; then
-        printf 'ERROR: physical S1 source HEAD changed during build\n' >&2
+        printf 'ERROR: physical Audio 86 source HEAD changed during build\n' >&2
         exit 1
     fi
 fi

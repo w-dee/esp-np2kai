@@ -141,10 +141,17 @@ def main() -> int:
     )
     require(
         build.count('"${SCRIPT_DIR}/resolve-clean-source-git-sha.sh"') == 2 and
+        build.splitlines().count("if (( audio86_physical_i2s )); then") == 2 and
         'post_build_git_sha' in build and
         '"${post_build_git_sha}" != "${REPOSITORY_GIT_SHA}"' in build,
-        "physical-short build does not enforce clean provenance before and "
+        "physical Audio 86 builds do not enforce clean provenance before and "
         "after the build",
+    )
+    require(
+        "physical Audio 86 evidence requires P4_AUDIO86_GIT_SHA" in
+        binding_cmake and
+        'P4_AUDIO86_GIT_SHA="${P4_AUDIO86_GIT_SHA}"' in binding_cmake,
+        "full/short physical source identity is not build-bound",
     )
     for command in (
         "ls-files -v -z",
@@ -194,6 +201,13 @@ def main() -> int:
             golden["PRE_RESET_PCM_SHA256"] ==
             "d51e85a3e8d63ecd763988f02521ef38e754f914ad84fc728375c8d84b8bf9a7",
             "frozen PRE_RESET_PCM identity changed")
+    require(golden["FULL_REPLAY_PCM_FRAMES"] == "2400" and
+            golden["FULL_REPLAY_PCM_BYTES"] == "9600" and
+            golden["FULL_REPLAY_PCM_CRC32"] == "b518c3c9" and
+            golden["FULL_REPLAY_PCM_SHA256"] ==
+            "176ea419f153382039e143163ff8476c5461abfddd055cd801003ef89c04a18a" and
+            golden["FULL_REPLAY_PCM_PEAK"] == "4148",
+            "frozen FULL_REPLAY_PCM identity changed")
 
     require(
         "audio86_physical_selector + audio86_partial_selector +" in build and
@@ -261,6 +275,10 @@ def main() -> int:
     print("S1_SHORT_REUSES_EXISTING_13_FRAME_FIXTURE=PASS")
     print("S1_SELECTOR_ISOLATION=PASS")
     print("FULL_PHYSICAL_PROFILE_SEMANTICS_UNCHANGED=PASS")
+    print("S2_EXISTING_FULL_PROFILE_REUSED=PASS")
+    print("S2_REUSES_EXISTING_FULL_REPLAY_GOLDEN=PASS")
+    print("S2_NEW_PCM_GOLDEN=NO")
+    print("S2_FULL_PHYSICAL_PROVENANCE_FAIL_CLOSED=PASS")
     print("VIRTUAL_PARTIAL_PROFILE_SEMANTICS_UNCHANGED=PASS")
     print("5D2_S1A_BUILD_MATRIX_EXPECTED=12")
     return 0

@@ -262,6 +262,7 @@ P4_NANO_AUDIO86_PHYSICAL_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_au
 P4_NANO_AUDIO86_PHYSICAL_MANIFEST := $(HOST_ROOT)/tools/emu/test_p4_audio86_physical_sink_manifest.py
 P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_s1_log.py
 P4_NANO_AUDIO86_PHYSICAL_S1_SOURCE := $(HOST_ROOT)/tools/test_p4_audio86_physical_s1_evidence.py
+P4_NANO_AUDIO86_PHYSICAL_S2A_SOURCE := $(HOST_ROOT)/tools/test_p4_audio86_physical_s2_runtime.py
 P4_NANO_CAPTURE_TEST := $(HOST_ROOT)/tools/test_p4_nano_capture.py
 P4_NANO_AUDIO86_TERMINAL_PREDICATE_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_audio86_guest_binding/include
 P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_SOURCE := $(CURDIR)/tests/p4_nano_audio86_terminal_predicate_test.cpp
@@ -1468,6 +1469,7 @@ test-p4-audio86-physical-s1:
 	@$(PYTHON) "$(P4_NANO_CAPTURE_TEST)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S1_SOURCE)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S2A_SOURCE)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE_TEST)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_PROJECT_INTERVAL)"

@@ -47,7 +47,7 @@ struct fake_backend {
     enum p4_nano_audio86_physical_io_result write_result;
     size_t preload_bytes;
     size_t write_bytes;
-    uint8_t copied[8][P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
+    uint8_t copied[16][P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
     size_t copied_count;
     int operation_failure;
     unsigned start_failure_stage;
@@ -150,7 +150,7 @@ static enum p4_nano_audio86_physical_io_result fake_copy(
     if (result == P4_NANO_AUDIO86_PHYSICAL_IO_OK && bytes == SIZE_MAX)
         bytes = requested;
     *copied = bytes;
-    if (bytes != 0U && fake->copied_count < 8U) {
+    if (bytes != 0U && fake->copied_count < 16U) {
         size_t capture = bytes < requested ? bytes : requested;
         memcpy(fake->copied[fake->copied_count], pcm, capture);
         fake->copied_count++;
@@ -510,6 +510,90 @@ static void test_retry_and_lost_wake(void)
         if (scenario == 0U)
             emit_history(&fake, "retry_before_arm_history");
     }
+}
+
+static void test_s2_ten_unit_stream(int inject_retry)
+{
+    struct fake_backend fake;
+    struct np2_pcm_sink interface;
+    struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+    struct p4_nano_audio86_physical_telemetry before;
+    struct p4_nano_audio86_physical_telemetry telemetry;
+    uint8_t pcm[10][P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
+    uint32_t retry_snapshot = 0U;
+    uint64_t accepted_before_retry = 0U;
+    unsigned index;
+    start_sink(&interface);
+    for (index = 0U; index < 10U; ++index) {
+        struct np2_pcm_sink_view view;
+        fill_pcm(pcm[index], sizeof(pcm[index]), (uint8_t)(31U + index));
+        view = full_view(pcm[index], index);
+        if (inject_retry && index == 4U) {
+            p4_nano_audio86_physical_sink_get_telemetry(sink, &before);
+            accepted_before_retry = before.semantic_accepted_frames;
+            retry_snapshot = p4_nano_audio86_physical_sink_retry_snapshot(sink);
+            fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_TIMEOUT;
+            fake.write_bytes = 0U;
+            assert(interface.submit(interface.opaque, &view) ==
+                   NP2_PCM_SINK_RETRY);
+            p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+            assert(telemetry.semantic_accepted_frames == accepted_before_retry &&
+                   telemetry.physical_units_copied == 4U &&
+                   telemetry.submit_attempts == 5U &&
+                   telemetry.retry_count == 1U &&
+                   !p4_nano_audio86_physical_sink_retry_ready(
+                       sink, retry_snapshot));
+            p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+            assert(p4_nano_audio86_physical_sink_retry_ready(
+                sink, retry_snapshot));
+            fake.write_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
+            fake.write_bytes = SIZE_MAX;
+        }
+        assert(interface.submit(interface.opaque, &view) ==
+               NP2_PCM_SINK_ACCEPTED);
+    }
+    assert(fake.preload_calls == 4U && fake.enable_calls == 1U &&
+           fake.write_calls == (inject_retry ? 7U : 6U) &&
+           fake.copied_count == 10U);
+    for (index = 0U; index < 10U; ++index)
+        assert(memcmp(fake.copied[index], pcm[index], sizeof(pcm[index])) == 0);
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &before);
+    assert(before.semantic_accepted_frames == 2400U &&
+           before.semantic_accepted_bytes == 9600U &&
+           before.physical_units_copied == 10U &&
+           before.physical_bytes_copied == 9600U &&
+           before.full_units == 10U && before.final_partial_units == 0U &&
+           before.final_valid_frames == 0U &&
+           before.physical_padding_frames == 0U &&
+           before.preloaded_units == 4U &&
+           before.submit_attempts == 10U + (unsigned)inject_retry &&
+           before.retry_count == (unsigned)inject_retry &&
+           before.accepted_pending_drain_frames == 2400U);
+    fake.auto_eof_budget = 4U;
+    assert(interface.finish(interface.opaque) == NP2_PCM_SINK_ACCEPTED);
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+    assert(telemetry.accepted_pending_drain_frames == 0U &&
+           telemetry.physically_drained_frames == 2400U &&
+           telemetry.physically_discarded_accepted_frames == 0U &&
+           telemetry.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
+           telemetry.finish_completed && !telemetry.sticky_error);
+    printf(EVIDENCE "scenario=%s preload_units=%u enable_calls=%u"
+           " running_writes=%u physical_units=%" PRIu64
+           " full_units=%u semantic_frames=%" PRIu64
+           " submit_attempts=%" PRIu64 " retry_count=%" PRIu64
+           " accepted_once=1 byte_identity=1 retry_slot_held=%u"
+           " retry_accepted_held=%u pending=%" PRIu64
+           " drained=%" PRIu64 " discarded=%" PRIu64 "\n",
+           inject_retry ? "s2_10_unit_retry" : "s2_10_unit_stream",
+           telemetry.preloaded_units, fake.enable_calls, fake.write_calls,
+           telemetry.physical_units_copied, telemetry.full_units,
+           telemetry.semantic_accepted_frames, telemetry.submit_attempts,
+           telemetry.retry_count, inject_retry ? 1U : 0U,
+           inject_retry && accepted_before_retry == 960U ? 1U : 0U,
+           telemetry.accepted_pending_drain_frames,
+           telemetry.physically_drained_frames,
+           telemetry.physically_discarded_accepted_frames);
+    close_sink(&fake, sink, &interface);
 }
 
 static void test_partial_progress(size_t bytes)
@@ -1019,6 +1103,8 @@ static void test_start_failure_matrix(void)
 int main(void)
 {
     test_full_controller();
+    test_s2_ten_unit_stream(0);
+    test_s2_ten_unit_stream(1);
     test_final_partial(1U);
     test_final_partial(13U);
     test_final_partial(239U);

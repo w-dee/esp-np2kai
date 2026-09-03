@@ -158,24 +158,24 @@ def main() -> int:
                     "controller->sink.finish"),
             "finish no longer follows empty-ring check")
 
-    capture = function_body(binding, "void capture_physical_s1_snapshot")
+    capture = function_body(binding, "void capture_physical_snapshot")
     require(ordered(capture, "p4_nano_audio86_physical_sink_get_telemetry",
-                    "runtime->physical_s1 = snapshot"),
+                    "runtime->physical = snapshot"),
             "runtime-owned terminal telemetry snapshot ordering drifted")
     cleanup = function_body(binding, "bool cleanup_pcm_start_failure")
     run = function_body(binding, "esp_err_t run_on_pc98_task")
     for owner, label in ((cleanup, "start-failure"), (run, "normal")):
-        require(owner.count("capture_physical_s1_snapshot(runtime);") == 1,
+        require(owner.count("capture_physical_snapshot(runtime);") == 1,
                 f"{label} physical snapshot occurrence drifted")
         require(ordered(owner,
                         "wait_task_suspended(runtime->pcm_consumer)",
-                        "capture_physical_s1_snapshot(runtime);",
+                        "capture_physical_snapshot(runtime);",
                         "vTaskDelete(runtime->pcm_consumer)",
                         "p4_nano_audio86_physical_sink_destroy"),
                 f"{label} snapshot/quiescence/destroy ordering drifted")
 
     evidence = function_body(binding, "void emit_physical_s1_evidence")
-    healthy = function_body(terminal, "bool physical_s1_snapshot_healthy")
+    healthy = function_body(terminal, "bool physical_snapshot_core_healthy")
     require("5D2_S1_FINISH schema=2" in evidence and
             "drain_completion_eof_epoch=" in evidence and
             "quiescent_eof_epoch=" in evidence and

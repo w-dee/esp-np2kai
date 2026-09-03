@@ -73,10 +73,10 @@ def main() -> int:
     run = body(binding, "esp_err_t run_on_pc98_task(",
                "} // namespace p4_nano_audio86_guest_binding")
     join = run.index("const bool pcm_joined")
-    snapshot = run.index("capture_physical_s1_snapshot(runtime);", join)
+    snapshot = run.index("capture_physical_snapshot(runtime);", join)
     delete = run.index("vTaskDelete(runtime->pcm_consumer);", snapshot)
     destroy = run.index("p4_nano_audio86_physical_sink_destroy(", delete)
-    destroy_record = run.index("record_physical_s1_destroy(", destroy)
+    destroy_record = run.index("record_physical_destroy(", destroy)
     classification = run.index("const bool normal_ok", destroy_record)
     summary = run.index("emit_summary(runtime, ok);", destroy)
     handoff = run[run.index("const bool pcm_terminal", join - 700):snapshot]
@@ -92,10 +92,10 @@ def main() -> int:
     require(snapshot < delete < destroy < destroy_record < classification < summary,
             "snapshot/delete/destroy/classification/emission order changed")
 
-    capture = body(binding, "void capture_physical_s1_snapshot(",
-                   "void record_physical_s1_destroy(")
+    capture = body(binding, "void capture_physical_snapshot(",
+                   "void record_physical_destroy(")
     require("p4_nano_audio86_physical_sink_get_telemetry" in capture and
-            "runtime->physical_s1 = snapshot" in capture and
+            "runtime->physical = snapshot" in capture and
             "std::printf" not in capture,
             "snapshot is not an owned, passive copy")
     consumer = body(binding, "void pcm_consumer_task(", "#endif\n\nbool failed")
@@ -139,16 +139,14 @@ def main() -> int:
             "sink->i2s_created = false" in sink,
             "current I2S state is conflated with history")
 
-    record_gate = body(binding,
-                       "#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)\n"
-                       "const char *physical_s1_controller_state_name",
-                       "void emit_summary(")
+    record_gate = body(binding, "void emit_physical_s1_evidence(",
+                       "bool physical_s1_snapshot_healthy(")
     for name in ("5D2_S1_IDENTITY", "5D2_S1_START", "5D2_S1_PCM",
                  "5D2_S1_FINISH"):
         require(record_gate.count(name) == 1,
                 f"authoritative record definition mismatch: {name}")
     require("P4_AUDIO86_GIT_SHA" in record_gate and
-            "physical-short evidence requires P4_AUDIO86_GIT_SHA" in cmake and
+            "physical Audio 86 evidence requires P4_AUDIO86_GIT_SHA" in cmake and
             'P4_AUDIO86_GIT_SHA="${P4_AUDIO86_GIT_SHA}"' in cmake,
             "physical source identity is not build-bound")
     require("physical_s1_snapshot_healthy(runtime)" in run,
@@ -156,7 +154,7 @@ def main() -> int:
     physical_branch = body(
         run, "#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)\n"
              "    const bool physical_sink_ok",
-        "#else\n    const bool virtual_sink_ok")
+        "#elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)")
     for observer in VIRTUAL_ONLY_OBSERVERS:
         require(observer not in physical_branch,
                 f"physical predicate retained virtual observer: {observer}")
@@ -217,12 +215,12 @@ def main() -> int:
     emitted = body(binding, "void emit_physical_s1_evidence(",
                    "bool physical_s1_snapshot_healthy(")
     require(emitted.count("runtime->") == 1 and
-            "runtime->physical_s1" in emitted and
+            "runtime->physical" in emitted and
             "p4_nano_audio86_physical_sink_get_telemetry" not in emitted,
             "UART evidence does not exclusively use the owned snapshot")
 
-    healthy = body(terminal, "bool physical_s1_snapshot_healthy(",
-                   "constexpr bool normal_terminal_healthy(")
+    healthy = body(terminal, "bool physical_snapshot_core_healthy(",
+                   "template <typename Snapshot>\nbool physical_snapshot_healthy(")
     require("sink.drain_completion_epoch - sink.drain_snapshot_epoch" in healthy and
             "sink.quiescent_eof_epoch - sink.drain_snapshot_epoch" in healthy and
             "drain_post_snapshot_eofs >=" in healthy and
@@ -234,6 +232,49 @@ def main() -> int:
             "quiescent_post_snapshot_eofs" in healthy and
             "sink.draining_queue_overflow_count == 0U" not in healthy,
             "physical-short drain q_ovf predicate is not semantic")
+    s1_healthy = body(
+        terminal, "bool physical_s1_snapshot_healthy(",
+        "template <typename Snapshot>\nbool physical_s2_snapshot_healthy(")
+    require("physical_snapshot_core_healthy(snapshot)" in s1_healthy and
+            "physical_snapshot_healthy(snapshot)" not in s1_healthy,
+            "S1 predicate no longer preserves its legacy truth table")
+
+    s2_evidence = body(binding, "void emit_physical_s2_evidence(",
+                       "bool physical_s2_snapshot_healthy(")
+    for name in ("5D2_S2_IDENTITY schema=1",
+                 "5D2_S2_START schema=1",
+                 "5D2_S2_STREAM schema=1",
+                 "5D2_S2_FINISH schema=1"):
+        require(s2_evidence.count(name) == 1,
+                f"S2 record definition mismatch: {name}")
+    for field in ("profile=AUDIO86_REAL_GUEST_PHYSICAL_I2S",
+                  "stimulus=FULL_REPLAY_PCM", "ring_capacity=",
+                  "prefill=", "preloaded_units=", "running_units=",
+                  "submit_attempts=", "retry_count=", "running_q_ovf=",
+                  "final_copy_eof_epoch=", "drain_completion_eof_epoch=",
+                  "quiescent_eof_epoch=", "drain_duration_ms=",
+                  "sink_destroyed="):
+        require(field in s2_evidence, f"S2 evidence field missing: {field}")
+    require("p4_nano_audio86_physical_sink_get_telemetry" not in s2_evidence and
+            "std::printf" in s2_evidence,
+            "S2 evidence does not emit exclusively from owned snapshot")
+    s2_predicate = body(terminal, "bool physical_s2_snapshot_healthy(",
+                        "constexpr bool normal_terminal_healthy(")
+    for condition in ("physical_snapshot_healthy(snapshot)",
+                      "snapshot.semantic_frames == expected_frames",
+                      "sink.physical_units_copied == expected_units",
+                      "sink.full_units == expected_units",
+                      "sink.final_partial_units == 0U",
+                      "sink.preloaded_units == expected_preloaded_units",
+                      "sink.submit_attempts - sink.physical_units_copied ==",
+                      "sink.retry_count",
+                      "P4_NANO_AUDIO86_PHYSICAL_DRAIN_TIMEOUT_MS"):
+        require(condition in s2_predicate,
+                f"S2 workload predicate missing: {condition}")
+    require("physical_s2_snapshot_healthy(runtime)" in run and
+            "P4_AUDIO86_PHYSICAL_S2_TERMINAL=%s" in binding and
+            "#elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)" in binding,
+            "full physical S2 predicate/terminal gate is incomplete")
 
     q_ovf_callback = body(
         sink, "static CALLBACK_IRAM void callback_on_send_q_ovf(",
@@ -265,8 +306,13 @@ def main() -> int:
     print("PHYSICAL_BRANCH_VIRTUAL_OBSERVERS=0")
     print("PHYSICAL_BRANCH_VIRTUAL_OBSERVER_EXCLUSION_SOURCE_PROOF=PASS")
     print("COMMON_NORMAL_OK_INVARIANTS_PRESERVED=PASS")
-    print("FULL_PHYSICAL_TERMINAL_PREDICATE_BEHAVIOR="
-          "LEGACY_NON_S1_VIRTUAL_OBSERVER_PATH_UNCHANGED")
+    print("S2_FULL_PHYSICAL_TERMINAL_PREDICATE_TRUTHFUL=PASS")
+    print("S2_STRUCTURED_RECORD_SCHEMA_SOURCE_PROOF=PASS")
+    print("S2_TERMINAL_MARKER_GATING_SOURCE_PROOF=PASS")
+    print("GENERIC_PHYSICAL_HEALTH_WORKLOAD_AGNOSTIC=PASS")
+    print("S1_PHYSICAL_HEALTH_NONREGRESSION=PASS")
+    print("S1_STRUCTURED_RECORDS_UNCHANGED=PASS")
+    print("S2_SNAPSHOT_USES_EXISTING_QUIESCENT_BOUNDARY=PASS")
     print("PHYSICAL_SHORT_SUCCESS_PREDICATE_TRUTHFUL=PASS")
     print("PHYSICAL_SHORT_DRAIN_Q_OVF_PREDICATE_CORRECTED=PASS")
     print("PHYSICAL_SHORT_Q_OVF_INTERVAL_PREDICATE_CORRECTED=PASS")

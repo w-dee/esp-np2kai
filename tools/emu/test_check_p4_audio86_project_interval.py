@@ -97,7 +97,7 @@ def main() -> int:
             block = (
                 "    if (physical_snapshot_ready && "
                 "runtime->physical_sink != nullptr)\n"
-                "        capture_physical_s1_snapshot(runtime);\n")
+                "        capture_physical_snapshot(runtime);\n")
             anchor = "    const bool pcm_terminal =\n"
             if text.count(block) != 2 or text.count(anchor) != 1:
                 raise SystemExit("owner snapshot mutation target missing")
@@ -106,7 +106,7 @@ def main() -> int:
             text = text[:block_at] + text[block_at + len(block):]
             anchor_at = text.index(anchor, run_start)
             return (text[:anchor_at] +
-                    "    capture_physical_s1_snapshot(runtime);\n" +
+                    "    capture_physical_snapshot(runtime);\n" +
                     text[anchor_at:])
 
         rejected(root, binding_rel, move_snapshot_before_quiescence,

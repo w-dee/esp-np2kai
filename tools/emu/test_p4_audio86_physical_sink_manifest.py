@@ -102,6 +102,18 @@ CALLBACK_BASE_FIELDS = {
 # validators named by the manifest predicates.
 EXEC_EVIDENCE_FIELDS = {
     "HOST_EXEC": {
+        "s2_10_unit_stream": {
+            "preload_units", "enable_calls", "running_writes",
+            "physical_units", "full_units", "semantic_frames",
+            "submit_attempts", "retry_count", "accepted_once",
+            "byte_identity", "retry_slot_held", "retry_accepted_held",
+            "pending", "drained", "discarded"},
+        "s2_10_unit_retry": {
+            "preload_units", "enable_calls", "running_writes",
+            "physical_units", "full_units", "semantic_frames",
+            "submit_attempts", "retry_count", "accepted_once",
+            "byte_identity", "retry_slot_held", "retry_accepted_held",
+            "pending", "drained", "discarded"},
         "short_eos": {"preload_units", "enable_calls", "physical_units",
                       "semantic_frames", "drain_eofs", "deadlock"},
         "retry_before_arm": {"epoch_before", "epoch_after", "callbacks",

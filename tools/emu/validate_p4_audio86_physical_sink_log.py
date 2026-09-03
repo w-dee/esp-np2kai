@@ -127,6 +127,35 @@ def validate(text: str) -> list[str]:
                     as_int(fields, "accepted_once", errors) == 1,
                     f"{scenario} ownership mismatch")
 
+    for scenario, retry_count in (("s2_10_unit_stream", 0),
+                                  ("s2_10_unit_retry", 1)):
+        fields = records.get(scenario, {})
+        require(errors, bool(fields), f"missing {scenario}")
+        if fields:
+            require(errors,
+                    as_int(fields, "preload_units", errors) == 4 and
+                    as_int(fields, "enable_calls", errors) == 1 and
+                    as_int(fields, "running_writes", errors) == 6 + retry_count,
+                    f"{scenario} preload/RUNNING progression mismatch")
+            require(errors,
+                    as_int(fields, "physical_units", errors) == 10 and
+                    as_int(fields, "full_units", errors) == 10 and
+                    as_int(fields, "semantic_frames", errors) == 2400 and
+                    as_int(fields, "submit_attempts", errors) ==
+                        10 + retry_count and
+                    as_int(fields, "retry_count", errors) == retry_count,
+                    f"{scenario} unit/retry accounting mismatch")
+            require(errors,
+                    as_int(fields, "accepted_once", errors) == 1 and
+                    as_int(fields, "byte_identity", errors) == 1 and
+                    as_int(fields, "retry_slot_held", errors) == retry_count and
+                    as_int(fields, "retry_accepted_held", errors) ==
+                        retry_count and
+                    as_int(fields, "pending", errors) == 0 and
+                    as_int(fields, "drained", errors) == 2400 and
+                    as_int(fields, "discarded", errors) == 0,
+                    f"{scenario} ownership/identity mismatch")
+
     callback_expected = {
         "callback_entry_before_disarm": {"entered": 1, "disarmed": 1,
             "in_flight_during": 1, "in_flight_after": 0,

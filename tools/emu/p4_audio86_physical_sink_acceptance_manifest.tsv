@@ -1,5 +1,7 @@
 # property_id	description	evidence_class	command	evidence_id	required_fields	predicate
 full_q240	Exact full q240 transfer	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_FULL_Q240	semantic_frames|semantic_bytes|physical_bytes|consume_calls	host_validator
+s2_10_unit_stream	S2 ten-unit steady-state stream	HOST_EXEC	make -C host test-p4-audio86-physical-sink	s2_10_unit_stream	preload_units|enable_calls|running_writes|physical_units|full_units|semantic_frames|submit_attempts|retry_count|accepted_once|byte_identity|retry_slot_held|retry_accepted_held|pending|drained|discarded	host_validator
+s2_10_unit_retry	S2 ten-unit stream with one RUNNING retry	HOST_EXEC	make -C host test-p4-audio86-physical-sink	s2_10_unit_retry	preload_units|enable_calls|running_writes|physical_units|full_units|semantic_frames|submit_attempts|retry_count|accepted_once|byte_identity|retry_slot_held|retry_accepted_held|pending|drained|discarded	host_validator
 partial_matrix	Final partial padding matrix	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_FINAL_PARTIAL	frames|semantic_bytes|physical_bytes|padding_frames|padding_zero|digest_excludes_padding	host_validator
 partial_progress	Partial low-level progress fails closed	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_PARTIAL_PROGRESS	bytes|ring_consumed|rollback	host_validator
 queue_overflow_policy	Queue overflow state policy	HOST_EXEC	make -C host test-p4-audio86-physical-sink	marker:5D1_QUEUE_OVF	running|draining|stale	host_validator
