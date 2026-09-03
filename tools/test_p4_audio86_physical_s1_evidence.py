@@ -132,6 +132,33 @@ def main() -> int:
             "p4_nano_audio86_physical_sink_get_telemetry" not in emitted,
             "UART evidence does not exclusively use the owned snapshot")
 
+    healthy = body(binding, "bool physical_s1_snapshot_healthy(", "#endif")
+    require("sink.drain_completion_epoch - sink.drain_snapshot_epoch" in healthy and
+            "post_snapshot_eofs >= P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS" in healthy,
+            "physical-short EOF drain predicate weakened")
+    require("sink.running_queue_overflow_count == 0U" in healthy and
+            "sink.draining_queue_overflow_count <= post_snapshot_eofs" in healthy and
+            "sink.draining_queue_overflow_count == 0U" not in healthy,
+            "physical-short drain q_ovf predicate is not semantic")
+
+    q_ovf_callback = body(
+        sink, "static CALLBACK_IRAM void callback_on_send_q_ovf(",
+        "void CALLBACK_IRAM p4_nano_audio86_callback_gate_on_sent(")
+    draining_branch = body(
+        q_ovf_callback,
+        "if (state == P4_NANO_AUDIO86_PHYSICAL_DRAINING)",
+        "else if (state == P4_NANO_AUDIO86_PHYSICAL_RUNNING")
+    running_branch = q_ovf_callback[q_ovf_callback.index(
+        "else if (state == P4_NANO_AUDIO86_PHYSICAL_RUNNING"):]
+    require("draining_queue_overflow_count" in draining_branch and
+            "sticky_error" not in draining_branch and
+            "notify_waiter" not in draining_branch,
+            "draining q_ovf is no longer telemetry-only")
+    require("running_queue_overflow_count" in running_branch and
+            "sticky_error" in running_branch and
+            "notify_waiter" in running_branch,
+            "running q_ovf is no longer sticky-fatal")
+
     print("S1_SNAPSHOT_ORDERING_SOURCE_PROOF=PASS")
     print("PHYSICAL_TELEMETRY_SNAPSHOT_RACE_FREE=PASS")
     print("S1_SNAPSHOT_OWNS_ALL_EMITTED_DATA=PASS")
@@ -141,6 +168,10 @@ def main() -> int:
     print("S1_TELEMETRY_ISR_PRINTF=NO")
     print("VIRTUAL_NORMAL_OK_SEMANTICS_UNCHANGED=PASS")
     print("PHYSICAL_SHORT_SUCCESS_PREDICATE_TRUTHFUL=PASS")
+    print("PHYSICAL_SHORT_DRAIN_Q_OVF_PREDICATE_CORRECTED=PASS")
+    print("RUNNING_Q_OVF_SEMANTICS_UNCHANGED=PASS")
+    print("DRAINING_Q_OVF_ACCEPTANCE_CLASS=TELEMETRY_ONLY")
+    print("GLOBAL_Q_OVF_SEMANTICS_WEAKENED=NO")
     print("FAKE_VIRTUAL_LATCHES_ADDED=NO")
     print("GLOBAL_NORMAL_OK_WEAKENED=NO")
     return 0

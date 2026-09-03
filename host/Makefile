@@ -262,6 +262,8 @@ P4_NANO_AUDIO86_PHYSICAL_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_au
 P4_NANO_AUDIO86_PHYSICAL_MANIFEST := $(HOST_ROOT)/tools/emu/test_p4_audio86_physical_sink_manifest.py
 P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_s1_log.py
 P4_NANO_AUDIO86_PHYSICAL_S1_SOURCE := $(HOST_ROOT)/tools/test_p4_audio86_physical_s1_evidence.py
+P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE := $(HOST_ROOT)/tools/emu/check_p4_audio86_callback_idf_barrier.py
+P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE_TEST := $(HOST_ROOT)/tools/emu/test_check_p4_audio86_callback_idf_source.py
 P4_NANO_AUDIO86_SOURCE_PROVENANCE := $(HOST_ROOT)/tools/test_p4_audio86_source_provenance.py
 OPNGEN_SYNTHETIC_WORKLOAD_SOURCE := $(HOST_ROOT)/firmware/components/np2opngen_fixture/np2opngen_synthetic_workload.c
 OPNGEN_E1C_TEST_SOURCE := $(CURDIR)/tests/opngen_e1c_sustained_test.c
@@ -1451,6 +1453,8 @@ test-p4-audio86-physical-sink: build-p4-audio86-physical-sink
 test-p4-audio86-physical-s1:
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S1_SOURCE)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE_TEST)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_SOURCE_PROVENANCE)"
 
 build-p4-audio86-physical-sink-asan:

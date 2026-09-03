@@ -103,6 +103,15 @@ def accepted(directory: Path, lines: list[str]) -> bool:
 
 def main() -> int:
     canonical = canonical_lines()
+    drain_one = replace_once(canonical, "draining_q_ovf=0",
+                             "draining_q_ovf=1")
+    drain_at_eof_bound = replace_once(canonical, "draining_q_ovf=0",
+                                      "draining_q_ovf=4")
+    accepted_boundaries = (
+        ("draining_q_ovf_zero", canonical),
+        ("draining_q_ovf_nonzero", drain_one),
+        ("draining_q_ovf_at_eof_bound", drain_at_eof_bound),
+    )
     mutations: list[tuple[str, list[str]]] = []
     mutations.append(("missing_record", canonical[:1] + canonical[2:]))
     mutations.append(("duplicate_record", canonical[:2] + [canonical[1]] + canonical[2:]))
@@ -131,7 +140,7 @@ def main() -> int:
         ("controller_state", "controller_state=FINISHED",
          "controller_state=FAILED"),
         ("insufficient_eof", "post_snapshot_eofs=4", "post_snapshot_eofs=3"),
-        ("q_ovf", "running_q_ovf=0", "running_q_ovf=1"),
+        ("running_q_ovf", "running_q_ovf=0", "running_q_ovf=1"),
         ("pending", "pending_frames=0", "pending_frames=1"),
         ("discarded", "discarded_frames=0", "discarded_frames=1"),
         ("drained", "drained_frames=13", "drained_frames=12"),
@@ -152,15 +161,32 @@ def main() -> int:
     )
     for name, old, new in replacements:
         mutations.append((name, replace_once(canonical, old, new)))
+    mutations.extend((
+        ("draining_q_ovf_exceeds_eof",
+         replace_once(canonical, "draining_q_ovf=0", "draining_q_ovf=5")),
+        ("draining_q_ovf_with_sticky_error",
+         replace_once(drain_one, "sticky_error=0", "sticky_error=1")),
+        ("draining_q_ovf_with_ownership_failure",
+         replace_once(drain_one, "drained_frames=13", "drained_frames=12")),
+        ("draining_q_ovf_with_insufficient_eof",
+         replace_once(
+             replace_once(drain_one, "finish_eof_epoch=2",
+                          "finish_eof_epoch=1"),
+             "post_snapshot_eofs=4", "post_snapshot_eofs=3")),
+    ))
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
-        if not accepted(directory, canonical):
-            print("canonical S1 evidence rejected", file=sys.stderr)
-            return 1
+        for name, boundary in accepted_boundaries:
+            if not accepted(directory, boundary):
+                print(f"valid S1 boundary rejected: {name}", file=sys.stderr)
+                return 1
         for name, mutated in mutations:
             if accepted(directory, mutated):
                 print(f"mutation accepted: {name}", file=sys.stderr)
                 return 1
+    print("S1_DRAIN_Q_OVF_ACCEPTANCE_BOUNDARY_TEST=PASS "
+          "accepted=0,1,post_snapshot_eofs rejected=post_snapshot_eofs_plus_1")
+    print("S1_VALIDATOR_DRAIN_Q_OVF_RULE_SEMANTIC=PASS")
     print(f"S1_PHYSICAL_VALIDATOR_MUTATIONS={len(mutations)}_ALL_REJECTED")
     print("S1_PHYSICAL_VALIDATOR_CHANGE_SENSITIVITY=PASS")
     print("S1_TERMINAL_COMPLETE_ACCEPTANCE_AUTHORITY=NO")

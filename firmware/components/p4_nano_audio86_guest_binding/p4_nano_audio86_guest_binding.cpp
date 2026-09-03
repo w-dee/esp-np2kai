@@ -2211,6 +2211,8 @@ bool physical_s1_snapshot_healthy(const Runtime *runtime)
 {
     const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
     const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
+    const uint32_t post_snapshot_eofs =
+        sink.drain_completion_epoch - sink.drain_snapshot_epoch;
     return snapshot.captured && snapshot.sink_destroyed == 1U &&
         snapshot.controller_state == NP2_PCM_OUTPUT_FINISHED &&
         sink.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
@@ -2225,7 +2227,8 @@ bool physical_s1_snapshot_healthy(const Runtime *runtime)
         sink.physically_drained_frames == kRenderFrames &&
         sink.physically_discarded_accepted_frames == 0U &&
         sink.running_queue_overflow_count == 0U &&
-        sink.draining_queue_overflow_count == 0U &&
+        post_snapshot_eofs >= P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
+        sink.draining_queue_overflow_count <= post_snapshot_eofs &&
         !sink.sticky_error && sink.callback_refcount == 0U &&
         !sink.callbacks_active && sink.codec_final_muted &&
         sink.pa_final_low && !sink.i2s_enabled && !sink.i2s_created &&

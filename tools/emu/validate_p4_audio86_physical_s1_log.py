@@ -271,7 +271,7 @@ def validate(raw_path: Path, status_path: Path,
     required_finish = {
         "finish_completed": 1, "pending_frames": 0,
         "drained_frames": semantic_frames, "discarded_frames": 0,
-        "running_q_ovf": 0, "draining_q_ovf": 0, "sticky_error": 0,
+        "running_q_ovf": 0, "sticky_error": 0,
         "stale_callbacks": 0,
         "callback_in_flight": 0, "callbacks_active": 0,
         "codec_final_muted": 1, "pa_final_low": 1, "i2s_enabled": 0,
@@ -281,6 +281,9 @@ def validate(raw_path: Path, status_path: Path,
     require(errors, all(numeric[f"finish.{key}"] == value
                         for key, value in required_finish.items()),
             "finish/quiescence mismatch")
+    require(errors, numeric["finish.draining_q_ovf"] <=
+            numeric["finish.post_snapshot_eofs"],
+            "drain q_ovf exceeds post-snapshot EOFs")
     require(errors, numeric["finish.registered_generation"] > 0 and
             numeric["finish.terminal_generation"] ==
                 numeric["finish.registered_generation"] + 1,
