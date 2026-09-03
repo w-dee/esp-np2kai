@@ -24,6 +24,8 @@ struct np2audio86_runtime_horizon_mailbox {
     NP2_AUDIO86_RUNTIME_ATOMIC(uint32_t) horizon_state;
     uint32_t horizon_frame_lo;
     uint32_t horizon_frame_hi;
+    uint32_t horizon_flags;
+    uint32_t terminal_reset_ordinal;
 };
 
 struct np2audio86_runtime_control {
@@ -39,12 +41,24 @@ enum np2audio86_runtime_horizon_state {
     NP2_AUDIO86_RUNTIME_HORIZON_FULL = 1U,
 };
 
+enum np2audio86_runtime_horizon_flags {
+    NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE = 0U,
+    NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL = 1U,
+};
+
 struct np2audio86_runtime_producer_clock {
     uint64_t committed_frame_owner;
+    uint32_t terminal_published_owner;
 };
 
 struct np2audio86_runtime_consumer_clock {
     uint64_t committed_frame_reconstructed;
+};
+
+struct np2audio86_runtime_horizon_observation {
+    uint64_t frame;
+    uint32_t flags;
+    uint32_t terminal_reset_ordinal;
 };
 
 enum np2audio86_runtime_horizon_status {
@@ -52,16 +66,19 @@ enum np2audio86_runtime_horizon_status {
     NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT,
     NP2_AUDIO86_RUNTIME_HORIZON_NONMONOTONIC,
     NP2_AUDIO86_RUNTIME_HORIZON_RETRY,
+    NP2_AUDIO86_RUNTIME_HORIZON_BOUNDS,
+    NP2_AUDIO86_RUNTIME_HORIZON_TERMINATED,
+    NP2_AUDIO86_RUNTIME_HORIZON_RESET_REQUIRED,
 };
 
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
-    sizeof(struct np2audio86_runtime_horizon_mailbox) == 12U &&
+    sizeof(struct np2audio86_runtime_horizon_mailbox) == 20U &&
         NP2_AUDIO86_RUNTIME_ALIGNOF(
             struct np2audio86_runtime_horizon_mailbox) == 4U,
-    "86R.5 horizon mailbox must be three aligned 32-bit fields");
+    "86R.5 horizon mailbox must be five aligned 32-bit fields");
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
-    sizeof(struct np2audio86_runtime_control) == 28U,
-    "86R.5 control state must remain seven 32-bit fields");
+    sizeof(struct np2audio86_runtime_control) == 36U,
+    "86R.5 control state must remain nine 32-bit fields");
 NP2_AUDIO86_RUNTIME_STATIC_ASSERT(
     NP2_AUDIO86_RUNTIME_ALIGNOF(struct np2audio86_runtime_control) >= 4U,
     "86R.5 control state must be naturally aligned");
@@ -94,12 +111,22 @@ uint32_t np2audio86_runtime_reset_ack(
 int np2audio86_runtime_horizon_publish(
     struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_producer_clock *producer, uint64_t frame);
+int np2audio86_runtime_terminal_horizon_publish(
+    struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_producer_clock *producer, uint64_t frame,
+    uint64_t workload_bound, uint32_t reset_ordinal);
+bool np2audio86_runtime_semantic_event_permitted(
+    const struct np2audio86_runtime_producer_clock *producer);
 int np2audio86_runtime_horizon_observe(
     struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_consumer_clock *consumer);
 int np2audio86_runtime_horizon_try_observe(
     struct np2audio86_runtime_control *control,
     struct np2audio86_runtime_consumer_clock *consumer);
+int np2audio86_runtime_horizon_try_observe_detail(
+    struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_consumer_clock *consumer,
+    struct np2audio86_runtime_horizon_observation *observation);
 bool np2audio86_runtime_horizon_pending(
     const struct np2audio86_runtime_control *control);
 

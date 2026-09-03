@@ -63,6 +63,10 @@ BRESULT iocore_build(void);
      !defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE))
 #error "sustained physical evidence requires sustained PCM over physical I2S"
 #endif
+#if defined(P4_NANO_AUDIO86_TERMINAL_POST_PCM_FAILURE_TEST) && \
+    !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+#error "terminal post-PCM producer failure test requires sustained profile"
+#endif
 
 namespace p4_nano_audio86_guest_binding {
 namespace {
@@ -83,6 +87,9 @@ constexpr uint32_t kErrorWorker = 2U;
 constexpr uint32_t kErrorGuest = 3U;
 constexpr uint32_t kErrorFinalRender = 4U;
 constexpr uint32_t kErrorEventApply = 5U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+constexpr uint64_t kSustainedTerminalResetFrame = 95761U;
+#endif
 /* The fixture's DATA_RUN value overlaps the guest adapter's PCM-control
  * trace value.  Keep the transport semantic namespaces disjoint. */
 constexpr uint32_t kEventOpnaRegister = 0x100U;
@@ -414,6 +421,16 @@ struct Runtime {
     bool horizon_owned = false;
     bool event_committed = false;
     bool run_committed = false;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    /* Producer-owned until the terminal mailbox release publication. */
+    bool terminal_horizon_armed = false;
+    /* Worker-owned; read only after task join outside the worker. */
+    uint32_t terminal_reset_applied_ordinal = 0U;
+    std::atomic<uint32_t> terminal_horizon_published{0U};
+    std::atomic<uint32_t> terminal_horizon_observed{0U};
+    std::atomic<uint32_t> terminal_pcm_ready{0U};
+    std::atomic<uint32_t> terminal_pcm_before_guest_done{0U};
+#endif
     uint64_t next_sequence = 0U;
     uint32_t reset_ordinal = 0U;
     uint64_t rendered_frame = 0U;
@@ -486,7 +503,7 @@ struct Runtime {
 DRAM_ATTR Runtime s_runtime{};
 static_assert(sizeof(np2audio86_event_ring) == 3080U);
 static_assert(sizeof(np2audio86_byte_ring) == 65544U);
-static_assert(sizeof(np2audio86_runtime_control) == 28U);
+static_assert(sizeof(np2audio86_runtime_control) == 36U);
 
 void notify_producer(Runtime *runtime)
 {
@@ -1646,6 +1663,10 @@ int reserve_checked(void *opaque, const uint32_t kind, const size_t bytes,
         runtime->byte_extend_terminal_order != 0U)
         ++runtime->byte_extend_terminal_reserve_calls;
     if (runtime == nullptr || token == nullptr || runtime->transaction_active ||
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        !np2audio86_runtime_semantic_event_permitted(
+            &runtime->producer_clock) ||
+#endif
         (kind != NP2AUDIO86_GUEST_TRANSACTION_EVENT &&
          kind != NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN &&
          kind != NP2AUDIO86_GUEST_TRANSACTION_RESET) ||
@@ -1841,11 +1862,32 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
         if (runtime != nullptr) fail(runtime, kErrorTransport);
         return;
     }
-    if (np2audio86_runtime_horizon_publish(&runtime->control, &runtime->producer_clock,
-                                            frame) != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+    const bool reset = runtime->transaction_kind == NP2AUDIO86_GUEST_TRANSACTION_RESET;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    const bool terminal = reset && runtime->terminal_horizon_armed;
+    const int publish_status = terminal
+        ? ((frame == kSustainedTerminalResetFrame &&
+            runtime->reset_ordinal != 0U)
+               ? np2audio86_runtime_terminal_horizon_publish(
+                     &runtime->control, &runtime->producer_clock,
+                     kRenderFrames, kRenderFrames, runtime->reset_ordinal)
+               : NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT)
+        : np2audio86_runtime_horizon_publish(
+              &runtime->control, &runtime->producer_clock, frame);
+#else
+    const int publish_status = np2audio86_runtime_horizon_publish(
+        &runtime->control, &runtime->producer_clock, frame);
+#endif
+    if (publish_status != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
         fail(runtime, kErrorTransport); return;
     }
-    const bool reset = runtime->transaction_kind == NP2AUDIO86_GUEST_TRANSACTION_RESET;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    if (terminal) {
+        runtime->terminal_horizon_armed = false;
+        runtime->terminal_horizon_published.store(1U,
+                                                   std::memory_order_release);
+    }
+#endif
     runtime->transaction_active = false;
     runtime->horizon_owned = false;
     runtime->transaction_kind = 0U;
@@ -1872,6 +1914,23 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
             (void)p4_nano_audio86_notifications::wait_producer();
             runtime->producer_waiting.store(0U, std::memory_order_release);
         }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (terminal) {
+            /* RESET ACK remains the first lifecycle boundary.  Terminal PCM
+             * completion is a separate predicate: the worker can satisfy it
+             * without guest producer_done, and the producer cannot race into
+             * post-ACK snapshot/unbind work before q399 is durable. */
+            while (!failed(runtime) &&
+                   runtime->terminal_pcm_ready.load(
+                       std::memory_order_acquire) == 0U) {
+                runtime->producer_waiting.store(1U,
+                                                std::memory_order_release);
+                (void)p4_nano_audio86_notifications::wait_producer();
+                runtime->producer_waiting.store(0U,
+                                                std::memory_order_release);
+            }
+        }
+#endif
         if (kPressureScenario == kPressureResetAck) {
             pressure_capture_after(runtime);
             runtime->pressure_resume_count.store(1U, std::memory_order_release);
@@ -2028,7 +2087,12 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     sustained_trace_apply(runtime, &runtime->applied[apply_index]);
 #endif
-    if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
+    const bool reset_event = event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    /* Copy producer-owned slot data before consume releases the slot. */
+    const uint32_t reset_event_ordinal = reset_event ? event->payload : 0U;
+#endif
+    if (reset_event) {
         if (kPressureScenario == kPressureResetAck) {
             runtime->reset_ack_held_ordinal = event->payload;
             runtime->reset_ack_held.store(1U, std::memory_order_release);
@@ -2052,7 +2116,14 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
             notify_producer(runtime);
         }
     }
-    return np2audio86_event_ring_consume(&runtime->events) == NP2_AUDIO86_TRANSPORT_OK;
+    if (np2audio86_event_ring_consume(&runtime->events) !=
+        NP2_AUDIO86_TRANSPORT_OK)
+        return false;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    if (reset_event)
+        runtime->terminal_reset_applied_ordinal = reset_event_ordinal;
+#endif
+    return true;
 }
 
 void worker_task(void *opaque)
@@ -2075,6 +2146,14 @@ void worker_task(void *opaque)
         !render_until(runtime, kS2ResetFrameOffset)) {
         fail(runtime, kErrorFinalRender);
     }
+#endif
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+    bool pcm_finished = false;
+#endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    bool terminal_horizon_observed = false;
+    uint64_t terminal_horizon = 0U;
+    uint32_t terminal_reset_ordinal = 0U;
 #endif
     for (;;) {
         /* The Core 0 worker is the smallest profile-only controller: it never
@@ -2115,10 +2194,39 @@ void worker_task(void *opaque)
             }
         }
         const np2audio86_event *event = nullptr;
-        const int horizon = np2audio86_runtime_horizon_try_observe(
-            &runtime->control, &runtime->consumer_clock);
+        np2audio86_runtime_horizon_observation horizon_observation{};
+        const int horizon = np2audio86_runtime_horizon_try_observe_detail(
+            &runtime->control, &runtime->consumer_clock,
+            &horizon_observation);
         const int peek = np2audio86_event_ring_peek(&runtime->events, &event);
-        if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK) notify_producer(runtime);
+        if (horizon == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+            if (horizon_observation.flags ==
+                NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL) {
+                if (terminal_horizon_observed ||
+                    horizon_observation.frame != kRenderFrames ||
+                    horizon_observation.terminal_reset_ordinal == 0U) {
+                    fail(runtime, kErrorTransport);
+                } else {
+                    terminal_horizon_observed = true;
+                    terminal_horizon = horizon_observation.frame;
+                    terminal_reset_ordinal =
+                        horizon_observation.terminal_reset_ordinal;
+                    runtime->terminal_horizon_observed.store(
+                        1U, std::memory_order_release);
+                }
+            } else if (horizon_observation.flags !=
+                           NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE ||
+                       terminal_horizon_observed) {
+                fail(runtime, kErrorTransport);
+            }
+#else
+            if (horizon_observation.flags !=
+                NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE)
+                fail(runtime, kErrorTransport);
+#endif
+            notify_producer(runtime);
+        }
         if (peek == NP2_AUDIO86_TRANSPORT_OK && event != nullptr &&
             event->frame_timestamp <= runtime->consumer_clock.committed_frame_reconstructed) {
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
@@ -2176,11 +2284,68 @@ void worker_task(void *opaque)
             notify_producer(runtime);
             continue;
         }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (terminal_horizon_observed && !pcm_finished) {
+            if (peek == NP2_AUDIO86_TRANSPORT_OK && event != nullptr &&
+                event->frame_timestamp > terminal_horizon) {
+                fail(runtime, kErrorTransport);
+                break;
+            }
+            const bool transport_empty =
+                np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
+                np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
+                !np2audio86_runtime_horizon_pending(&runtime->control);
+            if (transport_empty &&
+                runtime->terminal_reset_applied_ordinal ==
+                    terminal_reset_ordinal) {
+                if (!render_until(runtime, terminal_horizon)) {
+                    fail(runtime, kErrorFinalRender);
+                    break;
+                }
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                if (!finish_pcm(runtime)) {
+                    fail(runtime, kErrorFinalRender);
+                    break;
+                }
+#endif
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+                pcm_finished = true;
+#endif
+                runtime->terminal_pcm_before_guest_done.store(
+                    runtime->producer_done.load(std::memory_order_acquire) == 0U
+                        ? 1U : 0U,
+                    std::memory_order_release);
+                runtime->terminal_pcm_ready.store(1U,
+                                                   std::memory_order_release);
+                notify_producer(runtime);
+                continue;
+            }
+            if (np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
+                (runtime->terminal_reset_applied_ordinal !=
+                     terminal_reset_ordinal ||
+                 np2audio86_byte_ring_occupancy(&runtime->bytes) != 0U)) {
+                /* Acquiring the terminal mailbox also acquires all prior
+                 * producer publications.  An empty event ring here therefore
+                 * proves that the declared RESET is absent, not merely late. */
+                fail(runtime, kErrorTransport);
+                break;
+            }
+            if (runtime->producer_done.load(std::memory_order_acquire) != 0U) {
+                fail(runtime, kErrorTransport);
+                break;
+            }
+        }
+#endif
         if (runtime->producer_done.load(std::memory_order_acquire) != 0U &&
             np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
             np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
             !np2audio86_runtime_horizon_pending(&runtime->control)) {
             if (!failed(runtime)) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+                if (!terminal_horizon_observed || !pcm_finished) {
+                    fail(runtime, kErrorTransport);
+                }
+#else
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
                 if (kPcmS2PartialLifecycle)
                     runtime->pcm_s2_final_rendering.store(
@@ -2193,6 +2358,7 @@ void worker_task(void *opaque)
                         0U, std::memory_order_release);
 #endif
                 if (!final_rendered) fail(runtime, kErrorFinalRender);
+#endif
             }
             break;
         }
@@ -2204,7 +2370,7 @@ void worker_task(void *opaque)
         (void)p4_nano_audio86_notifications::wait_worker();
     }
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
-    if (!finish_pcm(runtime)) fail(runtime, kErrorFinalRender);
+    if (!pcm_finished && !finish_pcm(runtime)) fail(runtime, kErrorFinalRender);
 #endif
     runtime->worker_quiescent.store(1U, std::memory_order_release);
     (void)xSemaphoreGive(runtime->done);
@@ -2391,7 +2557,26 @@ bool execute_real_i286(Runtime *runtime)
         if (CPU_CLOCK > 100000000U) return false;
     }
     if (failed(runtime)) return false;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    /* HLT is the producer's irrevocable terminal guest boundary.  Arming is
+     * owner-local; the following RESET transaction publishes the declaration
+     * only after its event slot has been released. */
+    runtime->terminal_horizon_armed = true;
+#endif
     board86_reset(&np2cfg, FALSE);
+#if defined(P4_NANO_AUDIO86_TERMINAL_POST_PCM_FAILURE_TEST)
+    if (runtime->terminal_pcm_ready.load(std::memory_order_acquire) == 0U ||
+        runtime->producer_done.load(std::memory_order_acquire) != 0U)
+        return false;
+    if (runtime->lifecycle_runtime != nullptr)
+        (void)runtime->lifecycle_runtime->mark_failure();
+    fail(runtime, kErrorInjectedFatal);
+    std::printf("P4_AUDIO86_TERMINAL_POST_PCM_PRODUCER_FAILURE "
+                "pcm_done=1 guest_done=0 first_error=%" PRIu32
+                " overall=FAIL\n",
+                runtime->first_error.load(std::memory_order_acquire));
+    return false;
+#endif
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
     np2audio86_guest_host_snapshot(&runtime->final_state);
@@ -3994,6 +4179,19 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     np2audio86_event_ring_init(&runtime->events);
     np2audio86_byte_ring_init(&runtime->bytes);
     np2audio86_runtime_control_init(&runtime->control);
+    runtime->producer_clock = {};
+    runtime->consumer_clock = {};
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    runtime->terminal_horizon_armed = false;
+    runtime->terminal_reset_applied_ordinal = 0U;
+    runtime->terminal_horizon_published.store(0U,
+                                               std::memory_order_relaxed);
+    runtime->terminal_horizon_observed.store(0U,
+                                              std::memory_order_relaxed);
+    runtime->terminal_pcm_ready.store(0U, std::memory_order_relaxed);
+    runtime->terminal_pcm_before_guest_done.store(
+        0U, std::memory_order_relaxed);
+#endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     np2opngen_pcm_ring_init(&runtime->pcm_ring);
 #if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
@@ -4364,6 +4562,17 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                     np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
                     np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
                     !np2audio86_runtime_horizon_pending(&runtime->control)
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+                    && runtime->producer_clock.terminal_published_owner == 1U
+                    && runtime->terminal_horizon_published.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->terminal_horizon_observed.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->terminal_pcm_ready.load(
+                           std::memory_order_acquire) == 1U
+                    && runtime->terminal_pcm_before_guest_done.load(
+                           std::memory_order_acquire) == 1U
+#endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
                     && runtime->pcm_ring_finished.load(std::memory_order_acquire) != 0U
                     && np2opngen_pcm_ring_occupancy(&runtime->pcm_ring) == 0U

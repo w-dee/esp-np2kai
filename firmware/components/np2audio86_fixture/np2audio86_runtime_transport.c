@@ -16,6 +16,8 @@ void np2audio86_runtime_control_init(
                 NP2_AUDIO86_RUNTIME_HORIZON_EMPTY);
     control->horizon.horizon_frame_lo = 0U;
     control->horizon.horizon_frame_hi = 0U;
+    control->horizon.horizon_flags = NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE;
+    control->horizon.terminal_reset_ordinal = 0U;
 }
 
 bool np2audio86_runtime_first_error_publish(
@@ -89,12 +91,16 @@ uint32_t np2audio86_runtime_reset_ack(
                                       memory_order_acquire);
 }
 
-int np2audio86_runtime_horizon_publish(
+static int horizon_publish(
     struct np2audio86_runtime_control *control,
-    struct np2audio86_runtime_producer_clock *producer, uint64_t frame)
+    struct np2audio86_runtime_producer_clock *producer, uint64_t frame,
+    uint32_t flags, uint32_t terminal_reset_ordinal)
 {
     if (control == NULL || producer == NULL) {
         return NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT;
+    }
+    if (producer->terminal_published_owner != 0U) {
+        return NP2_AUDIO86_RUNTIME_HORIZON_TERMINATED;
     }
     if (frame < producer->committed_frame_owner) {
         return NP2_AUDIO86_RUNTIME_HORIZON_NONMONOTONIC;
@@ -108,21 +114,62 @@ int np2audio86_runtime_horizon_publish(
      * plain stores happen-before a consumer which acquires FULL. */
     control->horizon.horizon_frame_lo = (uint32_t)frame;
     control->horizon.horizon_frame_hi = (uint32_t)(frame >> 32U);
+    control->horizon.horizon_flags = flags;
+    control->horizon.terminal_reset_ordinal = terminal_reset_ordinal;
     producer->committed_frame_owner = frame;
+    if (flags == NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL) {
+        producer->terminal_published_owner = 1U;
+    }
     atomic_store_explicit(&control->horizon.horizon_state,
                           NP2_AUDIO86_RUNTIME_HORIZON_FULL,
                           memory_order_release);
     return NP2_AUDIO86_RUNTIME_HORIZON_OK;
 }
 
-int np2audio86_runtime_horizon_try_observe(
+int np2audio86_runtime_horizon_publish(
     struct np2audio86_runtime_control *control,
-    struct np2audio86_runtime_consumer_clock *consumer)
+    struct np2audio86_runtime_producer_clock *producer, uint64_t frame)
+{
+    return horizon_publish(control, producer, frame,
+                           NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE, 0U);
+}
+
+int np2audio86_runtime_terminal_horizon_publish(
+    struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_producer_clock *producer, uint64_t frame,
+    uint64_t workload_bound, uint32_t reset_ordinal)
+{
+    if (control == NULL || producer == NULL) {
+        return NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT;
+    }
+    if (reset_ordinal == 0U) {
+        return NP2_AUDIO86_RUNTIME_HORIZON_RESET_REQUIRED;
+    }
+    if (frame > workload_bound) {
+        return NP2_AUDIO86_RUNTIME_HORIZON_BOUNDS;
+    }
+    return horizon_publish(control, producer, frame,
+                           NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL,
+                           reset_ordinal);
+}
+
+bool np2audio86_runtime_semantic_event_permitted(
+    const struct np2audio86_runtime_producer_clock *producer)
+{
+    return producer != NULL && producer->terminal_published_owner == 0U;
+}
+
+int np2audio86_runtime_horizon_try_observe_detail(
+    struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_consumer_clock *consumer,
+    struct np2audio86_runtime_horizon_observation *observation)
 {
     uint32_t low;
     uint32_t high;
     uint64_t frame;
-    if (control == NULL || consumer == NULL) {
+    uint32_t flags;
+    uint32_t reset_ordinal;
+    if (control == NULL || consumer == NULL || observation == NULL) {
         return NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT;
     }
     if (atomic_load_explicit(&control->horizon.horizon_state,
@@ -131,18 +178,32 @@ int np2audio86_runtime_horizon_try_observe(
         return NP2_AUDIO86_RUNTIME_HORIZON_RETRY;
     }
     /* FULL grants the sole consumer exclusive payload ownership.  EMPTY is
-     * not released until both plain loads have completed. */
+     * not released until all plain payload loads have completed. */
     low = control->horizon.horizon_frame_lo;
     high = control->horizon.horizon_frame_hi;
+    flags = control->horizon.horizon_flags;
+    reset_ordinal = control->horizon.terminal_reset_ordinal;
     frame = ((uint64_t)high << 32U) | low;
     if (frame < consumer->committed_frame_reconstructed) {
         return NP2_AUDIO86_RUNTIME_HORIZON_NONMONOTONIC;
     }
     consumer->committed_frame_reconstructed = frame;
+    observation->frame = frame;
+    observation->flags = flags;
+    observation->terminal_reset_ordinal = reset_ordinal;
     atomic_store_explicit(&control->horizon.horizon_state,
                           NP2_AUDIO86_RUNTIME_HORIZON_EMPTY,
                           memory_order_release);
     return NP2_AUDIO86_RUNTIME_HORIZON_OK;
+}
+
+int np2audio86_runtime_horizon_try_observe(
+    struct np2audio86_runtime_control *control,
+    struct np2audio86_runtime_consumer_clock *consumer)
+{
+    struct np2audio86_runtime_horizon_observation observation;
+    return np2audio86_runtime_horizon_try_observe_detail(
+        control, consumer, &observation);
 }
 
 int np2audio86_runtime_horizon_observe(

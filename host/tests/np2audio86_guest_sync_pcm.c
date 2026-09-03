@@ -967,6 +967,9 @@ static int run_sustained_ring_integration(
     struct np2_pcm_output_controller controller;
     struct np2audio86_event_ring reset_events;
     struct np2audio86_runtime_control control;
+    struct np2audio86_runtime_producer_clock producer_clock = {0U, 0U};
+    struct np2audio86_runtime_consumer_clock consumer_clock = {0U};
+    struct np2audio86_runtime_horizon_observation terminal_observation;
     np2audio86_sustained_evidence evidence;
     struct sustained_ring_sink sink_state;
     const struct np2_pcm_sink sink = {
@@ -1015,6 +1018,18 @@ static int run_sustained_ring_integration(
                 np2audio86_reset_event_ring_enqueue(
                     &reset_events, &event, &producer_reset_ordinal) !=
                     NP2_AUDIO86_TRANSPORT_OK ||
+                np2audio86_runtime_terminal_horizon_publish(
+                    &control, &producer_clock, 96000U, 96000U,
+                    producer_reset_ordinal) !=
+                    NP2_AUDIO86_RUNTIME_HORIZON_OK ||
+                np2audio86_runtime_horizon_try_observe_detail(
+                    &control, &consumer_clock, &terminal_observation) !=
+                    NP2_AUDIO86_RUNTIME_HORIZON_OK ||
+                terminal_observation.frame != 96000U ||
+                terminal_observation.flags !=
+                    NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL ||
+                terminal_observation.terminal_reset_ordinal !=
+                    producer_reset_ordinal ||
                 np2audio86_event_ring_peek(
                     &reset_events, &published_reset) !=
                     NP2_AUDIO86_TRANSPORT_OK || published_reset == NULL ||

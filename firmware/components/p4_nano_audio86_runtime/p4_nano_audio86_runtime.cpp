@@ -125,15 +125,15 @@ struct Runtime {
 static_assert(sizeof(struct np2audio86_event) == 24U);
 static_assert(sizeof(struct np2audio86_event_ring) == 3080U);
 static_assert(sizeof(struct np2audio86_byte_ring) == 65544U);
-static_assert(sizeof(struct np2audio86_runtime_control) == 28U);
-static_assert(sizeof(struct np2audio86_runtime_horizon_mailbox) == 12U);
+static_assert(sizeof(struct np2audio86_runtime_control) == 36U);
+static_assert(sizeof(struct np2audio86_runtime_horizon_mailbox) == 20U);
 static_assert(alignof(struct np2audio86_runtime_control) >= 4U);
 static_assert(sizeof(((Runtime *)nullptr)->producer_stack) ==
               kProducerStackBytes);
 static_assert(sizeof(((Runtime *)nullptr)->worker_stack) == kWorkerStackBytes);
 DRAM_ATTR Runtime s_runtime{};
 static_assert(sizeof(StaticTask_t) == 344U);
-static_assert(sizeof(Runtime) == 117152U);
+static_assert(sizeof(Runtime) == 117168U);
 uint32_t s_next_generation = 0U;
 uint32_t s_last_deleted_generation = 0U;
 bool s_storage_reusable = true;
