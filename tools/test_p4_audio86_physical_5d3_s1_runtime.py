@@ -132,7 +132,7 @@ def main() -> int:
             "frozen F1 sustained golden identity changed")
     sha_block = section(
         binding, "constexpr uint8_t kSustainedExpectedPcmSha256",
-        "#endif")
+        "constexpr uint8_t kSustainedExpectedPreResetPcmSha256")
     embedded_sha = "".join(
         match.group(1) for match in
         re.finditer(r"0x([0-9a-f]{2})U", sha_block)
@@ -141,6 +141,17 @@ def main() -> int:
             "kSustainedExpectedPcmCrc32 = 0x" +
             golden["FULL_REPLAY_PCM_CRC32"] + "U" in binding,
             "firmware local PCM identity differs from authoritative golden")
+    pre_reset_sha_block = section(
+        binding, "constexpr uint8_t kSustainedExpectedPreResetPcmSha256",
+        "#endif")
+    embedded_pre_reset_sha = "".join(
+        match.group(1) for match in
+        re.finditer(r"0x([0-9a-f]{2})U", pre_reset_sha_block)
+    )
+    require(embedded_pre_reset_sha ==
+            "5ea610e1e93f2119f9f2175be509a91657aa5de074650ee2b78fe792e782c8d8" and
+            "pre_reset_sha256=" in evidence,
+            "frozen pre-reset SHA-256 is not bound into 5D3 evidence")
     require(all(unchanged_from_baseline(path) for path in UNCHANGED),
             "closed physical sink/capture/golden source changed")
     require("PHYSICAL_EXEC" not in "\n".join(

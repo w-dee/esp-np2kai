@@ -76,6 +76,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         "first_valid_frames=240 first_crc32=b58ed112 final_sequence=399 "
         "final_offset=95760 final_slot_valid_frames=240 final_crc32=6d08c1ec "
         "pre_reset_frames=95761 pre_reset_bytes=383044 pre_reset_crc32=c65c7a5d "
+        "pre_reset_sha256=5ea610e1e93f2119f9f2175be509a91657aa5de074650ee2b78fe792e782c8d8 "
         "reset_frame=95761 reset_sequence=18 reset_ordinal=1 reset_opcode=2147483648 "
         f"io_count={g['GUEST_IO_SEMANTIC_COUNT']} io_crc32={g['GUEST_IO_CRC32']} "
         f"io_sha256={g['GUEST_IO_SHA256']} "
@@ -211,6 +212,7 @@ def main() -> int:
         "E_final": replace_once(base, "final_state_crc32=848e5e85", "final_state_crc32=048e5e85"),
         "F_reset": replace_once(base, "reset_ordinal=1", "reset_ordinal=2"),
         "F_pre_reset": replace_once(base, "pre_reset_crc32=c65c7a5d", "pre_reset_crc32=065c7a5d"),
+        "F_pre_reset_sha": replace_once(base, "pre_reset_sha256=5ea610e1", "pre_reset_sha256=0ea610e1"),
         "G_submit": replace_once(base, "submit_attempts=401", "submit_attempts=400"),
         "G_acceptance": replace_once(base, "sink_accepted_frames=96000", "sink_accepted_frames=95760"),
         "H_running_qovf": replace_once(base, "running_q_ovf=0", "running_q_ovf=1"),

@@ -61,6 +61,7 @@ RECORD_FIELDS = {
         "first_sequence", "first_offset", "first_valid_frames", "first_crc32",
         "final_sequence", "final_offset", "final_slot_valid_frames", "final_crc32",
         "pre_reset_frames", "pre_reset_bytes", "pre_reset_crc32",
+        "pre_reset_sha256",
         "reset_frame", "reset_sequence", "reset_ordinal", "reset_opcode",
         "io_count", "io_crc32", "io_sha256", "event_count", "event_crc32",
         "event_sha256", "timer_count", "timer_crc32", "timer_sha256",
@@ -98,6 +99,7 @@ RECORD_FIELDS = {
 RECORD_ORDER = tuple(RECORD_FIELDS)
 CRC32 = re.compile(r"[0-9a-f]{8}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+PRE_RESET_SHA256 = "5ea610e1e93f2119f9f2175be509a91657aa5de074650ee2b78fe792e782c8d8"
 PASS_LINE = b"P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=COMPLETE"
 FAIL_LINE = b"P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=FAILED"
 REAL_GUEST_PASS_LINE = b"P4_AUDIO86_REAL_GUEST_RESULT=PASS"
@@ -346,6 +348,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
             numeric["stream.pre_reset_frames"] == 95761 and
             numeric["stream.pre_reset_bytes"] == 383044 and
             stream["pre_reset_crc32"] == "c65c7a5d" and
+            stream["pre_reset_sha256"] == PRE_RESET_SHA256 and
             numeric["stream.reset_frame"] == 95761 and
             numeric["stream.reset_sequence"] == 18 and
             numeric["stream.reset_ordinal"] == 1 and

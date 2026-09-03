@@ -100,6 +100,13 @@ constexpr uint8_t kSustainedExpectedPcmSha256[NP2_SHA256_DIGEST_SIZE] = {
     0xd4U, 0xaaU, 0x31U, 0xa0U, 0x33U, 0xc9U, 0x22U, 0x3eU,
     0xb2U, 0x25U, 0x00U, 0x60U, 0x4fU, 0xffU, 0x62U, 0xa0U,
 };
+constexpr uint8_t kSustainedExpectedPreResetPcmSha256[
+    NP2_SHA256_DIGEST_SIZE] = {
+    0x5eU, 0xa6U, 0x10U, 0xe1U, 0xe9U, 0x3fU, 0x21U, 0x19U,
+    0xf9U, 0xf2U, 0x17U, 0x5bU, 0xe5U, 0x09U, 0xa9U, 0x16U,
+    0x57U, 0xaaU, 0x5dU, 0xe0U, 0x74U, 0x65U, 0x0eU, 0xe2U,
+    0xb7U, 0x8fU, 0xe7U, 0x92U, 0xe7U, 0x82U, 0xc8U, 0xd8U,
+};
 #endif
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 #if !defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
@@ -2911,7 +2918,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " final_sequence=%" PRIu32 " final_offset=%" PRIu64
                 " final_slot_valid_frames=%u final_crc32=%08" PRIx32
                 " pre_reset_frames=%" PRIu64 " pre_reset_bytes=%" PRIu64
-                " pre_reset_crc32=%08" PRIx32,
+                " pre_reset_crc32=%08" PRIx32 " pre_reset_sha256=",
                 e.next_generated_sequence, e.next_accepted_sequence,
                 e.next_generated_sequence, e.next_accepted_sequence,
                 e.next_generated_frame_offset, e.next_accepted_frame_offset,
@@ -2921,6 +2928,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 e.final_accepted.sequence, e.final_accepted.frame_offset,
                 e.final_accepted.valid_frames, e.final_accepted.crc32,
                 e.reset.frames, e.reset.bytes, e.reset.crc32);
+    print_sha256(e.reset.sha256);
     std::printf(" reset_frame=%" PRIu64 " reset_sequence=%" PRIu32
                 " reset_ordinal=%" PRIu32 " reset_opcode=2147483648"
                 " io_count=%" PRIu64 " io_crc32=%08" PRIx32 " io_sha256=",
@@ -3063,6 +3071,8 @@ sustained_physical_local_health(const Runtime *runtime)
     local.reset_identity_expected = e.reset.frozen &&
         e.reset.frames == 95761U && e.reset.bytes == 383044U &&
         e.reset.crc32 == 0xc65c7a5dU &&
+        std::memcmp(e.reset.sha256, kSustainedExpectedPreResetPcmSha256,
+                    sizeof(e.reset.sha256)) == 0 &&
         e.reset.reset_event_frame == 95761U &&
         e.reset.reset_event_sequence == 18U && e.reset.reset_ordinal == 1U &&
         e.reset.ring_next_frame_offset == 95761U &&
