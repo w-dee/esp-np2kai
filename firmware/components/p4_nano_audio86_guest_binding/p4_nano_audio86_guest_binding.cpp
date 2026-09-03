@@ -260,6 +260,8 @@ struct Runtime {
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
     uint64_t physical_diagnostic_origin_us = 0U;
     bool physical_diagnostic_origin_valid = false;
+    std::atomic<uint32_t> physical_diagnostic_rendered_frames{0U};
+    std::atomic<uint32_t> physical_diagnostic_next_published_sequence{0U};
 #endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     PhysicalSnapshot physical{};
@@ -851,6 +853,38 @@ void observe_physical_qovf(Runtime *runtime, const uint64_t now_us)
     p4_nano_audio86_physical_sink_observe_first_qovf(
         runtime->physical_sink, physical_diagnostic_relative_us(runtime, now_us));
 }
+
+void publish_physical_ring_context(Runtime *runtime)
+{
+    p4_nano_audio86_physical_sink_publish_ring_context(
+        runtime->physical_sink,
+        runtime->physical_diagnostic_rendered_frames.load(
+            std::memory_order_acquire),
+        runtime->physical_diagnostic_next_published_sequence.load(
+            std::memory_order_acquire),
+        np2opngen_pcm_ring_occupancy(&runtime->pcm_ring),
+        runtime->pcm_production_done.load(std::memory_order_acquire) != 0U);
+}
+
+void publish_physical_wait_enter(
+    Runtime *runtime, const p4_nano_audio86_consumer_wait_reason reason,
+    const uint32_t sequence)
+{
+    publish_physical_ring_context(runtime);
+    p4_nano_audio86_physical_sink_publish_wait_enter(
+        runtime->physical_sink, reason, sequence,
+        physical_diagnostic_relative_us(runtime, physical_diagnostic_now_us()));
+}
+
+void publish_physical_wait_resume(
+    Runtime *runtime, const p4_nano_audio86_consumer_wait_reason reason,
+    const uint32_t sequence)
+{
+    p4_nano_audio86_physical_sink_publish_wait_resume(
+        runtime->physical_sink, reason, sequence,
+        physical_diagnostic_relative_us(runtime, physical_diagnostic_now_us()));
+    publish_physical_ring_context(runtime);
+}
 #endif
 
 enum np2_pcm_sink_result sustained_sink_start(void *opaque)
@@ -1013,6 +1047,11 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         const int status = np2opngen_pcm_ring_append(
             &runtime->pcm_ring, pcm + appended * 4U, frames - appended,
             frame_offset + appended, &consumed);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        runtime->physical_diagnostic_next_published_sequence.store(
+            runtime->pcm_ring.next_sequence, std::memory_order_release);
+        publish_physical_ring_context(runtime);
+#endif
         appended += consumed;
         runtime->pcm_produced_frames += consumed;
         runtime->pcm_produced_bytes += consumed * 4U;
@@ -1074,6 +1113,11 @@ bool finish_pcm(Runtime *runtime)
             runtime->pcm_ring_finished.store(1U, std::memory_order_release);
             runtime->pcm_ring_before_done = 1U;
             runtime->pcm_production_done.store(1U, std::memory_order_release);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            runtime->physical_diagnostic_next_published_sequence.store(
+                runtime->pcm_ring.next_sequence, std::memory_order_release);
+            publish_physical_ring_context(runtime);
+#endif
             resolve_post_done_retry(runtime);
             notify_pcm_consumer(runtime);
             return true;
@@ -1236,7 +1280,17 @@ void pcm_consumer_task(void *opaque)
                        runtime->pcm_sink_permission.load(
                            std::memory_order_acquire) == kPcmSinkPermissionHold) {
 #endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+                    publish_physical_wait_enter(
+                        runtime, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+                        physical_step_sequence);
+#endif
                     (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+                    publish_physical_wait_resume(
+                        runtime, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+                        physical_step_sequence);
+#endif
                     ++runtime->pcm_retry_wakes;
                 }
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
@@ -1278,6 +1332,9 @@ void pcm_consumer_task(void *opaque)
                 runtime->pcm_post_done_retry_waiting.store(
                     0U, std::memory_order_release);
             }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            publish_physical_ring_context(runtime);
+#endif
             notify_worker(runtime);
             continue;
         }
@@ -1294,6 +1351,12 @@ void pcm_consumer_task(void *opaque)
                 runtime->sustained.next_accepted_sequence,
                 runtime->sustained.next_accepted_sequence,
                 physical_diagnostic_now_us());
+#endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            publish_physical_wait_enter(
+                runtime,
+                P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL,
+                runtime->sustained.next_accepted_sequence);
 #endif
             const enum np2_pcm_output_status finish_status =
                 np2_pcm_output_finish(&runtime->pcm_controller);
@@ -1321,8 +1384,24 @@ void pcm_consumer_task(void *opaque)
             }
             break;
         }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        const p4_nano_audio86_consumer_wait_reason wait_reason = released
+            ? P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY
+            : P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL;
+        publish_physical_wait_enter(
+            runtime, wait_reason, runtime->sustained.next_accepted_sequence);
+#endif
         (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        publish_physical_wait_resume(
+            runtime, wait_reason, runtime->sustained.next_accepted_sequence);
+#endif
     }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    publish_physical_wait_enter(
+        runtime, P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL,
+        runtime->sustained.next_accepted_sequence);
+#endif
     runtime->pcm_consumer_quiescent.store(1U, std::memory_order_release);
     (void)xSemaphoreGive(runtime->pcm_done_semaphore);
     vTaskSuspend(nullptr);
@@ -1811,6 +1890,12 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
                                              &stats) != 0) return false;
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         runtime->pcm_semantic_rendered_frames += frames;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        runtime->physical_diagnostic_rendered_frames.store(
+            static_cast<uint32_t>(runtime->pcm_semantic_rendered_frames),
+            std::memory_order_release);
+        publish_physical_ring_context(runtime);
+#endif
 #endif
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
         if (np2audio86_sustained_generated(
@@ -3010,6 +3095,20 @@ const char *consumer_service_phase_name(const uint32_t phase)
     return "UNKNOWN";
 }
 
+const char *consumer_wait_reason_name(const uint32_t reason)
+{
+    switch (reason) {
+    case P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE: return "RUNNABLE";
+    case P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF: return "RETRY_EOF_WAIT";
+    case P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY:
+        return "PCM_RING_EMPTY_WAIT";
+    case P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL: return "PCM_PREFILL_WAIT";
+    case P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL:
+        return "FINISH_OR_TERMINAL_WAIT";
+    }
+    return "UNKNOWN";
+}
+
 const char *first_qovf_state_name(const uint32_t state)
 {
     if (state == 0U) return "NONE";
@@ -3068,7 +3167,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
             sink.preloaded_units
         ? sink.physical_units_copied - sink.preloaded_units : 0U;
 
-    std::printf("5D3_S1_IDENTITY schema=2 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_IDENTITY schema=3 evidence_class=PHYSICAL_EXEC"
                 " source_git_sha=%s"
                 " profile=AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S"
                 " workload_id=FULL_REPLAY_PCM_SUSTAINED_2S_V1"
@@ -3077,7 +3176,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " guest_program_crc32=e577580a"
                 " guest_program_sha256=56443e5c4e524a34e046387e83ef7f89b647d60bc0b3c2ff7c84abe5084a6ce7\n",
                 P4_AUDIO86_GIT_SHA);
-    std::printf("5D3_S1_START schema=2 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_START schema=3 evidence_class=PHYSICAL_EXEC"
                 " rate_hz=48000 channels=2 sample_bits=16 encoding=S16LE"
                 " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
                 " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
@@ -3107,7 +3206,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 sink.startup_durations_valid,
                 sink.enable_stream_duration_us,
                 sink.codec_unmute_duration_us);
-    std::printf("5D3_S1_STREAM schema=2 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_STREAM schema=3 evidence_class=PHYSICAL_EXEC"
                 " generated_frames=%" PRIu64 " generated_bytes=%" PRIu64
                 " generated_crc32=%08" PRIx32 " generated_sha256=",
                 e.next_generated_frame_offset, e.generated.bytes, generated_crc);
@@ -3196,7 +3295,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 snapshot.abandoned_published_frames,
                 snapshot.abandoned_partial_frames,
                 snapshot.abandoned_rendered_frames);
-    std::printf("5D3_S1_PROGRESS schema=2 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_PROGRESS schema=3 evidence_class=PHYSICAL_EXEC"
                 " pcm_ring_max_occupancy=%" PRIu32
                 " pcm_producer_full_wait_count=%" PRIu32
                 " pcm_consumer_empty_after_release_before_done_count=%" PRIu32
@@ -3232,7 +3331,15 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 e.max_downstream_submit_sequence,
                 e.max_post_accept_evidence_us,
                 e.max_post_accept_evidence_sequence);
-    std::printf("5D3_S1_FINISH schema=2 evidence_class=PHYSICAL_EXEC"
+    const uint32_t q399_rendered =
+        sink.first_qovf_rendered_frames >= kRenderFrames ? 1U : 0U;
+    const uint32_t q399_published =
+        sink.first_qovf_next_published_sequence >= kExpectedPcmSlots ? 1U : 0U;
+    const uint32_t q399_available = q399_published != 0U &&
+            sink.first_qovf_consumer_next_sequence < kExpectedPcmSlots &&
+            sink.first_qovf_ring_occupancy != 0U
+        ? 1U : 0U;
+    std::printf("5D3_S1_FINISH schema=3 evidence_class=PHYSICAL_EXEC"
                 " controller_state=%s sink_state=%s"
                 " final_copy_eof_epoch=%" PRIu32
                 " drain_completion_eof_epoch=%" PRIu32
@@ -3253,6 +3360,28 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " first_qovf_last_submit_return_us=%" PRIu32
                 " first_qovf_last_step_exit_us=%" PRIu32
                 " first_qovf_last_running_accepted_us=%" PRIu32
+                " first_qovf_wait_reason=%s"
+                " first_qovf_consumer_next_sequence=%" PRIu32
+                " first_qovf_next_published_sequence=%" PRIu32
+                " first_qovf_q399_rendered=%" PRIu32
+                " first_qovf_q399_published=%" PRIu32
+                " first_qovf_q399_available=%" PRIu32
+                " first_qovf_ring_occupancy=%" PRIu32
+                " first_qovf_production_done=%" PRIu32
+                " first_qovf_rendered_frames=%" PRIu32
+                " first_qovf_eof_notify_count=%" PRIu32
+                " first_qovf_hpwoken_true_count=%" PRIu32
+                " first_qovf_retry_wait_enter_count=%" PRIu32
+                " first_qovf_retry_wait_resume_count=%" PRIu32
+                " first_qovf_ring_wait_enter_count=%" PRIu32
+                " first_qovf_ring_wait_resume_count=%" PRIu32
+                " first_qovf_last_wait_enter_us=%" PRIu32
+                " first_qovf_last_wait_resume_us=%" PRIu32
+                " first_qovf_last_resume_reason=%s"
+                " first_qovf_last_resume_sequence=%" PRIu32
+                " notification_state_model=PROJECT_WAIT_REASON_AND_COUNTERS"
+                " cpu0_task_identity=UNAVAILABLE_SAFELY"
+                " service_phase_semantics=LAST_SERVICE_NOT_WAIT_REASON"
                 " first_qovf_observed=%" PRIu32
                 " first_qovf_observed_us=%" PRIu32
                 " qovf_time_semantics=TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER"
@@ -3284,6 +3413,23 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 sink.first_qovf_last_submit_return_us,
                 sink.first_qovf_last_step_exit_us,
                 sink.first_qovf_last_running_accepted_us,
+                consumer_wait_reason_name(sink.first_qovf_wait_reason),
+                sink.first_qovf_consumer_next_sequence,
+                sink.first_qovf_next_published_sequence,
+                q399_rendered, q399_published, q399_available,
+                sink.first_qovf_ring_occupancy,
+                sink.first_qovf_production_done,
+                sink.first_qovf_rendered_frames,
+                sink.first_qovf_eof_notify_count,
+                sink.first_qovf_hpwoken_true_count,
+                sink.first_qovf_retry_wait_enter_count,
+                sink.first_qovf_retry_wait_resume_count,
+                sink.first_qovf_ring_wait_enter_count,
+                sink.first_qovf_ring_wait_resume_count,
+                sink.first_qovf_last_wait_enter_us,
+                sink.first_qovf_last_wait_resume_us,
+                consumer_wait_reason_name(sink.first_qovf_last_resume_reason),
+                sink.first_qovf_last_resume_sequence,
                 sink.first_qovf_observed,
                 sink.first_qovf_observed_us,
                 sink.registered_generation, sink.generation,
@@ -3843,6 +3989,12 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
 #else
     np2audio86_sustained_evidence_init(&runtime->sustained);
     runtime->rendered_frame_published.store(0U, std::memory_order_relaxed);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    runtime->physical_diagnostic_rendered_frames.store(
+        0U, std::memory_order_relaxed);
+    runtime->physical_diagnostic_next_published_sequence.store(
+        0U, std::memory_order_relaxed);
+#endif
 #endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     runtime->physical = {};

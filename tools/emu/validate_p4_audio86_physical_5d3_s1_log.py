@@ -102,7 +102,21 @@ RECORD_FIELDS = {
         "first_qovf_current_sequence", "first_qovf_published_sequence",
         "first_qovf_last_step_enter_us",
         "first_qovf_last_submit_return_us", "first_qovf_last_step_exit_us",
-        "first_qovf_last_running_accepted_us", "first_qovf_observed",
+        "first_qovf_last_running_accepted_us", "first_qovf_wait_reason",
+        "first_qovf_consumer_next_sequence",
+        "first_qovf_next_published_sequence", "first_qovf_q399_rendered",
+        "first_qovf_q399_published", "first_qovf_q399_available",
+        "first_qovf_ring_occupancy", "first_qovf_production_done",
+        "first_qovf_rendered_frames", "first_qovf_eof_notify_count",
+        "first_qovf_hpwoken_true_count",
+        "first_qovf_retry_wait_enter_count",
+        "first_qovf_retry_wait_resume_count",
+        "first_qovf_ring_wait_enter_count",
+        "first_qovf_ring_wait_resume_count", "first_qovf_last_wait_enter_us",
+        "first_qovf_last_wait_resume_us", "first_qovf_last_resume_reason",
+        "first_qovf_last_resume_sequence", "notification_state_model",
+        "cpu0_task_identity", "service_phase_semantics",
+        "first_qovf_observed",
         "first_qovf_observed_us", "qovf_time_semantics",
         "registered_generation", "terminal_generation", "stale_callbacks",
         "callback_in_flight", "callbacks_active", "codec_final_muted",
@@ -230,7 +244,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     identity, start, stream, progress, finish = (
         records[name] for name in RECORD_ORDER)
     for name, fields in records.items():
-        require(errors, fields["schema"] == "2", f"{name}: schema mismatch")
+        require(errors, fields["schema"] == "3", f"{name}: schema mismatch")
         require(errors, fields["evidence_class"] == evidence_class,
                 f"{name}: evidence class mismatch")
 
@@ -238,7 +252,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     if golden is None:
         return errors
     expected_identity = {
-        "schema": "2", "evidence_class": evidence_class,
+        "schema": "3", "evidence_class": evidence_class,
         "source_git_sha": expected_source_sha,
         "profile": "AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S",
         "workload_id": "FULL_REPLAY_PCM_SUSTAINED_2S_V1",
@@ -274,6 +288,9 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
         "schema", "evidence_class", "encoding", "i2s_format", "clock_source",
         "timing_authority", "controller_state", "sink_state",
         "first_qovf_state", "first_qovf_phase", "qovf_time_semantics",
+        "first_qovf_wait_reason", "first_qovf_last_resume_reason",
+        "notification_state_model", "cpu0_task_identity",
+        "service_phase_semantics",
     }
     digest_fields = {key for key in stream if key.endswith("crc32") or
                      key.endswith("sha256")}
@@ -472,6 +489,21 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
                 "DOWNSTREAM_SUBMIT", "POST_ACCEPT_EVIDENCE", "WAIT_EOF",
                 "FINISH",
             }, "first q_ovf phase invalid")
+    wait_reasons = {
+        "RUNNABLE", "RETRY_EOF_WAIT", "PCM_RING_EMPTY_WAIT",
+        "PCM_PREFILL_WAIT", "FINISH_OR_TERMINAL_WAIT",
+    }
+    require(errors, finish["first_qovf_wait_reason"] in wait_reasons,
+            "first q_ovf wait reason invalid")
+    require(errors, finish["first_qovf_last_resume_reason"] in wait_reasons,
+            "first q_ovf last resume reason invalid")
+    require(errors,
+            finish["notification_state_model"] ==
+                "PROJECT_WAIT_REASON_AND_COUNTERS" and
+            finish["cpu0_task_identity"] == "UNAVAILABLE_SAFELY" and
+            finish["service_phase_semantics"] ==
+                "LAST_SERVICE_NOT_WAIT_REASON",
+            "final-boundary diagnostic semantics mismatch")
     require(errors,
             0 <= numeric["finish.first_qovf_eof_epoch"] <= 0xFFFFFFFF and
             0 <= numeric["finish.first_qovf_current_sequence"] < units and
@@ -486,6 +518,82 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     require(errors, all(0 <= value <= 0xFFFFFFFF for value in qovf_times) and
             0 <= numeric["finish.first_qovf_observed_us"] <= 0xFFFFFFFF,
             "first q_ovf progress timestamp outside uint32 range")
+    consumer_sequence = numeric["finish.first_qovf_consumer_next_sequence"]
+    published_sequence = numeric["finish.first_qovf_next_published_sequence"]
+    ring_occupancy = numeric["finish.first_qovf_ring_occupancy"]
+    production_done = numeric["finish.first_qovf_production_done"]
+    rendered_frames = numeric["finish.first_qovf_rendered_frames"]
+    q399_rendered = numeric["finish.first_qovf_q399_rendered"]
+    q399_published = numeric["finish.first_qovf_q399_published"]
+    q399_available = numeric["finish.first_qovf_q399_available"]
+    eof_notify = numeric["finish.first_qovf_eof_notify_count"]
+    hpwoken = numeric["finish.first_qovf_hpwoken_true_count"]
+    retry_enter = numeric["finish.first_qovf_retry_wait_enter_count"]
+    retry_resume = numeric["finish.first_qovf_retry_wait_resume_count"]
+    ring_enter = numeric["finish.first_qovf_ring_wait_enter_count"]
+    ring_resume = numeric["finish.first_qovf_ring_wait_resume_count"]
+    last_wait_enter = numeric["finish.first_qovf_last_wait_enter_us"]
+    last_wait_resume = numeric["finish.first_qovf_last_wait_resume_us"]
+    last_resume_sequence = numeric["finish.first_qovf_last_resume_sequence"]
+    require(errors,
+            0 <= consumer_sequence <= units and
+            0 <= published_sequence <= units and
+            0 <= ring_occupancy <= numeric["start.ring_capacity"] and
+            production_done in (0, 1) and
+            0 <= rendered_frames <= frames and
+            q399_rendered in (0, 1) and q399_published in (0, 1) and
+            q399_available in (0, 1),
+            "final-boundary ring state outside structural bounds")
+    require(errors,
+            q399_rendered == int(rendered_frames >= frames) and
+            q399_published == int(published_sequence >= units) and
+            q399_available == int(
+                q399_published == 1 and consumer_sequence < units and
+                ring_occupancy > 0),
+            "q399 derived-state inconsistency")
+    require(errors, production_done == 0 or published_sequence == units,
+            "production-done publication inconsistency")
+    require(errors, hpwoken <= eof_notify,
+            "higher-priority-woken count exceeds EOF notifications")
+    require(errors, retry_resume <= retry_enter and ring_resume <= ring_enter,
+            "wait resume count exceeds wait entry count")
+    require(errors, 0 <= last_wait_enter <= 0xFFFFFFFF and
+            0 <= last_wait_resume <= 0xFFFFFFFF and
+            0 <= last_resume_sequence <= units,
+            "wait/resume diagnostic range mismatch")
+    wait_reason = finish["first_qovf_wait_reason"]
+    if wait_reason == "RUNNABLE":
+        require(errors, retry_enter == retry_resume and ring_enter == ring_resume,
+                "RUNNABLE snapshot has an unmatched wait entry")
+        if retry_resume + ring_resume > 0:
+            require(errors, last_wait_resume >= last_wait_enter,
+                    "RUNNABLE snapshot resumes before latest wait entry")
+    elif wait_reason == "RETRY_EOF_WAIT":
+        require(errors, consumer_sequence < units and
+                retry_enter == retry_resume + 1 and
+                ring_enter == ring_resume and
+                last_wait_enter >= last_wait_resume,
+                "RETRY EOF wait tuple is impossible")
+    elif wait_reason in {"PCM_RING_EMPTY_WAIT", "PCM_PREFILL_WAIT"}:
+        require(errors, ring_occupancy == 0 and
+                ring_enter == ring_resume + 1 and
+                retry_enter == retry_resume and
+                last_wait_enter >= last_wait_resume,
+                "PCM ring wait tuple is impossible")
+    else:
+        require(errors, retry_enter == retry_resume and ring_enter == ring_resume,
+                "terminal snapshot has an unmatched wait entry")
+    if retry_resume + ring_resume == 0:
+        require(errors, last_wait_resume == 0 and
+                finish["first_qovf_last_resume_reason"] == "RUNNABLE" and
+                last_resume_sequence == 0,
+                "zero-resume snapshot contains resume diagnostics")
+    else:
+        require(errors,
+                finish["first_qovf_last_resume_reason"] in {
+                    "RETRY_EOF_WAIT", "PCM_RING_EMPTY_WAIT", "PCM_PREFILL_WAIT",
+                } and last_resume_sequence < units,
+                "last resume tuple is impossible")
     if numeric["stream.running_q_ovf"] > 0:
         require(errors, latch == 1 and observed == 1 and
                 finish["first_qovf_state"] in {"STARTING", "RUNNING"} and
@@ -500,6 +608,24 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
                 numeric["finish.first_qovf_current_sequence"] == 0 and
                 numeric["finish.first_qovf_published_sequence"] == 0 and
                 all(value == 0 for value in qovf_times) and
+                all(numeric[f"finish.{name}"] == 0 for name in (
+                    "first_qovf_consumer_next_sequence",
+                    "first_qovf_next_published_sequence",
+                    "first_qovf_q399_rendered", "first_qovf_q399_published",
+                    "first_qovf_q399_available", "first_qovf_ring_occupancy",
+                    "first_qovf_production_done", "first_qovf_rendered_frames",
+                    "first_qovf_eof_notify_count",
+                    "first_qovf_hpwoken_true_count",
+                    "first_qovf_retry_wait_enter_count",
+                    "first_qovf_retry_wait_resume_count",
+                    "first_qovf_ring_wait_enter_count",
+                    "first_qovf_ring_wait_resume_count",
+                    "first_qovf_last_wait_enter_us",
+                    "first_qovf_last_wait_resume_us",
+                    "first_qovf_last_resume_sequence",
+                )) and
+                finish["first_qovf_wait_reason"] == "RUNNABLE" and
+                finish["first_qovf_last_resume_reason"] == "RUNNABLE" and
                 numeric["finish.first_qovf_observed_us"] == 0,
                 "zero-q_ovf run contains a spurious first-fault latch")
 

@@ -42,6 +42,7 @@ struct fake_backend {
     unsigned unregister_calls;
     unsigned release_calls;
     unsigned notifications;
+    unsigned notify_hpwoken;
     unsigned auto_eof_budget;
     unsigned post_completion_eof_qovf_budget;
     int qovf_on_wait;
@@ -293,11 +294,13 @@ static void fake_wait(void *opaque, uint32_t timeout_ms)
     }
 }
 
-static void fake_notify(void *opaque, bool from_isr)
+static uint32_t fake_notify(void *opaque, bool from_isr)
 {
     struct fake_backend *fake = opaque;
-    (void)from_isr;
     fake->notifications++;
+    return P4_NANO_AUDIO86_NOTIFY_ATTEMPTED |
+           (from_isr && fake->notify_hpwoken
+                ? P4_NANO_AUDIO86_NOTIFY_HIGHER_PRIORITY_WOKEN : 0U);
 }
 
 static void fake_release(void *opaque)
@@ -827,6 +830,159 @@ static void test_first_qovf_latch(void)
            p4_nano_audio86_physical_sink_diagnostic_storage_bytes());
 }
 
+static void test_final_boundary_diagnostics(void)
+{
+    uint8_t pcm[P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES];
+    fill_pcm(pcm, sizeof(pcm), 71U);
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 95760U, 399U, 0U, false);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY,
+            399U, 100U);
+        fake.notify_hpwoken = 1U;
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY &&
+               telemetry.first_qovf_consumer_next_sequence == 399U &&
+               telemetry.first_qovf_next_published_sequence == 399U &&
+               telemetry.first_qovf_ring_occupancy == 0U &&
+               telemetry.first_qovf_production_done == 0U &&
+               telemetry.first_qovf_rendered_frames == 95760U &&
+               telemetry.first_qovf_eof_notify_count == 1U &&
+               telemetry.first_qovf_hpwoken_true_count == 1U &&
+               telemetry.first_qovf_ring_wait_enter_count == 1U &&
+               telemetry.first_qovf_ring_wait_resume_count == 0U &&
+               telemetry.first_qovf_last_wait_enter_us == 100U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 96000U, 400U, 1U, false);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+            399U, 200U);
+        fake.notify_hpwoken = 0U;
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        p4_nano_audio86_physical_sink_publish_wait_resume(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+            399U, 210U);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+            399U, 220U);
+        fake.notify_hpwoken = 1U;
+        p4_nano_audio86_callback_gate_on_sent(fake.callback_gate);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF &&
+               telemetry.first_qovf_next_published_sequence == 400U &&
+               telemetry.first_qovf_ring_occupancy == 1U &&
+               telemetry.first_qovf_rendered_frames == 96000U &&
+               telemetry.first_qovf_eof_notify_count == 2U &&
+               telemetry.first_qovf_hpwoken_true_count == 1U &&
+               telemetry.first_qovf_retry_wait_enter_count == 2U &&
+               telemetry.first_qovf_retry_wait_resume_count == 1U &&
+               telemetry.first_qovf_last_wait_enter_us == 220U &&
+               telemetry.first_qovf_last_wait_resume_us == 210U &&
+               telemetry.first_qovf_last_resume_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF &&
+               telemetry.first_qovf_last_resume_sequence == 399U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY,
+            399U, 300U);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 96000U, 400U, 1U, true);
+        p4_nano_audio86_physical_sink_publish_wait_resume(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY,
+            399U, 310U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE &&
+               telemetry.first_qovf_next_published_sequence == 400U &&
+               telemetry.first_qovf_ring_occupancy == 1U &&
+               telemetry.first_qovf_production_done == 1U &&
+               telemetry.first_qovf_ring_wait_enter_count == 1U &&
+               telemetry.first_qovf_ring_wait_resume_count == 1U &&
+               telemetry.first_qovf_last_wait_resume_us == 310U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 96000U, 400U, 2U, true);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+            398U, 400U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF &&
+               telemetry.first_qovf_consumer_next_sequence == 398U &&
+               telemetry.first_qovf_next_published_sequence == 400U &&
+               telemetry.first_qovf_ring_occupancy == 2U &&
+               telemetry.first_qovf_production_done == 1U &&
+               telemetry.first_qovf_rendered_frames == 96000U &&
+               telemetry.first_qovf_retry_wait_enter_count == 1U &&
+               telemetry.first_qovf_retry_wait_resume_count == 0U);
+        close_sink(&fake, sink, &interface);
+    }
+    {
+        struct fake_backend fake;
+        struct np2_pcm_sink interface;
+        struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+        struct p4_nano_audio86_physical_telemetry telemetry;
+        start_sink(&interface);
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_ring_context(
+            sink, 96000U, 400U, 0U, true);
+        p4_nano_audio86_physical_sink_publish_wait_enter(
+            sink, P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL,
+            400U, 500U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+        p4_nano_audio86_physical_sink_get_telemetry(sink, &telemetry);
+        assert(telemetry.first_qovf_wait_reason ==
+                   P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL &&
+               telemetry.first_qovf_consumer_next_sequence == 400U &&
+               telemetry.first_qovf_next_published_sequence == 400U &&
+               telemetry.first_qovf_ring_occupancy == 0U &&
+               telemetry.first_qovf_production_done == 1U);
+        close_sink(&fake, sink, &interface);
+    }
+    puts("CONSUMER_WAIT_REASON_HOST_TEST=PASS");
+    puts("EOF_WAKE_COUNTER_HOST_TEST=PASS");
+    puts("FINAL_Q399_DIAGNOSTIC_STATE_MACHINE_TEST=PASS");
+}
+
 struct callback_race_threads {
     struct fake_backend *fake;
     struct np2_pcm_sink *interface;
@@ -1200,6 +1356,7 @@ int main(void)
     test_finish_and_callbacks();
     test_queue_overflow();
     test_first_qovf_latch();
+    test_final_boundary_diagnostics();
     test_quiescence_timeout();
     test_callback_control_faults();
     test_terminal_accounting();

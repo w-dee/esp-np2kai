@@ -91,9 +91,9 @@ def main() -> int:
     evidence = section(binding, "void emit_physical_5d3_s1_evidence(",
                        "sustained_physical_local_health(")
     names = (
-        "5D3_S1_IDENTITY schema=2", "5D3_S1_START schema=2",
-        "5D3_S1_STREAM schema=2", "5D3_S1_PROGRESS schema=2",
-        "5D3_S1_FINISH schema=2",
+        "5D3_S1_IDENTITY schema=3", "5D3_S1_START schema=3",
+        "5D3_S1_STREAM schema=3", "5D3_S1_PROGRESS schema=3",
+        "5D3_S1_FINISH schema=3",
     )
     positions = [evidence.find(name) for name in names]
     require(all(position >= 0 for position in positions) and
@@ -165,6 +165,13 @@ def main() -> int:
         "TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER",
         "retry_episode_units", "direct_running_accept_units",
         "max_downstream_submit_us", "max_post_accept_evidence_us",
+        "publish_physical_wait_enter", "publish_physical_wait_resume",
+        "publish_physical_ring_context", "first_qovf_wait_reason",
+        "first_qovf_q399_rendered", "first_qovf_q399_published",
+        "first_qovf_q399_available", "first_qovf_eof_notify_count",
+        "first_qovf_hpwoken_true_count",
+        "PROJECT_WAIT_REASON_AND_COUNTERS",
+        "LAST_SERVICE_NOT_WAIT_REASON", "UNAVAILABLE_SAFELY",
     ):
         require(token in binding or token in (
                     ROOT / "firmware/components/np2audio86_fixture/include/"
@@ -188,6 +195,9 @@ def main() -> int:
     print("SUSTAINED_GUEST_COOPERATIVE_SCHEDULING=PASS")
     print("WDT_FEED_ONLY_FIX_REJECTED=YES")
     print("PHYSICAL_ACCEPTANCE_THRESHOLDS_UNCHANGED=PASS")
+    print("5D3_SCHEMA3_WAIT_REASON_INSTRUMENTATION=PASS")
+    print("FROZEN_QOVF_FINAL_BOUNDARY_CONTEXT=PASS")
+    print("PHYSICAL_RUNTIME_BEHAVIOR_UNCHANGED_BY_DIAGNOSTICS=PASS")
     return 0
 
 

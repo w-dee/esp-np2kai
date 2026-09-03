@@ -24,6 +24,27 @@
 #define DIAGNOSTIC_CURRENT_SHIFT DIAGNOSTIC_PHASE_BITS
 #define DIAGNOSTIC_PUBLISHED_SHIFT \
     (DIAGNOSTIC_PHASE_BITS + DIAGNOSTIC_SEQUENCE_BITS)
+#define DIAGNOSTIC_WAIT_REASON_BITS 3U
+#define DIAGNOSTIC_WAIT_SEQUENCE_BITS 9U
+#define DIAGNOSTIC_WAIT_REASON_MASK \
+    ((1U << DIAGNOSTIC_WAIT_REASON_BITS) - 1U)
+#define DIAGNOSTIC_WAIT_SEQUENCE_MASK \
+    ((1U << DIAGNOSTIC_WAIT_SEQUENCE_BITS) - 1U)
+#define DIAGNOSTIC_WAIT_SEQUENCE_SHIFT DIAGNOSTIC_WAIT_REASON_BITS
+#define DIAGNOSTIC_RENDERED_FRAME_BITS 17U
+#define DIAGNOSTIC_PUBLISHED_UNIT_BITS 9U
+#define DIAGNOSTIC_OCCUPANCY_BITS 4U
+#define DIAGNOSTIC_RENDERED_FRAME_MASK \
+    ((1U << DIAGNOSTIC_RENDERED_FRAME_BITS) - 1U)
+#define DIAGNOSTIC_PUBLISHED_UNIT_MASK \
+    ((1U << DIAGNOSTIC_PUBLISHED_UNIT_BITS) - 1U)
+#define DIAGNOSTIC_OCCUPANCY_MASK \
+    ((1U << DIAGNOSTIC_OCCUPANCY_BITS) - 1U)
+#define DIAGNOSTIC_PUBLISHED_UNIT_SHIFT DIAGNOSTIC_RENDERED_FRAME_BITS
+#define DIAGNOSTIC_OCCUPANCY_SHIFT \
+    (DIAGNOSTIC_RENDERED_FRAME_BITS + DIAGNOSTIC_PUBLISHED_UNIT_BITS)
+#define DIAGNOSTIC_PRODUCTION_DONE_SHIFT \
+    (DIAGNOSTIC_OCCUPANCY_SHIFT + DIAGNOSTIC_OCCUPANCY_BITS)
 
 struct p4_nano_audio86_diagnostic_publication {
     _Atomic uint32_t service_word;
@@ -31,6 +52,17 @@ struct p4_nano_audio86_diagnostic_publication {
     _Atomic uint32_t last_submit_return_us;
     _Atomic uint32_t last_step_exit_us;
     _Atomic uint32_t last_running_accepted_us;
+    _Atomic uint32_t ring_context_word;
+    _Atomic uint32_t wait_context_word;
+    _Atomic uint32_t last_wait_enter_us;
+    _Atomic uint32_t last_wait_resume_us;
+    _Atomic uint32_t last_wait_resume_context_word;
+    _Atomic uint32_t retry_wait_enter_count;
+    _Atomic uint32_t retry_wait_resume_count;
+    _Atomic uint32_t ring_wait_enter_count;
+    _Atomic uint32_t ring_wait_resume_count;
+    _Atomic uint32_t eof_notify_count;
+    _Atomic uint32_t eof_hpwoken_true_count;
     /* 0=empty, 1=callback is writing, 2=frozen and readable. */
     _Atomic uint32_t first_qovf_latch_state;
     _Atomic uint32_t first_qovf_state;
@@ -40,6 +72,17 @@ struct p4_nano_audio86_diagnostic_publication {
     _Atomic uint32_t first_qovf_last_submit_return_us;
     _Atomic uint32_t first_qovf_last_step_exit_us;
     _Atomic uint32_t first_qovf_last_running_accepted_us;
+    _Atomic uint32_t first_qovf_ring_context_word;
+    _Atomic uint32_t first_qovf_wait_context_word;
+    _Atomic uint32_t first_qovf_last_wait_enter_us;
+    _Atomic uint32_t first_qovf_last_wait_resume_us;
+    _Atomic uint32_t first_qovf_last_wait_resume_context_word;
+    _Atomic uint32_t first_qovf_retry_wait_enter_count;
+    _Atomic uint32_t first_qovf_retry_wait_resume_count;
+    _Atomic uint32_t first_qovf_ring_wait_enter_count;
+    _Atomic uint32_t first_qovf_ring_wait_resume_count;
+    _Atomic uint32_t first_qovf_eof_notify_count;
+    _Atomic uint32_t first_qovf_eof_hpwoken_true_count;
     _Atomic uint32_t first_qovf_observed;
     _Atomic uint32_t first_qovf_observed_us;
     _Atomic uint32_t enable_stream_duration_us;
@@ -155,6 +198,60 @@ static uint32_t diagnostic_published_sequence(uint32_t service_word)
            DIAGNOSTIC_SEQUENCE_MASK;
 }
 
+static uint32_t diagnostic_wait_context_word(
+    enum p4_nano_audio86_consumer_wait_reason reason,
+    uint32_t consumer_next_sequence)
+{
+    return ((uint32_t)reason & DIAGNOSTIC_WAIT_REASON_MASK) |
+           ((consumer_next_sequence & DIAGNOSTIC_WAIT_SEQUENCE_MASK) <<
+            DIAGNOSTIC_WAIT_SEQUENCE_SHIFT);
+}
+
+static uint32_t diagnostic_ring_context_word(
+    uint32_t rendered_frames, uint32_t next_published_sequence,
+    uint32_t occupancy, bool production_done)
+{
+    return (rendered_frames & DIAGNOSTIC_RENDERED_FRAME_MASK) |
+           ((next_published_sequence & DIAGNOSTIC_PUBLISHED_UNIT_MASK) <<
+            DIAGNOSTIC_PUBLISHED_UNIT_SHIFT) |
+           ((occupancy & DIAGNOSTIC_OCCUPANCY_MASK) <<
+            DIAGNOSTIC_OCCUPANCY_SHIFT) |
+           ((production_done ? 1U : 0U) <<
+            DIAGNOSTIC_PRODUCTION_DONE_SHIFT);
+}
+
+static uint32_t diagnostic_wait_reason(uint32_t word)
+{
+    return word & DIAGNOSTIC_WAIT_REASON_MASK;
+}
+
+static uint32_t diagnostic_wait_sequence(uint32_t word)
+{
+    return (word >> DIAGNOSTIC_WAIT_SEQUENCE_SHIFT) &
+           DIAGNOSTIC_WAIT_SEQUENCE_MASK;
+}
+
+static uint32_t diagnostic_rendered_frames(uint32_t word)
+{
+    return word & DIAGNOSTIC_RENDERED_FRAME_MASK;
+}
+
+static uint32_t diagnostic_next_published_sequence(uint32_t word)
+{
+    return (word >> DIAGNOSTIC_PUBLISHED_UNIT_SHIFT) &
+           DIAGNOSTIC_PUBLISHED_UNIT_MASK;
+}
+
+static uint32_t diagnostic_ring_occupancy(uint32_t word)
+{
+    return (word >> DIAGNOSTIC_OCCUPANCY_SHIFT) & DIAGNOSTIC_OCCUPANCY_MASK;
+}
+
+static uint32_t diagnostic_production_done(uint32_t word)
+{
+    return (word >> DIAGNOSTIC_PRODUCTION_DONE_SHIFT) & 1U;
+}
+
 static void diagnostic_set_phase(
     struct p4_nano_audio86_diagnostic_publication *diagnostic,
     enum p4_nano_audio86_consumer_service_phase phase)
@@ -242,17 +339,97 @@ void p4_nano_audio86_physical_sink_observe_first_qovf(
     }
 }
 
+void p4_nano_audio86_physical_sink_publish_ring_context(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t rendered_frames,
+    uint32_t next_published_sequence, uint32_t occupancy,
+    bool production_done)
+{
+    if (sink == NULL || rendered_frames > DIAGNOSTIC_RENDERED_FRAME_MASK ||
+        next_published_sequence > DIAGNOSTIC_PUBLISHED_UNIT_MASK ||
+        occupancy > DIAGNOSTIC_OCCUPANCY_MASK)
+        return;
+    atomic_store_explicit(&sink->callback_gate.diagnostic.ring_context_word,
+                          diagnostic_ring_context_word(
+                              rendered_frames, next_published_sequence,
+                              occupancy, production_done),
+                          memory_order_release);
+}
+
+void p4_nano_audio86_physical_sink_publish_wait_enter(
+    struct p4_nano_audio86_physical_sink *sink,
+    enum p4_nano_audio86_consumer_wait_reason reason,
+    uint32_t consumer_next_sequence, uint32_t relative_us)
+{
+    struct p4_nano_audio86_diagnostic_publication *diagnostic;
+    if (sink == NULL || reason == P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE ||
+        (uint32_t)reason > P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL ||
+        consumer_next_sequence > DIAGNOSTIC_WAIT_SEQUENCE_MASK)
+        return;
+    diagnostic = &sink->callback_gate.diagnostic;
+    atomic_store_explicit(&diagnostic->last_wait_enter_us, relative_us,
+                          memory_order_relaxed);
+    if (reason == P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF) {
+        atomic_fetch_add_explicit(&diagnostic->retry_wait_enter_count, 1U,
+                                  memory_order_relaxed);
+    } else if (reason == P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY ||
+               reason == P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL) {
+        atomic_fetch_add_explicit(&diagnostic->ring_wait_enter_count, 1U,
+                                  memory_order_relaxed);
+    }
+    /* Release the reason last so the ISR cannot observe a new wait reason with
+     * the preceding task-authored context still unpublished. */
+    atomic_store_explicit(&diagnostic->wait_context_word,
+                          diagnostic_wait_context_word(
+                              reason, consumer_next_sequence),
+                          memory_order_release);
+}
+
+void p4_nano_audio86_physical_sink_publish_wait_resume(
+    struct p4_nano_audio86_physical_sink *sink,
+    enum p4_nano_audio86_consumer_wait_reason reason,
+    uint32_t consumer_next_sequence, uint32_t relative_us)
+{
+    struct p4_nano_audio86_diagnostic_publication *diagnostic;
+    uint32_t resume_word;
+    if (sink == NULL || reason == P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE ||
+        (uint32_t)reason > P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL ||
+        consumer_next_sequence > DIAGNOSTIC_WAIT_SEQUENCE_MASK)
+        return;
+    diagnostic = &sink->callback_gate.diagnostic;
+    resume_word = diagnostic_wait_context_word(reason,
+                                                consumer_next_sequence);
+    if (reason == P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF) {
+        atomic_fetch_add_explicit(&diagnostic->retry_wait_resume_count, 1U,
+                                  memory_order_relaxed);
+    } else if (reason == P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY ||
+               reason == P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL) {
+        atomic_fetch_add_explicit(&diagnostic->ring_wait_resume_count, 1U,
+                                  memory_order_relaxed);
+    }
+    atomic_store_explicit(&diagnostic->last_wait_resume_us, relative_us,
+                          memory_order_relaxed);
+    atomic_store_explicit(&diagnostic->last_wait_resume_context_word,
+                          resume_word, memory_order_relaxed);
+    /* RUNNABLE is published before the caller reevaluates level predicates. */
+    atomic_store_explicit(&diagnostic->wait_context_word,
+                          diagnostic_wait_context_word(
+                              P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE,
+                              consumer_next_sequence),
+                          memory_order_release);
+}
+
 size_t p4_nano_audio86_physical_sink_diagnostic_storage_bytes(void)
 {
     return sizeof(struct p4_nano_audio86_diagnostic_publication);
 }
 
-static void notify_waiter(struct p4_nano_audio86_physical_sink *sink,
-                          bool from_isr)
+static uint32_t notify_waiter(struct p4_nano_audio86_physical_sink *sink,
+                              bool from_isr)
 {
     if (sink->backend.notify_waiter != NULL) {
-        sink->backend.notify_waiter(sink->backend.opaque, from_isr);
+        return sink->backend.notify_waiter(sink->backend.opaque, from_isr);
     }
+    return P4_NANO_AUDIO86_NOTIFY_NONE;
 }
 
 static void mark_failed(struct p4_nano_audio86_physical_sink *sink)
@@ -301,6 +478,18 @@ int p4_nano_audio86_physical_sink_create(
     atomic_init(&sink->callback_gate.diagnostic.last_submit_return_us, 0U);
     atomic_init(&sink->callback_gate.diagnostic.last_step_exit_us, 0U);
     atomic_init(&sink->callback_gate.diagnostic.last_running_accepted_us, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.ring_context_word, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.wait_context_word, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.last_wait_enter_us, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.last_wait_resume_us, 0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.last_wait_resume_context_word, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.retry_wait_enter_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.retry_wait_resume_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.ring_wait_enter_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.ring_wait_resume_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.eof_notify_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.eof_hpwoken_true_count, 0U);
     atomic_init(&sink->callback_gate.diagnostic.first_qovf_latch_state, 0U);
     atomic_init(&sink->callback_gate.diagnostic.first_qovf_state, 0U);
     atomic_init(&sink->callback_gate.diagnostic.first_qovf_eof_epoch, 0U);
@@ -313,6 +502,29 @@ int p4_nano_audio86_physical_sink_create(
                 0U);
     atomic_init(
         &sink->callback_gate.diagnostic.first_qovf_last_running_accepted_us, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.first_qovf_ring_context_word,
+                0U);
+    atomic_init(&sink->callback_gate.diagnostic.first_qovf_wait_context_word,
+                0U);
+    atomic_init(&sink->callback_gate.diagnostic.first_qovf_last_wait_enter_us,
+                0U);
+    atomic_init(&sink->callback_gate.diagnostic.first_qovf_last_wait_resume_us,
+                0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_last_wait_resume_context_word,
+        0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_retry_wait_enter_count, 0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_retry_wait_resume_count, 0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_ring_wait_enter_count, 0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_ring_wait_resume_count, 0U);
+    atomic_init(&sink->callback_gate.diagnostic.first_qovf_eof_notify_count,
+                0U);
+    atomic_init(
+        &sink->callback_gate.diagnostic.first_qovf_eof_hpwoken_true_count, 0U);
     atomic_init(&sink->callback_gate.diagnostic.first_qovf_observed, 0U);
     atomic_init(&sink->callback_gate.diagnostic.first_qovf_observed_us, 0U);
     atomic_init(&sink->callback_gate.diagnostic.enable_stream_duration_us, 0U);
@@ -747,9 +959,20 @@ static CALLBACK_IRAM void callback_on_sent(
     struct p4_nano_audio86_physical_sink *sink =
         callback_gate_enter(gate, generation, generation_override);
     if (sink != NULL) {
+        uint32_t notify_result;
         atomic_fetch_add_explicit(&sink->tx_eof_epoch, 1U,
                                   memory_order_release);
-        notify_waiter(sink, true);
+        notify_result = notify_waiter(sink, true);
+        if ((notify_result & P4_NANO_AUDIO86_NOTIFY_ATTEMPTED) != 0U) {
+            atomic_fetch_add_explicit(&gate->diagnostic.eof_notify_count, 1U,
+                                      memory_order_relaxed);
+        }
+        if ((notify_result &
+             P4_NANO_AUDIO86_NOTIFY_HIGHER_PRIORITY_WOKEN) != 0U) {
+            atomic_fetch_add_explicit(
+                &gate->diagnostic.eof_hpwoken_true_count, 1U,
+                memory_order_relaxed);
+        }
         callback_gate_exit(gate);
     }
 }
@@ -808,8 +1031,47 @@ static CALLBACK_IRAM void callback_on_send_q_ovf(
                     &diagnostic->first_qovf_last_running_accepted_us,
                     atomic_load_explicit(
                         &diagnostic->last_running_accepted_us,
+                         memory_order_acquire),
+                    memory_order_relaxed);
+                atomic_store_explicit(
+                    &diagnostic->first_qovf_ring_context_word,
+                    atomic_load_explicit(&diagnostic->ring_context_word,
+                                         memory_order_acquire),
+                    memory_order_relaxed);
+                atomic_store_explicit(
+                    &diagnostic->first_qovf_wait_context_word,
+                    atomic_load_explicit(&diagnostic->wait_context_word,
+                                         memory_order_acquire),
+                    memory_order_relaxed);
+                atomic_store_explicit(
+                    &diagnostic->first_qovf_last_wait_enter_us,
+                    atomic_load_explicit(&diagnostic->last_wait_enter_us,
+                                         memory_order_acquire),
+                    memory_order_relaxed);
+                atomic_store_explicit(
+                    &diagnostic->first_qovf_last_wait_resume_us,
+                    atomic_load_explicit(&diagnostic->last_wait_resume_us,
+                                         memory_order_acquire),
+                    memory_order_relaxed);
+                atomic_store_explicit(
+                    &diagnostic->first_qovf_last_wait_resume_context_word,
+                    atomic_load_explicit(
+                        &diagnostic->last_wait_resume_context_word,
                         memory_order_acquire),
                     memory_order_relaxed);
+#define FREEZE_DIAGNOSTIC_COUNTER(name) \
+                atomic_store_explicit( \
+                    &diagnostic->first_qovf_##name, \
+                    atomic_load_explicit(&diagnostic->name, \
+                                         memory_order_acquire), \
+                    memory_order_relaxed)
+                FREEZE_DIAGNOSTIC_COUNTER(retry_wait_enter_count);
+                FREEZE_DIAGNOSTIC_COUNTER(retry_wait_resume_count);
+                FREEZE_DIAGNOSTIC_COUNTER(ring_wait_enter_count);
+                FREEZE_DIAGNOSTIC_COUNTER(ring_wait_resume_count);
+                FREEZE_DIAGNOSTIC_COUNTER(eof_notify_count);
+                FREEZE_DIAGNOSTIC_COUNTER(eof_hpwoken_true_count);
+#undef FREEZE_DIAGNOSTIC_COUNTER
                 atomic_store_explicit(&diagnostic->first_qovf_latch_state, 2U,
                                       memory_order_release);
             }
@@ -892,6 +1154,19 @@ void p4_nano_audio86_physical_sink_get_telemetry(
             ? atomic_load_explicit(&diagnostic->first_qovf_service_word,
                                    memory_order_acquire)
             : 0U;
+        const uint32_t wait_word = latch_state == 2U
+            ? atomic_load_explicit(&diagnostic->first_qovf_wait_context_word,
+                                   memory_order_acquire)
+            : 0U;
+        const uint32_t ring_word = latch_state == 2U
+            ? atomic_load_explicit(&diagnostic->first_qovf_ring_context_word,
+                                   memory_order_acquire)
+            : 0U;
+        const uint32_t resume_word = latch_state == 2U
+            ? atomic_load_explicit(
+                  &diagnostic->first_qovf_last_wait_resume_context_word,
+                  memory_order_acquire)
+            : 0U;
         telemetry->first_active_qovf_latched = latch_state == 2U ? 1U : 0U;
         telemetry->first_qovf_state = latch_state == 2U
             ? atomic_load_explicit(&diagnostic->first_qovf_state,
@@ -924,6 +1199,47 @@ void p4_nano_audio86_physical_sink_get_telemetry(
                   &diagnostic->first_qovf_last_running_accepted_us,
                   memory_order_acquire)
             : 0U;
+        telemetry->first_qovf_wait_reason = diagnostic_wait_reason(wait_word);
+        telemetry->first_qovf_consumer_next_sequence =
+            diagnostic_wait_sequence(wait_word);
+        telemetry->first_qovf_next_published_sequence =
+            diagnostic_next_published_sequence(ring_word);
+        telemetry->first_qovf_ring_occupancy =
+            diagnostic_ring_occupancy(ring_word);
+        telemetry->first_qovf_production_done =
+            diagnostic_production_done(ring_word);
+        telemetry->first_qovf_rendered_frames =
+            diagnostic_rendered_frames(ring_word);
+#define LOAD_FROZEN_DIAGNOSTIC_COUNTER(name) \
+        telemetry->first_qovf_##name = latch_state == 2U \
+            ? atomic_load_explicit(&diagnostic->first_qovf_##name, \
+                                   memory_order_acquire) \
+            : 0U
+        LOAD_FROZEN_DIAGNOSTIC_COUNTER(eof_notify_count);
+        LOAD_FROZEN_DIAGNOSTIC_COUNTER(retry_wait_enter_count);
+        LOAD_FROZEN_DIAGNOSTIC_COUNTER(retry_wait_resume_count);
+        LOAD_FROZEN_DIAGNOSTIC_COUNTER(ring_wait_enter_count);
+        LOAD_FROZEN_DIAGNOSTIC_COUNTER(ring_wait_resume_count);
+#undef LOAD_FROZEN_DIAGNOSTIC_COUNTER
+        telemetry->first_qovf_hpwoken_true_count = latch_state == 2U
+            ? atomic_load_explicit(
+                  &diagnostic->first_qovf_eof_hpwoken_true_count,
+                  memory_order_acquire)
+            : 0U;
+        telemetry->first_qovf_last_wait_enter_us = latch_state == 2U
+            ? atomic_load_explicit(
+                  &diagnostic->first_qovf_last_wait_enter_us,
+                  memory_order_acquire)
+            : 0U;
+        telemetry->first_qovf_last_wait_resume_us = latch_state == 2U
+            ? atomic_load_explicit(
+                  &diagnostic->first_qovf_last_wait_resume_us,
+                  memory_order_acquire)
+            : 0U;
+        telemetry->first_qovf_last_resume_reason =
+            diagnostic_wait_reason(resume_word);
+        telemetry->first_qovf_last_resume_sequence =
+            diagnostic_wait_sequence(resume_word);
         telemetry->first_qovf_observed = atomic_load_explicit(
             &diagnostic->first_qovf_observed, memory_order_acquire) == 2U
             ? 1U : 0U;

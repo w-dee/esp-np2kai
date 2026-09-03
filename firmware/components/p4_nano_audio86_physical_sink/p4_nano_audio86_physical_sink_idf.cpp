@@ -348,18 +348,22 @@ void wait_hint(void *, uint32_t timeout_ms)
     (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, pdMS_TO_TICKS(timeout_ms));
 }
 
-void notify_waiter(void *opaque, bool from_isr)
+uint32_t notify_waiter(void *opaque, bool from_isr)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
     if (backend->waiter_slot == nullptr || *backend->waiter_slot == nullptr)
-        return;
+        return P4_NANO_AUDIO86_NOTIFY_NONE;
     if (from_isr) {
         BaseType_t high_priority_woken = pdFALSE;
         vTaskNotifyGiveIndexedFromISR(*backend->waiter_slot, 0U,
                                       &high_priority_woken);
         if (high_priority_woken == pdTRUE) portYIELD_FROM_ISR();
+        return P4_NANO_AUDIO86_NOTIFY_ATTEMPTED |
+               (high_priority_woken == pdTRUE
+                    ? P4_NANO_AUDIO86_NOTIFY_HIGHER_PRIORITY_WOKEN : 0U);
     } else {
         (void)xTaskNotifyGiveIndexed(*backend->waiter_slot, 0U);
+        return P4_NANO_AUDIO86_NOTIFY_ATTEMPTED;
     }
 }
 

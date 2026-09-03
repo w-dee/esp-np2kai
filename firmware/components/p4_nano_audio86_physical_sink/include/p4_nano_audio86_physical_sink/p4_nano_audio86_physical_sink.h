@@ -35,6 +35,23 @@ enum p4_nano_audio86_consumer_service_phase {
     P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH,
 };
 
+/* Task-owned reason for the PCM consumer's current scheduling state.  This is
+ * deliberately separate from service phase: phase describes the last service
+ * operation, while wait reason describes why the task is about to block. */
+enum p4_nano_audio86_consumer_wait_reason {
+    P4_NANO_AUDIO86_CONSUMER_WAIT_RUNNABLE = 0,
+    P4_NANO_AUDIO86_CONSUMER_WAIT_RETRY_EOF,
+    P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_RING_EMPTY,
+    P4_NANO_AUDIO86_CONSUMER_WAIT_PCM_PREFILL,
+    P4_NANO_AUDIO86_CONSUMER_WAIT_FINISH_OR_TERMINAL,
+};
+
+enum p4_nano_audio86_notify_result {
+    P4_NANO_AUDIO86_NOTIFY_NONE = 0,
+    P4_NANO_AUDIO86_NOTIFY_ATTEMPTED = 1U << 0,
+    P4_NANO_AUDIO86_NOTIFY_HIGHER_PRIORITY_WOKEN = 1U << 1,
+};
+
 enum p4_nano_audio86_consumer_progress_point {
     P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY = 0,
     P4_NANO_AUDIO86_PROGRESS_STEP_ENTER,
@@ -70,7 +87,7 @@ struct p4_nano_audio86_physical_backend {
     int (*unregister_callbacks)(void *opaque);
     uint64_t (*now_ms)(void *opaque);
     void (*wait_hint)(void *opaque, uint32_t timeout_ms);
-    void (*notify_waiter)(void *opaque, bool from_isr);
+    uint32_t (*notify_waiter)(void *opaque, bool from_isr);
     void (*release)(void *opaque);
     void *opaque;
 };
@@ -125,6 +142,22 @@ struct p4_nano_audio86_physical_telemetry {
     uint32_t first_qovf_last_submit_return_us;
     uint32_t first_qovf_last_step_exit_us;
     uint32_t first_qovf_last_running_accepted_us;
+    uint32_t first_qovf_wait_reason;
+    uint32_t first_qovf_consumer_next_sequence;
+    uint32_t first_qovf_next_published_sequence;
+    uint32_t first_qovf_ring_occupancy;
+    uint32_t first_qovf_production_done;
+    uint32_t first_qovf_rendered_frames;
+    uint32_t first_qovf_eof_notify_count;
+    uint32_t first_qovf_hpwoken_true_count;
+    uint32_t first_qovf_retry_wait_enter_count;
+    uint32_t first_qovf_retry_wait_resume_count;
+    uint32_t first_qovf_ring_wait_enter_count;
+    uint32_t first_qovf_ring_wait_resume_count;
+    uint32_t first_qovf_last_wait_enter_us;
+    uint32_t first_qovf_last_wait_resume_us;
+    uint32_t first_qovf_last_resume_reason;
+    uint32_t first_qovf_last_resume_sequence;
     uint32_t first_qovf_observed;
     uint32_t first_qovf_observed_us;
     enum p4_nano_audio86_physical_state state;
@@ -182,6 +215,18 @@ void p4_nano_audio86_physical_sink_publish_consumer_progress(
     uint32_t relative_us);
 void p4_nano_audio86_physical_sink_observe_first_qovf(
     struct p4_nano_audio86_physical_sink *sink, uint32_t relative_us);
+void p4_nano_audio86_physical_sink_publish_ring_context(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t rendered_frames,
+    uint32_t next_published_sequence, uint32_t occupancy,
+    bool production_done);
+void p4_nano_audio86_physical_sink_publish_wait_enter(
+    struct p4_nano_audio86_physical_sink *sink,
+    enum p4_nano_audio86_consumer_wait_reason reason,
+    uint32_t consumer_next_sequence, uint32_t relative_us);
+void p4_nano_audio86_physical_sink_publish_wait_resume(
+    struct p4_nano_audio86_physical_sink *sink,
+    enum p4_nano_audio86_consumer_wait_reason reason,
+    uint32_t consumer_next_sequence, uint32_t relative_us);
 size_t p4_nano_audio86_physical_sink_diagnostic_storage_bytes(void);
 
 void p4_nano_audio86_physical_sink_get_telemetry(
