@@ -49,7 +49,8 @@ RECORD_FIELDS = {
         "expected_units", "prepare_completed", "pa_initial_low",
         "codec_initialized_muted", "i2s_initialized",
         "muted_warmup_completed", "callbacks_registered", "stream_started",
-        "codec_unmute_completed",
+        "codec_unmute_completed", "startup_durations_valid",
+        "enable_stream_duration_us", "codec_unmute_duration_us",
     ),
     "5D3_S1_STREAM": (
         "schema", "evidence_class", "generated_frames", "generated_bytes",
@@ -71,7 +72,8 @@ RECORD_FIELDS = {
         "sink_accepted_frames", "sink_accepted_bytes", "physical_units",
         "full_units", "final_partial_units", "final_valid_frames",
         "padding_frames", "padding_bytes", "submit_attempts", "retry_count",
-        "retry_identity_failures", "running_q_ovf", "final_ring_occupancy",
+        "retry_identity_failures", "retry_episode_units",
+        "direct_running_accept_units", "running_q_ovf", "final_ring_occupancy",
         "final_ring_partial", "drops", "overwrite", "abandoned_published",
         "abandoned_partial", "abandoned_rendered",
     ),
@@ -81,6 +83,11 @@ RECORD_FIELDS = {
         "pcm_consumer_empty_after_release_before_done_count",
         "max_running_accept_gap_ms", "stream_started_ms", "drain_completed_ms",
         "stream_wall_ms", "preloaded_units", "running_accepted_units",
+        "max_gap_initial", "max_gap_previous_sequence_valid",
+        "max_gap_previous_sequence", "max_gap_next_sequence",
+        "max_gap_previous_relative_ms", "max_gap_next_relative_ms",
+        "max_downstream_submit_us", "max_downstream_submit_sequence",
+        "max_post_accept_evidence_us", "max_post_accept_evidence_sequence",
         "timing_authority",
     ),
     "5D3_S1_FINISH": (
@@ -90,6 +97,13 @@ RECORD_FIELDS = {
         "quiescent_post_snapshot_eofs", "drain_duration_ms",
         "finish_completed", "pending_frames", "drained_frames",
         "discarded_frames", "draining_q_ovf", "sticky_error",
+        "first_active_qovf_latched", "first_qovf_state",
+        "first_qovf_eof_epoch", "first_qovf_phase",
+        "first_qovf_current_sequence", "first_qovf_published_sequence",
+        "first_qovf_last_step_enter_us",
+        "first_qovf_last_submit_return_us", "first_qovf_last_step_exit_us",
+        "first_qovf_last_running_accepted_us", "first_qovf_observed",
+        "first_qovf_observed_us", "qovf_time_semantics",
         "registered_generation", "terminal_generation", "stale_callbacks",
         "callback_in_flight", "callbacks_active", "codec_final_muted",
         "pa_final_low", "i2s_enabled", "i2s_created", "first_error",
@@ -216,7 +230,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     identity, start, stream, progress, finish = (
         records[name] for name in RECORD_ORDER)
     for name, fields in records.items():
-        require(errors, fields["schema"] == "1", f"{name}: schema mismatch")
+        require(errors, fields["schema"] == "2", f"{name}: schema mismatch")
         require(errors, fields["evidence_class"] == evidence_class,
                 f"{name}: evidence class mismatch")
 
@@ -224,7 +238,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     if golden is None:
         return errors
     expected_identity = {
-        "schema": "1", "evidence_class": evidence_class,
+        "schema": "2", "evidence_class": evidence_class,
         "source_git_sha": expected_source_sha,
         "profile": "AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S",
         "workload_id": "FULL_REPLAY_PCM_SUSTAINED_2S_V1",
@@ -250,7 +264,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
         "pa_initial_low": "1", "codec_initialized_muted": "1",
         "i2s_initialized": "1", "muted_warmup_completed": "1",
         "callbacks_registered": "1", "stream_started": "1",
-        "codec_unmute_completed": "1",
+        "codec_unmute_completed": "1", "startup_durations_valid": "1",
     }
     require(errors, all(start.get(key) == value
                         for key, value in expected_start.items()),
@@ -259,6 +273,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     enum_fields = {
         "schema", "evidence_class", "encoding", "i2s_format", "clock_source",
         "timing_authority", "controller_state", "sink_state",
+        "first_qovf_state", "first_qovf_phase", "qovf_time_semantics",
     }
     digest_fields = {key for key in stream if key.endswith("crc32") or
                      key.endswith("sha256")}
@@ -389,10 +404,104 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     require(errors, numeric["progress.max_running_accept_gap_ms"] <= 40,
             "RUNNING accepted-progress gap exceeds 8 q240 x 5 ms bound")
     preloaded = numeric["progress.preloaded_units"]
+    running_units = numeric["progress.running_accepted_units"]
     require(errors, preloaded == numeric["start.prefill"] == 4 and
-            numeric["progress.running_accepted_units"] ==
-                physical_units - preloaded == 396,
+            running_units == physical_units - preloaded == 396,
             "preload/RUNNING accepted-unit arithmetic mismatch")
+    require(errors,
+            numeric["stream.retry_episode_units"] >= 0 and
+            numeric["stream.retry_episode_units"] <= retry_count and
+            numeric["stream.direct_running_accept_units"] >= 0 and
+            numeric["stream.retry_episode_units"] +
+                numeric["stream.direct_running_accept_units"] == running_units,
+            "RUNNING retry distribution arithmetic mismatch")
+
+    gap = numeric["progress.max_running_accept_gap_ms"]
+    gap_initial = numeric["progress.max_gap_initial"]
+    previous_valid = numeric["progress.max_gap_previous_sequence_valid"]
+    previous_sequence = numeric["progress.max_gap_previous_sequence"]
+    next_sequence = numeric["progress.max_gap_next_sequence"]
+    previous_relative = numeric["progress.max_gap_previous_relative_ms"]
+    next_relative = numeric["progress.max_gap_next_relative_ms"]
+    require(errors, gap_initial in (0, 1) and previous_valid in (0, 1),
+            "max-gap sentinel flags malformed")
+    require(errors, next_relative >= previous_relative and
+            next_relative - previous_relative == gap,
+            "max-gap endpoint arithmetic mismatch")
+    require(errors, preloaded <= next_sequence < units,
+            "max-gap next sequence outside RUNNING range")
+    if gap_initial:
+        require(errors, previous_valid == 0 and previous_sequence == 0 and
+                previous_relative == 0 and next_sequence == preloaded,
+                "initial max-gap sentinel/sequence mismatch")
+    else:
+        require(errors, previous_valid == 1 and
+                preloaded <= previous_sequence < units and
+                next_sequence == previous_sequence + 1,
+                "max-gap sequence mismatch")
+    for duration_name, sequence_name in (
+        ("max_downstream_submit_us", "max_downstream_submit_sequence"),
+        ("max_post_accept_evidence_us", "max_post_accept_evidence_sequence"),
+    ):
+        require(errors,
+                0 <= numeric[f"progress.{duration_name}"] <= 0xFFFFFFFF,
+                f"{duration_name}: duration outside uint32 range")
+        require(errors,
+                preloaded <= numeric[f"progress.{sequence_name}"] < units,
+                f"{sequence_name}: sequence outside RUNNING range")
+    require(errors,
+            numeric["start.startup_durations_valid"] == 1 and
+            0 <= numeric["start.enable_stream_duration_us"] <= 0xFFFFFFFF and
+            0 <= numeric["start.codec_unmute_duration_us"] <= 0xFFFFFFFF,
+            "startup duration diagnostics malformed")
+
+    latch = numeric["finish.first_active_qovf_latched"]
+    observed = numeric["finish.first_qovf_observed"]
+    require(errors, latch in (0, 1) and observed in (0, 1),
+            "first q_ovf latch flags malformed")
+    require(errors,
+            finish["qovf_time_semantics"] ==
+                "TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER",
+            "first q_ovf time semantics mismatch")
+    require(errors,
+            finish["first_qovf_state"] in {"NONE", "STARTING", "RUNNING"},
+            "first q_ovf state invalid")
+    require(errors,
+            finish["first_qovf_phase"] in {
+                "NONE", "START_ENABLE", "CODEC_UNMUTE",
+                "DOWNSTREAM_SUBMIT", "POST_ACCEPT_EVIDENCE", "WAIT_EOF",
+                "FINISH",
+            }, "first q_ovf phase invalid")
+    require(errors,
+            0 <= numeric["finish.first_qovf_eof_epoch"] <= 0xFFFFFFFF and
+            0 <= numeric["finish.first_qovf_current_sequence"] < units and
+            0 <= numeric["finish.first_qovf_published_sequence"] <= units and
+            numeric["finish.first_qovf_published_sequence"] <=
+                numeric["finish.first_qovf_current_sequence"] + 1,
+            "first q_ovf sequence/epoch range mismatch")
+    qovf_times = tuple(numeric[f"finish.{name}"] for name in (
+        "first_qovf_last_step_enter_us", "first_qovf_last_submit_return_us",
+        "first_qovf_last_step_exit_us", "first_qovf_last_running_accepted_us",
+    ))
+    require(errors, all(0 <= value <= 0xFFFFFFFF for value in qovf_times) and
+            0 <= numeric["finish.first_qovf_observed_us"] <= 0xFFFFFFFF,
+            "first q_ovf progress timestamp outside uint32 range")
+    if numeric["stream.running_q_ovf"] > 0:
+        require(errors, latch == 1 and observed == 1 and
+                finish["first_qovf_state"] in {"STARTING", "RUNNING"} and
+                finish["first_qovf_phase"] != "NONE" and
+                numeric["finish.first_qovf_observed_us"] >= max(qovf_times),
+                "active q_ovf lacks a complete frozen service latch")
+    else:
+        require(errors, latch == 0 and observed == 0 and
+                finish["first_qovf_state"] == "NONE" and
+                finish["first_qovf_phase"] == "NONE" and
+                numeric["finish.first_qovf_eof_epoch"] == 0 and
+                numeric["finish.first_qovf_current_sequence"] == 0 and
+                numeric["finish.first_qovf_published_sequence"] == 0 and
+                all(value == 0 for value in qovf_times) and
+                numeric["finish.first_qovf_observed_us"] == 0,
+                "zero-q_ovf run contains a spurious first-fault latch")
 
     final_epoch = numeric["finish.final_copy_eof_epoch"]
     drain_epoch = numeric["finish.drain_completion_eof_epoch"]

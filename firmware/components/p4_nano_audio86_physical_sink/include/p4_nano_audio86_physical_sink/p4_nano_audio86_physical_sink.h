@@ -25,6 +25,24 @@ extern "C" {
 struct p4_nano_audio86_physical_sink;
 struct p4_nano_audio86_callback_gate;
 
+enum p4_nano_audio86_consumer_service_phase {
+    P4_NANO_AUDIO86_CONSUMER_PHASE_NONE = 0,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_START_ENABLE,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_CODEC_UNMUTE,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_POST_ACCEPT_EVIDENCE,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF,
+    P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH,
+};
+
+enum p4_nano_audio86_consumer_progress_point {
+    P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY = 0,
+    P4_NANO_AUDIO86_PROGRESS_STEP_ENTER,
+    P4_NANO_AUDIO86_PROGRESS_SUBMIT_RETURN,
+    P4_NANO_AUDIO86_PROGRESS_STEP_EXIT,
+    P4_NANO_AUDIO86_PROGRESS_RUNNING_ACCEPTED,
+};
+
 enum p4_nano_audio86_physical_io_result {
     P4_NANO_AUDIO86_PHYSICAL_IO_OK = 0,
     P4_NANO_AUDIO86_PHYSICAL_IO_TIMEOUT,
@@ -40,6 +58,9 @@ struct p4_nano_audio86_physical_backend {
     enum p4_nano_audio86_physical_io_result (*preload)(
         void *opaque, const uint8_t *pcm, size_t bytes, size_t *bytes_loaded);
     int (*enable_stream)(void *opaque);
+    void (*get_startup_durations)(void *opaque,
+                                  uint32_t *enable_stream_us,
+                                  uint32_t *codec_unmute_us);
     enum p4_nano_audio86_physical_io_result (*write)(
         void *opaque, const uint8_t *pcm, size_t bytes,
         size_t *bytes_written, uint32_t timeout_ms);
@@ -91,6 +112,21 @@ struct p4_nano_audio86_physical_telemetry {
     uint32_t draining_queue_overflow_count;
     uint32_t callback_refcount;
     uint32_t preloaded_units;
+    uint32_t enable_stream_duration_us;
+    uint32_t codec_unmute_duration_us;
+    uint32_t startup_durations_valid;
+    uint32_t first_active_qovf_latched;
+    uint32_t first_qovf_state;
+    uint32_t first_qovf_eof_epoch;
+    uint32_t first_qovf_phase;
+    uint32_t first_qovf_current_sequence;
+    uint32_t first_qovf_published_sequence;
+    uint32_t first_qovf_last_step_enter_us;
+    uint32_t first_qovf_last_submit_return_us;
+    uint32_t first_qovf_last_step_exit_us;
+    uint32_t first_qovf_last_running_accepted_us;
+    uint32_t first_qovf_observed;
+    uint32_t first_qovf_observed_us;
     enum p4_nano_audio86_physical_state state;
     bool prepare_completed;
     bool pa_initial_low;
@@ -131,6 +167,22 @@ void p4_nano_audio86_callback_gate_on_sent(
     struct p4_nano_audio86_callback_gate *gate);
 void p4_nano_audio86_callback_gate_on_send_q_ovf(
     struct p4_nano_audio86_callback_gate *gate);
+
+/* Task-context diagnostics use a single 32-bit atomic service word for the
+ * phase/current/published sequence tuple.  Relative timestamps are separate
+ * 32-bit atomics.  The ISR never calls a timer API. */
+void p4_nano_audio86_callback_gate_set_service_phase(
+    struct p4_nano_audio86_callback_gate *gate,
+    enum p4_nano_audio86_consumer_service_phase phase);
+void p4_nano_audio86_physical_sink_publish_consumer_progress(
+    struct p4_nano_audio86_physical_sink *sink,
+    enum p4_nano_audio86_consumer_progress_point point,
+    enum p4_nano_audio86_consumer_service_phase phase,
+    uint32_t current_sequence, uint32_t published_sequence,
+    uint32_t relative_us);
+void p4_nano_audio86_physical_sink_observe_first_qovf(
+    struct p4_nano_audio86_physical_sink *sink, uint32_t relative_us);
+size_t p4_nano_audio86_physical_sink_diagnostic_storage_bytes(void);
 
 void p4_nano_audio86_physical_sink_get_telemetry(
     const struct p4_nano_audio86_physical_sink *sink,

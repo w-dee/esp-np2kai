@@ -18,6 +18,7 @@ extern "C" {
 #define NP2_AUDIO86_SUSTAINED_QUANTUM_MS 5U
 #define NP2_AUDIO86_SUSTAINED_PROGRESS_BOUND_MS \
     (NP2_AUDIO86_SUSTAINED_RING_SLOTS * NP2_AUDIO86_SUSTAINED_QUANTUM_MS)
+#define NP2_AUDIO86_SUSTAINED_COOPERATIVE_SLICE_US 250000U
 
 enum np2audio86_sustained_submit_result {
     NP2_AUDIO86_SUSTAINED_ACCEPTED = 0,
@@ -96,7 +97,35 @@ typedef struct {
     uint64_t last_running_accept_ms;
     uint64_t max_running_accept_gap_ms;
     uint64_t drain_completed_ms;
+    uint32_t last_running_accept_sequence;
+    uint32_t max_running_gap_previous_sequence;
+    uint32_t max_running_gap_next_sequence;
+    uint64_t last_running_accept_relative_ms;
+    uint64_t max_running_gap_previous_relative_ms;
+    uint64_t max_running_gap_next_relative_ms;
+    uint32_t retry_episode_units;
+    uint32_t direct_running_accept_units;
+    uint32_t max_downstream_submit_us;
+    uint32_t max_downstream_submit_sequence;
+    uint32_t max_post_accept_evidence_us;
+    uint32_t max_post_accept_evidence_sequence;
+    uint8_t max_running_gap_present;
+    uint8_t max_running_gap_initial;
+    uint8_t max_running_gap_previous_sequence_valid;
+    uint8_t running_accept_sequence_valid;
+    uint8_t max_downstream_submit_present;
+    uint8_t max_post_accept_evidence_present;
 } np2audio86_sustained_evidence;
+
+typedef uint64_t (*np2audio86_sustained_monotonic_us_fn)(void *opaque);
+typedef void (*np2audio86_sustained_delay_one_tick_fn)(void *opaque);
+
+typedef struct {
+    np2audio86_sustained_monotonic_us_fn monotonic_us;
+    np2audio86_sustained_delay_one_tick_fn delay_one_tick;
+    void *opaque;
+    uint64_t slice_started_us;
+} np2audio86_sustained_cooperative_scheduler;
 
 void np2audio86_sustained_digest_init(np2audio86_sustained_digest *digest);
 void np2audio86_sustained_digest_update(np2audio86_sustained_digest *digest,
@@ -136,9 +165,21 @@ void np2audio86_sustained_stream_start(
     np2audio86_sustained_evidence *evidence, uint64_t now_ms);
 void np2audio86_sustained_drain_complete(
     np2audio86_sustained_evidence *evidence, uint64_t now_ms);
+void np2audio86_sustained_observe_downstream_submit(
+    np2audio86_sustained_evidence *evidence, uint32_t sequence,
+    uint32_t duration_us);
+void np2audio86_sustained_observe_post_accept_evidence(
+    np2audio86_sustained_evidence *evidence, uint32_t sequence,
+    uint32_t duration_us);
 uint64_t np2audio86_sustained_stream_wall_ms(
     const np2audio86_sustained_evidence *evidence);
 uint32_t np2audio86_sustained_worker_wait_ms(uint64_t remaining_frames);
+int np2audio86_sustained_cooperative_scheduler_init(
+    np2audio86_sustained_cooperative_scheduler *scheduler,
+    np2audio86_sustained_monotonic_us_fn monotonic_us,
+    np2audio86_sustained_delay_one_tick_fn delay_one_tick, void *opaque);
+int np2audio86_sustained_cooperative_checkpoint(
+    np2audio86_sustained_cooperative_scheduler *scheduler);
 
 #ifdef __cplusplus
 }

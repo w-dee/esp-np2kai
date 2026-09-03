@@ -24,7 +24,6 @@ CMAKE = ROOT / "firmware/components/p4_nano_audio86_guest_binding/CMakeLists.txt
 GOLDEN = ROOT / "host/probe/audio86_guest_sustained_2s_golden.json"
 MANIFEST = ROOT / "tools/emu/p4_audio86_physical_sink_acceptance_manifest.tsv"
 UNCHANGED = (
-    "firmware/components/p4_nano_audio86_physical_sink",
     "tools/emu/p4_audio86_physical_capture_v2.py",
     "host/probe/audio86_guest_sustained_2s_golden.json",
 )
@@ -92,9 +91,9 @@ def main() -> int:
     evidence = section(binding, "void emit_physical_5d3_s1_evidence(",
                        "sustained_physical_local_health(")
     names = (
-        "5D3_S1_IDENTITY schema=1", "5D3_S1_START schema=1",
-        "5D3_S1_STREAM schema=1", "5D3_S1_PROGRESS schema=1",
-        "5D3_S1_FINISH schema=1",
+        "5D3_S1_IDENTITY schema=2", "5D3_S1_START schema=2",
+        "5D3_S1_STREAM schema=2", "5D3_S1_PROGRESS schema=2",
+        "5D3_S1_FINISH schema=2",
     )
     positions = [evidence.find(name) for name in names]
     require(all(position >= 0 for position in positions) and
@@ -157,8 +156,22 @@ def main() -> int:
     require("PHYSICAL_EXEC" not in "\n".join(
         line for line in manifest.splitlines() if "5d3" in line.lower()),
         "manifest claims pre-hardware 5D3 PHYSICAL_EXEC PASS")
+    for token in (
+        "np2audio86_sustained_cooperative_checkpoint(&cooperative)",
+        "sustained_guest_delay_one_tick", "vTaskDelay(1U)",
+        "NP2_AUDIO86_SUSTAINED_COOPERATIVE_SLICE_US",
+        "P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT",
+        "P4_NANO_AUDIO86_CONSUMER_PHASE_POST_ACCEPT_EVIDENCE",
+        "TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER",
+        "retry_episode_units", "direct_running_accept_units",
+        "max_downstream_submit_us", "max_post_accept_evidence_us",
+    ):
+        require(token in binding or token in (
+                    ROOT / "firmware/components/np2audio86_fixture/include/"
+                    "np2audio86_sustained_evidence.h").read_text(encoding="utf-8"),
+                f"R2 source contract lost {token}")
 
-    print("F3_PHYSICAL_SINK_ARCHITECTURE_UNCHANGED=PASS")
+    print("R2_PHYSICAL_SINK_ARCHITECTURE_SEMANTICS_UNCHANGED=PASS")
     print("F3_SUSTAINED_PHYSICAL_PROFILE_FIRST_CLASS=PASS")
     print("S1_SELECTOR_SEMANTICS_UNCHANGED=PASS")
     print("S2_SELECTOR_SEMANTICS_UNCHANGED=PASS")
@@ -172,6 +185,9 @@ def main() -> int:
     print("F3_FIRMWARE_REALTIME_FAILURE_GATE=ABSENT")
     print("F3_HOST_GOLDEN_REMAINS_AUTHORITATIVE=PASS")
     print("F3_PHYSICAL_EXEC_PASS=NOT_CLAIMED")
+    print("SUSTAINED_GUEST_COOPERATIVE_SCHEDULING=PASS")
+    print("WDT_FEED_ONLY_FIX_REJECTED=YES")
+    print("PHYSICAL_ACCEPTANCE_THRESHOLDS_UNCHANGED=PASS")
     return 0
 
 

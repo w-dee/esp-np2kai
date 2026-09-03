@@ -257,6 +257,10 @@ struct Runtime {
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     p4_nano_audio86_physical_sink *physical_sink = nullptr;
 #endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    uint64_t physical_diagnostic_origin_us = 0U;
+    bool physical_diagnostic_origin_valid = false;
+#endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     PhysicalSnapshot physical{};
 #endif
@@ -804,11 +808,64 @@ const np2_pcm_sink kPcmSink{&s_runtime, pcm_sink_start, pcm_sink_submit,
                             pcm_sink_finish, pcm_sink_abort};
 
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+uint64_t physical_diagnostic_now_us()
+{
+    const int64_t now_us = esp_timer_get_time();
+    return now_us < 0 ? 0U : static_cast<uint64_t>(now_us);
+}
+
+uint32_t physical_diagnostic_elapsed_us(const uint64_t started_us,
+                                        const uint64_t completed_us)
+{
+    if (completed_us < started_us) return 0U;
+    const uint64_t elapsed = completed_us - started_us;
+    return elapsed > UINT32_MAX ? UINT32_MAX
+                                : static_cast<uint32_t>(elapsed);
+}
+
+uint32_t physical_diagnostic_relative_us(const Runtime *runtime,
+                                         const uint64_t now_us)
+{
+    if (runtime == nullptr || !runtime->physical_diagnostic_origin_valid ||
+        now_us < runtime->physical_diagnostic_origin_us)
+        return 0U;
+    const uint64_t relative = now_us - runtime->physical_diagnostic_origin_us;
+    return relative > UINT32_MAX ? UINT32_MAX
+                                 : static_cast<uint32_t>(relative);
+}
+
+void publish_physical_diagnostic(
+    Runtime *runtime, enum p4_nano_audio86_consumer_progress_point point,
+    enum p4_nano_audio86_consumer_service_phase phase,
+    const uint32_t current_sequence, const uint32_t published_sequence,
+    const uint64_t now_us)
+{
+    p4_nano_audio86_physical_sink_publish_consumer_progress(
+        runtime->physical_sink, point, phase, current_sequence,
+        published_sequence, physical_diagnostic_relative_us(runtime, now_us));
+}
+
+void observe_physical_qovf(Runtime *runtime, const uint64_t now_us)
+{
+    p4_nano_audio86_physical_sink_observe_first_qovf(
+        runtime->physical_sink, physical_diagnostic_relative_us(runtime, now_us));
+}
+#endif
+
 enum np2_pcm_sink_result sustained_sink_start(void *opaque)
 {
     auto *runtime = static_cast<Runtime *>(opaque);
     if (runtime == nullptr || runtime->sustained_downstream.start == nullptr)
         return NP2_PCM_SINK_FATAL;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    runtime->physical_diagnostic_origin_us = physical_diagnostic_now_us();
+    runtime->physical_diagnostic_origin_valid = true;
+    publish_physical_diagnostic(
+        runtime, P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY,
+        P4_NANO_AUDIO86_CONSUMER_PHASE_NONE, 0U, 0U,
+        runtime->physical_diagnostic_origin_us);
+#endif
     const enum np2_pcm_sink_result result =
         runtime->sustained_downstream.start(runtime->sustained_downstream.opaque);
 #if !defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
@@ -816,6 +873,9 @@ enum np2_pcm_sink_result sustained_sink_start(void *opaque)
         np2audio86_sustained_stream_start(
             &runtime->sustained,
             static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+#endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    observe_physical_qovf(runtime, physical_diagnostic_now_us());
 #endif
     return result;
 }
@@ -827,27 +887,75 @@ enum np2_pcm_sink_result sustained_sink_submit(
     if (runtime == nullptr || view == nullptr ||
         runtime->sustained_downstream.submit == nullptr)
         return NP2_PCM_SINK_FATAL;
+    uint8_t running = 1U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    p4_nano_audio86_physical_telemetry before{};
+    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink, &before);
+    running = before.state == P4_NANO_AUDIO86_PHYSICAL_RUNNING ? 1U : 0U;
+    const uint64_t downstream_started_us = physical_diagnostic_now_us();
+    publish_physical_diagnostic(
+        runtime, P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY,
+        P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT, view->sequence,
+        runtime->sustained.next_accepted_sequence, downstream_started_us);
+#endif
     const enum np2_pcm_sink_result result = runtime->sustained_downstream.submit(
         runtime->sustained_downstream.opaque, view);
-    if (result == NP2_PCM_SINK_FATAL) return result;
-    uint8_t running = 1U;
-#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
-    p4_nano_audio86_physical_telemetry telemetry{};
-    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink,
-                                                 &telemetry);
-    running = telemetry.state == P4_NANO_AUDIO86_PHYSICAL_RUNNING ? 1U : 0U;
-    if (running && !runtime->sustained.stream_started)
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    const uint64_t downstream_returned_us = physical_diagnostic_now_us();
+    if (running) {
+        np2audio86_sustained_observe_downstream_submit(
+            &runtime->sustained, view->sequence,
+            physical_diagnostic_elapsed_us(downstream_started_us,
+                                           downstream_returned_us));
+    }
+    publish_physical_diagnostic(
+        runtime, P4_NANO_AUDIO86_PROGRESS_SUBMIT_RETURN,
+        result == NP2_PCM_SINK_ACCEPTED
+            ? P4_NANO_AUDIO86_CONSUMER_PHASE_POST_ACCEPT_EVIDENCE
+            : P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF,
+        view->sequence, runtime->sustained.next_accepted_sequence,
+        downstream_returned_us);
+    p4_nano_audio86_physical_telemetry after{};
+    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink, &after);
+    if (after.state == P4_NANO_AUDIO86_PHYSICAL_RUNNING &&
+        !runtime->sustained.stream_started)
         np2audio86_sustained_stream_start(
-            &runtime->sustained,
-            static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+            &runtime->sustained, downstream_returned_us / 1000U);
+    observe_physical_qovf(runtime, downstream_returned_us);
 #endif
+    if (result == NP2_PCM_SINK_FATAL) return result;
     const enum np2audio86_sustained_submit_result evidence_result =
         result == NP2_PCM_SINK_ACCEPTED ? NP2_AUDIO86_SUSTAINED_ACCEPTED
                                        : NP2_AUDIO86_SUSTAINED_RETRY;
-    if (np2audio86_sustained_submit(
+    const uint64_t evidence_started_us =
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+        downstream_returned_us;
+#else
+        static_cast<uint64_t>(esp_timer_get_time());
+#endif
+    const int evidence_status = np2audio86_sustained_submit(
             &runtime->sustained, evidence_result, view->sequence,
             view->frame_offset, view->pcm, view->valid_frames, running,
-            static_cast<uint64_t>(esp_timer_get_time()) / 1000U) != 0)
+            evidence_started_us / 1000U);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    const uint64_t evidence_completed_us = physical_diagnostic_now_us();
+    if (result == NP2_PCM_SINK_ACCEPTED && running) {
+        np2audio86_sustained_observe_post_accept_evidence(
+            &runtime->sustained, view->sequence,
+            physical_diagnostic_elapsed_us(evidence_started_us,
+                                           evidence_completed_us));
+    }
+    publish_physical_diagnostic(
+        runtime,
+        result == NP2_PCM_SINK_ACCEPTED && running && evidence_status == 0
+            ? P4_NANO_AUDIO86_PROGRESS_RUNNING_ACCEPTED
+            : P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY,
+        P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF,
+        view->sequence, runtime->sustained.next_accepted_sequence,
+        evidence_completed_us);
+    observe_physical_qovf(runtime, evidence_completed_us);
+#endif
+    if (evidence_status != 0)
         return NP2_PCM_SINK_FATAL;
     return result;
 }
@@ -857,12 +965,23 @@ enum np2_pcm_sink_result sustained_sink_finish(void *opaque)
     auto *runtime = static_cast<Runtime *>(opaque);
     if (runtime == nullptr || runtime->sustained_downstream.finish == nullptr)
         return NP2_PCM_SINK_FATAL;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    publish_physical_diagnostic(
+        runtime, P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY,
+        P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH,
+        runtime->sustained.next_accepted_sequence,
+        runtime->sustained.next_accepted_sequence,
+        physical_diagnostic_now_us());
+#endif
     const enum np2_pcm_sink_result result = runtime->sustained_downstream.finish(
         runtime->sustained_downstream.opaque);
     if (result == NP2_PCM_SINK_ACCEPTED)
         np2audio86_sustained_drain_complete(
             &runtime->sustained,
             static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    observe_physical_qovf(runtime, physical_diagnostic_now_us());
+#endif
     return result;
 }
 
@@ -1045,6 +1164,16 @@ void pcm_consumer_task(void *opaque)
             break;
         }
         if (released && occupancy != 0U) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            const uint32_t physical_step_sequence =
+                runtime->sustained.next_accepted_sequence;
+            publish_physical_diagnostic(
+                runtime, P4_NANO_AUDIO86_PROGRESS_STEP_ENTER,
+                P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT,
+                physical_step_sequence,
+                runtime->sustained.next_accepted_sequence,
+                physical_diagnostic_now_us());
+#endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
             const uint32_t physical_retry_snapshot =
                 p4_nano_audio86_physical_sink_retry_snapshot(
@@ -1052,6 +1181,19 @@ void pcm_consumer_task(void *opaque)
 #endif
             const enum np2_pcm_output_status status =
                 np2_pcm_output_step(&runtime->pcm_controller);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            const uint64_t physical_step_returned_us =
+                physical_diagnostic_now_us();
+            publish_physical_diagnostic(
+                runtime, P4_NANO_AUDIO86_PROGRESS_STEP_EXIT,
+                status == NP2_PCM_OUTPUT_RETRY
+                    ? P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF
+                    : P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF,
+                physical_step_sequence,
+                runtime->sustained.next_accepted_sequence,
+                physical_step_returned_us);
+            observe_physical_qovf(runtime, physical_step_returned_us);
+#endif
             if (status == NP2_PCM_OUTPUT_RETRY) {
                 const bool post_done_retry =
                     runtime->pcm_post_done_retry_waiting.load(
@@ -1097,6 +1239,9 @@ void pcm_consumer_task(void *opaque)
                     (void)ulTaskNotifyTakeIndexed(0U, pdTRUE, portMAX_DELAY);
                     ++runtime->pcm_retry_wakes;
                 }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+                observe_physical_qovf(runtime, physical_diagnostic_now_us());
+#endif
                 if (runtime->pcm_retry_wakes == 0U)
                     runtime->pcm_retry_wait_skipped_ready = 1U;
                 continue;
@@ -1142,6 +1287,14 @@ void pcm_consumer_task(void *opaque)
                     ? 1U : 0U;
             runtime->pcm_eos_after_done = 1U;
             runtime->pcm_finish_after_empty = 1U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+            publish_physical_diagnostic(
+                runtime, P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY,
+                P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH,
+                runtime->sustained.next_accepted_sequence,
+                runtime->sustained.next_accepted_sequence,
+                physical_diagnostic_now_us());
+#endif
             const enum np2_pcm_output_status finish_status =
                 np2_pcm_output_finish(&runtime->pcm_controller);
             if (finish_status != NP2_PCM_OUTPUT_OK) {
@@ -2042,6 +2195,21 @@ void sustained_trace_io(void *opaque,
 }
 #endif
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+uint64_t sustained_guest_monotonic_us(void *)
+{
+    const int64_t now_us = esp_timer_get_time();
+    return now_us < 0 ? 0U : static_cast<uint64_t>(now_us);
+}
+
+void sustained_guest_delay_one_tick(void *)
+{
+    /* A blocking one-tick delay, rather than taskYIELD(), gives lower-priority
+     * CPU1 system work a bounded opportunity to run. */
+    vTaskDelay(1U);
+}
+#endif
+
 bool execute_real_i286(Runtime *runtime)
 {
     /* The real profile deliberately uses the frozen 86R.2 clock tuple.  The
@@ -2108,8 +2276,19 @@ bool execute_real_i286(Runtime *runtime)
     i286core.s.r.w.ip = 0U; i286core.s.r.w.flag = I_FLAG;
     i286core.s.adrsmask = 0xfffffU;
     nevent_get1stevent();
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    np2audio86_sustained_cooperative_scheduler cooperative{};
+    if (np2audio86_sustained_cooperative_scheduler_init(
+            &cooperative, sustained_guest_monotonic_us,
+            sustained_guest_delay_one_tick, nullptr) != 0)
+        return false;
+#endif
     while (!failed(runtime)) {
         if (mem[i286core.s.r.w.ip] == 0xf4U) break;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (np2audio86_sustained_cooperative_checkpoint(&cooperative) < 0)
+            return false;
+#endif
         if (i286core.s.remainclock <= 0) { nevent_progress(); continue; }
         i286c_step();
         if (CPU_CLOCK > 100000000U) return false;
@@ -2815,6 +2994,30 @@ bool physical_s2_snapshot_healthy(const Runtime *runtime)
 #endif
 
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+const char *consumer_service_phase_name(const uint32_t phase)
+{
+    switch (phase) {
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_NONE: return "NONE";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_START_ENABLE: return "START_ENABLE";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_CODEC_UNMUTE: return "CODEC_UNMUTE";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT:
+        return "DOWNSTREAM_SUBMIT";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_POST_ACCEPT_EVIDENCE:
+        return "POST_ACCEPT_EVIDENCE";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF: return "WAIT_EOF";
+    case P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH: return "FINISH";
+    }
+    return "UNKNOWN";
+}
+
+const char *first_qovf_state_name(const uint32_t state)
+{
+    if (state == 0U) return "NONE";
+    if (state == P4_NANO_AUDIO86_PHYSICAL_STARTING) return "STARTING";
+    if (state == P4_NANO_AUDIO86_PHYSICAL_RUNNING) return "RUNNING";
+    return "UNKNOWN";
+}
+
 void print_sha256(const uint8_t digest[NP2_SHA256_DIGEST_SIZE])
 {
     for (size_t i = 0U; i < NP2_SHA256_DIGEST_SIZE; ++i)
@@ -2865,7 +3068,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
             sink.preloaded_units
         ? sink.physical_units_copied - sink.preloaded_units : 0U;
 
-    std::printf("5D3_S1_IDENTITY schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_IDENTITY schema=2 evidence_class=PHYSICAL_EXEC"
                 " source_git_sha=%s"
                 " profile=AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S"
                 " workload_id=FULL_REPLAY_PCM_SUSTAINED_2S_V1"
@@ -2874,7 +3077,7 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " guest_program_crc32=e577580a"
                 " guest_program_sha256=56443e5c4e524a34e046387e83ef7f89b647d60bc0b3c2ff7c84abe5084a6ce7\n",
                 P4_AUDIO86_GIT_SHA);
-    std::printf("5D3_S1_START schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_START schema=2 evidence_class=PHYSICAL_EXEC"
                 " rate_hz=48000 channels=2 sample_bits=16 encoding=S16LE"
                 " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
                 " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
@@ -2884,7 +3087,10 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " expected_units=400 prepare_completed=%u pa_initial_low=%u"
                 " codec_initialized_muted=%u i2s_initialized=%u"
                 " muted_warmup_completed=%u callbacks_registered=%u"
-                " stream_started=%u codec_unmute_completed=%u\n",
+                " stream_started=%u codec_unmute_completed=%u"
+                " startup_durations_valid=%" PRIu32
+                " enable_stream_duration_us=%" PRIu32
+                " codec_unmute_duration_us=%" PRIu32 "\n",
                 P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT,
                 P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME,
                 P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES,
@@ -2897,8 +3103,11 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 sink.muted_warmup_completed ? 1U : 0U,
                 sink.callbacks_registered ? 1U : 0U,
                 sink.stream_started ? 1U : 0U,
-                sink.codec_unmute_completed ? 1U : 0U);
-    std::printf("5D3_S1_STREAM schema=1 evidence_class=PHYSICAL_EXEC"
+                sink.codec_unmute_completed ? 1U : 0U,
+                sink.startup_durations_valid,
+                sink.enable_stream_duration_us,
+                sink.codec_unmute_duration_us);
+    std::printf("5D3_S1_STREAM schema=2 evidence_class=PHYSICAL_EXEC"
                 " generated_frames=%" PRIu64 " generated_bytes=%" PRIu64
                 " generated_crc32=%08" PRIx32 " generated_sha256=",
                 e.next_generated_frame_offset, e.generated.bytes, generated_crc);
@@ -2963,6 +3172,8 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " padding_frames=%" PRIu64 " padding_bytes=%" PRIu64
                 " submit_attempts=%" PRIu64 " retry_count=%" PRIu64
                 " retry_identity_failures=%" PRIu32
+                " retry_episode_units=%" PRIu32
+                " direct_running_accept_units=%" PRIu32
                 " running_q_ovf=%" PRIu32
                 " final_ring_occupancy=%" PRIu32
                 " final_ring_partial=%" PRIu32
@@ -2977,13 +3188,15 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 sink.final_partial_units, sink.final_valid_frames,
                 sink.physical_padding_frames, padding_bytes,
                 sink.submit_attempts, sink.retry_count,
-                e.retry_identity_failures, sink.running_queue_overflow_count,
+                e.retry_identity_failures, e.retry_episode_units,
+                e.direct_running_accept_units,
+                sink.running_queue_overflow_count,
                 snapshot.final_ring_occupancy, snapshot.final_ring_partial,
                 snapshot.drops, snapshot.overwrites,
                 snapshot.abandoned_published_frames,
                 snapshot.abandoned_partial_frames,
                 snapshot.abandoned_rendered_frames);
-    std::printf("5D3_S1_PROGRESS schema=1 evidence_class=PHYSICAL_EXEC"
+    std::printf("5D3_S1_PROGRESS schema=2 evidence_class=PHYSICAL_EXEC"
                 " pcm_ring_max_occupancy=%" PRIu32
                 " pcm_producer_full_wait_count=%" PRIu32
                 " pcm_consumer_empty_after_release_before_done_count=%" PRIu32
@@ -2993,13 +3206,33 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " stream_wall_ms=%" PRIu64
                 " preloaded_units=%" PRIu32
                 " running_accepted_units=%" PRIu64
+                " max_gap_initial=%u"
+                " max_gap_previous_sequence_valid=%u"
+                " max_gap_previous_sequence=%" PRIu32
+                " max_gap_next_sequence=%" PRIu32
+                " max_gap_previous_relative_ms=%" PRIu64
+                " max_gap_next_relative_ms=%" PRIu64
+                " max_downstream_submit_us=%" PRIu32
+                " max_downstream_submit_sequence=%" PRIu32
+                " max_post_accept_evidence_us=%" PRIu32
+                " max_post_accept_evidence_sequence=%" PRIu32
                 " timing_authority=HOST_ONLY\n",
                 e.pcm_ring_max_occupancy, e.pcm_producer_full_wait_count,
                 e.pcm_consumer_premature_empty_count,
                 e.max_running_accept_gap_ms, e.stream_started_ms,
                 e.drain_completed_ms, np2audio86_sustained_stream_wall_ms(&e),
-                sink.preloaded_units, running_units);
-    std::printf("5D3_S1_FINISH schema=1 evidence_class=PHYSICAL_EXEC"
+                sink.preloaded_units, running_units,
+                e.max_running_gap_initial,
+                e.max_running_gap_previous_sequence_valid,
+                e.max_running_gap_previous_sequence,
+                e.max_running_gap_next_sequence,
+                e.max_running_gap_previous_relative_ms,
+                e.max_running_gap_next_relative_ms,
+                e.max_downstream_submit_us,
+                e.max_downstream_submit_sequence,
+                e.max_post_accept_evidence_us,
+                e.max_post_accept_evidence_sequence);
+    std::printf("5D3_S1_FINISH schema=2 evidence_class=PHYSICAL_EXEC"
                 " controller_state=%s sink_state=%s"
                 " final_copy_eof_epoch=%" PRIu32
                 " drain_completion_eof_epoch=%" PRIu32
@@ -3010,6 +3243,19 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 " pending_frames=%" PRIu64 " drained_frames=%" PRIu64
                 " discarded_frames=%" PRIu64
                 " draining_q_ovf=%" PRIu32 " sticky_error=%u"
+                " first_active_qovf_latched=%" PRIu32
+                " first_qovf_state=%s"
+                " first_qovf_eof_epoch=%" PRIu32
+                " first_qovf_phase=%s"
+                " first_qovf_current_sequence=%" PRIu32
+                " first_qovf_published_sequence=%" PRIu32
+                " first_qovf_last_step_enter_us=%" PRIu32
+                " first_qovf_last_submit_return_us=%" PRIu32
+                " first_qovf_last_step_exit_us=%" PRIu32
+                " first_qovf_last_running_accepted_us=%" PRIu32
+                " first_qovf_observed=%" PRIu32
+                " first_qovf_observed_us=%" PRIu32
+                " qovf_time_semantics=TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER"
                 " registered_generation=%" PRIu32
                 " terminal_generation=%" PRIu32
                 " stale_callbacks=%" PRIu32
@@ -3028,6 +3274,18 @@ void emit_physical_5d3_s1_evidence(const Runtime *runtime)
                 sink.physically_discarded_accepted_frames,
                 sink.draining_queue_overflow_count,
                 sink.sticky_error ? 1U : 0U,
+                sink.first_active_qovf_latched,
+                first_qovf_state_name(sink.first_qovf_state),
+                sink.first_qovf_eof_epoch,
+                consumer_service_phase_name(sink.first_qovf_phase),
+                sink.first_qovf_current_sequence,
+                sink.first_qovf_published_sequence,
+                sink.first_qovf_last_step_enter_us,
+                sink.first_qovf_last_submit_return_us,
+                sink.first_qovf_last_step_exit_us,
+                sink.first_qovf_last_running_accepted_us,
+                sink.first_qovf_observed,
+                sink.first_qovf_observed_us,
                 sink.registered_generation, sink.generation,
                 sink.stale_callback_count, sink.callback_refcount,
                 sink.callbacks_active ? 1U : 0U,

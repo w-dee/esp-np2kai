@@ -47,7 +47,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
                     evidence_class: str = "VALIDATOR_FIXTURE") -> list[str]:
     g = json.loads(GOLDEN.read_text(encoding="utf-8"))["values"]
     return [
-        "5D3_S1_IDENTITY schema=1 "
+        "5D3_S1_IDENTITY schema=2 "
         f"evidence_class={evidence_class} source_git_sha={EXPECTED_SHA} "
         "profile=AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S "
         "workload_id=FULL_REPLAY_PCM_SUSTAINED_2S_V1 "
@@ -55,7 +55,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         f"guest_program_bytes={g['SUSTAINED_GUEST_PROGRAM_SERIALIZED_BYTES']} "
         f"guest_program_crc32={g['SUSTAINED_GUEST_PROGRAM_CRC32']} "
         f"guest_program_sha256={g['SUSTAINED_GUEST_PROGRAM_SHA256']}",
-        "5D3_S1_START schema=1 "
+        "5D3_S1_START schema=2 "
         f"evidence_class={evidence_class} rate_hz=48000 channels=2 "
         "sample_bits=16 encoding=S16LE i2s_format=PHILIPS clock_source=APLL "
         "mclk_multiple=256 mclk_hz=12288000 q_frames=240 bytes_per_frame=4 "
@@ -63,8 +63,9 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         "prefill=4 semantic_duration_ms=2000 expected_units=400 "
         "prepare_completed=1 pa_initial_low=1 codec_initialized_muted=1 "
         "i2s_initialized=1 muted_warmup_completed=1 callbacks_registered=1 "
-        "stream_started=1 codec_unmute_completed=1",
-        "5D3_S1_STREAM schema=1 "
+        "stream_started=1 codec_unmute_completed=1 startup_durations_valid=1 "
+        "enable_stream_duration_us=37 codec_unmute_duration_us=83",
+        "5D3_S1_STREAM schema=2 "
         f"evidence_class={evidence_class} generated_frames=96000 "
         f"generated_bytes=384000 generated_crc32={g['FULL_REPLAY_PCM_CRC32']} "
         f"generated_sha256={g['FULL_REPLAY_PCM_SHA256']} accepted_frames=96000 "
@@ -95,24 +96,38 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         "sink_accepted_frames=96000 sink_accepted_bytes=384000 physical_units=400 "
         "full_units=400 final_partial_units=0 final_valid_frames=0 "
         "padding_frames=0 padding_bytes=0 submit_attempts=401 retry_count=1 "
-        "retry_identity_failures=0 running_q_ovf=0 final_ring_occupancy=0 "
+        "retry_identity_failures=0 retry_episode_units=1 "
+        "direct_running_accept_units=395 running_q_ovf=0 final_ring_occupancy=0 "
         "final_ring_partial=0 drops=0 overwrite=0 abandoned_published=0 "
         "abandoned_partial=0 abandoned_rendered=0",
-        "5D3_S1_PROGRESS schema=1 "
+        "5D3_S1_PROGRESS schema=2 "
         f"evidence_class={evidence_class} pcm_ring_max_occupancy=8 "
         "pcm_producer_full_wait_count=7 "
         "pcm_consumer_empty_after_release_before_done_count=2 "
         f"max_running_accept_gap_ms={gap_ms} stream_started_ms=1000 "
         f"drain_completed_ms={1000 + wall_ms} stream_wall_ms={wall_ms} "
-        "preloaded_units=4 running_accepted_units=396 timing_authority=HOST_ONLY",
-        "5D3_S1_FINISH schema=1 "
+        "preloaded_units=4 running_accepted_units=396 max_gap_initial=0 "
+        "max_gap_previous_sequence_valid=1 max_gap_previous_sequence=199 "
+        "max_gap_next_sequence=200 max_gap_previous_relative_ms=995 "
+        f"max_gap_next_relative_ms={995 + gap_ms} max_downstream_submit_us=120 "
+        "max_downstream_submit_sequence=200 max_post_accept_evidence_us=80 "
+        "max_post_accept_evidence_sequence=201 timing_authority=HOST_ONLY",
+        "5D3_S1_FINISH schema=2 "
         f"evidence_class={evidence_class} controller_state=FINISHED "
         "sink_state=QUIESCENT final_copy_eof_epoch=4294967294 "
         "drain_completion_eof_epoch=2 quiescent_eof_epoch=4 "
         "drain_post_snapshot_eofs=4 quiescent_post_snapshot_eofs=6 "
         "drain_duration_ms=4 finish_completed=1 pending_frames=0 "
         "drained_frames=96000 discarded_frames=0 draining_q_ovf=2 "
-        "sticky_error=0 registered_generation=1 terminal_generation=2 "
+        "sticky_error=0 first_active_qovf_latched=0 first_qovf_state=NONE "
+        "first_qovf_eof_epoch=0 first_qovf_phase=NONE "
+        "first_qovf_current_sequence=0 first_qovf_published_sequence=0 "
+        "first_qovf_last_step_enter_us=0 first_qovf_last_submit_return_us=0 "
+        "first_qovf_last_step_exit_us=0 "
+        "first_qovf_last_running_accepted_us=0 first_qovf_observed=0 "
+        "first_qovf_observed_us=0 "
+        "qovf_time_semantics=TASK_PUBLISHED_RELATIVE_US_NO_ISR_TIMER "
+        "registered_generation=1 terminal_generation=2 "
         "stale_callbacks=0 callback_in_flight=0 callbacks_active=0 "
         "codec_final_muted=1 pa_final_low=1 i2s_enabled=0 i2s_created=0 "
         "first_error=0 forced_abort=0 sink_destroyed=1",
@@ -178,7 +193,7 @@ def main() -> int:
         "A_missing_record": base[:2] + base[3:],
         "A_duplicate_record": base[:2] + [base[1]] + base[2:],
         "A_reorder": [base[1], base[0], *base[2:]],
-        "A_unknown_record": [base[0], "5D3_S1_UNKNOWN schema=1", *base[1:]],
+        "A_unknown_record": [base[0], "5D3_S1_UNKNOWN schema=2", *base[1:]],
         "A_cross_namespace_terminal": [
             *base[:-2], "P4_AUDIO86_PHYSICAL_S2_TERMINAL=COMPLETE", *base[-2:]],
         "A_unknown_field": replace_once(base, " codec_unmute_completed=1",
@@ -193,8 +208,8 @@ def main() -> int:
         "B_board": replace_once(base, "board=P4_NANO_P4_V1X", "board=GENERIC"),
         "B_backend": replace_once(base, "backend=IDF_I2S0_ES8311", "backend=FAKE"),
         "B_class": replace_once(
-            base, "5D3_S1_IDENTITY schema=1 evidence_class=VALIDATOR_FIXTURE",
-            "5D3_S1_IDENTITY schema=1 evidence_class=HOST_EXEC"),
+            base, "5D3_S1_IDENTITY schema=2 evidence_class=VALIDATOR_FIXTURE",
+            "5D3_S1_IDENTITY schema=2 evidence_class=HOST_EXEC"),
         "C_generated_frames": replace_once(base, "generated_frames=96000", "generated_frames=95999"),
         "C_generated_crc": replace_once(base, "generated_crc32=5bb15277", "generated_crc32=0bb15277"),
         "C_accepted_sha": replace_once(base, "accepted_sha256=b315", "accepted_sha256=a315"),
@@ -216,6 +231,15 @@ def main() -> int:
         "G_submit": replace_once(base, "submit_attempts=401", "submit_attempts=400"),
         "G_acceptance": replace_once(base, "sink_accepted_frames=96000", "sink_accepted_frames=95760"),
         "H_running_qovf": replace_once(base, "running_q_ovf=0", "running_q_ovf=1"),
+        "H_missing_first_qovf_latch": replace_once(
+            base, "running_q_ovf=0", "running_q_ovf=1"),
+        "H_invalid_qovf_state": replace_once(
+            base, "first_qovf_state=NONE", "first_qovf_state=FAILED"),
+        "H_invalid_qovf_phase": replace_once(
+            base, "first_qovf_phase=NONE", "first_qovf_phase=HASHING"),
+        "H_qovf_sequence_range": replace_once(
+            base, "first_qovf_current_sequence=0",
+            "first_qovf_current_sequence=400"),
         "H_drain": replace_once(base, "drain_post_snapshot_eofs=4", "drain_post_snapshot_eofs=3"),
         "H_quiescent": replace_once(base, "quiescent_post_snapshot_eofs=6", "quiescent_post_snapshot_eofs=3"),
         "H_draining_qovf": replace_once(base, "draining_q_ovf=2", "draining_q_ovf=7"),
@@ -224,6 +248,24 @@ def main() -> int:
             "drain_post_snapshot_eofs=4", "drain_post_snapshot_eofs=2147483648"),
         "I_wall": canonical_lines(wall_ms=2041),
         "I_gap": canonical_lines(gap_ms=41),
+        "I_gap_endpoint_arithmetic": replace_once(
+            base, "max_gap_next_relative_ms=1035",
+            "max_gap_next_relative_ms=1034"),
+        "I_gap_sequence": replace_once(
+            base, "max_gap_next_sequence=200", "max_gap_next_sequence=201"),
+        "I_retry_episode_arithmetic": replace_once(
+            base, "retry_episode_units=1", "retry_episode_units=2"),
+        "I_retry_distribution_total": replace_once(
+            base, "direct_running_accept_units=395",
+            "direct_running_accept_units=394"),
+        "I_downstream_duration_malformed": replace_once(
+            base, "max_downstream_submit_us=120",
+            "max_downstream_submit_us=bad"),
+        "I_evidence_duration_malformed": replace_once(
+            base, "max_post_accept_evidence_us=80",
+            "max_post_accept_evidence_us=bad"),
+        "I_failure_path_diagnostic_missing": replace_once(
+            base, " first_qovf_observed_us=0", ""),
         "J_pending": replace_once(base, "pending_frames=0", "pending_frames=1"),
         "J_discarded": replace_once(base, "discarded_frames=0", "discarded_frames=1"),
         "J_drop": replace_once(base, "drops=0", "drops=1"),
@@ -241,6 +283,10 @@ def main() -> int:
         "L_failed": [*base[:-1], FAIL_MARKER],
         "L_missing_terminal": base[:-1],
         "L_duplicate_terminal": [*base, PASS_MARKER],
+        "M_schema1_as_schema2": [
+            line.replace("schema=2", "schema=1")
+            if line.startswith("5D3_S1_") else line for line in base
+        ],
     }
     with tempfile.TemporaryDirectory(prefix="f3-validator-") as tmp:
         directory = Path(tmp)
@@ -262,7 +308,7 @@ def main() -> int:
         for label, tail in (
             ("panic", b"Guru Meditation Error: Core 0 panic'ed\r\n"),
             ("reset", b"ESP-ROM:esp32p4\r\n"),
-            ("authority", b"5D3_S1_PROGRESS schema=1\r\n"),
+            ("authority", b"5D3_S1_PROGRESS schema=2\r\n"),
         ):
             if not run_case(directory, base, tail=tail):
                 raise AssertionError(f"unsafe tail accepted: {label}")
@@ -273,6 +319,7 @@ def main() -> int:
     print("F3_RECORD_GRAMMAR_SOURCE_SYNC=PASS")
     print("F3_REALTIME_BOUNDARIES_2040_40=PASS")
     print("F3_VALIDATOR_FIXTURE_CLASSIFICATION=PASS")
+    print("5D3_SCHEMA2_DIAGNOSTIC_CHANGE_SENSITIVITY=PASS")
     return 0
 
 

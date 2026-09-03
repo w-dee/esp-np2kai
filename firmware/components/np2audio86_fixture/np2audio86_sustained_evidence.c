@@ -138,6 +138,12 @@ int np2audio86_sustained_submit(
         return 0;
     }
     if (result != NP2_AUDIO86_SUSTAINED_ACCEPTED) return -1;
+    if (sink_running) {
+        if (evidence->retry_pending)
+            ++evidence->retry_episode_units;
+        else
+            ++evidence->direct_running_accept_units;
+    }
     np2audio86_sustained_digest_update(&evidence->accepted, pcm, bytes, 1U);
     slot.present = 1U;
     slot.sequence = sequence;
@@ -150,12 +156,31 @@ int np2audio86_sustained_submit(
     ++evidence->next_accepted_sequence;
     evidence->retry_pending = 0U;
     if (sink_running && evidence->stream_started) {
-        const uint64_t previous = evidence->running_accept_seen
-            ? evidence->last_running_accept_ms : evidence->stream_started_ms;
-        const uint64_t gap = now_ms >= previous ? now_ms - previous : 0U;
-        if (gap > evidence->max_running_accept_gap_ms)
+        const uint64_t relative_ms = now_ms >= evidence->stream_started_ms
+            ? now_ms - evidence->stream_started_ms : 0U;
+        const uint64_t previous_relative_ms = evidence->running_accept_seen
+            ? evidence->last_running_accept_relative_ms : 0U;
+        const uint64_t gap = relative_ms >= previous_relative_ms
+            ? relative_ms - previous_relative_ms : 0U;
+        if (!evidence->max_running_gap_present ||
+            gap > evidence->max_running_accept_gap_ms) {
             evidence->max_running_accept_gap_ms = gap;
+            evidence->max_running_gap_present = 1U;
+            evidence->max_running_gap_initial =
+                evidence->running_accept_seen ? 0U : 1U;
+            evidence->max_running_gap_previous_sequence_valid =
+                evidence->running_accept_seen ? 1U : 0U;
+            evidence->max_running_gap_previous_sequence =
+                evidence->last_running_accept_sequence;
+            evidence->max_running_gap_next_sequence = sequence;
+            evidence->max_running_gap_previous_relative_ms =
+                previous_relative_ms;
+            evidence->max_running_gap_next_relative_ms = relative_ms;
+        }
         evidence->last_running_accept_ms = now_ms;
+        evidence->last_running_accept_relative_ms = relative_ms;
+        evidence->last_running_accept_sequence = sequence;
+        evidence->running_accept_sequence_valid = 1U;
         evidence->running_accept_seen = 1U;
     }
     return 0;
@@ -238,6 +263,32 @@ void np2audio86_sustained_drain_complete(
     evidence->drain_completed_ms = now_ms;
 }
 
+void np2audio86_sustained_observe_downstream_submit(
+    np2audio86_sustained_evidence *evidence, uint32_t sequence,
+    uint32_t duration_us)
+{
+    if (evidence == NULL) return;
+    if (!evidence->max_downstream_submit_present ||
+        duration_us > evidence->max_downstream_submit_us) {
+        evidence->max_downstream_submit_present = 1U;
+        evidence->max_downstream_submit_us = duration_us;
+        evidence->max_downstream_submit_sequence = sequence;
+    }
+}
+
+void np2audio86_sustained_observe_post_accept_evidence(
+    np2audio86_sustained_evidence *evidence, uint32_t sequence,
+    uint32_t duration_us)
+{
+    if (evidence == NULL) return;
+    if (!evidence->max_post_accept_evidence_present ||
+        duration_us > evidence->max_post_accept_evidence_us) {
+        evidence->max_post_accept_evidence_present = 1U;
+        evidence->max_post_accept_evidence_us = duration_us;
+        evidence->max_post_accept_evidence_sequence = sequence;
+    }
+}
+
 uint64_t np2audio86_sustained_stream_wall_ms(
     const np2audio86_sustained_evidence *evidence)
 {
@@ -258,4 +309,38 @@ uint32_t np2audio86_sustained_worker_wait_ms(uint64_t remaining_frames)
     duration_ms += (remainder * 1000U + 47999U) / 48000U;
     if (duration_ms > UINT32_MAX - 5000U) return UINT32_MAX;
     return (uint32_t)(5000U + duration_ms);
+}
+
+int np2audio86_sustained_cooperative_scheduler_init(
+    np2audio86_sustained_cooperative_scheduler *scheduler,
+    np2audio86_sustained_monotonic_us_fn monotonic_us,
+    np2audio86_sustained_delay_one_tick_fn delay_one_tick, void *opaque)
+{
+    if (scheduler == NULL || monotonic_us == NULL || delay_one_tick == NULL)
+        return -1;
+    scheduler->monotonic_us = monotonic_us;
+    scheduler->delay_one_tick = delay_one_tick;
+    scheduler->opaque = opaque;
+    scheduler->slice_started_us = monotonic_us(opaque);
+    return 0;
+}
+
+int np2audio86_sustained_cooperative_checkpoint(
+    np2audio86_sustained_cooperative_scheduler *scheduler)
+{
+    uint64_t now_us;
+    uint64_t resumed_us;
+    if (scheduler == NULL || scheduler->monotonic_us == NULL ||
+        scheduler->delay_one_tick == NULL)
+        return -1;
+    now_us = scheduler->monotonic_us(scheduler->opaque);
+    if (now_us < scheduler->slice_started_us) return -1;
+    if (now_us - scheduler->slice_started_us <
+        NP2_AUDIO86_SUSTAINED_COOPERATIVE_SLICE_US)
+        return 0;
+    scheduler->delay_one_tick(scheduler->opaque);
+    resumed_us = scheduler->monotonic_us(scheduler->opaque);
+    if (resumed_us < now_us) return -1;
+    scheduler->slice_started_us = resumed_us;
+    return 1;
 }

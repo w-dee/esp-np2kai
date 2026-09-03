@@ -40,7 +40,16 @@ struct IdfBackend {
     bool channel_created = false;
     bool channel_enabled = false;
     bool callbacks_registered = false;
+    uint32_t enable_stream_duration_us = 0U;
+    uint32_t codec_unmute_duration_us = 0U;
 };
+
+uint32_t elapsed_us(const int64_t started, const int64_t completed)
+{
+    if (started < 0 || completed < started) return 0U;
+    const uint64_t elapsed = static_cast<uint64_t>(completed - started);
+    return elapsed > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(elapsed);
+}
 
 esp_err_t codec_write(const p4_nano_board::I2cDeviceLease &lease,
                       uint8_t reg, uint8_t value)
@@ -244,14 +253,34 @@ enum p4_nano_audio86_physical_io_result preload(
 int enable_stream(void *opaque)
 {
     auto *backend = static_cast<IdfBackend *>(opaque);
-    if (i2s_channel_enable(backend->tx) != ESP_OK) return -1;
+    const int64_t enable_started_us = esp_timer_get_time();
+    const esp_err_t enable_result = i2s_channel_enable(backend->tx);
+    backend->enable_stream_duration_us = elapsed_us(
+        enable_started_us, esp_timer_get_time());
+    if (enable_result != ESP_OK) return -1;
     backend->channel_enabled = true;
-    if (codec_mute(backend->codec, false) != ESP_OK) {
+    p4_nano_audio86_callback_gate_set_service_phase(
+        backend->callback_gate, P4_NANO_AUDIO86_CONSUMER_PHASE_CODEC_UNMUTE);
+    const int64_t unmute_started_us = esp_timer_get_time();
+    const esp_err_t unmute_result = codec_mute(backend->codec, false);
+    backend->codec_unmute_duration_us = elapsed_us(
+        unmute_started_us, esp_timer_get_time());
+    if (unmute_result != ESP_OK) {
         (void)i2s_channel_disable(backend->tx);
         backend->channel_enabled = false;
         return -1;
     }
     return 0;
+}
+
+void get_startup_durations(void *opaque, uint32_t *enable_stream_us,
+                           uint32_t *codec_unmute_us)
+{
+    auto *backend = static_cast<IdfBackend *>(opaque);
+    if (enable_stream_us != nullptr)
+        *enable_stream_us = backend->enable_stream_duration_us;
+    if (codec_unmute_us != nullptr)
+        *codec_unmute_us = backend->codec_unmute_duration_us;
 }
 
 enum p4_nano_audio86_physical_io_result write(
@@ -361,7 +390,7 @@ void release(void *opaque)
 }
 
 const struct p4_nano_audio86_physical_backend kOperations = {
-    prepare, preload, enable_stream, write, mute, pa_low, disable,
+    prepare, preload, enable_stream, get_startup_durations, write, mute, pa_low, disable,
     unregister_callbacks, now_ms, wait_hint, notify_waiter, release, nullptr};
 
 } // namespace

@@ -161,7 +161,7 @@ void release(void *)
 }
 
 const p4_nano_audio86_physical_backend kOperations = {
-    prepare, preload, enable, write, mute, pa_low, disable,
+    prepare, preload, enable, nullptr, write, mute, pa_low, disable,
     unregister_callbacks, now_ms, wait_hint, notify_waiter, release, nullptr};
 
 } // namespace

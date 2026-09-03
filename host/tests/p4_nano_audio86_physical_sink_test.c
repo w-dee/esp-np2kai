@@ -33,6 +33,8 @@ struct fake_backend {
     unsigned prepare_calls;
     unsigned preload_calls;
     unsigned enable_calls;
+    uint32_t enable_stream_duration_us;
+    uint32_t codec_unmute_duration_us;
     unsigned write_calls;
     unsigned mute_calls;
     unsigned pa_low_calls;
@@ -43,6 +45,7 @@ struct fake_backend {
     unsigned auto_eof_budget;
     unsigned post_completion_eof_qovf_budget;
     int qovf_on_wait;
+    int qovf_on_enable;
     enum p4_nano_audio86_physical_io_result preload_result;
     enum p4_nano_audio86_physical_io_result write_result;
     size_t preload_bytes;
@@ -174,7 +177,20 @@ static int fake_enable(void *opaque)
     fake->enable_calls++;
     record_operation(fake, 'E');
     record_event(fake, "ENABLE", 0, 0U);
+    if (fake->qovf_on_enable)
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake->callback_gate);
     return fake->operation_failure ? -1 : 0;
+}
+
+static void fake_get_startup_durations(void *opaque,
+                                       uint32_t *enable_stream_us,
+                                       uint32_t *codec_unmute_us)
+{
+    struct fake_backend *fake = opaque;
+    if (enable_stream_us != NULL)
+        *enable_stream_us = fake->enable_stream_duration_us;
+    if (codec_unmute_us != NULL)
+        *codec_unmute_us = fake->codec_unmute_duration_us;
 }
 
 static enum p4_nano_audio86_physical_io_result fake_write(
@@ -298,7 +314,8 @@ static struct p4_nano_audio86_physical_sink *new_sink(
     struct fake_backend *fake, struct np2_pcm_sink *interface)
 {
     const struct p4_nano_audio86_physical_backend backend = {
-        fake_prepare, fake_preload, fake_enable, fake_write, fake_mute,
+        fake_prepare, fake_preload, fake_enable, fake_get_startup_durations,
+        fake_write, fake_mute,
         fake_pa_low, fake_disable, fake_unregister, fake_now, fake_wait,
         fake_notify, fake_release, fake};
     struct p4_nano_audio86_physical_sink *sink = NULL;
@@ -310,6 +327,8 @@ static struct p4_nano_audio86_physical_sink *new_sink(
     fake->write_result = P4_NANO_AUDIO86_PHYSICAL_IO_OK;
     fake->preload_bytes = SIZE_MAX;
     fake->write_bytes = SIZE_MAX;
+    fake->enable_stream_duration_us = 37U;
+    fake->codec_unmute_duration_us = 83U;
     assert(p4_nano_audio86_physical_sink_create(&sink, &backend) == 0);
     *interface = p4_nano_audio86_physical_sink_interface(sink);
     return sink;
@@ -742,6 +761,72 @@ static void test_queue_overflow(void)
     puts("5D1_QUEUE_OVF running=FATAL draining=TELEMETRY_ONLY stale=IGNORED result=PASS");
 }
 
+static void assert_first_qovf_freezes(
+    enum p4_nano_audio86_consumer_service_phase phase, int during_enable)
+{
+    struct fake_backend fake;
+    struct np2_pcm_sink interface;
+    struct p4_nano_audio86_physical_sink *sink = new_sink(&fake, &interface);
+    struct p4_nano_audio86_physical_telemetry first;
+    struct p4_nano_audio86_physical_telemetry later;
+    uint8_t pcm[960];
+    fill_pcm(pcm, sizeof(pcm), (uint8_t)(41U + (unsigned)phase));
+    start_sink(&interface);
+    p4_nano_audio86_physical_sink_publish_consumer_progress(
+        sink, P4_NANO_AUDIO86_PROGRESS_STEP_ENTER, phase, 7U, 6U, 101U);
+    if (during_enable) {
+        fake.qovf_on_enable = 1;
+        enter_running(&fake, &interface, pcm);
+    } else {
+        enter_running(&fake, &interface, pcm);
+        p4_nano_audio86_physical_sink_publish_consumer_progress(
+            sink, P4_NANO_AUDIO86_PROGRESS_SUBMIT_RETURN, phase,
+            7U, 6U, 202U);
+        p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+    }
+    p4_nano_audio86_physical_sink_observe_first_qovf(sink, 303U);
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &first);
+    assert(first.first_active_qovf_latched == 1U &&
+           first.first_qovf_state == (uint32_t)(
+               during_enable ? P4_NANO_AUDIO86_PHYSICAL_STARTING
+                             : P4_NANO_AUDIO86_PHYSICAL_RUNNING) &&
+           first.first_qovf_phase == (uint32_t)phase &&
+           first.first_qovf_current_sequence == 7U &&
+           first.first_qovf_published_sequence == 6U &&
+           first.first_qovf_observed == 1U &&
+           first.first_qovf_observed_us == 303U &&
+           first.enable_stream_duration_us == 37U &&
+           first.codec_unmute_duration_us == 83U &&
+           first.startup_durations_valid == 1U);
+    p4_nano_audio86_physical_sink_publish_consumer_progress(
+        sink, P4_NANO_AUDIO86_PROGRESS_STEP_EXIT,
+        P4_NANO_AUDIO86_CONSUMER_PHASE_FINISH, 99U, 98U, 404U);
+    p4_nano_audio86_callback_gate_on_send_q_ovf(fake.callback_gate);
+    p4_nano_audio86_physical_sink_observe_first_qovf(sink, 505U);
+    p4_nano_audio86_physical_sink_get_telemetry(sink, &later);
+    assert(later.first_qovf_state == first.first_qovf_state &&
+           later.first_qovf_phase == first.first_qovf_phase &&
+           later.first_qovf_current_sequence ==
+               first.first_qovf_current_sequence &&
+           later.first_qovf_published_sequence ==
+               first.first_qovf_published_sequence &&
+           later.first_qovf_observed_us == first.first_qovf_observed_us);
+    close_sink(&fake, sink, &interface);
+}
+
+static void test_first_qovf_latch(void)
+{
+    assert_first_qovf_freezes(P4_NANO_AUDIO86_CONSUMER_PHASE_START_ENABLE, 1);
+    assert_first_qovf_freezes(
+        P4_NANO_AUDIO86_CONSUMER_PHASE_DOWNSTREAM_SUBMIT, 0);
+    assert_first_qovf_freezes(
+        P4_NANO_AUDIO86_CONSUMER_PHASE_POST_ACCEPT_EVIDENCE, 0);
+    assert_first_qovf_freezes(P4_NANO_AUDIO86_CONSUMER_PHASE_WAIT_EOF, 0);
+    printf("FIRST_QOVF_LATCH_HOST_TEST=PASS\n");
+    printf("PHYSICAL_DIAGNOSTIC_FIXED_BYTES=%zu\n",
+           p4_nano_audio86_physical_sink_diagnostic_storage_bytes());
+}
+
 struct callback_race_threads {
     struct fake_backend *fake;
     struct np2_pcm_sink *interface;
@@ -1114,6 +1199,7 @@ int main(void)
     test_partial_progress(956U);
     test_finish_and_callbacks();
     test_queue_overflow();
+    test_first_qovf_latch();
     test_quiescence_timeout();
     test_callback_control_faults();
     test_terminal_accounting();
