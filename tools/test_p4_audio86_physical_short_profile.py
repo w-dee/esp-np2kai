@@ -175,7 +175,7 @@ def main() -> int:
             "fake lifecycle backend guard unexpectedly disappeared")
 
     partial_fixture = binding_source[
-        binding_source.index("#if defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)"):
+        binding_source.index("#elif defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)"):
         binding_source.index("#elif P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO",)
     ]
     require("kRenderFrames = 13U" in partial_fixture and
@@ -183,7 +183,7 @@ def main() -> int:
             "kExpectedPartialSlots = 1U" in partial_fixture,
             "existing 13-frame partial-EOS fixture semantics changed")
     render_profiles = binding_source[
-        binding_source.index("#if defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)"):
+        binding_source.index("#elif defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)"):
         binding_source.index("constexpr size_t kApplyRecordBytes")
     ]
     require(
@@ -211,8 +211,8 @@ def main() -> int:
 
     require(
         "audio86_physical_selector + audio86_partial_selector +" in build and
-        "audio86_physical_short > 1" in build and
-        "--audio86-real-guest-physical-i2s-short are mutually exclusive" in build,
+        "audio86_physical_short + audio86_sustained > 1" in build and
+        "selectors are mutually exclusive" in build,
         "manual physical-plus-partial composition is not rejected",
     )
     run_rejected(
@@ -255,7 +255,7 @@ def main() -> int:
         expected_fragment="--esp-emu-test requires the generic p4-v3x",
     )
 
-    explicit_builds = len(re.findall(r"^build ", matrix, re.MULTILINE))
+    explicit_builds = len(re.findall(r"^(?:build|launch) ", matrix, re.MULTILINE))
     stages = re.search(r"^stages=\(([^)]*)\)$", matrix, re.MULTILINE)
     require(stages is not None, "lifecycle stage matrix is missing")
     stage_count = len(stages.group(1).split())
@@ -265,7 +265,7 @@ def main() -> int:
             "short physical matrix entry must occur exactly once")
     require(matrix.count("--audio86-real-guest-physical-i2s\n") == 1,
             "full physical matrix entry must remain exactly once")
-    require("5D2_S1A_BUILD_MATRIX=12/12_PASS" in matrix,
+    require("F3_FINAL_BUILD_MATRIX=12/12_PASS" in matrix,
             "matrix result marker is not truthful")
     require("build_matrix\tTwelve profiles build\tBUILD" in manifest,
             "physical acceptance manifest does not describe 12 builds")

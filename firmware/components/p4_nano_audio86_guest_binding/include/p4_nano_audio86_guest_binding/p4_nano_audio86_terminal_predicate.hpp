@@ -13,6 +13,26 @@
 
 namespace p4_nano_audio86_terminal_predicate {
 
+struct SustainedPhysicalLocalHealth {
+    std::uint64_t generated_frames = 0U;
+    std::uint64_t generated_bytes = 0U;
+    std::uint64_t accepted_frames = 0U;
+    std::uint64_t accepted_bytes = 0U;
+    std::uint32_t generated_units = 0U;
+    std::uint32_t accepted_units = 0U;
+    std::uint32_t next_generated_sequence = 0U;
+    std::uint32_t next_accepted_sequence = 0U;
+    std::uint64_t next_generated_frame_offset = 0U;
+    std::uint64_t next_accepted_frame_offset = 0U;
+    std::uint16_t generated_slot_fill_frames = 0U;
+    std::uint32_t retry_pending = 0U;
+    std::uint32_t retry_identity_failures = 0U;
+    bool generated_digest_expected = false;
+    bool accepted_digest_matches_generated = false;
+    bool reset_identity_expected = false;
+    bool trace_shape_expected = false;
+};
+
 template <typename Observer>
 bool virtual_sink_observer_healthy(
     const Observer &observer, const std::uint32_t expected_slots,
@@ -129,6 +149,34 @@ bool physical_s2_snapshot_healthy(
             sink.retry_count &&
         sink.drain_duration_ms <
             P4_NANO_AUDIO86_PHYSICAL_DRAIN_TIMEOUT_MS;
+}
+
+template <typename Snapshot>
+bool sustained_physical_snapshot_healthy(
+    const Snapshot &snapshot, const SustainedPhysicalLocalHealth &local,
+    const std::uint64_t expected_frames, const std::uint32_t expected_units,
+    const std::uint32_t expected_preloaded_units)
+{
+    return physical_s2_snapshot_healthy(
+               snapshot, expected_frames, expected_units,
+               expected_preloaded_units) &&
+        local.generated_frames == expected_frames &&
+        local.generated_bytes == expected_frames *
+            P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME &&
+        local.accepted_frames == expected_frames &&
+        local.accepted_bytes == local.generated_bytes &&
+        local.generated_units == expected_units &&
+        local.accepted_units == expected_units &&
+        local.next_generated_sequence == expected_units &&
+        local.next_accepted_sequence == expected_units &&
+        local.next_generated_frame_offset == expected_frames &&
+        local.next_accepted_frame_offset == expected_frames &&
+        local.generated_slot_fill_frames == 0U &&
+        local.retry_pending == 0U &&
+        local.retry_identity_failures == 0U &&
+        local.generated_digest_expected &&
+        local.accepted_digest_matches_generated &&
+        local.reset_identity_expected && local.trace_shape_expected;
 }
 
 constexpr bool normal_terminal_healthy(

@@ -19,6 +19,8 @@ constexpr std::size_t kPcmBytes = kExpectedFrames * 4U;
 constexpr std::uint64_t kS2ExpectedFrames = 2400U;
 constexpr std::uint64_t kS2ExpectedUnits = 10U;
 constexpr std::uint32_t kS2ExpectedPreloadedUnits = 4U;
+constexpr std::uint64_t kF3ExpectedFrames = 96000U;
+constexpr std::uint32_t kF3ExpectedUnits = 400U;
 
 struct PhysicalSnapshot {
     p4_nano_audio86_physical_telemetry sink{};
@@ -110,6 +112,26 @@ PhysicalSnapshot healthy_s2_snapshot()
     return snapshot;
 }
 
+predicate::SustainedPhysicalLocalHealth healthy_f3_local()
+{
+    predicate::SustainedPhysicalLocalHealth local{};
+    local.generated_frames = kF3ExpectedFrames;
+    local.generated_bytes = kF3ExpectedFrames * 4U;
+    local.accepted_frames = kF3ExpectedFrames;
+    local.accepted_bytes = kF3ExpectedFrames * 4U;
+    local.generated_units = kF3ExpectedUnits;
+    local.accepted_units = kF3ExpectedUnits;
+    local.next_generated_sequence = kF3ExpectedUnits;
+    local.next_accepted_sequence = kF3ExpectedUnits;
+    local.next_generated_frame_offset = kF3ExpectedFrames;
+    local.next_accepted_frame_offset = kF3ExpectedFrames;
+    local.generated_digest_expected = true;
+    local.accepted_digest_matches_generated = true;
+    local.reset_identity_expected = true;
+    local.trace_shape_expected = true;
+    return local;
+}
+
 void require(const bool condition, const char *message)
 {
     if (condition) return;
@@ -155,6 +177,54 @@ int main()
                           healthy_s2, kS2ExpectedFrames, kS2ExpectedUnits,
                           kS2ExpectedPreloadedUnits)),
             "healthy full physical path with virtual defaults did not complete");
+
+    PhysicalSnapshot healthy_f3 = healthy_s2;
+    healthy_f3.semantic_frames = kF3ExpectedFrames;
+    healthy_f3.semantic_bytes = kF3ExpectedFrames * 4U;
+    healthy_f3.controller_accepted_frames = kF3ExpectedFrames;
+    healthy_f3.controller_accepted_bytes = kF3ExpectedFrames * 4U;
+    healthy_f3.sink.semantic_accepted_frames = kF3ExpectedFrames;
+    healthy_f3.sink.semantic_accepted_bytes = kF3ExpectedFrames * 4U;
+    healthy_f3.sink.physical_units_copied = kF3ExpectedUnits;
+    healthy_f3.sink.physical_bytes_copied = kF3ExpectedUnits * 960U;
+    healthy_f3.sink.full_units = kF3ExpectedUnits;
+    healthy_f3.sink.submit_attempts = kF3ExpectedUnits;
+    healthy_f3.sink.physically_drained_frames = kF3ExpectedFrames;
+    predicate::SustainedPhysicalLocalHealth f3_local = healthy_f3_local();
+    require(predicate::sustained_physical_snapshot_healthy(
+                healthy_f3, f3_local, kF3ExpectedFrames, kF3ExpectedUnits,
+                kS2ExpectedPreloadedUnits),
+            "healthy F3 sustained physical predicate rejected");
+    auto bad_digest = f3_local;
+    bad_digest.generated_digest_expected = false;
+    require(!predicate::sustained_physical_snapshot_healthy(
+                healthy_f3, bad_digest, kF3ExpectedFrames, kF3ExpectedUnits,
+                kS2ExpectedPreloadedUnits),
+            "F3 semantic digest failure accepted");
+    PhysicalSnapshot bad_ownership = healthy_f3;
+    --bad_ownership.sink.semantic_accepted_frames;
+    require(!predicate::sustained_physical_snapshot_healthy(
+                bad_ownership, f3_local, kF3ExpectedFrames, kF3ExpectedUnits,
+                kS2ExpectedPreloadedUnits),
+            "F3 ownership failure accepted");
+    PhysicalSnapshot bad_running_qovf = healthy_f3;
+    bad_running_qovf.sink.running_queue_overflow_count = 1U;
+    require(!predicate::sustained_physical_snapshot_healthy(
+                bad_running_qovf, f3_local, kF3ExpectedFrames,
+                kF3ExpectedUnits, kS2ExpectedPreloadedUnits),
+            "F3 RUNNING q_ovf accepted");
+    PhysicalSnapshot bad_lifecycle = healthy_f3;
+    bad_lifecycle.sink.codec_final_muted = false;
+    require(!predicate::sustained_physical_snapshot_healthy(
+                bad_lifecycle, f3_local, kF3ExpectedFrames,
+                kF3ExpectedUnits, kS2ExpectedPreloadedUnits),
+            "F3 sink lifecycle failure accepted");
+    /* No realtime field enters SustainedPhysicalLocalHealth: a slow host-only
+     * timing observation cannot change the firmware-local terminal result. */
+    require(predicate::sustained_physical_snapshot_healthy(
+                healthy_f3, f3_local, kF3ExpectedFrames, kF3ExpectedUnits,
+                kS2ExpectedPreloadedUnits),
+            "host-only realtime observation affected F3 local predicate");
 
     const NegativeCase cases[] = {
         {"snapshot_missing", +[](PhysicalSnapshot &s) { s.captured = false; }},
@@ -287,5 +357,8 @@ int main()
     std::printf("S2_WORKLOAD_PREDICATE_NEGATIVE_MATRIX=%zu/%zu_PASS\n",
                 s2_case_count, s2_case_count);
     std::printf("S2_FULL_PHYSICAL_WITH_VIRTUAL_DEFAULTS_TERMINAL=PASS\n");
+    std::printf("F3_FIRMWARE_PREDICATE_SEMANTIC_FAILURES=PASS\n");
+    std::printf("F3_FIRMWARE_PREDICATE_PHYSICAL_FAILURES=PASS\n");
+    std::printf("F3_FIRMWARE_PREDICATE_REALTIME_INDEPENDENCE=PASS\n");
     return 0;
 }

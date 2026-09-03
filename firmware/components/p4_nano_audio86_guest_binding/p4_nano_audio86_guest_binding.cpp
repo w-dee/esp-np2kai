@@ -57,6 +57,13 @@ BRESULT iocore_build(void);
 #define P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE 1
 #endif
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE) && \
+    (!defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE) || \
+     !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE) || \
+     !defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE))
+#error "sustained physical evidence requires sustained PCM over physical I2S"
+#endif
+
 namespace p4_nano_audio86_guest_binding {
 namespace {
 
@@ -85,6 +92,15 @@ constexpr uint32_t kEventPcmControl = 0x102U;
 #define P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO 0
 #endif
 constexpr size_t kS2ResetFrameOffset = 1920U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+constexpr uint32_t kSustainedExpectedPcmCrc32 = 0x5bb15277U;
+constexpr uint8_t kSustainedExpectedPcmSha256[NP2_SHA256_DIGEST_SIZE] = {
+    0xb3U, 0x15U, 0xa9U, 0x47U, 0x6eU, 0x4fU, 0xc3U, 0x0cU,
+    0xbbU, 0x7aU, 0xeaU, 0x0cU, 0x7aU, 0x1bU, 0xfaU, 0x9cU,
+    0xd4U, 0xaaU, 0x31U, 0xa0U, 0x33U, 0xc9U, 0x22U, 0x3eU,
+    0xb2U, 0x25U, 0x00U, 0x60U, 0x4fU, 0xffU, 0x62U, 0xa0U,
+};
+#endif
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 #if !defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
 #error "sustained evidence requires the q240 output path"
@@ -2121,6 +2137,13 @@ bool wait_task_suspended(TaskHandle_t task)
 void capture_physical_snapshot(Runtime *runtime)
 {
     PhysicalSnapshot snapshot{};
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    snapshot.semantic_frames = runtime->sustained.next_generated_frame_offset;
+    snapshot.semantic_bytes = runtime->sustained.generated.bytes;
+    np2audio86_sustained_digest_snapshot(
+        &runtime->sustained.generated, &snapshot.semantic_crc32,
+        snapshot.semantic_sha256);
+#else
 #if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
     const uint8_t *const semantic_pcm = runtime->pre_reset_pcm;
     const uint64_t semantic_frames = runtime->pre_reset_frame;
@@ -2131,20 +2154,21 @@ void capture_physical_snapshot(Runtime *runtime)
     const size_t semantic_bytes =
         static_cast<size_t>(semantic_frames) *
         P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME;
-    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink,
-                                                 &snapshot.sink);
     snapshot.semantic_frames = semantic_frames;
     snapshot.semantic_bytes = semantic_bytes;
-    snapshot.controller_accepted_frames =
-        runtime->pcm_controller.accepted_frames;
-    snapshot.controller_accepted_bytes =
-        runtime->pcm_controller.accepted_bytes;
     snapshot.semantic_crc32 = np2_crc32_iso_hdlc(
         semantic_pcm, semantic_bytes);
     np2_sha256_context sha{};
     np2_sha256_init(&sha);
     np2_sha256_update(&sha, semantic_pcm, semantic_bytes);
     np2_sha256_final(&sha, snapshot.semantic_sha256);
+#endif
+    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink,
+                                                 &snapshot.sink);
+    snapshot.controller_accepted_frames =
+        runtime->pcm_controller.accepted_frames;
+    snapshot.controller_accepted_bytes =
+        runtime->pcm_controller.accepted_bytes;
     snapshot.controller_state = runtime->pcm_controller.state;
     snapshot.first_error = runtime->first_error.load(std::memory_order_acquire);
     snapshot.forced_abort = runtime->pcm_forced_abort_requested.load(
@@ -2498,7 +2522,8 @@ void emit_sustained_evidence(const Runtime *runtime)
 #endif
 
 #if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE) || \
-    defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
+    defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE) || \
+    defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
 const char *physical_controller_state_name(
     const enum np2_pcm_output_state state)
 {
@@ -2779,6 +2804,284 @@ bool physical_s2_snapshot_healthy(const Runtime *runtime)
     return p4_nano_audio86_terminal_predicate::physical_s2_snapshot_healthy(
         runtime->physical, kRenderFrames, kExpectedUnits,
         P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS);
+}
+#endif
+
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+void print_sha256(const uint8_t digest[NP2_SHA256_DIGEST_SIZE])
+{
+    for (size_t i = 0U; i < NP2_SHA256_DIGEST_SIZE; ++i)
+        std::printf("%02x", digest[i]);
+}
+
+void snapshot_digest(const np2audio86_sustained_digest &digest,
+                     uint32_t *crc32,
+                     uint8_t sha256[NP2_SHA256_DIGEST_SIZE])
+{
+    np2audio86_sustained_digest_snapshot(&digest, crc32, sha256);
+}
+
+void emit_physical_5d3_s1_evidence(const Runtime *runtime)
+{
+    const PhysicalSnapshot &snapshot = runtime->physical;
+    if (!snapshot.captured) return;
+    const auto &e = runtime->sustained;
+    const auto &sink = snapshot.sink;
+    uint32_t generated_crc = 0U, accepted_crc = 0U;
+    uint32_t io_crc = 0U, event_crc = 0U, timer_crc = 0U;
+    uint32_t action_crc = 0U, final_state_crc = 0U;
+    uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t accepted_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t io_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t event_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t timer_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t action_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t final_state_sha[NP2_SHA256_DIGEST_SIZE]{};
+    snapshot_digest(e.generated, &generated_crc, generated_sha);
+    snapshot_digest(e.accepted, &accepted_crc, accepted_sha);
+    snapshot_digest(e.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO], &io_crc, io_sha);
+    snapshot_digest(e.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT],
+                    &event_crc, event_sha);
+    snapshot_digest(e.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER],
+                    &timer_crc, timer_sha);
+    snapshot_digest(e.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY],
+                    &action_crc, action_sha);
+    snapshot_digest(e.trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE],
+                    &final_state_crc, final_state_sha);
+    const uint32_t drain_delta =
+        sink.drain_completion_epoch - sink.drain_snapshot_epoch;
+    const uint32_t quiescent_delta =
+        sink.quiescent_eof_epoch - sink.drain_snapshot_epoch;
+    const uint64_t padding_bytes = sink.physical_padding_frames *
+        P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME;
+    const uint64_t running_units = sink.physical_units_copied >=
+            sink.preloaded_units
+        ? sink.physical_units_copied - sink.preloaded_units : 0U;
+
+    std::printf("5D3_S1_IDENTITY schema=1 evidence_class=PHYSICAL_EXEC"
+                " source_git_sha=%s"
+                " profile=AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S"
+                " workload_id=FULL_REPLAY_PCM_SUSTAINED_2S_V1"
+                " board=P4_NANO_P4_V1X backend=IDF_I2S0_ES8311"
+                " display=DISABLED guest_program_bytes=5498"
+                " guest_program_crc32=e577580a"
+                " guest_program_sha256=56443e5c4e524a34e046387e83ef7f89b647d60bc0b3c2ff7c84abe5084a6ce7\n",
+                P4_AUDIO86_GIT_SHA);
+    std::printf("5D3_S1_START schema=1 evidence_class=PHYSICAL_EXEC"
+                " rate_hz=48000 channels=2 sample_bits=16 encoding=S16LE"
+                " i2s_format=PHILIPS clock_source=APLL mclk_multiple=256"
+                " mclk_hz=12288000 q_frames=%u bytes_per_frame=%u"
+                " physical_unit_bytes=%u dma_desc=%u dma_frames=%u"
+                " ring_capacity=%u prefill=%u semantic_duration_ms=2000"
+                " expected_units=400 prepare_completed=%u pa_initial_low=%u"
+                " codec_initialized_muted=%u i2s_initialized=%u"
+                " muted_warmup_completed=%u callbacks_registered=%u"
+                " stream_started=%u codec_unmute_completed=%u\n",
+                P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT,
+                P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME,
+                P4_NANO_AUDIO86_PHYSICAL_UNIT_BYTES,
+                P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS,
+                P4_NANO_AUDIO86_PHYSICAL_FRAMES_PER_UNIT,
+                NP2_OPNGEN_PCM_RING_CAPACITY, kPcmPrefillSlots,
+                sink.prepare_completed ? 1U : 0U, sink.pa_initial_low ? 1U : 0U,
+                sink.codec_initialized_muted ? 1U : 0U,
+                sink.i2s_initialized ? 1U : 0U,
+                sink.muted_warmup_completed ? 1U : 0U,
+                sink.callbacks_registered ? 1U : 0U,
+                sink.stream_started ? 1U : 0U,
+                sink.codec_unmute_completed ? 1U : 0U);
+    std::printf("5D3_S1_STREAM schema=1 evidence_class=PHYSICAL_EXEC"
+                " generated_frames=%" PRIu64 " generated_bytes=%" PRIu64
+                " generated_crc32=%08" PRIx32 " generated_sha256=",
+                e.next_generated_frame_offset, e.generated.bytes, generated_crc);
+    print_sha256(generated_sha);
+    std::printf(" accepted_frames=%" PRIu64 " accepted_bytes=%" PRIu64
+                " accepted_crc32=%08" PRIx32 " accepted_sha256=",
+                e.next_accepted_frame_offset, e.accepted.bytes, accepted_crc);
+    print_sha256(accepted_sha);
+    std::printf(" generated_units=%" PRIu32 " accepted_units=%" PRIu32
+                " next_generated_sequence=%" PRIu32
+                " next_accepted_sequence=%" PRIu32
+                " next_generated_frame_offset=%" PRIu64
+                " next_accepted_frame_offset=%" PRIu64
+                " generated_slot_fill_frames=%u"
+                " first_sequence=%" PRIu32 " first_offset=%" PRIu64
+                " first_valid_frames=%u first_crc32=%08" PRIx32
+                " final_sequence=%" PRIu32 " final_offset=%" PRIu64
+                " final_slot_valid_frames=%u final_crc32=%08" PRIx32
+                " pre_reset_frames=%" PRIu64 " pre_reset_bytes=%" PRIu64
+                " pre_reset_crc32=%08" PRIx32,
+                e.next_generated_sequence, e.next_accepted_sequence,
+                e.next_generated_sequence, e.next_accepted_sequence,
+                e.next_generated_frame_offset, e.next_accepted_frame_offset,
+                e.generated_slot_fill_frames,
+                e.first_accepted.sequence, e.first_accepted.frame_offset,
+                e.first_accepted.valid_frames, e.first_accepted.crc32,
+                e.final_accepted.sequence, e.final_accepted.frame_offset,
+                e.final_accepted.valid_frames, e.final_accepted.crc32,
+                e.reset.frames, e.reset.bytes, e.reset.crc32);
+    std::printf(" reset_frame=%" PRIu64 " reset_sequence=%" PRIu32
+                " reset_ordinal=%" PRIu32 " reset_opcode=2147483648"
+                " io_count=%" PRIu64 " io_crc32=%08" PRIx32 " io_sha256=",
+                e.reset.reset_event_frame, e.reset.reset_event_sequence,
+                e.reset.reset_ordinal,
+                e.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO].records, io_crc);
+    print_sha256(io_sha);
+    std::printf(" event_count=%" PRIu64 " event_crc32=%08" PRIx32
+                " event_sha256=",
+                e.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT].records, event_crc);
+    print_sha256(event_sha);
+    std::printf(" timer_count=%" PRIu64 " timer_crc32=%08" PRIx32
+                " timer_sha256=",
+                e.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER].records, timer_crc);
+    print_sha256(timer_sha);
+    std::printf(" action_count=%" PRIu64 " action_crc32=%08" PRIx32
+                " action_sha256=",
+                e.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY].records, action_crc);
+    print_sha256(action_sha);
+    std::printf(" final_state_count=%" PRIu64
+                " final_state_crc32=%08" PRIx32 " final_state_sha256=",
+                e.trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE].records,
+                final_state_crc);
+    print_sha256(final_state_sha);
+    std::printf(" controller_accepted_frames=%" PRIu64
+                " controller_accepted_bytes=%" PRIu64
+                " sink_accepted_frames=%" PRIu64
+                " sink_accepted_bytes=%" PRIu64
+                " physical_units=%" PRIu64 " full_units=%" PRIu32
+                " final_partial_units=%" PRIu32
+                " final_valid_frames=%" PRIu32
+                " padding_frames=%" PRIu64 " padding_bytes=%" PRIu64
+                " submit_attempts=%" PRIu64 " retry_count=%" PRIu64
+                " retry_identity_failures=%" PRIu32
+                " running_q_ovf=%" PRIu32
+                " final_ring_occupancy=%" PRIu32
+                " final_ring_partial=%" PRIu32
+                " drops=%" PRIu32 " overwrite=%" PRIu32
+                " abandoned_published=%" PRIu64
+                " abandoned_partial=%" PRIu64
+                " abandoned_rendered=%" PRIu64 "\n",
+                snapshot.controller_accepted_frames,
+                snapshot.controller_accepted_bytes,
+                sink.semantic_accepted_frames, sink.semantic_accepted_bytes,
+                sink.physical_units_copied, sink.full_units,
+                sink.final_partial_units, sink.final_valid_frames,
+                sink.physical_padding_frames, padding_bytes,
+                sink.submit_attempts, sink.retry_count,
+                e.retry_identity_failures, sink.running_queue_overflow_count,
+                snapshot.final_ring_occupancy, snapshot.final_ring_partial,
+                snapshot.drops, snapshot.overwrites,
+                snapshot.abandoned_published_frames,
+                snapshot.abandoned_partial_frames,
+                snapshot.abandoned_rendered_frames);
+    std::printf("5D3_S1_PROGRESS schema=1 evidence_class=PHYSICAL_EXEC"
+                " pcm_ring_max_occupancy=%" PRIu32
+                " pcm_producer_full_wait_count=%" PRIu32
+                " pcm_consumer_empty_after_release_before_done_count=%" PRIu32
+                " max_running_accept_gap_ms=%" PRIu64
+                " stream_started_ms=%" PRIu64
+                " drain_completed_ms=%" PRIu64
+                " stream_wall_ms=%" PRIu64
+                " preloaded_units=%" PRIu32
+                " running_accepted_units=%" PRIu64
+                " timing_authority=HOST_ONLY\n",
+                e.pcm_ring_max_occupancy, e.pcm_producer_full_wait_count,
+                e.pcm_consumer_premature_empty_count,
+                e.max_running_accept_gap_ms, e.stream_started_ms,
+                e.drain_completed_ms, np2audio86_sustained_stream_wall_ms(&e),
+                sink.preloaded_units, running_units);
+    std::printf("5D3_S1_FINISH schema=1 evidence_class=PHYSICAL_EXEC"
+                " controller_state=%s sink_state=%s"
+                " final_copy_eof_epoch=%" PRIu32
+                " drain_completion_eof_epoch=%" PRIu32
+                " quiescent_eof_epoch=%" PRIu32
+                " drain_post_snapshot_eofs=%" PRIu32
+                " quiescent_post_snapshot_eofs=%" PRIu32
+                " drain_duration_ms=%" PRIu64 " finish_completed=%u"
+                " pending_frames=%" PRIu64 " drained_frames=%" PRIu64
+                " discarded_frames=%" PRIu64
+                " draining_q_ovf=%" PRIu32 " sticky_error=%u"
+                " registered_generation=%" PRIu32
+                " terminal_generation=%" PRIu32
+                " stale_callbacks=%" PRIu32
+                " callback_in_flight=%" PRIu32 " callbacks_active=%u"
+                " codec_final_muted=%u pa_final_low=%u"
+                " i2s_enabled=%u i2s_created=%u"
+                " first_error=%" PRIu32 " forced_abort=%" PRIu32
+                " sink_destroyed=%" PRIu32 "\n",
+                physical_controller_state_name(snapshot.controller_state),
+                physical_sink_state_name(sink.state), sink.drain_snapshot_epoch,
+                sink.drain_completion_epoch, sink.quiescent_eof_epoch,
+                drain_delta, quiescent_delta, sink.drain_duration_ms,
+                sink.finish_completed ? 1U : 0U,
+                sink.accepted_pending_drain_frames,
+                sink.physically_drained_frames,
+                sink.physically_discarded_accepted_frames,
+                sink.draining_queue_overflow_count,
+                sink.sticky_error ? 1U : 0U,
+                sink.registered_generation, sink.generation,
+                sink.stale_callback_count, sink.callback_refcount,
+                sink.callbacks_active ? 1U : 0U,
+                sink.codec_final_muted ? 1U : 0U,
+                sink.pa_final_low ? 1U : 0U,
+                sink.i2s_enabled ? 1U : 0U, sink.i2s_created ? 1U : 0U,
+                snapshot.first_error, snapshot.forced_abort,
+                snapshot.sink_destroyed);
+}
+
+p4_nano_audio86_terminal_predicate::SustainedPhysicalLocalHealth
+sustained_physical_local_health(const Runtime *runtime)
+{
+    const auto &e = runtime->sustained;
+    uint32_t generated_crc = 0U, accepted_crc = 0U;
+    uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t accepted_sha[NP2_SHA256_DIGEST_SIZE]{};
+    snapshot_digest(e.generated, &generated_crc, generated_sha);
+    snapshot_digest(e.accepted, &accepted_crc, accepted_sha);
+    p4_nano_audio86_terminal_predicate::SustainedPhysicalLocalHealth local{};
+    local.generated_frames = e.next_generated_frame_offset;
+    local.generated_bytes = e.generated.bytes;
+    local.accepted_frames = e.next_accepted_frame_offset;
+    local.accepted_bytes = e.accepted.bytes;
+    local.generated_units = e.next_generated_sequence;
+    local.accepted_units = e.next_accepted_sequence;
+    local.next_generated_sequence = e.next_generated_sequence;
+    local.next_accepted_sequence = e.next_accepted_sequence;
+    local.next_generated_frame_offset = e.next_generated_frame_offset;
+    local.next_accepted_frame_offset = e.next_accepted_frame_offset;
+    local.generated_slot_fill_frames = e.generated_slot_fill_frames;
+    local.retry_pending = e.retry_pending;
+    local.retry_identity_failures = e.retry_identity_failures;
+    local.generated_digest_expected =
+        generated_crc == kSustainedExpectedPcmCrc32 &&
+        std::memcmp(generated_sha, kSustainedExpectedPcmSha256,
+                    sizeof(generated_sha)) == 0;
+    local.accepted_digest_matches_generated =
+        accepted_crc == generated_crc &&
+        std::memcmp(accepted_sha, generated_sha, sizeof(generated_sha)) == 0;
+    local.reset_identity_expected = e.reset.frozen &&
+        e.reset.frames == 95761U && e.reset.bytes == 383044U &&
+        e.reset.crc32 == 0xc65c7a5dU &&
+        e.reset.reset_event_frame == 95761U &&
+        e.reset.reset_event_sequence == 18U && e.reset.reset_ordinal == 1U &&
+        e.reset.ring_next_frame_offset == 95761U &&
+        e.reset.applied_after_ring == 1U && e.reset.ack_after_apply == 1U;
+    local.trace_shape_expected =
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO].records == 246U &&
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT].records == 18U &&
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_RUN].records == 1U &&
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER].records == 20U &&
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY].records == 19U &&
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE].records == 1U;
+    return local;
+}
+
+bool physical_5d3_s1_snapshot_healthy(const Runtime *runtime)
+{
+    return p4_nano_audio86_terminal_predicate::
+        sustained_physical_snapshot_healthy(
+            runtime->physical, sustained_physical_local_health(runtime),
+            kRenderFrames, kExpectedPcmSlots, kPcmPrefillSlots);
 }
 #endif
 
@@ -3179,6 +3482,8 @@ void emit_summary(const Runtime *runtime, const bool ok)
     emit_physical_s1_evidence(runtime);
 #elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
     emit_physical_s2_evidence(runtime);
+#elif defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    emit_physical_5d3_s1_evidence(runtime);
 #endif
     std::printf("P4_AUDIO86_REAL_GUEST_RESULT=%s\n", ok ? "PASS" : "FAIL");
 #if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
@@ -3186,6 +3491,9 @@ void emit_summary(const Runtime *runtime, const bool ok)
                 ok ? "COMPLETE" : "FAILED");
 #elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
     std::printf("P4_AUDIO86_PHYSICAL_S2_TERMINAL=%s\n",
+                ok ? "COMPLETE" : "FAILED");
+#elif defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    std::printf("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s\n",
                 ok ? "COMPLETE" : "FAILED");
 #endif
 }
@@ -3665,6 +3973,9 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     const bool sink_profile_ok = physical_sink_ok;
 #elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
     const bool physical_sink_ok = physical_s2_snapshot_healthy(runtime);
+    const bool sink_profile_ok = physical_sink_ok;
+#elif defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    const bool physical_sink_ok = physical_5d3_s1_snapshot_healthy(runtime);
     const bool sink_profile_ok = physical_sink_ok;
 #elif defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     uint32_t generated_crc = 0U;
