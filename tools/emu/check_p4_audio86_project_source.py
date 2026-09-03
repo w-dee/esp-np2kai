@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = "6460b3d87f3b62d2974f187d12fbe1b0a5a0035c"
+BASELINE = "f9f347798396ce470b25455d3707b3c7957e1065"
 SINK = ROOT / "firmware/components/p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.c"
 BINDING = ROOT / "firmware/components/p4_nano_audio86_guest_binding/p4_nano_audio86_guest_binding.cpp"
 TEST_GUARD = "P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE"
