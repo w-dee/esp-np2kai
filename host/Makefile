@@ -261,6 +261,7 @@ P4_NANO_AUDIO86_PHYSICAL_VALIDATOR := $(HOST_ROOT)/tools/emu/validate_p4_audio86
 P4_NANO_AUDIO86_PHYSICAL_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_sink_log.py
 P4_NANO_AUDIO86_PHYSICAL_MANIFEST := $(HOST_ROOT)/tools/emu/test_p4_audio86_physical_sink_manifest.py
 P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_s1_log.py
+P4_NANO_AUDIO86_PHYSICAL_S2_MUTATIONS := $(HOST_ROOT)/tools/emu/test_validate_p4_audio86_physical_s2_log.py
 P4_NANO_AUDIO86_PHYSICAL_S1_SOURCE := $(HOST_ROOT)/tools/test_p4_audio86_physical_s1_evidence.py
 P4_NANO_AUDIO86_PHYSICAL_S2A_SOURCE := $(HOST_ROOT)/tools/test_p4_audio86_physical_s2_runtime.py
 P4_NANO_CAPTURE_TEST := $(HOST_ROOT)/tools/test_p4_nano_capture.py
@@ -411,7 +412,7 @@ VIDEO_RUNNER_DEPENDENCIES := \
 .PHONY: test-p4-nano-board-static
 .PHONY: build-opngen-pcm-ring test-opngen-pcm-ring build-opngen-pcm-ring-asan test-opngen-pcm-ring-asan build-opngen-pcm-ring-ubsan test-opngen-pcm-ring-ubsan build-opngen-pcm-ring-tsan test-opngen-pcm-ring-tsan
 .PHONY: build-np2pcm-output test-np2pcm-output test-np2pcm-output-stress build-np2pcm-output-asan test-np2pcm-output-asan build-np2pcm-output-ubsan test-np2pcm-output-ubsan build-np2pcm-output-tsan test-np2pcm-output-tsan
-.PHONY: build-p4-audio86-physical-sink test-p4-audio86-physical-sink build-p4-audio86-physical-sink-asan test-p4-audio86-physical-sink-asan build-p4-audio86-physical-sink-ubsan test-p4-audio86-physical-sink-ubsan build-p4-audio86-physical-sink-tsan test-p4-audio86-physical-sink-tsan
+.PHONY: build-p4-audio86-physical-sink test-p4-audio86-physical-sink build-p4-audio86-physical-sink-asan test-p4-audio86-physical-sink-asan build-p4-audio86-physical-sink-ubsan test-p4-audio86-physical-sink-ubsan build-p4-audio86-physical-sink-tsan test-p4-audio86-physical-sink-tsan test-p4-audio86-physical-s1 test-p4-audio86-physical-s2
 
 test-audio86-guest-contract:
 	@$(PYTHON) "$(AUDIO86_GUEST_CONTRACT_SCRIPT)" \
@@ -1474,6 +1475,13 @@ test-p4-audio86-physical-s1:
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE_TEST)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_PROJECT_INTERVAL)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_PROJECT_INTERVAL_TEST)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_SOURCE_PROVENANCE)"
+
+test-p4-audio86-physical-s2: test-p4-audio86-physical-sink
+	@$(PYTHON) "$(P4_NANO_CAPTURE_TEST)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S1_MUTATIONS)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S2_MUTATIONS)"
+	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_S2A_SOURCE)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_SOURCE_PROVENANCE)"
 
 build-p4-audio86-physical-sink-asan:
