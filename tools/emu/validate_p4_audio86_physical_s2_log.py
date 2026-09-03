@@ -11,19 +11,25 @@ from pathlib import Path
 
 try:
     from .p4_audio86_physical_capture_v2 import (
+        UINT32_HALF_RANGE,
         decimal,
         require,
         validate_capture_status_v2,
         validate_region_fatal_safety,
         validate_structural_tail,
+        valid_source_git_sha,
+        uint32_delta,
     )
 except ImportError:  # Direct script execution.
     from p4_audio86_physical_capture_v2 import (
+        UINT32_HALF_RANGE,
         decimal,
         require,
         validate_capture_status_v2,
         validate_region_fatal_safety,
         validate_structural_tail,
+        valid_source_git_sha,
+        uint32_delta,
     )
 
 
@@ -70,10 +76,8 @@ RECORD_FIELDS = {
     ),
 }
 RECORD_ORDER = tuple(RECORD_FIELDS)
-SHA1 = re.compile(r"[0-9a-f]{40}")
 CRC32 = re.compile(r"[0-9a-f]{8}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-UINT32_HALF_RANGE = 1 << 31
 PASS_LINE = b"P4_AUDIO86_PHYSICAL_S2_TERMINAL=COMPLETE"
 FAIL_LINE = b"P4_AUDIO86_PHYSICAL_S2_TERMINAL=FAILED"
 REAL_GUEST_PASS_LINE = b"P4_AUDIO86_REAL_GUEST_RESULT=PASS"
@@ -158,7 +162,7 @@ def _load_full_replay_golden(errors: list[str]) -> dict[str, str] | None:
 def validate(raw_path: Path, status_path: Path,
              expected_source_sha: str) -> list[str]:
     errors: list[str] = []
-    require(errors, SHA1.fullmatch(expected_source_sha) is not None,
+    require(errors, valid_source_git_sha(expected_source_sha),
             "expected source SHA must be 40 lowercase hex digits")
     try:
         regions = validate_capture_status_v2(
@@ -204,7 +208,7 @@ def validate(raw_path: Path, status_path: Path,
         require(errors, fields["schema"] == "1", f"{name}: schema mismatch")
         require(errors, fields["evidence_class"] == "PHYSICAL_EXEC",
                 f"{name}: evidence class mismatch")
-    require(errors, SHA1.fullmatch(identity["source_git_sha"]) is not None and
+    require(errors, valid_source_git_sha(identity["source_git_sha"]) and
             identity["source_git_sha"] == expected_source_sha,
             "source Git SHA mismatch")
     require(errors, identity == {
@@ -332,8 +336,8 @@ def validate(raw_path: Path, status_path: Path,
             0 <= drain_epoch <= 0xFFFFFFFF and
             0 <= quiescent_epoch <= 0xFFFFFFFF,
             "EOF epoch outside uint32 range")
-    drain_delta = (drain_epoch - final_epoch) & 0xFFFFFFFF
-    quiescent_delta = (quiescent_epoch - final_epoch) & 0xFFFFFFFF
+    drain_delta = uint32_delta(drain_epoch, final_epoch)
+    quiescent_delta = uint32_delta(quiescent_epoch, final_epoch)
     require(errors,
             numeric["finish.drain_post_snapshot_eofs"] == drain_delta and
             numeric["finish.quiescent_post_snapshot_eofs"] == quiescent_delta,

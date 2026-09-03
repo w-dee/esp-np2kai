@@ -17,6 +17,8 @@ except ImportError:  # Direct script execution.
 
 
 DECIMAL = re.compile(r"0|[1-9][0-9]*")
+SOURCE_GIT_SHA = re.compile(r"[0-9a-f]{40}")
+UINT32_HALF_RANGE = 1 << 31
 REAL_GUEST_PREFIX = b"P4_AUDIO86_REAL_GUEST_RESULT="
 OUTER_GUEST_FAIL_PREFIX = b"P4_NANO_AUDIO86_REAL_GUEST_STATUS=FAIL"
 SECOND_STAGE_BOOT_LINE = re.compile(
@@ -83,6 +85,14 @@ def decimal(fields: dict[str, str], key: str, errors: list[str]) -> int:
         errors.append(f"{key}: invalid decimal")
         return -1
     return int(value)
+
+
+def valid_source_git_sha(value: str) -> bool:
+    return SOURCE_GIT_SHA.fullmatch(value) is not None
+
+
+def uint32_delta(later: int, earlier: int) -> int:
+    return (later - earlier) & 0xFFFFFFFF
 
 
 def _canonical_execution_start(
