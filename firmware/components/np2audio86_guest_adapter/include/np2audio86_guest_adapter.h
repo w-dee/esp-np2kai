@@ -212,6 +212,10 @@ int np2audio86_guest_host_sink_is_bound(void);
 size_t np2audio86_guest_test_full_snapshot_size(void);
 int np2audio86_guest_test_full_snapshot(void *out, size_t bytes);
 uint8_t np2audio86_guest_test_contract_violation(void);
+void np2audio86_guest_test_reset_io_cycle_observation(void);
+size_t np2audio86_guest_test_io_cycle_observation_count(void);
+uint64_t np2audio86_guest_test_first_io_guest_cycle(void);
+uint64_t np2audio86_guest_test_last_io_guest_cycle(void);
 #endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple);
 void np2audio86_guest_host_set_cpumode(uint32_t cpumode);

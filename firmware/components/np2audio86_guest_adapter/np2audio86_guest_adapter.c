@@ -53,6 +53,11 @@ static uint8_t g_run_transaction_active;
 static uint8_t g_semantic_call_active;
 static uint8_t g_contract_violation;
 static uint8_t g_termination_pending;
+#if defined(NP2AUDIO86_GUEST_TEST)
+static size_t g_io_cycle_observation_count;
+static uint64_t g_first_io_guest_cycle;
+static uint64_t g_last_io_guest_cycle;
+#endif
 
 static int flush_pending_run(void);
 
@@ -133,6 +138,12 @@ static void append_io(uint16_t port, uint8_t direction, uint8_t value,
     item->port = port; item->direction = direction;
     item->value = value; item->result = result;
     memset(item->reserved, 0, sizeof(item->reserved));
+#if defined(NP2AUDIO86_GUEST_TEST)
+    if (g_io_cycle_observation_count == 0U)
+        g_first_io_guest_cycle = g_state.guest_cycles;
+    g_last_io_guest_cycle = g_state.guest_cycles;
+    ++g_io_cycle_observation_count;
+#endif
 }
 
 static int transaction_begin(uint32_t kind, size_t initial_bytes,
@@ -748,6 +759,18 @@ int np2audio86_guest_test_full_snapshot(void *out, size_t bytes)
 }
 uint8_t np2audio86_guest_test_contract_violation(void)
 { return g_contract_violation; }
+void np2audio86_guest_test_reset_io_cycle_observation(void)
+{
+    g_io_cycle_observation_count = 0U;
+    g_first_io_guest_cycle = 0U;
+    g_last_io_guest_cycle = 0U;
+}
+size_t np2audio86_guest_test_io_cycle_observation_count(void)
+{ return g_io_cycle_observation_count; }
+uint64_t np2audio86_guest_test_first_io_guest_cycle(void)
+{ return g_first_io_guest_cycle; }
+uint64_t np2audio86_guest_test_last_io_guest_cycle(void)
+{ return g_last_io_guest_cycle; }
 #endif
 void np2audio86_guest_host_set_clock(uint32_t baseclock, uint32_t multiple)
 {

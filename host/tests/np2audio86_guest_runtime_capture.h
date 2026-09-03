@@ -15,6 +15,19 @@ extern "C" {
 int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
                                      np2audio86_guest_state_snapshot_t *state);
 
+typedef struct {
+    size_t program_bytes;
+    size_t io_observation_count;
+    uint64_t first_io_guest_cycle;
+    uint64_t last_io_guest_cycle;
+    uint16_t termination_ip;
+    uint8_t terminated_at_hlt;
+} np2audio86_guest_execution_evidence_t;
+
+int np2audio86_guest_runtime_capture_sustained_2s(
+    np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
+    np2audio86_guest_execution_evidence_t *evidence);
+
 /* Execute the same prepared real-i286 fixture while semantic handlers publish
  * directly to sink.  The optional trace remains an observation copy only; it
  * is never drained to drive publication. */

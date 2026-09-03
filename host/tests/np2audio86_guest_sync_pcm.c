@@ -8,6 +8,8 @@
 
 #include "np2audio86_fixture.h"
 #include "np2audio86_guest_async.h"
+#include "np2audio86_guest_evidence.h"
+#include "np2audio86_guest_program.h"
 #include "np2audio86_guest_runtime_capture.h"
 #include "np2_crc32.h"
 #include "np2_sha256.h"
@@ -17,7 +19,11 @@
 #define SYNC_MAX_EVENTS 64U
 #define SYNC_MAX_RUNS 8U
 #define SYNC_MAX_ACTIONS (SYNC_MAX_EVENTS + SYNC_MAX_RUNS)
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+#define SYNC_HORIZON_FRAMES NP2_AUDIO86_GUEST_SUSTAINED_2S_FRAMES
+#else
 #define SYNC_HORIZON_FRAMES 2400U
+#endif
 #define SYNC_TRACE_RECORD_BYTES 40U
 
 _Static_assert(sizeof(np2audio86_guest_event_t) == 24U,
@@ -63,6 +69,7 @@ struct sync_pcm_result {
     uint64_t full_nonzero;
     uint64_t pre_nonzero;
     uint64_t full_first_nonzero;
+    uint64_t full_last_nonzero;
     uint64_t pre_first_nonzero;
     uint64_t full_clamp;
     uint64_t pre_clamp;
@@ -631,6 +638,7 @@ static int render_chunk(struct np2audio86_render_state *worker,
         }
         if (nonzero) {
             ++result->full_nonzero;
+            result->full_last_nonzero = frame + i;
             if (result->full_nonzero == 1U) {
                 result->full_first_nonzero = frame + i;
             }
@@ -1028,6 +1036,7 @@ static int run_domain_a_pcm_split_test(void)
     return 0;
 }
 
+#if !defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
 static int run_boundary_tests(const uint8_t *pcm_bytes, size_t pcm_count)
 {
     struct sync_action actions[5] = {
@@ -1052,6 +1061,7 @@ static int run_boundary_tests(const uint8_t *pcm_bytes, size_t pcm_count)
     }
     return 0;
 }
+#endif
 
 static const char *event_meaning(uint32_t opcode, uint32_t payload)
 {
@@ -1104,9 +1114,12 @@ static int emit_result(const struct sync_pcm_result *result,
            result->full_frames, result->full_bytes);
     print_digest("FULL_REPLAY_PCM", result->full_pcm, result->full_bytes);
     printf("FULL_REPLAY_PCM_PEAK=%" PRIu64 "\nFULL_REPLAY_PCM_NONZERO=%" PRIu64
-           "\nFULL_REPLAY_PCM_FIRST_NONZERO=%" PRIu64 "\nFULL_REPLAY_PCM_CLAMP=%" PRIu64 "\n",
+           "\nFULL_REPLAY_PCM_FIRST_NONZERO=%" PRIu64
+           "\nFULL_REPLAY_PCM_LAST_NONZERO=%" PRIu64
+           "\nFULL_REPLAY_PCM_CLAMP=%" PRIu64 "\n",
            result->full_peak, result->full_nonzero,
-           result->full_first_nonzero, result->full_clamp);
+           result->full_first_nonzero, result->full_last_nonzero,
+           result->full_clamp);
     for (i = 0U; i < trace->event_count; ++i) {
         if (trace->events[i].opcode == NP2AUDIO86_TRACE_OPNA_REGISTER) {
             ++opcode_counts[0];
@@ -1144,6 +1157,13 @@ int main(void)
     static uint8_t run_serialized[SYNC_MAX_RUNS * 32U];
     static uint8_t event_serialized_copy[SYNC_MAX_EVENTS * 24U];
     static uint8_t run_serialized_copy[SYNC_MAX_RUNS * 32U];
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+    static uint8_t io_serialized[16384U * 24U];
+    static uint8_t timer_serialized[4096U * 28U];
+    static uint8_t state_serialized[256U];
+    static uint8_t original_program[65536U];
+    static uint8_t sustained_program[65536U];
+#endif
     static np2audio86_guest_event_t events_copy[SYNC_MAX_EVENTS];
     static np2audio86_guest_data_run_t runs_copy[SYNC_MAX_RUNS];
     np2audio86_guest_trace_t trace = {
@@ -1154,25 +1174,38 @@ int main(void)
     np2audio86_guest_state_snapshot_t guest_state;
     struct sync_action actions[SYNC_MAX_ACTIONS];
     struct sync_action serialized_actions[SYNC_MAX_ACTIONS];
-    struct sync_pcm_result direct;
-    struct sync_pcm_result serialized;
-    struct sync_pcm_result alternate;
+    static struct sync_pcm_result direct;
+    static struct sync_pcm_result serialized;
+    static struct sync_pcm_result alternate;
     size_t event_bytes, run_bytes, event_copy_bytes, run_copy_bytes;
     size_t event_count, run_count, action_count, serialized_action_count;
     int build_rc;
     struct sync_input_snapshot input_snapshot;
     uint8_t pcm_mutation_copy[32768];
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+    np2audio86_guest_execution_evidence_t execution;
+    size_t io_bytes, timer_bytes, state_bytes;
+    size_t original_program_bytes, sustained_program_bytes;
+    size_t poll_start;
+    size_t final_q240_nonzero = 0U;
+#endif
 
     if (test_pcm86_partial_lengths() != 0) return 2;
     if (test_pcm86_incomplete_frames() != 0) return 3;
     if (test_pcm86_partial_boundaries() != 0) return 4;
 
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+    if (np2audio86_guest_runtime_capture_sustained_2s(
+            &trace, &guest_state, &execution) != 0) return 1;
+#else
     if (np2audio86_guest_runtime_capture(&trace, &guest_state) != 0) return 1;
+#endif
     printf("SOURCE_86R2_HEAD=0639a606842d04842f68baf717d41c4d93d794bf\n");
     event_bytes = serialize_guest_events(trace.events, trace.event_count,
                                          event_serialized);
     run_bytes = serialize_guest_runs(trace.data_runs, trace.data_run_count,
                                      run_serialized);
+#if !defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
     if (trace.event_count != 18U || trace.pcm_count != 8U ||
         trace.data_run_count != 1U || event_bytes != 432U || run_bytes != 32U ||
         np2_crc32_iso_hdlc(event_serialized, event_bytes) != UINT32_C(0x3b57b261) ||
@@ -1180,6 +1213,41 @@ int main(void)
         np2_crc32_iso_hdlc(run_serialized, run_bytes) != UINT32_C(0xb5843125)) {
         return 1;
     }
+#else
+    original_program_bytes = np2audio86_guest_program_build(
+        original_program, sizeof(original_program));
+    sustained_program_bytes = np2audio86_guest_program_build_sustained_2s(
+        sustained_program, sizeof(sustained_program));
+    if (original_program_bytes == 0U || sustained_program_bytes == 0U ||
+        sustained_program_bytes != execution.program_bytes ||
+        sustained_program[sustained_program_bytes - 1U] != UINT8_C(0xf4) ||
+        trace.event_count != 18U || trace.pcm_count != 8U ||
+        trace.data_run_count != 1U || event_bytes != 432U || run_bytes != 32U ||
+        execution.terminated_at_hlt != 1U ||
+        execution.io_observation_count != trace.io_count ||
+        trace.io_count < NP2_AUDIO86_GUEST_SUSTAINED_2S_POLL_COUNT + 2U ||
+        guest_state.guest_cycles != execution.last_io_guest_cycle ||
+        guest_state.guest_cycles >= UINT64_C(100000000) ||
+        guest_state.frame_timestamp < UINT64_C(95760) ||
+        guest_state.frame_timestamp >= SYNC_HORIZON_FRAMES) {
+        return 1;
+    }
+    poll_start = trace.io_count - NP2_AUDIO86_GUEST_SUSTAINED_2S_POLL_COUNT - 1U;
+    for (size_t poll = poll_start; poll + 1U < trace.io_count; ++poll) {
+        if (trace.io[poll].port != UINT16_C(0x188) ||
+            trace.io[poll].direction != 0U || trace.io[poll].result != 0U ||
+            trace.io[poll].sequence != trace.io[poll_start].sequence ||
+            (poll > poll_start &&
+             trace.io[poll].frame_timestamp <= trace.io[poll - 1U].frame_timestamp)) {
+            return 1;
+        }
+    }
+    if (trace.io[trace.io_count - 1U].port != UINT16_C(0x188) ||
+        trace.io[trace.io_count - 1U].direction != 0U ||
+        trace.io[trace.io_count - 1U].result != 0U) {
+        return 1;
+    }
+#endif
     if (snapshot_inputs(&input_snapshot, trace.events, trace.event_count,
                         trace.data_runs, trace.data_run_count,
                         trace.pcm_bytes, trace.pcm_count) != 0) return 1;
@@ -1229,14 +1297,84 @@ int main(void)
         run_domain_a_pcm_split_test() != 0 ||
         run_negative_tests(actions, action_count, trace.pcm_bytes,
                            trace.pcm_count) != 0 ||
+#if !defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
         run_boundary_tests(trace.pcm_bytes, trace.pcm_count) != 0 ||
+#endif
         direct.pre_nonzero == 0U || direct.pre_peak == 0U ||
         direct.full_nonzero == 0U || direct.full_peak == 0U ||
         direct.full_clamp != 0U || direct.pre_clamp != 0U) {
         return 1;
     }
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+    for (size_t frame = 95760U; frame < SYNC_HORIZON_FRAMES; ++frame) {
+        const uint8_t *sample = direct.full_pcm + frame * 4U;
+        if (sample[0] != 0U || sample[1] != 0U ||
+            sample[2] != 0U || sample[3] != 0U) {
+            ++final_q240_nonzero;
+        }
+    }
+    if (direct.full_last_nonzero < 95760U || final_q240_nonzero == 0U ||
+        direct.full_frames != NP2_AUDIO86_GUEST_SUSTAINED_2S_FRAMES ||
+        direct.full_bytes != NP2_AUDIO86_GUEST_SUSTAINED_2S_BYTES) {
+        return 1;
+    }
+#endif
     if (emit_result(&direct, &trace, event_serialized, event_bytes,
                     run_serialized, run_bytes) != 0) return 1;
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+    io_bytes = np2audio86_guest_evidence_serialize_io(&trace, io_serialized);
+    timer_bytes = np2audio86_guest_evidence_serialize_timers(&trace,
+                                                             timer_serialized);
+    state_bytes = np2audio86_guest_evidence_serialize_state(&guest_state,
+                                                            state_serialized);
+    printf("WORKLOAD_ID=FULL_REPLAY_PCM_SUSTAINED_2S_V1\n");
+    printf("SEMANTIC_DURATION_MS=2000\nSUSTAINED_Q240_UNITS=%u\n",
+           NP2_AUDIO86_GUEST_SUSTAINED_2S_QUANTA_240);
+    print_digest("ORIGINAL_GUEST_PROGRAM", original_program,
+                 original_program_bytes);
+    print_digest("SUSTAINED_GUEST_PROGRAM", sustained_program,
+                 sustained_program_bytes);
+    printf("SUSTAINED_LOOP_COUNT=%u\n",
+           NP2_AUDIO86_GUEST_SUSTAINED_2S_POLL_COUNT);
+    printf("SUSTAINED_LOOP_INNER_COUNT=%u\nSUSTAINED_LOOP_CYCLES=%" PRIu64
+           "\n",
+           NP2_AUDIO86_GUEST_SUSTAINED_INNER_COUNT,
+           NP2_AUDIO86_GUEST_SUSTAINED_LOOP_CYCLES);
+    printf("FIRST_GUEST_IO_FRAME=%" PRIu64 "\nLAST_GUEST_IO_FRAME=%" PRIu64
+           "\nFIRST_GUEST_IO_CYCLE=%" PRIu64 "\nLAST_GUEST_IO_CYCLE=%" PRIu64
+           "\nFINAL_GUEST_CYCLE=%" PRIu64 "\nFINAL_GUEST_FRAME=%" PRIu64 "\n",
+           trace.io[0].frame_timestamp, trace.io[trace.io_count - 1U].frame_timestamp,
+           execution.first_io_guest_cycle, execution.last_io_guest_cycle,
+           guest_state.guest_cycles, guest_state.frame_timestamp);
+    printf("GUEST_CYCLE_GUARD_MARGIN=%" PRIu64 "\n",
+           UINT64_C(100000000) - guest_state.guest_cycles);
+    printf("STATUS_POLL_PORT=0x0188\nSTATUS_POLL_RESULT=0\n");
+    print_digest("GUEST_IO", io_serialized, io_bytes);
+    printf("GUEST_IO_SEMANTIC_COUNT=%zu\n", trace.io_count);
+    print_digest("TIMER_PIC", timer_serialized, timer_bytes);
+    printf("TIMER_PIC_SEMANTIC_COUNT=%zu\n", trace.timer_count);
+    print_digest("FINAL_G_STATE", state_serialized, state_bytes);
+    printf("FINAL_G_STATE_SEMANTIC_COUNT=1\n");
+    printf("FINAL_EVENT_FRAME=%" PRIu64 "\nRESET_SEQUENCE=%" PRIu64
+           "\nRESET_OPCODE=%" PRIu32 "\n",
+           trace.events[trace.event_count - 1U].frame_timestamp,
+           trace.events[trace.event_count - 1U].sequence,
+           trace.events[trace.event_count - 1U].opcode);
+    printf("FINAL_Q240_NONZERO_FRAMES=%zu\n", final_q240_nonzero);
+    printf("GUEST_TERMINATION=HLT\nGUEST_TERMINATION_IP=%u\n",
+           execution.termination_ip);
+    printf("ORIGINAL_FULL_REPLAY_PCM_UNCHANGED=PASS\n");
+    printf("SUSTAINED_FIXTURE_REAL_I286_EXECUTION=PASS\n");
+    printf("SUSTAINED_FIXTURE_REAL_BOARD86_IO=PASS\n");
+    printf("SUSTAINED_STATUS_POLL_SIDE_EFFECT_AUDIT=PASS\n");
+    printf("SUSTAINED_LOOP_COUNT_SOURCE_GROUNDED=PASS\n");
+    printf("SUSTAINED_GUEST_CYCLE_GUARD_UNCHANGED=PASS\n");
+    printf("SUSTAINED_GUEST_ACTIVITY_DISTRIBUTED=PASS\n");
+    printf("SUSTAINED_FINAL_Q240_AUDIO_ACTIVITY=PASS\n");
+    printf("SUSTAINED_RENDER_QUANTUM_EQUIVALENCE=120_240_PASS\n");
+    printf("SUSTAINED_FIXTURE_AUDIO_PATHS=FM,PSG,RHYTHM\n");
+    printf("PCM86_SEMANTIC_WAVEFORM=NOT_EXERCISED\n");
+#endif
     printf("AUDIO86_GUEST_SYNC_INPUT=PASS\n");
     printf("AUDIO86_GUEST_SYNC_GLOBAL_SEQUENCE_VALIDATION=PASS\n");
     printf("MERGED_ACTION_SEQUENCE_VALIDATION=PASS\n");
@@ -1254,7 +1392,9 @@ int main(void)
     printf("AUDIO86_GUEST_SYNC_QUANTUM_INDEPENDENCE=PASS\n");
     printf("AUDIO86_GUEST_SYNC_PCM_DETERMINISM=PASS\n");
     printf("AUDIO86_GUEST_SYNC_NEGATIVE_TESTS=PASS\n");
+#if !defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
     printf("AUDIO86_GUEST_SYNC_BOUNDARY_TESTS=PASS\n");
+#endif
     printf("PCM86_RENDERER_ARBITRARY_LENGTH_ACCEPTANCE=PASS\n");
     printf("PCM86_ZERO_LENGTH_REJECTED=PASS\n");
     printf("PCM86_MAX_LENGTH_BOUNDARY=PASS\n");

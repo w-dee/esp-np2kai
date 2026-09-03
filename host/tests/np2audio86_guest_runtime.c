@@ -1095,13 +1095,16 @@ static void run_86r2c_evidence_tests(void)
 
 static int np2audio86_guest_runtime_run(
     np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
-    const np2audio86_guest_sink_t *sink)
+    const np2audio86_guest_sink_t *sink,
+    size_t (*program_builder)(uint8_t *, size_t),
+    np2audio86_guest_execution_evidence_t *evidence)
 {
     size_t program_size;
 
-    if (trace == NULL || state == NULL) {
+    if (trace == NULL || state == NULL || program_builder == NULL) {
         return -1;
     }
+    if (evidence != NULL) memset(evidence, 0, sizeof(*evidence));
     trace->event_count = 0;
     trace->data_run_count = 0;
     trace->pcm_count = 0;
@@ -1137,7 +1140,8 @@ static int np2audio86_guest_runtime_run(
     pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
-    program_size = np2audio86_guest_program_build(mem, sizeof(mem));
+    program_size = program_builder(mem, sizeof(mem));
+    np2audio86_guest_test_reset_io_cycle_observation();
     if (program_size >= 0x90000u || !run_program(program_size)) {
         board86_unbind();
         np2audio86_guest_sink_unbind();
@@ -1148,6 +1152,24 @@ static int np2audio86_guest_runtime_run(
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
     np2audio86_guest_host_snapshot(state);
+    if (evidence != NULL) {
+        if (i286core.s.r.w.ip != program_size - 1U ||
+            mem[i286core.s.r.w.ip] != UINT8_C(0xf4)) {
+            board86_unbind();
+            np2audio86_guest_sink_unbind();
+            np2audio86_guest_host_trace_detach();
+            return -1;
+        }
+        evidence->program_bytes = program_size;
+        evidence->io_observation_count =
+            np2audio86_guest_test_io_cycle_observation_count();
+        evidence->first_io_guest_cycle =
+            np2audio86_guest_test_first_io_guest_cycle();
+        evidence->last_io_guest_cycle =
+            np2audio86_guest_test_last_io_guest_cycle();
+        evidence->termination_ip = i286core.s.r.w.ip;
+        evidence->terminated_at_hlt = 1U;
+    }
     board86_unbind();
     np2audio86_guest_sink_unbind();
     np2audio86_guest_host_trace_detach();
@@ -1157,7 +1179,18 @@ static int np2audio86_guest_runtime_run(
 int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
                                      np2audio86_guest_state_snapshot_t *state)
 {
-    return np2audio86_guest_runtime_run(trace, state, NULL);
+    return np2audio86_guest_runtime_run(trace, state, NULL,
+                                        np2audio86_guest_program_build, NULL);
+}
+
+int np2audio86_guest_runtime_capture_sustained_2s(
+    np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
+    np2audio86_guest_execution_evidence_t *evidence)
+{
+    if (evidence == NULL) return -1;
+    return np2audio86_guest_runtime_run(
+        trace, state, NULL, np2audio86_guest_program_build_sustained_2s,
+        evidence);
 }
 
 int np2audio86_guest_runtime_live(
@@ -1167,7 +1200,8 @@ int np2audio86_guest_runtime_live(
     if (sink == NULL) {
         return -1;
     }
-    return np2audio86_guest_runtime_run(trace, state, sink);
+    return np2audio86_guest_runtime_run(trace, state, sink,
+                                        np2audio86_guest_program_build, NULL);
 }
 
 #ifndef NP2AUDIO86_GUEST_RUNTIME_NO_MAIN

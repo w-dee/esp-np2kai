@@ -13,6 +13,18 @@ extern "C" {
 
 size_t np2audio86_guest_program_build(uint8_t *out, size_t capacity);
 
+/* Derived host/reference workload.  The original 86R.2 50 ms builder above
+ * remains the canonical short fixture and is intentionally independent. */
+#define NP2_AUDIO86_GUEST_SUSTAINED_2S_FRAMES 96000U
+#define NP2_AUDIO86_GUEST_SUSTAINED_2S_BYTES 384000U
+#define NP2_AUDIO86_GUEST_SUSTAINED_2S_QUANTA_240 400U
+#define NP2_AUDIO86_GUEST_SUSTAINED_2S_POLL_COUNT 187U
+#define NP2_AUDIO86_GUEST_SUSTAINED_INNER_COUNT 65536U
+#define NP2_AUDIO86_GUEST_SUSTAINED_LOOP_CYCLES UINT64_C(98044100)
+
+size_t np2audio86_guest_program_build_sustained_2s(uint8_t *out,
+                                                   size_t capacity);
+
 #ifdef __cplusplus
 }
 #endif
