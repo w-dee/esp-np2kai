@@ -126,6 +126,17 @@ typedef struct {
 } np2audio86_guest_io_trace_t;
 
 typedef struct {
+    void *opaque;
+    void (*event)(void *opaque, const np2audio86_guest_event_t *record);
+    void (*data_run)(void *opaque,
+                     const np2audio86_guest_data_run_t *record);
+    void (*pcm_byte)(void *opaque, uint8_t value);
+    void (*timer)(void *opaque,
+                  const np2audio86_guest_timer_trace_t *record);
+    void (*io)(void *opaque, const np2audio86_guest_io_trace_t *record);
+} np2audio86_guest_trace_observer_t;
+
+typedef struct {
     np2audio86_guest_event_t *events;
     size_t event_capacity;
     size_t event_count;
@@ -144,7 +155,32 @@ typedef struct {
     /* Host-only consumer cursor: accumulated PCM runs may be drained from
      * the attached producer trace without changing their global offsets. */
     size_t pcm_offset_base;
+    /* Opt-in sustained mode: counts and observer callbacks remain complete,
+     * while each caller-provided array is a fixed first-half/last-half
+     * diagnostic window.  The default zero preserves exact short traces and
+     * their capacity-failure semantics. */
+    uint8_t bounded_windows;
+    np2audio86_guest_trace_observer_t observer;
 } np2audio86_guest_trace_t;
+
+static inline size_t np2audio86_guest_trace_window_index(size_t count,
+                                                          size_t capacity)
+{
+    if (capacity == 0U) return 0U;
+    const size_t first = capacity / 2U;
+    const size_t last = capacity - first;
+    return count < first ? count : first + ((count - first) % last);
+}
+
+static inline size_t np2audio86_guest_trace_window_last_start(
+    size_t total_count, size_t capacity)
+{
+    if (capacity == 0U) return 0U;
+    const size_t first = capacity / 2U;
+    const size_t last = capacity - first;
+    return total_count <= first ? first :
+        first + ((total_count - first) % last);
+}
 
 typedef struct {
     uint64_t frame_timestamp;

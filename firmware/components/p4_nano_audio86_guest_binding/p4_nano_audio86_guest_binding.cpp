@@ -9,6 +9,7 @@
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -38,6 +39,7 @@ BRESULT iocore_build(void);
 #include "np2audio86_guest_evidence.h"
 #include "np2audio86_guest_program.h"
 #include "np2audio86_runtime_transport.h"
+#include "np2audio86_sustained_evidence.h"
 #include "np2opngen_pcm_canonical.h"
 #include "np2opngen_pcm_ring.h"
 #include "np2pcm_output.h"
@@ -50,6 +52,7 @@ BRESULT iocore_build(void);
 
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE) && \
     !defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE) && \
+    !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE) && \
     !defined(P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE)
 #define P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE 1
 #endif
@@ -66,7 +69,8 @@ constexpr UBaseType_t kPcmConsumerPriority = tskIDLE_PRIORITY + 7U;
 constexpr uint32_t kPcmConsumerStackBytes = 4096U;
 constexpr uint32_t kPcmPrefillSlots = 4U;
 #endif
-constexpr TickType_t kTimeout = pdMS_TO_TICKS(5000U);
+constexpr uint32_t kTimeoutMs = 5000U;
+constexpr TickType_t kTimeout = pdMS_TO_TICKS(kTimeoutMs);
 constexpr uint32_t kErrorTransport = 1U;
 constexpr uint32_t kErrorWorker = 2U;
 constexpr uint32_t kErrorGuest = 3U;
@@ -81,7 +85,15 @@ constexpr uint32_t kEventPcmControl = 0x102U;
 #define P4_NANO_AUDIO86_PCM_LIFECYCLE_SCENARIO 0
 #endif
 constexpr size_t kS2ResetFrameOffset = 1920U;
-#if defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+#if !defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+#error "sustained evidence requires the q240 output path"
+#endif
+constexpr size_t kRenderFrames = NP2_AUDIO86_GUEST_SUSTAINED_2S_FRAMES;
+constexpr uint32_t kExpectedPcmSlots =
+    NP2_AUDIO86_GUEST_SUSTAINED_2S_QUANTA_240;
+constexpr uint32_t kExpectedPartialSlots = 0U;
+#elif defined(P4_NANO_AUDIO86_PCM_PARTIAL_EOS_PROFILE)
 constexpr size_t kRenderFrames = 13U;
 constexpr uint32_t kExpectedPcmSlots = 1U;
 constexpr uint32_t kExpectedPartialSlots = 1U;
@@ -199,12 +211,19 @@ struct Runtime {
     uint8_t worker_run[NP2_AUDIO86_ASYNC_MAX_DATA_RUN]{};
     SINT32 mix[NP2_AUDIO86_QUANTUM_FRAMES * 2U]{};
     uint8_t canonical[NP2_AUDIO86_QUANTUM_FRAMES * 4U]{};
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    np2audio86_sustained_evidence sustained{};
+    np2_pcm_sink sustained_downstream{};
+#else
     uint8_t full_pcm[kRenderFrames * 4U]{};
     uint8_t pre_reset_pcm[kRenderFrames * 4U]{};
+#endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     np2opngen_pcm_ring pcm_ring{};
     np2_pcm_output_controller pcm_controller{};
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     uint8_t ring_pcm[kRenderFrames * 4U]{};
+#endif
     StaticTask_t pcm_consumer_tcb{};
     StackType_t pcm_consumer_stack[kPcmConsumerStackBytes / sizeof(StackType_t)]{};
     StaticSemaphore_t pcm_ready_storage{};
@@ -325,11 +344,13 @@ struct Runtime {
     uint32_t pcm_eos_after_done = 0U;
     uint32_t pcm_finish_after_empty = 0U;
     uint32_t pcm_ack_after_finish = 0U;
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     uint64_t pcm_slot_offsets[kExpectedPcmSlots]{};
     uint32_t pcm_slot_sequences[kExpectedPcmSlots]{};
     uint16_t pcm_slot_frames[kExpectedPcmSlots]{};
     uint16_t pcm_slot_flags[kExpectedPcmSlots]{};
     uint32_t pcm_slot_crc32[kExpectedPcmSlots]{};
+#endif
 #endif
     ApplyRecord applied[32]{};
     np2audio86_guest_event_t trace_events[64]{};
@@ -367,6 +388,9 @@ struct Runtime {
     uint64_t next_sequence = 0U;
     uint32_t reset_ordinal = 0U;
     uint64_t rendered_frame = 0U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    std::atomic<uint64_t> rendered_frame_published{0U};
+#endif
     uint64_t worker_byte_offset = 0U;
     uint64_t pre_reset_frame = 0U;
     bool reset_seen = false;
@@ -591,6 +615,7 @@ enum np2_pcm_sink_result pcm_sink_submit(
     if (runtime->pcm_consumed_slots == 0U)
         runtime->pcm_first_submit_occupancy =
             np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     std::memcpy(runtime->ring_pcm + static_cast<size_t>(view->frame_offset) * 4U,
                 view->pcm, bytes);
     const uint32_t slot = runtime->pcm_consumed_slots;
@@ -600,6 +625,7 @@ enum np2_pcm_sink_result pcm_sink_submit(
     runtime->pcm_slot_flags[slot] = view->flags;
     runtime->pcm_slot_crc32[slot] = np2_crc32_iso_hdlc_finish(
         np2_crc32_iso_hdlc_update(np2_crc32_iso_hdlc_init(), view->pcm, bytes));
+#endif
     ++runtime->pcm_consumed_slots;
     if (view->valid_frames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES)
         ++runtime->pcm_partial_slots;
@@ -753,6 +779,83 @@ enum np2_pcm_sink_result pcm_sink_abort(void *opaque)
 const np2_pcm_sink kPcmSink{&s_runtime, pcm_sink_start, pcm_sink_submit,
                             pcm_sink_finish, pcm_sink_abort};
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+enum np2_pcm_sink_result sustained_sink_start(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || runtime->sustained_downstream.start == nullptr)
+        return NP2_PCM_SINK_FATAL;
+    const enum np2_pcm_sink_result result =
+        runtime->sustained_downstream.start(runtime->sustained_downstream.opaque);
+#if !defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    if (result == NP2_PCM_SINK_ACCEPTED)
+        np2audio86_sustained_stream_start(
+            &runtime->sustained,
+            static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+#endif
+    return result;
+}
+
+enum np2_pcm_sink_result sustained_sink_submit(
+    void *opaque, const struct np2_pcm_sink_view *view)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || view == nullptr ||
+        runtime->sustained_downstream.submit == nullptr)
+        return NP2_PCM_SINK_FATAL;
+    const enum np2_pcm_sink_result result = runtime->sustained_downstream.submit(
+        runtime->sustained_downstream.opaque, view);
+    if (result == NP2_PCM_SINK_FATAL) return result;
+    uint8_t running = 1U;
+#if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
+    p4_nano_audio86_physical_telemetry telemetry{};
+    p4_nano_audio86_physical_sink_get_telemetry(runtime->physical_sink,
+                                                 &telemetry);
+    running = telemetry.state == P4_NANO_AUDIO86_PHYSICAL_RUNNING ? 1U : 0U;
+    if (running && !runtime->sustained.stream_started)
+        np2audio86_sustained_stream_start(
+            &runtime->sustained,
+            static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+#endif
+    const enum np2audio86_sustained_submit_result evidence_result =
+        result == NP2_PCM_SINK_ACCEPTED ? NP2_AUDIO86_SUSTAINED_ACCEPTED
+                                       : NP2_AUDIO86_SUSTAINED_RETRY;
+    if (np2audio86_sustained_submit(
+            &runtime->sustained, evidence_result, view->sequence,
+            view->frame_offset, view->pcm, view->valid_frames, running,
+            static_cast<uint64_t>(esp_timer_get_time()) / 1000U) != 0)
+        return NP2_PCM_SINK_FATAL;
+    return result;
+}
+
+enum np2_pcm_sink_result sustained_sink_finish(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || runtime->sustained_downstream.finish == nullptr)
+        return NP2_PCM_SINK_FATAL;
+    const enum np2_pcm_sink_result result = runtime->sustained_downstream.finish(
+        runtime->sustained_downstream.opaque);
+    if (result == NP2_PCM_SINK_ACCEPTED)
+        np2audio86_sustained_drain_complete(
+            &runtime->sustained,
+            static_cast<uint64_t>(esp_timer_get_time()) / 1000U);
+    return result;
+}
+
+enum np2_pcm_sink_result sustained_sink_abort(void *opaque)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || runtime->sustained_downstream.abort == nullptr)
+        return NP2_PCM_SINK_FATAL;
+    return runtime->sustained_downstream.abort(
+        runtime->sustained_downstream.opaque);
+}
+
+const np2_pcm_sink kSustainedSink{
+    &s_runtime, sustained_sink_start, sustained_sink_submit,
+    sustained_sink_finish, sustained_sink_abort};
+#endif
+
 bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
                 const uint64_t frame_offset)
 {
@@ -770,13 +873,26 @@ bool append_pcm(Runtime *runtime, const uint8_t *pcm, const size_t frames,
         appended += consumed;
         runtime->pcm_produced_frames += consumed;
         runtime->pcm_produced_bytes += consumed * 4U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        np2audio86_sustained_observe_ring(
+            &runtime->sustained,
+            np2opngen_pcm_ring_occupancy(&runtime->pcm_ring));
+#endif
         notify_pcm_consumer(runtime);
         drive_pcm_s2_partial_controller(runtime);
         if (runtime->pcm_forced_abort_requested.load(
                 std::memory_order_acquire) != 0U)
             return false;
-        if (status == NP2_OPNGEN_PCM_RING_OK) continue;
+        if (status == NP2_OPNGEN_PCM_RING_OK) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+            np2audio86_sustained_producer_full(&runtime->sustained, 0U);
+#endif
+            continue;
+        }
         if (status != NP2_OPNGEN_PCM_RING_FULL) return false;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        np2audio86_sustained_producer_full(&runtime->sustained, 1U);
+#endif
         runtime->pcm_worker_space_waiting.store(1U, std::memory_order_release);
         notify_pcm_consumer(runtime);
         drive_pcm_retry_controller(runtime);
@@ -863,6 +979,12 @@ void pcm_consumer_task(void *opaque)
         const uint32_t occupancy = np2opngen_pcm_ring_occupancy(&runtime->pcm_ring);
         const bool production_done =
             runtime->pcm_production_done.load(std::memory_order_acquire) != 0U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (occupancy == 0U)
+            np2audio86_sustained_consumer_empty(
+                &runtime->sustained, released ? 1U : 0U,
+                production_done ? 1U : 0U);
+#endif
         if (kPcmLifecycleScenario == kPcmLifecycleConsumerFailureEmpty &&
             runtime->pcm_lifecycle_triggered.exchange(1U,
                                                        std::memory_order_acq_rel) == 0U)
@@ -1508,15 +1630,28 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         runtime->pcm_semantic_rendered_frames += frames;
 #endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        if (np2audio86_sustained_generated(
+                &runtime->sustained,
+                runtime->sustained.next_generated_sequence,
+                runtime->rendered_frame, runtime->canonical,
+                static_cast<uint16_t>(frames)) != 0)
+            return false;
+#else
         const size_t offset = static_cast<size_t>(runtime->rendered_frame) * 4U;
         std::memcpy(runtime->full_pcm + offset, runtime->canonical, frames * 4U);
         if (!runtime->reset_seen)
             std::memcpy(runtime->pre_reset_pcm + offset, runtime->canonical, frames * 4U);
+#endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         if (!append_pcm(runtime, runtime->canonical, frames, runtime->rendered_frame))
             return false;
 #endif
         runtime->rendered_frame += frames;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        runtime->rendered_frame_published.store(runtime->rendered_frame,
+                                                std::memory_order_release);
+#endif
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
         if (kPcmS2PartialLifecycle &&
             runtime->pcm_s2_controller_driven.load(
@@ -1527,9 +1662,17 @@ bool render_until(Runtime *runtime, const uint64_t target_frame)
     return true;
 }
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+void sustained_trace_apply(Runtime *runtime, const ApplyRecord *record);
+#endif
+
 bool apply_event(Runtime *runtime, const np2audio86_event *event)
 {
-    if (event == nullptr || runtime->applied_count.load(std::memory_order_relaxed) >= 32U)
+    if (event == nullptr
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        || runtime->applied_count.load(std::memory_order_relaxed) >= 32U
+#endif
+        )
         return false;
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     const bool s2_reset_event = kPcmS2ResetLifecycle &&
@@ -1591,9 +1734,20 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
                                                       byte_count, runtime->source,
                                                       sizeof(runtime->source));
     if (result != 0) return false;
-    const uint32_t apply_index = runtime->applied_count.fetch_add(1U, std::memory_order_relaxed);
-    runtime->applied[apply_index] = {event->frame_timestamp, event->sequence, opcode, action,
-                                     byte_offset, byte_count, action_payload};
+    const uint32_t apply_count = runtime->applied_count.fetch_add(
+        1U, std::memory_order_relaxed);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    const uint32_t apply_index = static_cast<uint32_t>(
+        np2audio86_guest_trace_window_index(apply_count, 32U));
+#else
+    const uint32_t apply_index = apply_count;
+#endif
+    runtime->applied[apply_index] = {
+        event->frame_timestamp, event->sequence, opcode, action,
+        byte_offset, byte_count, action_payload};
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    sustained_trace_apply(runtime, &runtime->applied[apply_index]);
+#endif
     if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
         if (kPressureScenario == kPressureResetAck) {
             runtime->reset_ack_held.store(1U, std::memory_order_release);
@@ -1602,6 +1756,15 @@ bool apply_event(Runtime *runtime, const np2audio86_event *event)
         } else {
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
             runtime->reset_ack_after_ring = runtime->reset_applied_after_ring;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+            if (event->sequence > UINT32_MAX) return false;
+            np2audio86_sustained_freeze_reset(
+                &runtime->sustained, event->frame_timestamp,
+                static_cast<uint32_t>(event->sequence), runtime->reset_ordinal,
+                runtime->pcm_ring.next_frame_offset,
+                runtime->reset_applied_after_ring ? 1U : 0U,
+                runtime->reset_ack_after_ring ? 1U : 0U);
+#endif
 #endif
             np2audio86_runtime_reset_ack_publish(&runtime->control, runtime->reset_ordinal + 1U);
             notify_producer(runtime);
@@ -1765,6 +1928,87 @@ void worker_task(void *opaque)
     vTaskSuspend(nullptr);
 }
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+void sustained_trace_apply(Runtime *runtime, const ApplyRecord *record)
+{
+    uint8_t canonical[kApplyRecordBytes]{};
+    const auto le32 = [](uint8_t *out, const uint32_t value) {
+        for (size_t i = 0U; i < 4U; ++i)
+            out[i] = static_cast<uint8_t>(value >> (i * 8U));
+    };
+    const auto le64 = [](uint8_t *out, const uint64_t value) {
+        for (size_t i = 0U; i < 8U; ++i)
+            out[i] = static_cast<uint8_t>(value >> (i * 8U));
+    };
+    le64(canonical, record->frame);
+    le64(canonical + 8U, record->sequence);
+    le32(canonical + 16U, record->opcode);
+    le32(canonical + 20U, record->action);
+    le64(canonical + 24U, record->byte_offset);
+    le32(canonical + 32U, record->byte_count);
+    le32(canonical + 36U, record->payload);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_APPLY,
+        canonical, sizeof(canonical));
+}
+
+void sustained_trace_event(void *opaque,
+                           const np2audio86_guest_event_t *record)
+{
+    uint8_t canonical[24U]{};
+    auto *runtime = static_cast<Runtime *>(opaque);
+    const size_t bytes = np2audio86_guest_evidence_serialize_event_record(
+        record, canonical);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_EVENT,
+        canonical, bytes);
+}
+
+void sustained_trace_run(void *opaque,
+                         const np2audio86_guest_data_run_t *record)
+{
+    uint8_t canonical[32U]{};
+    auto *runtime = static_cast<Runtime *>(opaque);
+    const size_t bytes = np2audio86_guest_evidence_serialize_run_record(
+        record, canonical);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_RUN,
+        canonical, bytes);
+}
+
+void sustained_trace_pcm_byte(void *opaque, const uint8_t value)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_PCM_BYTES,
+        &value, 1U);
+}
+
+void sustained_trace_timer(void *opaque,
+                           const np2audio86_guest_timer_trace_t *record)
+{
+    uint8_t canonical[28U]{};
+    auto *runtime = static_cast<Runtime *>(opaque);
+    const size_t bytes = np2audio86_guest_evidence_serialize_timer_record(
+        record, canonical);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_TIMER,
+        canonical, bytes);
+}
+
+void sustained_trace_io(void *opaque,
+                        const np2audio86_guest_io_trace_t *record)
+{
+    uint8_t canonical[24U]{};
+    auto *runtime = static_cast<Runtime *>(opaque);
+    const size_t bytes = np2audio86_guest_evidence_serialize_io_record(
+        record, canonical);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_IO,
+        canonical, bytes);
+}
+#endif
+
 bool execute_real_i286(Runtime *runtime)
 {
     /* The real profile deliberately uses the frozen 86R.2 clock tuple.  The
@@ -1780,9 +2024,23 @@ bool execute_real_i286(Runtime *runtime)
     np2audio86_guest_host_set_cpumode(pccore.cpumode);
     np2audio86_guest_host_set_cpu_position_fn(producer_position);
     np2audio86_guest_host_set_timer_hooks(timer_schedule, timer_cancel, timer_iswork, timer_irq);
-    runtime->trace = {runtime->trace_events, 64U, 0U, runtime->trace_runs, 8U, 0U,
-                      runtime->trace_bytes, sizeof(runtime->trace_bytes), 0U,
-                      runtime->trace_timers, 64U, 0U, runtime->trace_io, 128U, 0U, 0U};
+    runtime->trace = {};
+    runtime->trace.events = runtime->trace_events;
+    runtime->trace.event_capacity = 64U;
+    runtime->trace.data_runs = runtime->trace_runs;
+    runtime->trace.data_run_capacity = 8U;
+    runtime->trace.pcm_bytes = runtime->trace_bytes;
+    runtime->trace.pcm_capacity = sizeof(runtime->trace_bytes);
+    runtime->trace.timers = runtime->trace_timers;
+    runtime->trace.timer_capacity = 64U;
+    runtime->trace.io = runtime->trace_io;
+    runtime->trace.io_capacity = 128U;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    runtime->trace.bounded_windows = 1U;
+    runtime->trace.observer = {
+        runtime, sustained_trace_event, sustained_trace_run,
+        sustained_trace_pcm_byte, sustained_trace_timer, sustained_trace_io};
+#endif
     /* Establish board86 while no transport is bound.  The initial board
      * reset configures the guest-domain device but must never become a
      * runtime RESET record; canonical sequence zero starts only below. */
@@ -1801,8 +2059,14 @@ bool execute_real_i286(Runtime *runtime)
 #endif
     np2audio86_guest_host_trace_attach(&runtime->trace);
     np2audio86_guest_sink_bind(&kSink);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    const size_t program_size = np2audio86_guest_program_build_sustained_2s(
+        mem, 0x90000U);
+    if (program_size != 5498U) return false;
+#else
     const size_t program_size = np2audio86_guest_program_build(mem, 0x90000U);
     if (program_size != 4971U) return false;
+#endif
     i286c_initialize();
     i286c_reset();
     i286core.s.r.w.cs = 0U; i286core.s.cs_base = 0U;
@@ -1822,6 +2086,14 @@ bool execute_real_i286(Runtime *runtime)
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
     np2audio86_guest_host_snapshot(&runtime->final_state);
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    uint8_t canonical_state[128U]{};
+    const size_t state_bytes = np2audio86_guest_evidence_serialize_state(
+        &runtime->final_state, canonical_state);
+    np2audio86_sustained_trace_record(
+        &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE,
+        canonical_state, state_bytes);
+#endif
     return !np2audio86_guest_host_failed();
 }
 
@@ -1948,6 +2220,7 @@ bool cleanup_pcm_start_failure(Runtime *runtime)
 }
 #endif
 
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 void put_le32(uint8_t *out, const uint32_t value)
 {
     out[0] = static_cast<uint8_t>(value);
@@ -1974,7 +2247,23 @@ void print_digest(const char *name, const uint8_t *bytes, const size_t length)
     for (const uint8_t byte : digest) std::printf("%02x", byte);
     std::printf("\n");
 }
+#endif
 
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+void print_sustained_digest(const char *name,
+                            const np2audio86_sustained_digest *digest)
+{
+    uint32_t crc32 = 0U;
+    uint8_t sha256[NP2_SHA256_DIGEST_SIZE]{};
+    np2audio86_sustained_digest_snapshot(digest, &crc32, sha256);
+    std::printf("%s_SERIALIZED_BYTES=%" PRIu64 "\n%s_CRC32=%08" PRIx32
+                "\n%s_SHA256=", name, digest->bytes, name, crc32, name);
+    for (const uint8_t byte : sha256) std::printf("%02x", byte);
+    std::printf("\n");
+}
+#endif
+
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 size_t serialize_apply(const Runtime *runtime, uint8_t *out)
 {
     const uint32_t count = runtime->applied_count.load(std::memory_order_acquire);
@@ -1991,7 +2280,9 @@ size_t serialize_apply(const Runtime *runtime, uint8_t *out)
     }
     return static_cast<size_t>(count) * kApplyRecordBytes;
 }
+#endif
 
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 void emit_exact_evidence(const Runtime *runtime)
 {
     uint8_t serialized[2048]{};
@@ -2113,6 +2404,88 @@ void emit_exact_evidence(const Runtime *runtime)
     std::printf("REAL_P4_AUDIO_TIMING=NOT_VALIDATED\n");
 #endif
 }
+#else
+void emit_sustained_evidence(const Runtime *runtime)
+{
+    const auto &e = runtime->sustained;
+    std::printf("WORKLOAD_ID=FULL_REPLAY_PCM_SUSTAINED_2S_V1\n");
+    std::printf("SEMANTIC_DURATION_MS=2000\nSUSTAINED_Q240_UNITS=400\n");
+    print_sustained_digest("GUEST_IO",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO]);
+    std::printf("GUEST_IO_RECORDS=%" PRIu64 "\n",
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO].records);
+    print_sustained_digest("AUDIO_EVENTS",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT]);
+    std::printf("AUDIO_EVENTS_RECORDS=%" PRIu64 "\n",
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT].records);
+    print_sustained_digest("PCM86_DATA_RUNS",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_RUN]);
+    std::printf("PCM86_DATA_RUNS_RECORDS=%" PRIu64 "\n",
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_RUN].records);
+    print_sustained_digest("PCM86_BYTES",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_PCM_BYTES]);
+    print_sustained_digest("TIMER_PIC",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER]);
+    std::printf("TIMER_PIC_RECORDS=%" PRIu64 "\n",
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER].records);
+    print_sustained_digest("WORKER_APPLY_TRACE",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY]);
+    std::printf("WORKER_APPLY_TRACE_RECORDS=%" PRIu64 "\n",
+        e.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY].records);
+    print_sustained_digest("FINAL_G_STATE",
+        &e.trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE]);
+    print_sustained_digest("FULL_PCM", &e.generated);
+    std::printf("FULL_PCM_FRAMES=%" PRIu64 "\n",
+                e.next_generated_frame_offset);
+    print_sustained_digest("ACCEPTED_PCM", &e.accepted);
+    std::printf("ACCEPTED_PCM_FRAMES=%" PRIu64 "\n",
+                e.next_accepted_frame_offset);
+    std::printf("PRE_RESET_PCM_SERIALIZED_BYTES=%" PRIu64
+                "\nPRE_RESET_PCM_CRC32=%08" PRIx32 "\nPRE_RESET_PCM_SHA256=",
+                e.reset.bytes, e.reset.crc32);
+    for (const uint8_t byte : e.reset.sha256) std::printf("%02x", byte);
+    std::printf("\nPRE_RESET_PCM_FRAMES=%" PRIu64 "\n", e.reset.frames);
+    std::printf("P4_AUDIO86_SUSTAINED_SLOT first_sequence=%" PRIu32
+                " first_offset=%" PRIu64 " first_crc32=%08" PRIx32
+                " final_sequence=%" PRIu32 " final_offset=%" PRIu64
+                " final_crc32=%08" PRIx32 " storage=BOUNDED\n",
+                e.first_accepted.sequence, e.first_accepted.frame_offset,
+                e.first_accepted.crc32, e.final_accepted.sequence,
+                e.final_accepted.frame_offset, e.final_accepted.crc32);
+    std::printf("P4_AUDIO86_SUSTAINED_RESET frame=%" PRIu64
+                " sequence=%" PRIu32 " ordinal=%" PRIu32
+                " ring_next_frame=%" PRIu64 " applied_after_ring=%u"
+                " ack_after_apply=%u\n",
+                e.reset.reset_event_frame, e.reset.reset_event_sequence,
+                e.reset.reset_ordinal, e.reset.ring_next_frame_offset,
+                e.reset.applied_after_ring, e.reset.ack_after_apply);
+    std::printf("P4_AUDIO86_SUSTAINED_TRACE io=%" PRIu64 "/128"
+                " events=%" PRIu64 "/64 runs=%" PRIu64 "/8"
+                " timers=%" PRIu64 "/64 applied=%" PRIu64 "/32"
+                " model=FIRST_HALF_LAST_HALF_ALL_DIGESTED\n",
+                static_cast<uint64_t>(runtime->trace.io_count),
+                static_cast<uint64_t>(runtime->trace.event_count),
+                static_cast<uint64_t>(runtime->trace.data_run_count),
+                static_cast<uint64_t>(runtime->trace.timer_count),
+                static_cast<uint64_t>(runtime->applied_count.load()));
+    std::printf("P4_AUDIO86_SUSTAINED_RING max_occupancy=%" PRIu32
+                " producer_full_wait_count=%" PRIu32
+                " consumer_premature_empty_count=%" PRIu32 "\n",
+                e.pcm_ring_max_occupancy, e.pcm_producer_full_wait_count,
+                e.pcm_consumer_premature_empty_count);
+    std::printf("P4_AUDIO86_SUSTAINED_TIMING stream_started_ms=%" PRIu64
+                " drain_completed_ms=%" PRIu64 " stream_wall_ms=%" PRIu64
+                " max_running_accept_gap_ms=%" PRIu64
+                " progress_bound_ms=%u authority=HOST_ONLY\n",
+                e.stream_started_ms, e.drain_completed_ms,
+                np2audio86_sustained_stream_wall_ms(&e),
+                e.max_running_accept_gap_ms,
+                NP2_AUDIO86_SUSTAINED_PROGRESS_BOUND_MS);
+    std::printf("P4_AUDIO86_SUSTAINED_MEMORY evidence_fixed_bytes=%zu"
+                " duration_dependent_pcm_bytes=0 ring_bytes=%zu\n",
+                sizeof(e), sizeof(runtime->pcm_ring));
+}
+#endif
 
 #if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE) || \
     defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
@@ -2402,7 +2775,11 @@ bool physical_s2_snapshot_healthy(const Runtime *runtime)
 void emit_summary(const Runtime *runtime, const bool ok)
 {
     std::printf("P4_AUDIO86_REAL_GUEST profile=1 producer=p4_nano_pc98 producer_core=1 producer_priority=3 terminal_index=0 worker_core=0 worker_priority=6 producer_index=1 worker_index=0\n");
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    std::printf("P4_AUDIO86_REAL_GUEST_FIXTURE bytes=5498 crc32=e577580a\n");
+#else
     std::printf("P4_AUDIO86_REAL_GUEST_FIXTURE bytes=4971 crc32=544b2e8c\n");
+#endif
     std::printf("P4_AUDIO86_REAL_GUEST_RESIDUAL events=%" PRIu32 " bytes=%" PRIu32 " horizon=%u first_error=%" PRIu32 " pcm_fifo=%" PRId32 "\n",
                 np2audio86_event_ring_occupancy(&runtime->events),
                 np2audio86_byte_ring_occupancy(&runtime->bytes),
@@ -2416,7 +2793,13 @@ void emit_summary(const Runtime *runtime, const bool ok)
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     exact_evidence = exact_evidence && kPcmLifecycleScenario == kPcmLifecycleNone;
 #endif
-    if (exact_evidence) emit_exact_evidence(runtime);
+    if (exact_evidence) {
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        emit_sustained_evidence(runtime);
+#else
+        emit_exact_evidence(runtime);
+#endif
+    }
     if (kPressureScenario != kPressureNone && kFailureKind == kFailureNone) {
         const char *const name = kPressureScenario == kPressureEvent ? "EVENT" :
             kPressureScenario == kPressureByte ? "BYTE" :
@@ -2867,7 +3250,12 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     np2audio86_runtime_control_init(&runtime->control);
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     np2opngen_pcm_ring_init(&runtime->pcm_ring);
+#if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     std::memset(runtime->ring_pcm, 0, sizeof(runtime->ring_pcm));
+#else
+    np2audio86_sustained_evidence_init(&runtime->sustained);
+    runtime->rendered_frame_published.store(0U, std::memory_order_relaxed);
+#endif
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     runtime->physical = {};
 #endif
@@ -2991,6 +3379,12 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     selected_sink = p4_nano_audio86_physical_sink_interface(
         runtime->physical_sink);
 #endif
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    /* Evidence decorates the selected sink so ACCEPTED/RETRY accounting stays
+     * identical for the virtual F2 gate and a later physical profile. */
+    runtime->sustained_downstream = selected_sink;
+    selected_sink = kSustainedSink;
+#endif
     if (np2_pcm_output_controller_init(&runtime->pcm_controller,
                                        &runtime->pcm_ring, &selected_sink) != 0) {
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
@@ -3102,7 +3496,20 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
     runtime->producer_done.store(1U, std::memory_order_release);
     np2audio86_runtime_producer_done_publish(&runtime->control);
     notify_worker(runtime);
-    const bool worker_terminal = xSemaphoreTake(runtime->done, kTimeout) == pdTRUE;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    const uint64_t rendered_before_join = runtime->rendered_frame_published.load(
+        std::memory_order_acquire);
+    const uint64_t remaining_frames = rendered_before_join < kRenderFrames
+        ? kRenderFrames - rendered_before_join : 0U;
+    const uint32_t worker_wait_ms = np2audio86_sustained_worker_wait_ms(
+        remaining_frames);
+    const TickType_t worker_wait = pdMS_TO_TICKS(worker_wait_ms) == 0U
+        ? 1U : pdMS_TO_TICKS(worker_wait_ms);
+#else
+    const TickType_t worker_wait = kTimeout;
+#endif
+    const bool worker_terminal =
+        xSemaphoreTake(runtime->done, worker_wait) == pdTRUE;
     const bool worker_quiescent =
         runtime->worker_quiescent.load(std::memory_order_acquire) != 0U;
     const bool worker_suspended = worker_terminal && worker_quiescent &&
@@ -3248,6 +3655,44 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
 #elif defined(P4_NANO_AUDIO86_PHYSICAL_S2_PROFILE)
     const bool physical_sink_ok = physical_s2_snapshot_healthy(runtime);
     const bool sink_profile_ok = physical_sink_ok;
+#elif defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    uint32_t generated_crc = 0U;
+    uint32_t accepted_crc = 0U;
+    uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE]{};
+    uint8_t accepted_sha[NP2_SHA256_DIGEST_SIZE]{};
+    np2audio86_sustained_digest_snapshot(
+        &runtime->sustained.generated, &generated_crc, generated_sha);
+    np2audio86_sustained_digest_snapshot(
+        &runtime->sustained.accepted, &accepted_crc, accepted_sha);
+    const bool scalable_identity_ok =
+        runtime->sustained.generated.bytes == kRenderFrames * 4U &&
+        runtime->sustained.accepted.bytes == kRenderFrames * 4U &&
+        runtime->sustained.next_generated_sequence == kExpectedPcmSlots &&
+        runtime->sustained.next_accepted_sequence == kExpectedPcmSlots &&
+        runtime->sustained.next_generated_frame_offset == kRenderFrames &&
+        runtime->sustained.next_accepted_frame_offset == kRenderFrames &&
+        runtime->sustained.generated_slot_fill_frames == 0U &&
+        runtime->sustained.retry_pending == 0U &&
+        runtime->sustained.retry_identity_failures == 0U &&
+        runtime->sustained.reset.frozen &&
+        runtime->sustained.reset.frames == 95761U &&
+        runtime->sustained.reset.reset_event_frame == 95761U &&
+        runtime->sustained.reset.reset_event_sequence == 18U &&
+        runtime->sustained.reset.applied_after_ring == 1U &&
+        runtime->sustained.reset.ack_after_apply == 1U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_IO].records == 246U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_EVENT].records == 18U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_RUN].records == 1U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_TIMER].records == 20U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_APPLY].records == 19U &&
+        runtime->sustained.trace[NP2_AUDIO86_SUSTAINED_TRACE_FINAL_STATE].records == 1U &&
+        generated_crc == accepted_crc &&
+        std::memcmp(generated_sha, accepted_sha, sizeof(generated_sha)) == 0;
+    const bool virtual_sink_ok = scalable_identity_ok &&
+        p4_nano_audio86_terminal_predicate::virtual_sink_scalable_observer_healthy(
+            *runtime, kExpectedPcmSlots, kExpectedPartialSlots,
+            kPcmPrefillSlots);
+    const bool sink_profile_ok = virtual_sink_ok;
 #else
     const bool virtual_sink_ok =
         p4_nano_audio86_terminal_predicate::virtual_sink_observer_healthy(

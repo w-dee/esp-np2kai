@@ -257,6 +257,19 @@ int main()
     require(predicate::virtual_sink_observer_healthy(
                 virtual_observer, 1U, 1U, 1U),
             "healthy virtual observer rejected");
+    VirtualObserver scalable_observer{};
+    scalable_observer.pcm_consumed_slots = 400U;
+    scalable_observer.pcm_sink_started = 1U;
+    scalable_observer.pcm_sink_finished = 1U;
+    scalable_observer.pcm_ack_after_finish = 1U;
+    scalable_observer.pcm_first_submit_occupancy = 4U;
+    require(predicate::virtual_sink_scalable_observer_healthy(
+                scalable_observer, 400U, 0U, 4U),
+            "healthy scalable virtual observer rejected");
+    --scalable_observer.pcm_consumed_slots;
+    require(!predicate::virtual_sink_scalable_observer_healthy(
+                scalable_observer, 400U, 0U, 4U),
+            "scalable virtual slot loss accepted");
 
     std::printf("HEALTHY_PHYSICAL_WITH_VIRTUAL_DEFAULTS_TERMINAL_PASS=PASS\n");
     std::printf("SECOND_RUN_COUNTERFACTUAL_TERMINAL_CLASSIFICATION=COMPLETE_UNDER_FIXED_FIRMWARE\n");
@@ -264,6 +277,7 @@ int main()
     std::printf("PHYSICAL_TERMINAL_NEGATIVE_MATRIX=%zu/%zu_PASS\n",
                 case_count, case_count);
     std::printf("VIRTUAL_SINK_OBSERVER_PREDICATE=PASS\n");
+    std::printf("VIRTUAL_SINK_SCALABLE_OBSERVER_PREDICATE=PASS\n");
     std::printf("GENERIC_PHYSICAL_HEALTH_WORKLOAD_AGNOSTIC=PASS\n");
     std::printf("S1_PHYSICAL_HEALTH_NONREGRESSION=PASS\n");
     std::printf("S1_PHYSICAL_HEALTH_LEGACY_TRUTH_TABLE=%zu/%zu_PASS\n",

@@ -1308,7 +1308,8 @@ int main(void)
     uint8_t apply[ASYNC_MAX_ACTIONS * ASYNC_TRACE_RECORD_BYTES];
     np2audio86_guest_trace_t trace = {
         events, ASYNC_MAX_EVENTS, 0U, runs, ASYNC_MAX_RUNS, 0U,
-        pcm, sizeof(pcm), 0U, timers, 4096U, 0U, io, 16384U, 0U, 0U
+        pcm, sizeof(pcm), 0U, timers, 4096U, 0U, io, 16384U, 0U, 0U,
+        0U, {0}
     };
     np2audio86_guest_state_snapshot_t state;
     struct producer_context producer = {&context, &trace, &state};

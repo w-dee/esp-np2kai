@@ -9,14 +9,51 @@ static void le32(uint8_t *out, uint32_t value)
 static void le64(uint8_t *out, uint64_t value)
 { le32(out, (uint32_t)value); le32(out + 4, (uint32_t)(value >> 32)); }
 
+size_t np2audio86_guest_evidence_serialize_event_record(
+    const np2audio86_guest_event_t *e, uint8_t *out)
+{
+    le64(out, e->frame_timestamp); le64(out + 8U, e->sequence);
+    le32(out + 16U, e->opcode); le32(out + 20U, e->payload);
+    return 24U;
+}
+
+size_t np2audio86_guest_evidence_serialize_run_record(
+    const np2audio86_guest_data_run_t *r, uint8_t *out)
+{
+    le64(out, r->frame_timestamp); le64(out + 8U, r->sequence);
+    le64(out + 16U, r->byte_offset); le32(out + 24U, r->count);
+    le32(out + 28U, 0U);
+    return 32U;
+}
+
+size_t np2audio86_guest_evidence_serialize_timer_record(
+    const np2audio86_guest_timer_trace_t *t, uint8_t *out)
+{
+    le64(out, t->frame_timestamp); le64(out + 8U, t->guest_cycles);
+    le32(out + 16U, t->timer);
+    out[20U] = t->status; out[21U] = t->irq; out[22U] = t->level;
+    out[23U] = t->cause; out[24U] = t->pic_transition;
+    out[25U] = t->pcm_irqflag; out[26U] = t->pcm_reqirq; out[27U] = 0U;
+    return 28U;
+}
+
+size_t np2audio86_guest_evidence_serialize_io_record(
+    const np2audio86_guest_io_trace_t *io, uint8_t *out)
+{
+    le64(out, io->frame_timestamp); le64(out + 8U, io->sequence);
+    le16(out + 16U, io->port); out[18U] = io->direction;
+    out[19U] = io->value; out[20U] = io->result;
+    memset(out + 21U, 0, 3U);
+    return 24U;
+}
+
 size_t np2audio86_guest_evidence_serialize_events(
     const np2audio86_guest_trace_t *trace, uint8_t *out)
 {
     size_t at = 0U, i;
     for (i = 0U; i < trace->event_count; ++i) {
         const np2audio86_guest_event_t *e = &trace->events[i];
-        le64(out + at, e->frame_timestamp); le64(out + at + 8U, e->sequence);
-        le32(out + at + 16U, e->opcode); le32(out + at + 20U, e->payload); at += 24U;
+        at += np2audio86_guest_evidence_serialize_event_record(e, out + at);
     }
     return at;
 }
@@ -27,9 +64,7 @@ size_t np2audio86_guest_evidence_serialize_runs(
     size_t at = 0U, i;
     for (i = 0U; i < trace->data_run_count; ++i) {
         const np2audio86_guest_data_run_t *r = &trace->data_runs[i];
-        le64(out + at, r->frame_timestamp); le64(out + at + 8U, r->sequence);
-        le64(out + at + 16U, r->byte_offset); le32(out + at + 24U, r->count);
-        le32(out + at + 28U, 0U); at += 32U;
+        at += np2audio86_guest_evidence_serialize_run_record(r, out + at);
     }
     return at;
 }
@@ -40,12 +75,7 @@ size_t np2audio86_guest_evidence_serialize_timers(
     size_t at = 0U, i;
     for (i = 0U; i < trace->timer_count; ++i) {
         const np2audio86_guest_timer_trace_t *t = &trace->timers[i];
-        le64(out + at, t->frame_timestamp); le64(out + at + 8U, t->guest_cycles);
-        le32(out + at + 16U, t->timer);
-        out[at + 20U] = t->status; out[at + 21U] = t->irq; out[at + 22U] = t->level;
-        out[at + 23U] = t->cause; out[at + 24U] = t->pic_transition;
-        out[at + 25U] = t->pcm_irqflag; out[at + 26U] = t->pcm_reqirq;
-        out[at + 27U] = 0U; at += 28U;
+        at += np2audio86_guest_evidence_serialize_timer_record(t, out + at);
     }
     return at;
 }
@@ -56,10 +86,7 @@ size_t np2audio86_guest_evidence_serialize_io(
     size_t at = 0U, i;
     for (i = 0U; i < trace->io_count; ++i) {
         const np2audio86_guest_io_trace_t *io = &trace->io[i];
-        le64(out + at, io->frame_timestamp); le64(out + at + 8U, io->sequence);
-        le16(out + at + 16U, io->port); out[at + 18U] = io->direction;
-        out[at + 19U] = io->value; out[at + 20U] = io->result;
-        memset(out + at + 21U, 0, 3U); at += 24U;
+        at += np2audio86_guest_evidence_serialize_io_record(io, out + at);
     }
     return at;
 }

@@ -30,6 +30,21 @@ bool virtual_sink_observer_healthy(
                     sizeof(observer.full_pcm)) == 0;
 }
 
+template <typename Observer>
+bool virtual_sink_scalable_observer_healthy(
+    const Observer &observer, const std::uint32_t expected_slots,
+    const std::uint32_t expected_partial_slots,
+    const std::uint32_t minimum_first_submit_occupancy)
+{
+    return observer.pcm_consumed_slots == expected_slots &&
+        observer.pcm_partial_slots == expected_partial_slots &&
+        observer.pcm_sink_started == 1U &&
+        observer.pcm_sink_finished == 1U &&
+        observer.pcm_ack_after_finish == 1U &&
+        observer.pcm_first_submit_occupancy >=
+            minimum_first_submit_occupancy;
+}
+
 template <typename Snapshot>
 bool physical_snapshot_core_healthy(const Snapshot &snapshot)
 {

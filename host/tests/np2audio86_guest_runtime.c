@@ -326,7 +326,7 @@ static void run_boundary_tests(void)
     static np2audio86_guest_timer_trace_t timers[2];
     np2audio86_guest_trace_t trace = {
         events, 2, 0, runs, 2, 0, pcm_bytes, sizeof(pcm_bytes), 0,
-        timers, 2, 0, io, 2, 0, 0
+        timers, 2, 0, io, 2, 0, 0, 0, {0}
     };
     np2audio86_guest_state_snapshot_t state;
     np2audio86_guest_state_snapshot_t baseline;
@@ -1000,7 +1000,8 @@ static void run_86r2c_evidence_tests(void)
         static uint8_t invalid_pcm[8];
         np2audio86_guest_trace_t invalid_trace = {
             invalid_events, 8, 0, invalid_runs, 8, 0,
-            invalid_pcm, sizeof(invalid_pcm), 0, NULL, 0, 0, NULL, 0, 0, 0
+            invalid_pcm, sizeof(invalid_pcm), 0, NULL, 0, 0, NULL, 0, 0, 0,
+            0, {0}
         };
         uint64_t before_clock;
         unsigned before_schedules;
@@ -1230,7 +1231,7 @@ int main(void)
     static uint8_t serialized[200000];
     np2audio86_guest_trace_t trace = {
         events, 4096, 0, runs, 4096, 0, pcm_bytes, sizeof(pcm_bytes), 0,
-        timers, 4096, 0, io, 16384, 0, 0
+        timers, 4096, 0, io, 16384, 0, 0, 0, {0}
     };
     np2audio86_guest_state_snapshot_t snapshot;
     np2audio86_guest_state_snapshot_t snapshot2;

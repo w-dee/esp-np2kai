@@ -22,6 +22,14 @@ size_t np2audio86_guest_evidence_serialize_io(
     const np2audio86_guest_trace_t *trace, uint8_t *out);
 size_t np2audio86_guest_evidence_serialize_state(
     const np2audio86_guest_state_snapshot_t *state, uint8_t *out);
+size_t np2audio86_guest_evidence_serialize_event_record(
+    const np2audio86_guest_event_t *record, uint8_t *out);
+size_t np2audio86_guest_evidence_serialize_run_record(
+    const np2audio86_guest_data_run_t *record, uint8_t *out);
+size_t np2audio86_guest_evidence_serialize_timer_record(
+    const np2audio86_guest_timer_trace_t *record, uint8_t *out);
+size_t np2audio86_guest_evidence_serialize_io_record(
+    const np2audio86_guest_io_trace_t *record, uint8_t *out);
 
 #ifdef __cplusplus
 }

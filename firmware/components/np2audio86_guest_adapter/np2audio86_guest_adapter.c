@@ -127,17 +127,25 @@ static void semantic_leave(void) { g_semantic_call_active = 0U; }
 static void append_io(uint16_t port, uint8_t direction, uint8_t value,
                       uint8_t result)
 {
-    np2audio86_guest_io_trace_t *item;
+    np2audio86_guest_io_trace_t item;
     if (!g_trace || g_failed) return;
-    if (g_trace->io_count >= g_trace->io_capacity) {
+    if (!g_trace->bounded_windows &&
+        g_trace->io_count >= g_trace->io_capacity) {
         fail("guest I/O trace capacity"); return;
     }
-    item = &g_trace->io[g_trace->io_count++];
-    item->frame_timestamp = g_state.frame_timestamp;
-    item->sequence = g_state.sequence;
-    item->port = port; item->direction = direction;
-    item->value = value; item->result = result;
-    memset(item->reserved, 0, sizeof(item->reserved));
+    item.frame_timestamp = g_state.frame_timestamp;
+    item.sequence = g_state.sequence;
+    item.port = port; item.direction = direction;
+    item.value = value; item.result = result;
+    memset(item.reserved, 0, sizeof(item.reserved));
+    if (g_trace->observer.io)
+        g_trace->observer.io(g_trace->observer.opaque, &item);
+    if (g_trace->io_capacity != 0U)
+        g_trace->io[g_trace->bounded_windows
+                        ? np2audio86_guest_trace_window_index(
+                              g_trace->io_count, g_trace->io_capacity)
+                        : g_trace->io_count] = item;
+    ++g_trace->io_count;
 #if defined(NP2AUDIO86_GUEST_TEST)
     if (g_io_cycle_observation_count == 0U)
         g_first_io_guest_cycle = g_state.guest_cycles;
@@ -154,7 +162,8 @@ static int transaction_begin(uint32_t kind, size_t initial_bytes,
     memset(&candidate, 0, sizeof(candidate));
     if (kind == NP2AUDIO86_GUEST_TRANSACTION_EVENT ||
         kind == NP2AUDIO86_GUEST_TRANSACTION_RESET) {
-        if (g_trace && g_trace->event_count >= g_trace->event_capacity) {
+        if (g_trace && !g_trace->bounded_windows &&
+            g_trace->event_count >= g_trace->event_capacity) {
             if (!g_sink) fail("event trace capacity");
             return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
@@ -163,11 +172,13 @@ static int transaction_begin(uint32_t kind, size_t initial_bytes,
             fail("PCM DATA_RUN length");
             return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
         }
-        if (g_trace && g_trace->pcm_count >= g_trace->pcm_capacity) {
+        if (g_trace && !g_trace->bounded_windows &&
+            g_trace->pcm_count >= g_trace->pcm_capacity) {
             if (!g_sink) fail("PCM byte trace capacity");
             return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
-        if (g_trace && g_trace->data_run_count >= g_trace->data_run_capacity) {
+        if (g_trace && !g_trace->bounded_windows &&
+            g_trace->data_run_count >= g_trace->data_run_capacity) {
             if (!g_sink) fail("PCM DATA_RUN trace capacity");
             return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
         }
@@ -189,7 +200,8 @@ static int transaction_extend(np2audio86_guest_transaction_t *transaction,
 {
     if (transaction == NULL || additional_bytes == 0U || g_failed)
         return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
-    if (g_trace && (additional_bytes > g_trace->pcm_capacity ||
+    if (g_trace && !g_trace->bounded_windows &&
+                    (additional_bytes > g_trace->pcm_capacity ||
                     g_trace->pcm_count > g_trace->pcm_capacity - additional_bytes)) {
         if (!g_sink) fail("PCM byte trace capacity");
         return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
@@ -219,7 +231,17 @@ static void commit_event(np2audio86_guest_transaction_t *transaction,
     item.sequence = g_state.sequence;
     item.opcode = opcode;
     item.payload = payload;
-    if (g_trace) g_trace->events[g_trace->event_count++] = item;
+    if (g_trace) {
+        if (g_trace->observer.event)
+            g_trace->observer.event(g_trace->observer.opaque, &item);
+        if (g_trace->event_capacity != 0U)
+            g_trace->events[g_trace->bounded_windows
+                                ? np2audio86_guest_trace_window_index(
+                                      g_trace->event_count,
+                                      g_trace->event_capacity)
+                                : g_trace->event_count] = item;
+        ++g_trace->event_count;
+    }
     if (g_sink) {
         g_sink->commit_event(g_sink->opaque, transaction, &item);
         if (g_sink->commit_horizon)
@@ -248,11 +270,22 @@ static int flush_pending_run(void)
      * Domain G.  Keep this defensive guard as the final containment boundary
      * for host observation buffers, which are externally owned and can be
      * detached/re-attached around a pending run. */
-    if (g_trace && g_trace->data_run_count >= g_trace->data_run_capacity) {
+    if (g_trace && !g_trace->bounded_windows &&
+        g_trace->data_run_count >= g_trace->data_run_capacity) {
         fail("reserved PCM DATA_RUN trace capacity lost");
         return -1;
     }
-    if (g_trace) g_trace->data_runs[g_trace->data_run_count++] = run;
+    if (g_trace) {
+        if (g_trace->observer.data_run)
+            g_trace->observer.data_run(g_trace->observer.opaque, &run);
+        if (g_trace->data_run_capacity != 0U)
+            g_trace->data_runs[g_trace->bounded_windows
+                                   ? np2audio86_guest_trace_window_index(
+                                         g_trace->data_run_count,
+                                         g_trace->data_run_capacity)
+                                   : g_trace->data_run_count] = run;
+        ++g_trace->data_run_count;
+    }
     if (g_sink && g_run_transaction_active) {
         g_sink->commit_data_run(g_sink->opaque, &g_run_transaction, &run);
         if (g_sink->commit_horizon)
@@ -299,7 +332,15 @@ static void commit_pcm_byte(np2audio86_guest_transaction_t *transaction,
         g_run_count = 0U;
     }
     if (g_trace) {
-        g_trace->pcm_bytes[g_trace->pcm_count++] = value;
+        if (g_trace->observer.pcm_byte)
+            g_trace->observer.pcm_byte(g_trace->observer.opaque, value);
+        if (g_trace->pcm_capacity != 0U)
+            g_trace->pcm_bytes[g_trace->bounded_windows
+                                   ? np2audio86_guest_trace_window_index(
+                                         g_trace->pcm_count,
+                                         g_trace->pcm_capacity)
+                                   : g_trace->pcm_count] = value;
+        ++g_trace->pcm_count;
     }
     if (g_sink && g_run_transaction_active) {
         g_sink->commit_pcm_byte(g_sink->opaque, transaction, g_run_timestamp,
@@ -311,19 +352,28 @@ static void commit_pcm_byte(np2audio86_guest_transaction_t *transaction,
 static void timer_trace(uint8_t timer, uint8_t cause, uint8_t level,
                         uint8_t transition)
 {
-    np2audio86_guest_timer_trace_t *item;
+    np2audio86_guest_timer_trace_t item;
     if (!g_trace || g_failed) return;
-    if (g_trace->timer_count >= g_trace->timer_capacity) {
+    if (!g_trace->bounded_windows &&
+        g_trace->timer_count >= g_trace->timer_capacity) {
         fail("timer trace capacity"); return;
     }
-    item = &g_trace->timers[g_trace->timer_count++];
-    item->frame_timestamp = g_state.frame_timestamp;
-    item->guest_cycles = g_state.guest_cycles; item->timer = timer;
-    item->status = g_state.timer_status;
-    item->irq = (uint8_t)(timer == NP2AUDIO86_TRACE_PCM ?
+    item.frame_timestamp = g_state.frame_timestamp;
+    item.guest_cycles = g_state.guest_cycles; item.timer = timer;
+    item.status = g_state.timer_status;
+    item.irq = (uint8_t)(timer == NP2AUDIO86_TRACE_PCM ?
                           g_state.pcm_irq_line : g_state.opna_irq);
-    item->level = level; item->cause = cause; item->pic_transition = transition;
-    item->pcm_irqflag = g_state.pcm_irq; item->pcm_reqirq = g_state.pcm_reqirq;
+    item.level = level; item.cause = cause; item.pic_transition = transition;
+    item.pcm_irqflag = g_state.pcm_irq; item.pcm_reqirq = g_state.pcm_reqirq;
+    if (g_trace->observer.timer)
+        g_trace->observer.timer(g_trace->observer.opaque, &item);
+    if (g_trace->timer_capacity != 0U)
+        g_trace->timers[g_trace->bounded_windows
+                            ? np2audio86_guest_trace_window_index(
+                                  g_trace->timer_count,
+                                  g_trace->timer_capacity)
+                            : g_trace->timer_count] = item;
+    ++g_trace->timer_count;
 }
 
 static uint64_t timer_period(uint8_t timer)

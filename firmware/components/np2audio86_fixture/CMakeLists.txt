@@ -7,6 +7,7 @@ idf_component_register(
         "np2audio86_guest_async.c"
         "np2audio86_guest_evidence.c"
         "np2audio86_guest_program.c"
+        "np2audio86_sustained_evidence.c"
         "np2audio86_runtime_transport.c"
         "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c"
         "${NP2_AUDIO86_VENDOR_DIR}/sound/opngenc.c"

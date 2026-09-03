@@ -11,6 +11,9 @@
 #include "np2audio86_guest_evidence.h"
 #include "np2audio86_guest_program.h"
 #include "np2audio86_guest_runtime_capture.h"
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+#include "np2audio86_sustained_evidence.h"
+#endif
 #include "np2_crc32.h"
 #include "np2_sha256.h"
 #include "np2opngen_pcm_canonical.h"
@@ -1169,7 +1172,7 @@ int main(void)
     np2audio86_guest_trace_t trace = {
         events, SYNC_MAX_EVENTS, 0U, runs, SYNC_MAX_RUNS, 0U,
         pcm_bytes, sizeof(pcm_bytes), 0U, timers, 4096U, 0U,
-        io, 16384U, 0U, 0U
+        io, 16384U, 0U, 0U, 0U, {0}
     };
     np2audio86_guest_state_snapshot_t guest_state;
     struct sync_action actions[SYNC_MAX_ACTIONS];
@@ -1318,6 +1321,53 @@ int main(void)
         direct.full_bytes != NP2_AUDIO86_GUEST_SUSTAINED_2S_BYTES) {
         return 1;
     }
+    {
+        np2audio86_sustained_evidence scalable;
+        uint32_t generated_crc, accepted_crc;
+        uint8_t generated_sha[NP2_SHA256_DIGEST_SIZE];
+        uint8_t accepted_sha[NP2_SHA256_DIGEST_SIZE];
+        uint8_t golden_sha[NP2_SHA256_DIGEST_SIZE];
+        uint32_t slot;
+        np2audio86_sustained_evidence_init(&scalable);
+        for (slot = 0U; slot < NP2_AUDIO86_GUEST_SUSTAINED_2S_QUANTA_240;
+             ++slot) {
+            const uint64_t offset = (uint64_t)slot *
+                NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES;
+            const uint8_t *pcm = direct.full_pcm + offset * 4U;
+            if (np2audio86_sustained_generated(
+                    &scalable, slot, offset, pcm,
+                    NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES) != 0)
+                return 1;
+            if (slot == 0U || slot == 200U || slot == 399U) {
+                if (np2audio86_sustained_submit(
+                        &scalable, NP2_AUDIO86_SUSTAINED_RETRY, slot, offset,
+                        pcm, NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES,
+                        1U, slot * 5U) != 0)
+                    return 1;
+            }
+            if (np2audio86_sustained_submit(
+                    &scalable, NP2_AUDIO86_SUSTAINED_ACCEPTED, slot, offset,
+                    pcm, NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES,
+                    1U, slot * 5U) != 0)
+                return 1;
+        }
+        np2audio86_sustained_digest_snapshot(
+            &scalable.generated, &generated_crc, generated_sha);
+        np2audio86_sustained_digest_snapshot(
+            &scalable.accepted, &accepted_crc, accepted_sha);
+        sha_digest(direct.full_pcm, direct.full_bytes, golden_sha);
+        if (generated_crc != np2_crc32_iso_hdlc(direct.full_pcm,
+                                                direct.full_bytes) ||
+            generated_crc != accepted_crc ||
+            memcmp(generated_sha, golden_sha, sizeof(golden_sha)) != 0 ||
+            memcmp(generated_sha, accepted_sha, sizeof(generated_sha)) != 0 ||
+            scalable.next_generated_sequence != 400U ||
+            scalable.next_accepted_sequence != 400U ||
+            scalable.next_generated_frame_offset != 96000U ||
+            scalable.next_accepted_frame_offset != 96000U ||
+            scalable.retry_attempts != 3U || scalable.retry_pending != 0U)
+            return 1;
+    }
 #endif
     if (emit_result(&direct, &trace, event_serialized, event_bytes,
                     run_serialized, run_bytes) != 0) return 1;
@@ -1372,6 +1422,8 @@ int main(void)
     printf("SUSTAINED_GUEST_ACTIVITY_DISTRIBUTED=PASS\n");
     printf("SUSTAINED_FINAL_Q240_AUDIO_ACTIVITY=PASS\n");
     printf("SUSTAINED_RENDER_QUANTUM_EQUIVALENCE=120_240_PASS\n");
+    printf("SUSTAINED_HOST_400_Q240_EVIDENCE=PASS\n");
+    printf("SUSTAINED_HOST_RETRY_DIGEST_NONREGRESSION=PASS\n");
     printf("SUSTAINED_FIXTURE_AUDIO_PATHS=FM,PSG,RHYTHM\n");
     printf("PCM86_SEMANTIC_WAVEFORM=NOT_EXERCISED\n");
 #endif

@@ -8,7 +8,7 @@ set(P4_NANO_AUDIO86_VENDOR_SRC
 set(P4_NANO_AUDIO86_BINDING_REQUIRES
     np2core np2host np2runtime np2audio86_fixture np2audio86_guest_adapter np2opngen_fixture
     np2pcm_output p4_nano_audio86_notifications
-    p4_nano_audio86_physical_sink freertos esp_system heap)
+    p4_nano_audio86_physical_sink freertos esp_system esp_timer heap)
 
 idf_component_register(
     SRCS "p4_nano_audio86_guest_binding.cpp"
@@ -36,6 +36,10 @@ endif()
 if(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE=1)
+endif()
+if(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_SUSTAINED_PROFILE=1)
 endif()
 if(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
