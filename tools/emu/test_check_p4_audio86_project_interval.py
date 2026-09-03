@@ -22,6 +22,9 @@ FILES = (
     "firmware/components/p4_nano_audio86_guest_binding/"
     "p4_nano_audio86_guest_binding.cpp",
     "firmware/components/np2pcm_output/np2pcm_output.c",
+    "firmware/components/p4_nano_audio86_guest_binding/include/"
+    "p4_nano_audio86_guest_binding/"
+    "p4_nano_audio86_terminal_predicate.hpp",
 )
 
 
@@ -70,6 +73,7 @@ def main() -> int:
 
         sink_rel = FILES[0]
         binding_rel = FILES[3]
+        terminal_rel = FILES[5]
         barrier = (
             "    if (!close_callbacks(sink)) {\n"
             "        mark_failed(sink);\n"
@@ -137,6 +141,14 @@ def main() -> int:
                  replace_once("constexpr BaseType_t kPcmConsumerCore = 0;",
                               "constexpr BaseType_t kPcmConsumerCore = 1;"),
                  "PROJECT_CONSUMER_CORE_DRIFT_REJECTED")
+        rejected(
+            root, terminal_rel,
+            replace_once(
+                "sink.draining_queue_overflow_count <= "
+                "quiescent_post_snapshot_eofs",
+                "sink.draining_queue_overflow_count == "
+                "quiescent_post_snapshot_eofs"),
+            "PROJECT_DRAIN_QOVF_INTERVAL_PREDICATE_DRIFT_REJECTED")
 
     print("DRAIN_Q_OVF_COMPLETE_INTERVAL_SOURCE_PROOF=PASS")
     print("DRAIN_Q_OVF_PROJECT_INTERVAL_DRIFT_FAIL_CLOSED=PASS")

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +16,40 @@ IDF = ROOT / ("firmware/components/p4_nano_audio86_physical_sink/"
               "p4_nano_audio86_physical_sink_idf.cpp")
 CMAKE = ROOT / ("firmware/components/p4_nano_audio86_guest_binding/"
                 "CMakeLists.txt")
+TERMINAL = ROOT / (
+    "firmware/components/p4_nano_audio86_guest_binding/include/"
+    "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_predicate.hpp")
+
+VIRTUAL_ONLY_OBSERVERS = (
+    "pcm_consumed_slots",
+    "pcm_partial_slots",
+    "pcm_sink_started",
+    "pcm_sink_finished",
+    "pcm_ack_after_finish",
+    "pcm_first_submit_occupancy",
+    "full_pcm",
+    "ring_pcm",
+)
+
+COMMON_NORMAL_OK_INVARIANTS = (
+    "guest_ok", "joined", "pcm_joined", "pressure_ok", "!failed(runtime)",
+    "np2audio86_event_ring_occupancy", "np2audio86_byte_ring_occupancy",
+    "!np2audio86_runtime_horizon_pending", "pcm_ring_finished.load",
+    "np2opngen_pcm_ring_occupancy", "pcm_ring_producer_partial_valid_frames",
+    "pcm_controller.accepted_frames", "pcm_controller.accepted_bytes",
+    "pcm_produced_frames", "pcm_produced_bytes", "pcm_produced_slots",
+    "pcm_drops", "pcm_overwrites", "pcm_forced_abort == 0U",
+    "pcm_forced_abort_requested.load", "pcm_join_timeout",
+    "pcm_worker_join_timeout", "pcm_consumer_suspended_observed.load",
+    "pcm_worker_suspended_observed.load",
+    "pcm_consumer_deleted_after_suspended.load",
+    "pcm_worker_deleted_after_suspended.load",
+    "pcm_abandoned_published_frames", "pcm_abandoned_partial_frames",
+    "pcm_abandoned_rendered_frames", "pcm_ring_before_done",
+    "pcm_eos_after_done", "pcm_finish_after_empty",
+    "reset_ring_owned_frames", "reset_applied_after_ring",
+    "reset_ack_after_ring",
+)
 
 
 def require(condition: bool, message: str) -> None:
@@ -33,6 +68,7 @@ def main() -> int:
     sink = SINK.read_text(encoding="utf-8")
     idf = IDF.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
+    terminal = TERMINAL.read_text(encoding="utf-8")
 
     run = body(binding, "esp_err_t run_on_pc98_task(",
                "} // namespace p4_nano_audio86_guest_binding")
@@ -40,6 +76,8 @@ def main() -> int:
     snapshot = run.index("capture_physical_s1_snapshot(runtime);", join)
     delete = run.index("vTaskDelete(runtime->pcm_consumer);", snapshot)
     destroy = run.index("p4_nano_audio86_physical_sink_destroy(", delete)
+    destroy_record = run.index("record_physical_s1_destroy(", destroy)
+    classification = run.index("const bool normal_ok", destroy_record)
     summary = run.index("emit_summary(runtime, ok);", destroy)
     handoff = run[run.index("const bool pcm_terminal", join - 700):snapshot]
     for fact in (
@@ -51,8 +89,8 @@ def main() -> int:
         "pcm_ack && pcm_suspended",
     ):
         require(fact in handoff, f"snapshot handoff fact missing: {fact}")
-    require(snapshot < delete < destroy < summary,
-            "snapshot/delete/destroy/emission owner order changed")
+    require(snapshot < delete < destroy < destroy_record < classification < summary,
+            "snapshot/delete/destroy/classification/emission order changed")
 
     capture = body(binding, "void capture_physical_s1_snapshot(",
                    "void record_physical_s1_destroy(")
@@ -117,11 +155,61 @@ def main() -> int:
             "physical-short success predicate is not active")
     physical_branch = body(
         run, "#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)\n"
-             "                    && physical_s1_snapshot_healthy(runtime)",
-        "#else\n                    && runtime->pcm_sink_started")
-    require("pcm_sink_started" not in physical_branch and
-            "pcm_sink_finished" not in physical_branch,
-            "physical predicate fakes virtual sink latches")
+             "    const bool physical_sink_ok",
+        "#else\n    const bool virtual_sink_ok")
+    for observer in VIRTUAL_ONLY_OBSERVERS:
+        require(observer not in physical_branch,
+                f"physical predicate retained virtual observer: {observer}")
+    common = body(run, "const bool common_ok =", ";\n#if defined("
+                  "P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)\n#if defined("
+                  "P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)")
+    for observer in VIRTUAL_ONLY_OBSERVERS:
+        require(observer not in common,
+                f"common predicate retained virtual observer: {observer}")
+    for invariant in COMMON_NORMAL_OK_INVARIANTS:
+        require(invariant in common,
+                f"common predicate lost invariant: {invariant}")
+    virtual = body(terminal, "bool virtual_sink_observer_healthy(",
+                   "template <typename Snapshot>")
+    for observer in VIRTUAL_ONLY_OBSERVERS:
+        require(observer in virtual,
+                f"virtual predicate lost observer: {observer}")
+    for predicate in (
+        "observer.pcm_consumed_slots == expected_slots",
+        "observer.pcm_partial_slots == expected_partial_slots",
+        "observer.pcm_sink_started == 1U",
+        "observer.pcm_sink_finished == 1U",
+        "observer.pcm_ack_after_finish == 1U",
+        "observer.pcm_first_submit_occupancy >=",
+        "std::memcmp(observer.full_pcm, observer.ring_pcm",
+    ):
+        require(predicate in virtual,
+                f"virtual predicate semantics drifted: {predicate}")
+    require("virtual_sink_observer_healthy(" in run and
+            "const bool sink_profile_ok = physical_sink_ok" in run and
+            "const bool sink_profile_ok = virtual_sink_ok" in run and
+            "normal_terminal_healthy(" in run,
+            "profile-specific terminal predicate layers are not explicit")
+
+    callback_observers = body(binding, "enum np2_pcm_sink_result pcm_sink_start(",
+                              "const np2_pcm_sink kPcmSink")
+    for update in (
+        "runtime->pcm_sink_started = 1U",
+        "++runtime->pcm_consumed_slots",
+        "++runtime->pcm_partial_slots",
+        "runtime->pcm_first_submit_occupancy =",
+        "runtime->ring_pcm +",
+        "runtime->pcm_sink_finished = 1U",
+    ):
+        require(update in callback_observers,
+                f"virtual callback provenance missing: {update}")
+    require(re.search(
+                r"runtime->pcm_ack_after_finish\s*=\s*"
+                r"runtime->pcm_sink_finished", binding) is not None,
+            "virtual-derived finish acknowledgement provenance changed")
+    require("p4_nano_audio86_physical_sink_interface(" in run and
+            "selected_sink =" in run,
+            "physical sink no longer replaces the virtual callback sink")
     require("std::atomic<uint8_t>" not in binding and
             "_Atomic uint8_t" not in sink,
             "S1 introduced a byte-width atomic path")
@@ -133,7 +221,8 @@ def main() -> int:
             "p4_nano_audio86_physical_sink_get_telemetry" not in emitted,
             "UART evidence does not exclusively use the owned snapshot")
 
-    healthy = body(binding, "bool physical_s1_snapshot_healthy(", "#endif")
+    healthy = body(terminal, "bool physical_s1_snapshot_healthy(",
+                   "constexpr bool normal_terminal_healthy(")
     require("sink.drain_completion_epoch - sink.drain_snapshot_epoch" in healthy and
             "sink.quiescent_eof_epoch - sink.drain_snapshot_epoch" in healthy and
             "drain_post_snapshot_eofs >=" in healthy and
@@ -172,16 +261,25 @@ def main() -> int:
     print("S1_TELEMETRY_HOT_PATH_PRINTF=NO")
     print("S1_TELEMETRY_ISR_PRINTF=NO")
     print("VIRTUAL_NORMAL_OK_SEMANTICS_UNCHANGED=PASS")
+    print("VIRTUAL_ONLY_OBSERVER_SET_COMPLETE=PASS")
+    print("PHYSICAL_BRANCH_VIRTUAL_OBSERVERS=0")
+    print("PHYSICAL_BRANCH_VIRTUAL_OBSERVER_EXCLUSION_SOURCE_PROOF=PASS")
+    print("COMMON_NORMAL_OK_INVARIANTS_PRESERVED=PASS")
+    print("FULL_PHYSICAL_TERMINAL_PREDICATE_BEHAVIOR="
+          "LEGACY_NON_S1_VIRTUAL_OBSERVER_PATH_UNCHANGED")
     print("PHYSICAL_SHORT_SUCCESS_PREDICATE_TRUTHFUL=PASS")
     print("PHYSICAL_SHORT_DRAIN_Q_OVF_PREDICATE_CORRECTED=PASS")
     print("PHYSICAL_SHORT_Q_OVF_INTERVAL_PREDICATE_CORRECTED=PASS")
     print("DRAIN_COMPLETION_EPOCH_SEMANTICS_PRESERVED=PASS")
     print("QUIESCENT_EOF_EPOCH_OBSERVABLE=PASS")
     print("DRAIN_AND_QUIESCENT_EOF_INTERVALS_DISTINCT=PASS")
+    print("TERMINAL_CLASSIFICATION_TIMING_UNCHANGED=PASS")
+    print("S1_EVIDENCE_SCHEMA_VERSION=2")
     print("RUNNING_Q_OVF_SEMANTICS_UNCHANGED=PASS")
     print("DRAINING_Q_OVF_ACCEPTANCE_CLASS=TELEMETRY_ONLY")
     print("GLOBAL_Q_OVF_SEMANTICS_WEAKENED=NO")
     print("FAKE_VIRTUAL_LATCHES_ADDED=NO")
+    print("FAKE_VIRTUAL_OBSERVER_STATE_ADDED=NO")
     print("GLOBAL_NORMAL_OK_WEAKENED=NO")
     return 0
 

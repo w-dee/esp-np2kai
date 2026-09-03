@@ -42,6 +42,7 @@ BRESULT iocore_build(void);
 #include "np2opngen_pcm_ring.h"
 #include "np2pcm_output.h"
 #include "np2runtime/np2runtime.hpp"
+#include "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_predicate.hpp"
 #include "p4_nano_audio86_notifications/task_notification.hpp"
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
 #include "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink_idf.hpp"
@@ -2214,37 +2215,8 @@ void emit_physical_s1_evidence(const Runtime *runtime)
 
 bool physical_s1_snapshot_healthy(const Runtime *runtime)
 {
-    const PhysicalS1Snapshot &snapshot = runtime->physical_s1;
-    const p4_nano_audio86_physical_telemetry &sink = snapshot.sink;
-    const uint32_t drain_post_snapshot_eofs =
-        sink.drain_completion_epoch - sink.drain_snapshot_epoch;
-    const uint32_t quiescent_post_snapshot_eofs =
-        sink.quiescent_eof_epoch - sink.drain_snapshot_epoch;
-    return snapshot.captured && snapshot.sink_destroyed == 1U &&
-        snapshot.controller_state == NP2_PCM_OUTPUT_FINISHED &&
-        sink.state == P4_NANO_AUDIO86_PHYSICAL_QUIESCENT &&
-        sink.prepare_completed && sink.stream_started &&
-        sink.finish_completed &&
-        snapshot.controller_accepted_frames == kRenderFrames &&
-        snapshot.controller_accepted_bytes == kRenderFrames *
-            P4_NANO_AUDIO86_PHYSICAL_BYTES_PER_FRAME &&
-        sink.semantic_accepted_frames == snapshot.controller_accepted_frames &&
-        sink.semantic_accepted_bytes == snapshot.controller_accepted_bytes &&
-        sink.accepted_pending_drain_frames == 0U &&
-        sink.physically_drained_frames == kRenderFrames &&
-        sink.physically_discarded_accepted_frames == 0U &&
-        sink.running_queue_overflow_count == 0U &&
-        drain_post_snapshot_eofs >=
-            P4_NANO_AUDIO86_PHYSICAL_DMA_DESCRIPTORS &&
-        drain_post_snapshot_eofs < 0x80000000U &&
-        quiescent_post_snapshot_eofs < 0x80000000U &&
-        quiescent_post_snapshot_eofs >= drain_post_snapshot_eofs &&
-        sink.draining_queue_overflow_count <=
-            quiescent_post_snapshot_eofs &&
-        !sink.sticky_error && sink.callback_refcount == 0U &&
-        !sink.callbacks_active && sink.codec_final_muted &&
-        sink.pa_final_low && !sink.i2s_enabled && !sink.i2s_created &&
-        snapshot.first_error == 0U && snapshot.forced_abort == 0U;
+    return p4_nano_audio86_terminal_predicate::physical_s1_snapshot_healthy(
+        runtime->physical_s1, kRenderFrames);
 }
 #endif
 
@@ -3053,7 +3025,7 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
           runtime->pressure_index0_isolated.load(std::memory_order_acquire) != 0U) &&
          (kPressureScenario != kPressureResetAck ||
           runtime->pressure_ack_published.load(std::memory_order_acquire) != 0U));
-    const bool normal_ok = guest_ok && joined && pcm_joined && pressure_ok && !failed(runtime) &&
+    const bool common_ok = guest_ok && joined && pcm_joined && pressure_ok && !failed(runtime) &&
                     np2audio86_event_ring_occupancy(&runtime->events) == 0U &&
                     np2audio86_byte_ring_occupancy(&runtime->bytes) == 0U &&
                     !np2audio86_runtime_horizon_pending(&runtime->control)
@@ -3067,8 +3039,6 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                     && runtime->pcm_produced_frames == kRenderFrames
                     && runtime->pcm_produced_bytes == kRenderFrames * 4U
                     && runtime->pcm_produced_slots == kExpectedPcmSlots
-                    && runtime->pcm_consumed_slots == kExpectedPcmSlots
-                    && runtime->pcm_partial_slots == kExpectedPartialSlots
                     && runtime->pcm_drops == 0U
                     && runtime->pcm_overwrites == 0U
                     && runtime->pcm_forced_abort == 0U
@@ -3087,28 +3057,32 @@ esp_err_t run_on_pc98_task(TaskHandle_t producer,
                     && runtime->pcm_abandoned_published_frames == 0U
                     && runtime->pcm_abandoned_partial_frames == 0U
                     && runtime->pcm_abandoned_rendered_frames == 0U
-#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
-                    && physical_s1_snapshot_healthy(runtime)
-#else
-                    && runtime->pcm_sink_started == 1U
-                    && runtime->pcm_sink_finished == 1U
-#endif
                     && runtime->pcm_ring_before_done == 1U
                     && runtime->pcm_eos_after_done == 1U
                     && runtime->pcm_finish_after_empty == 1U
-#if !defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
-                    && runtime->pcm_ack_after_finish == 1U
-#endif
-                    && runtime->pcm_first_submit_occupancy >=
-                       (kRenderFrames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES
-                            ? 1U : kPcmPrefillSlots)
                     && runtime->reset_ring_owned_frames >= 13U
                     && runtime->reset_applied_after_ring == 1U
                     && runtime->reset_ack_after_ring == 1U
-                    && std::memcmp(runtime->full_pcm, runtime->ring_pcm,
-                                   sizeof(runtime->full_pcm)) == 0
 #endif
                     ;
+#if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
+#if defined(P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE)
+    const bool physical_sink_ok = physical_s1_snapshot_healthy(runtime);
+    const bool sink_profile_ok = physical_sink_ok;
+#else
+    const bool virtual_sink_ok =
+        p4_nano_audio86_terminal_predicate::virtual_sink_observer_healthy(
+            *runtime, kExpectedPcmSlots, kExpectedPartialSlots,
+            kRenderFrames < NP2_OPNGEN_PCM_RING_QUANTUM_FRAMES
+                ? 1U : kPcmPrefillSlots);
+    const bool sink_profile_ok = virtual_sink_ok;
+#endif
+#else
+    const bool sink_profile_ok = true;
+#endif
+    const bool normal_ok =
+        p4_nano_audio86_terminal_predicate::normal_terminal_healthy(
+            common_ok, sink_profile_ok);
     if ((kFailureKind != kFailureNone
 #if defined(P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE)
          || runtime->pcm_forced_abort_requested.load(std::memory_order_acquire) != 0U

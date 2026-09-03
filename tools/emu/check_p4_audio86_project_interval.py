@@ -55,6 +55,10 @@ def main() -> int:
     binding = (root / "firmware/components/p4_nano_audio86_guest_binding/"
                "p4_nano_audio86_guest_binding.cpp").read_text(
                    encoding="utf-8")
+    terminal = (root / "firmware/components/p4_nano_audio86_guest_binding/"
+                "include/p4_nano_audio86_guest_binding/"
+                "p4_nano_audio86_terminal_predicate.hpp").read_text(
+                    encoding="utf-8")
     controller = (root / "firmware/components/np2pcm_output/"
                   "np2pcm_output.c").read_text(encoding="utf-8")
 
@@ -171,7 +175,7 @@ def main() -> int:
                 f"{label} snapshot/quiescence/destroy ordering drifted")
 
     evidence = function_body(binding, "void emit_physical_s1_evidence")
-    healthy = function_body(binding, "bool physical_s1_snapshot_healthy")
+    healthy = function_body(terminal, "bool physical_s1_snapshot_healthy")
     require("5D2_S1_FINISH schema=2" in evidence and
             "drain_completion_eof_epoch=" in evidence and
             "quiescent_eof_epoch=" in evidence and
