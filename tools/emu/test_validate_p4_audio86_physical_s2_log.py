@@ -222,6 +222,13 @@ def main() -> int:
                 canonical, " codec_unmute_completed=1", "")),
             ("duplicate_field", replace_once(
                 canonical, " prefill=4", " prefill=4 prefill=4")),
+            ("schema", replace_once(
+                canonical, "5D2_S2_IDENTITY schema=1",
+                "5D2_S2_IDENTITY schema=2")),
+            ("evidence_class", replace_once(
+                canonical,
+                "5D2_S2_IDENTITY schema=1 evidence_class=PHYSICAL_EXEC",
+                "5D2_S2_IDENTITY schema=1 evidence_class=HOST_EXEC")),
             ("leading_space_record", [" " + canonical[0], *canonical[1:]]),
             ("s1_record_not_evidence", canonical[:4] +
              ["5D2_S1_IDENTITY schema=2 evidence_class=PHYSICAL_EXEC"] +
