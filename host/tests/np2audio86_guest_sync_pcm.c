@@ -104,6 +104,282 @@ struct sync_input_snapshot {
 static int validate_action_stream(const struct sync_action *actions,
                                   size_t action_count, size_t pcm_count);
 
+static int opn_connect_role(const _OPNGEN *fm, const SINT32 *pointer)
+{
+    if (pointer == NULL) return 0;
+    if (pointer == &fm->feedback2) return 1;
+    if (pointer == &fm->feedback3) return 2;
+    if (pointer == &fm->feedback4) return 3;
+    if (pointer == &fm->outdl) return 4;
+    if (pointer == &fm->outdc) return 5;
+    if (pointer == &fm->outdr) return 6;
+    return -1;
+}
+
+static ptrdiff_t rhythm_pointer_offset(
+    const struct np2audio86_render_state *state, unsigned track,
+    const SINT16 *pointer)
+{
+    const uintptr_t begin = (uintptr_t)state->rhythm_samples[track];
+    const uintptr_t end = begin + sizeof(state->rhythm_samples[track]);
+    const uintptr_t address = (uintptr_t)pointer;
+    if (address < begin || address > end ||
+        (address - begin) % sizeof(SINT16) != 0U) {
+        return -1;
+    }
+    return (ptrdiff_t)((address - begin) / sizeof(SINT16));
+}
+
+static int render_states_semantically_equal(
+    const struct np2audio86_render_state *left,
+    const struct np2audio86_render_state *right)
+{
+    struct np2audio86_render_state *left_copy = malloc(sizeof(*left_copy));
+    struct np2audio86_render_state *right_copy = malloc(sizeof(*right_copy));
+    unsigned channel;
+    unsigned track;
+    int equal = 0;
+    if (left_copy == NULL || right_copy == NULL) goto done;
+    memcpy(left_copy, left, sizeof(*left_copy));
+    memcpy(right_copy, right, sizeof(*right_copy));
+    for (channel = 0U; channel < 3U; ++channel) {
+        const int left_internal =
+            left->psg.tone[channel].pvol == &left->psg.evol;
+        const int right_internal =
+            right->psg.tone[channel].pvol == &right->psg.evol;
+        if (left_internal != right_internal ||
+            (!left_internal && left->psg.tone[channel].pvol !=
+                                   right->psg.tone[channel].pvol)) {
+            goto done;
+        }
+        left_copy->psg.tone[channel].pvol = NULL;
+        right_copy->psg.tone[channel].pvol = NULL;
+    }
+    for (channel = 0U; channel < NP2_AUDIO86_FM_CHANNELS; ++channel) {
+        const OPNCH *left_channel = &left->fm.opnch[channel];
+        const OPNCH *right_channel = &right->fm.opnch[channel];
+        SINT32 *const left_pointers[] = {
+            left_channel->connect1, left_channel->connect2,
+            left_channel->connect3, left_channel->connect4,
+        };
+        SINT32 *const right_pointers[] = {
+            right_channel->connect1, right_channel->connect2,
+            right_channel->connect3, right_channel->connect4,
+        };
+        unsigned connection;
+        for (connection = 0U; connection < 4U; ++connection) {
+            const int left_role = opn_connect_role(&left->fm,
+                                                   left_pointers[connection]);
+            const int right_role = opn_connect_role(&right->fm,
+                                                    right_pointers[connection]);
+            if (left_role < 0 || left_role != right_role) goto done;
+        }
+        left_copy->fm.opnch[channel].connect1 = NULL;
+        left_copy->fm.opnch[channel].connect2 = NULL;
+        left_copy->fm.opnch[channel].connect3 = NULL;
+        left_copy->fm.opnch[channel].connect4 = NULL;
+        right_copy->fm.opnch[channel].connect1 = NULL;
+        right_copy->fm.opnch[channel].connect2 = NULL;
+        right_copy->fm.opnch[channel].connect3 = NULL;
+        right_copy->fm.opnch[channel].connect4 = NULL;
+    }
+    for (track = 0U; track < NP2_AUDIO86_RHYTHM_TRACKS; ++track) {
+        const ptrdiff_t left_track_offset = rhythm_pointer_offset(
+            left, track, left->rhythm_tracks[track].pcm);
+        const ptrdiff_t right_track_offset = rhythm_pointer_offset(
+            right, track, right->rhythm_tracks[track].pcm);
+        const ptrdiff_t left_mix_offset = rhythm_pointer_offset(
+            left, track, left->rhythm.trk[track].pcm);
+        const ptrdiff_t right_mix_offset = rhythm_pointer_offset(
+            right, track, right->rhythm.trk[track].pcm);
+        if (left->rhythm_tracks[track].data.sample !=
+                left->rhythm_samples[track] ||
+            right->rhythm_tracks[track].data.sample !=
+                right->rhythm_samples[track] ||
+            left->rhythm.trk[track].data.sample !=
+                left->rhythm_samples[track] ||
+            right->rhythm.trk[track].data.sample !=
+                right->rhythm_samples[track] ||
+            left_track_offset < 0 || left_track_offset != right_track_offset ||
+            left_mix_offset < 0 || left_mix_offset != right_mix_offset) {
+            goto done;
+        }
+        left_copy->rhythm_tracks[track].data.sample = NULL;
+        left_copy->rhythm_tracks[track].pcm = NULL;
+        left_copy->rhythm.trk[track].data.sample = NULL;
+        left_copy->rhythm.trk[track].pcm = NULL;
+        right_copy->rhythm_tracks[track].data.sample = NULL;
+        right_copy->rhythm_tracks[track].pcm = NULL;
+        right_copy->rhythm.trk[track].data.sample = NULL;
+        right_copy->rhythm.trk[track].pcm = NULL;
+    }
+    equal = memcmp(left_copy, right_copy, sizeof(*left_copy)) == 0;
+    if (!equal) {
+        const uint8_t *left_bytes = (const uint8_t *)left_copy;
+        const uint8_t *right_bytes = (const uint8_t *)right_copy;
+        size_t offset;
+        for (offset = 0U; offset < sizeof(*left_copy); ++offset) {
+            if (left_bytes[offset] != right_bytes[offset]) {
+                fprintf(stderr,
+                        "R16_STATE_EQUIVALENCE=FAIL offset=%zu left=%u right=%u\n",
+                        offset, left_bytes[offset], right_bytes[offset]);
+                break;
+            }
+        }
+    }
+done:
+    free(left_copy);
+    free(right_copy);
+    return equal;
+}
+
+static int dirty_render_state(struct np2audio86_render_state *state,
+                              const uint8_t *source)
+{
+    SINT32 mix[61U * 2U] = {0};
+    struct np2audio86_fixture_result result = {0};
+    return np2audio86_render_pcm86_push(
+               state, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x30U, 0x71U) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x50U, 0xdfU) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x60U, 0x03U) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x28U, 0xf0U) != 0 ||
+           np2audio86_render_apply_opna_csm(state) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x08U, 0x0fU) != 0 ||
+           np2audio86_render_apply_opna_register(state, 0x10U, 0x3fU) != 0 ||
+           np2audio86_render_apply_pcm86_control(state, 0x08U, 0x82U) != 0 ||
+           np2audio86_render_span(state, mix, 61U, &result) != 0
+               ? -1
+               : 0;
+}
+
+static int render_canonical_239(struct np2audio86_render_state *state,
+                                uint8_t *canonical)
+{
+    SINT32 mix[239U * 2U] = {0};
+    struct np2audio86_fixture_result result = {0};
+    struct np2opngen_pcm_stats stats;
+    return np2audio86_render_span(state, mix, 239U, &result) != 0 ||
+           np2opngen_pcm_canonicalize_s16le(
+               mix, 239U, NP2_AUDIO86_CHANNELS, canonical, 239U * 4U,
+               &stats) != 0
+               ? -1
+               : 0;
+}
+
+static int test_r16_opngen_reset_contract(void)
+{
+    struct np2audio86_render_state *optimized = malloc(sizeof(*optimized));
+    struct np2audio86_render_state *reference = malloc(sizeof(*reference));
+    struct np2audio86_render_state *lifetime_a = malloc(sizeof(*lifetime_a));
+    struct np2audio86_render_state *lifetime_b = malloc(sizeof(*lifetime_b));
+    struct np2audio86_render_state *failed = malloc(sizeof(*failed));
+    uint8_t *source = malloc(NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES);
+    uint8_t optimized_pcm[239U * 4U];
+    uint8_t reference_pcm[239U * 4U];
+    struct np2audio86_guest_action reset = {
+        0U, 0U, NP2AUDIO86_TRACE_RESET_BARRIER, 0U, 0U, 0U,
+        NP2_AUDIO86_GUEST_ACTION_RESET
+    };
+    uint32_t calls;
+    unsigned checkpoint = 0U;
+    int result = -1;
+    if (optimized == NULL || reference == NULL || lifetime_a == NULL ||
+        lifetime_b == NULL || failed == NULL || source == NULL ||
+        np2audio86_fixture_generate_source(source) != 0) {
+        goto done;
+    }
+    checkpoint = 1U;
+    np2audio86_test_opngen_initialize_reset();
+    if (np2audio86_render_init(optimized) != 0 ||
+        np2audio86_render_init(reference) != 0 ||
+        np2audio86_test_opngen_initialize_call_count() != 2U ||
+        dirty_render_state(optimized, source) != 0 ||
+        dirty_render_state(reference, source) != 0) {
+        goto done;
+    }
+
+    /* render_init is the exact pre-R16 full-reinitialization reference. */
+    checkpoint = 2U;
+    if (np2audio86_render_init(reference) != 0) goto done;
+    checkpoint = 21U;
+    if (np2audio86_render_pcm86_push(
+            reference, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0)
+        goto done;
+    checkpoint = 22U;
+    if (np2audio86_test_opngen_initialize_call_count() != 3U) goto done;
+    checkpoint = 23U;
+    if (np2audio86_guest_action_apply(
+            optimized, &reset, NULL, 0U, source,
+            NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0)
+        goto done;
+    checkpoint = 24U;
+    if (np2audio86_test_opngen_initialize_call_count() != 3U) goto done;
+    checkpoint = 25U;
+    if (!render_states_semantically_equal(optimized, reference)) goto done;
+    checkpoint = 26U;
+    if (render_canonical_239(optimized, optimized_pcm) != 0) goto done;
+    checkpoint = 27U;
+    if (render_canonical_239(reference, reference_pcm) != 0) goto done;
+    checkpoint = 28U;
+    if (memcmp(optimized_pcm, reference_pcm, sizeof(optimized_pcm)) != 0)
+        goto done;
+    checkpoint = 29U;
+    if (!render_states_semantically_equal(optimized, reference)) goto done;
+
+    /* A later same-rate lifetime may rebuild the shared tables without
+     * invalidating an already-live instance. */
+    checkpoint = 3U;
+    if (np2audio86_render_init(lifetime_a) != 0 ||
+        np2audio86_render_init(lifetime_b) != 0 ||
+        np2audio86_test_opngen_initialize_call_count() != 5U ||
+        !render_states_semantically_equal(lifetime_a, lifetime_b) ||
+        np2audio86_render_pcm86_push(
+            lifetime_a, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
+        np2audio86_render_pcm86_push(
+            lifetime_b, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
+        render_canonical_239(lifetime_a, optimized_pcm) != 0 ||
+        render_canonical_239(lifetime_b, reference_pcm) != 0 ||
+        memcmp(optimized_pcm, reference_pcm, sizeof(optimized_pcm)) != 0) {
+        goto done;
+    }
+
+    checkpoint = 4U;
+    calls = np2audio86_test_opngen_initialize_call_count();
+    np2audio86_test_opngen_initialize_fail_next();
+    if (np2audio86_render_reset(optimized) != 0 ||
+        np2audio86_test_opngen_initialize_call_count() != calls ||
+        np2audio86_guest_action_prime_worker(
+            failed, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) == 0 ||
+        np2audio86_test_opngen_initialize_call_count() != calls ||
+        np2audio86_guest_action_prime_worker(
+            failed, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
+        np2audio86_test_opngen_initialize_call_count() != calls + 1U ||
+        np2audio86_guest_action_apply(
+            optimized, &reset, NULL, 0U, source,
+            NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES - 1U) == 0 ||
+        np2audio86_test_opngen_initialize_call_count() != calls + 1U) {
+        goto done;
+    }
+    printf("R16_OPNGEN_COLD_INITIALIZE_CALLS=%" PRIu32 "\n",
+           np2audio86_test_opngen_initialize_call_count());
+    printf("R16_GUEST_RESET_INITIALIZE_CALLS=0\n");
+    printf("R16_INJECTED_COLD_FAILURE_UPSTREAM_CALLS=0\n");
+    result = 0;
+done:
+    if (result != 0) {
+        fprintf(stderr, "R16_OPNGEN_RESET_CONTRACT=FAIL checkpoint=%u\n",
+                checkpoint);
+    }
+    free(optimized);
+    free(reference);
+    free(lifetime_a);
+    free(lifetime_b);
+    free(failed);
+    free(source);
+    return result;
+}
+
 static int pcm86_feed_semantically_equal(
     const struct np2audio86_pcm86_feed *left,
     const struct np2audio86_pcm86_feed *right)
@@ -1516,6 +1792,7 @@ int main(void)
     if (test_pcm86_partial_lengths() != 0) return 2;
     if (test_pcm86_incomplete_frames() != 0) return 3;
     if (test_pcm86_partial_boundaries() != 0) return 4;
+    if (test_r16_opngen_reset_contract() != 0) return 5;
 
 #if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
     if (np2audio86_guest_runtime_capture_sustained_2s(
@@ -1770,6 +2047,11 @@ int main(void)
     printf("AUDIO86_GUEST_SYNC_QUANTUM_INDEPENDENCE=PASS\n");
     printf("AUDIO86_GUEST_SYNC_PCM_DETERMINISM=PASS\n");
     printf("AUDIO86_GUEST_SYNC_NEGATIVE_TESTS=PASS\n");
+    printf("R16_OPNGEN_INITIALIZE_CALL_COUNT=PASS\n");
+    printf("R16_RESET_STATE_EQUIVALENCE=PASS\n");
+    printf("R16_POST_RESET_239_PCM_BYTE_EXACT=PASS\n");
+    printf("R16_MULTI_RUNTIME_LIFETIME=PASS\n");
+    printf("R16_INITIALIZE_FAILURE_PROPAGATION=PASS\n");
 #if !defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
     printf("AUDIO86_GUEST_SYNC_BOUNDARY_TESTS=PASS\n");
 #endif

@@ -170,10 +170,48 @@ void np2audio86_fixture_hash_control(struct np2audio86_fixture_result *result)
     }
 }
 
-static void configure_fm(OPNGEN fm)
+/* opngen_initialize() rebuilds process-global, rate-dependent lookup tables.
+ * A renderer lifetime must establish them before its first sample, but a
+ * guest RESET only resets the instance below and must not rebuild them. */
+#if defined(NP2AUDIO86_GUEST_TEST)
+static uint32_t opngen_initialize_call_count;
+static uint8_t opngen_initialize_fail_next;
+
+void np2audio86_test_opngen_initialize_reset(void)
+{
+    opngen_initialize_call_count = 0U;
+    opngen_initialize_fail_next = 0U;
+}
+
+uint32_t np2audio86_test_opngen_initialize_call_count(void)
+{
+    return opngen_initialize_call_count;
+}
+
+void np2audio86_test_opngen_initialize_fail_next(void)
+{
+    opngen_initialize_fail_next = 1U;
+}
+#endif
+
+static int initialize_fm_infrastructure(void)
+{
+#if defined(NP2AUDIO86_GUEST_TEST)
+    if (opngen_initialize_fail_next != 0U) {
+        opngen_initialize_fail_next = 0U;
+        return -1;
+    }
+#endif
+    opngen_initialize(NP2_AUDIO86_RATE_HZ);
+#if defined(NP2AUDIO86_GUEST_TEST)
+    ++opngen_initialize_call_count;
+#endif
+    return 0;
+}
+
+static void configure_fm_instance(OPNGEN fm)
 {
     unsigned channel;
-    opngen_initialize(NP2_AUDIO86_RATE_HZ);
     opngen_setvol(48U);
     opngen_reset(fm);
     opngen_setcfg(fm, AUDIO86_FM_CHANNELS,
@@ -201,6 +239,15 @@ static void configure_fm(OPNGEN fm)
         opngen_setreg(fm, (REG8)base, 0xb4U + index,
                       channel & 1U ? 0x40U : 0x80U);
     }
+}
+
+static int configure_fm_cold(OPNGEN fm)
+{
+    if (initialize_fm_infrastructure() != 0) {
+        return -1;
+    }
+    configure_fm_instance(fm);
+    return 0;
 }
 
 static void configure_psg(PSGGEN psg)
@@ -452,6 +499,15 @@ static int apply_event(struct audio86_state *state,
     }
 }
 
+static void configure_render_state_mutable(
+    struct np2audio86_render_state *state, const uint8_t *source)
+{
+    configure_fm_instance(&state->fm);
+    configure_psg(&state->psg);
+    configure_rhythm(state);
+    configure_pcm86(&state->pcm86, source);
+}
+
 int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
                                        const uint8_t *source)
 {
@@ -459,10 +515,10 @@ int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
         return -1;
     }
     memset(state, 0, sizeof(*state));
-    configure_fm(&state->fm);
-    configure_psg(&state->psg);
-    configure_rhythm(state);
-    configure_pcm86(&state->pcm86, source);
+    if (initialize_fm_infrastructure() != 0) {
+        return -1;
+    }
+    configure_render_state_mutable(state, source);
     return 0;
 }
 
@@ -576,7 +632,12 @@ int np2audio86_render_apply_pcm86_control(
 
 int np2audio86_render_reset(struct np2audio86_render_state *state)
 {
-    return np2audio86_render_init_with_source(state, NULL);
+    if (state == NULL) {
+        return -1;
+    }
+    memset(state, 0, sizeof(*state));
+    configure_render_state_mutable(state, NULL);
+    return 0;
 }
 
 void np2audio86_render_set_profile_clock(
@@ -766,7 +827,9 @@ int np2audio86_fixture_render(struct np2audio86_fixture_result *result)
     }
     memset(result, 0, sizeof(*result));
     memset(&state, 0, sizeof(state));
-    configure_fm(&state.fm);
+    if (configure_fm_cold(&state.fm) != 0) {
+        return -1;
+    }
     configure_psg(&state.psg);
     configure_rhythm(&state);
     configure_pcm86(&state.pcm86, NULL);
@@ -2141,7 +2204,10 @@ static void *async_worker_thread(void *opaque)
     }
     result = &context->result->oracle;
     memset(result, 0, sizeof(*result));
-    configure_fm(&context->worker_state.fm);
+    if (configure_fm_cold(&context->worker_state.fm) != 0) {
+        async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
+        return NULL;
+    }
     configure_psg(&context->worker_state.psg);
     configure_rhythm(&context->worker_state);
     configure_pcm86(&context->worker_state.pcm86, NULL);

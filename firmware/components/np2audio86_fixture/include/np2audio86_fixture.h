@@ -267,6 +267,12 @@ int np2audio86_async_validate_plan(const struct np2audio86_event *plan,
 int np2audio86_render_init(struct np2audio86_render_state *state);
 int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
                                        const uint8_t *source);
+#if defined(NP2AUDIO86_GUEST_TEST)
+/* Host-only seams for proving cold-initialization ownership and propagation. */
+void np2audio86_test_opngen_initialize_reset(void);
+uint32_t np2audio86_test_opngen_initialize_call_count(void);
+void np2audio86_test_opngen_initialize_fail_next(void);
+#endif
 void np2audio86_render_set_profile_clock(
     struct np2audio86_render_state *state,
     uint64_t (*now_us)(void *opaque), void *opaque);
@@ -281,6 +287,8 @@ int np2audio86_render_apply_opna_csm(struct np2audio86_render_state *state);
 int np2audio86_render_apply_pcm86_control(
     struct np2audio86_render_state *state, uint8_t register_index,
     uint8_t value);
+/* Reset mutable renderer state after a successful cold render_init call in
+ * the same runtime lifetime.  Process-global OPN tables remain unchanged. */
 int np2audio86_render_reset(struct np2audio86_render_state *state);
 int np2audio86_render_pcm86_push(struct np2audio86_render_state *state,
                                  const uint8_t *bytes, size_t count);

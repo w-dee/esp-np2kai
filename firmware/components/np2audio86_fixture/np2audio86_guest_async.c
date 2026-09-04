@@ -23,18 +23,26 @@ int np2audio86_guest_action_kind_for_opcode(uint32_t opcode, uint8_t *kind)
     }
 }
 
-int np2audio86_guest_action_prime_worker(
+static int prepare_worker(
     struct np2audio86_render_state *state, uint8_t *source,
-    size_t source_bytes)
+    size_t source_bytes, int cold_start)
 {
     if (state == NULL || source == NULL ||
         source_bytes != NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES ||
-        np2audio86_render_reset(state) != 0 ||
+        (cold_start ? np2audio86_render_init(state)
+                    : np2audio86_render_reset(state)) != 0 ||
         np2audio86_fixture_generate_source(source) != 0 ||
         np2audio86_render_pcm86_push(state, source, source_bytes) != 0) {
         return -1;
     }
     return 0;
+}
+
+int np2audio86_guest_action_prime_worker(
+    struct np2audio86_render_state *state, uint8_t *source,
+    size_t source_bytes)
+{
+    return prepare_worker(state, source, source_bytes, 1);
 }
 
 int np2audio86_guest_action_apply(
@@ -74,8 +82,7 @@ int np2audio86_guest_action_apply(
             (uint8_t)action->payload);
     case NP2_AUDIO86_GUEST_ACTION_RESET:
         return action->payload == 0U
-                   ? np2audio86_guest_action_prime_worker(state, source,
-                                                           source_bytes)
+                   ? prepare_worker(state, source, source_bytes, 0)
                    : -1;
     default:
         return -1;
