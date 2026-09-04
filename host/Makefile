@@ -1967,6 +1967,7 @@ test-np2runtime: test-np2runtime-lifecycle test-np2runtime-machine-config test-n
 test-p4-nano-pc98-runtime-contract: test-p4-nano-usb-keyboard-teardown-contract
 	@mkdir -p "$(dir $(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT))"
 	@$(CXX) -std=c++20 -fno-exceptions -fno-rtti -Wall -Wextra -Werror \
+		-pthread \
 		-I"$(P4_NANO_PC98_RUNTIME_HEADER_DIR)" \
 		"$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_SOURCE)" \
 		-o "$(P4_NANO_PC98_RUNTIME_CONTRACT_TEST_OUTPUT)"

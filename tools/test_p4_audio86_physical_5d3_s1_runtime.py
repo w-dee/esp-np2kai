@@ -16,6 +16,9 @@ BINDING = ROOT / (
     "firmware/components/p4_nano_audio86_guest_binding/"
     "p4_nano_audio86_guest_binding.cpp"
 )
+RUNTIME = ROOT / (
+    "firmware/components/p4_nano_pc98_runtime/p4_nano_pc98_runtime.cpp"
+)
 PREDICATE = ROOT / (
     "firmware/components/p4_nano_audio86_guest_binding/include/"
     "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_predicate.hpp"
@@ -71,6 +74,7 @@ def unchanged_from_r14_baseline(path: str) -> bool:
 
 def main() -> int:
     binding = BINDING.read_text(encoding="utf-8")
+    runtime = RUNTIME.read_text(encoding="utf-8")
     predicate = PREDICATE.read_text(encoding="utf-8")
     timing = TIMING.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
@@ -125,14 +129,16 @@ def main() -> int:
             "5D3 record source count/order mismatch")
     require(evidence.count("evidence_class=PHYSICAL_EXEC") == 6,
             "physical record classification mismatch")
-    tail = section(binding, "emit_physical_5d3_s1_evidence(runtime);",
-                   "} // namespace")
-    require(tail.index("P4_AUDIO86_REAL_GUEST_RESULT=%s") <
-            tail.index("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s"),
-            "5D3 result/terminal source order mismatch")
-    require(binding.count("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s") == 1 and
-            binding.count("emit_physical_5d3_s1_evidence(runtime);") == 1,
-            "5D3 terminal/emitter gate is not unique")
+    outer_terminal = section(runtime, "void emit_audio86_formal_terminal_once(",
+                             "void emit_audio86_timeout(")
+    require("audio86_lifecycle.claim_terminal(owner)" in outer_terminal and
+            "P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s" in outer_terminal,
+            "5D3 terminal is not routed through the outer CAS arbiter")
+    require(binding.count("P4_AUDIO86_REAL_GUEST_RESULT=%s") == 1 and
+            binding.count("emit_physical_5d3_s1_evidence(runtime);") == 1 and
+            binding.count("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s") == 0 and
+            runtime.count("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s") == 1,
+            "5D3 result/terminal emitter gate is not unique")
 
     local_predicate = section(predicate, "bool sustained_physical_snapshot_healthy(",
                               "constexpr bool normal_terminal_healthy(")

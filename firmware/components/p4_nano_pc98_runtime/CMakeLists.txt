@@ -108,3 +108,15 @@ if(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         P4_NANO_AUDIO86_SUSTAINED_PROFILE=1)
 endif()
+if(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE=1)
+endif()
+if(P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST)
+    if(NOT NP2_EMU_TEST OR NOT P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+        message(FATAL_ERROR
+            "Audio86 outer-timeout injection is ESP-EMU sustained-test only")
+    endif()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST=1)
+endif()

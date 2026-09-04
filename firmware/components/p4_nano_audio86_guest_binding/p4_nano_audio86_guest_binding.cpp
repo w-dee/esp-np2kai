@@ -562,6 +562,10 @@ DRAM_ATTR Runtime s_runtime{};
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
 DRAM_ATTR p4_nano_audio86_live_service s_live_service{};
 #endif
+std::atomic<uint32_t> s_owner_phase{
+    static_cast<uint32_t>(OwnerPhase::Created)};
+std::atomic<uint32_t> s_service_observable{0U};
+std::atomic<uint32_t> s_outer_timeout{0U};
 static_assert(sizeof(np2audio86_event_ring) == 3080U);
 static_assert(sizeof(np2audio86_byte_ring) == 65544U);
 static_assert(sizeof(np2audio86_runtime_control) == 36U);
@@ -3267,9 +3271,11 @@ bool execute_real_i286(Runtime *runtime)
     /* Bootstrap RESET is deliberately outside the live transport lifetime.
      * Only the fixed guest execution, including its terminal RESET, is a
      * client of the service. */
+    publish_owner_phase(OwnerPhase::GuestAttach);
     if (p4_nano_audio86_live_service_attach_guest(
             runtime->live_service) != P4_NANO_AUDIO86_LIVE_OK)
         return false;
+    publish_owner_phase(OwnerPhase::GuestExec);
 #endif
     np2audio86_guest_host_trace_attach(&runtime->trace);
 #if !defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
@@ -3329,9 +3335,11 @@ bool execute_real_i286(Runtime *runtime)
     /* HLT is the fixture's irrevocable terminal boundary.  The private arm
      * preserves RESET release -> fixed terminal horizon release -> notify;
      * generic live stop remains a separate no-RESET protocol. */
+    publish_owner_phase(OwnerPhase::TerminalArm);
     if (p4_nano_audio86_5d3_fixture_arm_terminal(runtime->live_service) !=
         P4_NANO_AUDIO86_LIVE_OK)
         return false;
+    publish_owner_phase(OwnerPhase::ResetWait);
 #endif
     board86_reset(&np2cfg, FALSE);
 #if defined(P4_NANO_AUDIO86_TERMINAL_POST_PCM_FAILURE_TEST)
@@ -4555,6 +4563,11 @@ bool physical_5d3_s1_snapshot_healthy(const Runtime *runtime)
 
 void emit_summary(const Runtime *runtime, const bool ok)
 {
+    if (s_outer_timeout.load(std::memory_order_acquire) != 0U) {
+        std::printf("P4_AUDIO86_LATE_INNER_RESULT=%s authoritative=NO reason=OUTER_TIMEOUT\n",
+                    ok ? "PASS" : "FAIL");
+        return;
+    }
     std::printf("P4_AUDIO86_REAL_GUEST profile=1 producer=p4_nano_pc98 producer_core=1 producer_priority=3 terminal_index=0 worker_core=0 worker_priority=6 producer_index=1 worker_index=0\n");
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     std::printf("P4_AUDIO86_REAL_GUEST_FIXTURE bytes=5498 crc32=e577580a\n");
@@ -4961,8 +4974,8 @@ void emit_summary(const Runtime *runtime, const bool ok)
     std::printf("P4_AUDIO86_PHYSICAL_S2_TERMINAL=%s\n",
                 ok ? "COMPLETE" : "FAILED");
 #elif defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE)
-    std::printf("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s\n",
-                ok ? "COMPLETE" : "FAILED");
+    /* The outer composition owns the 5D.3 formal terminal so a timeout and
+     * a late inner return cannot publish two authoritative records. */
 #endif
 }
 
@@ -5172,6 +5185,7 @@ esp_err_t run_sustained_live_on_pc98_task(
     bool joined_quiescent = false;
     bool destroyed = false;
     initialize_live_5d3_observer(runtime, producer, lifecycle_runtime);
+    publish_owner_phase(OwnerPhase::ServiceInit);
 
     np2_pcm_sink selected_sink = kPcmSink;
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
@@ -5197,6 +5211,8 @@ esp_err_t run_sustained_live_on_pc98_task(
         goto cleanup;
     }
     service_initialized = true;
+    s_service_observable.store(1U, std::memory_order_release);
+    publish_owner_phase(OwnerPhase::FixtureConfigure);
     result = p4_nano_audio86_5d3_fixture_configure(&s_live_service, &hooks);
     if (result != P4_NANO_AUDIO86_LIVE_OK) {
         std::printf(
@@ -5204,6 +5220,7 @@ esp_err_t run_sustained_live_on_pc98_task(
             static_cast<unsigned>(result));
         goto stop_or_join;
     }
+    publish_owner_phase(OwnerPhase::ServiceStart);
     result = p4_nano_audio86_live_service_start(&s_live_service);
     if (result != P4_NANO_AUDIO86_LIVE_OK) {
         std::printf("P4_AUDIO86_LIVE_SERVICE_FAILURE stage=start result=%u\n",
@@ -5211,11 +5228,13 @@ esp_err_t run_sustained_live_on_pc98_task(
         goto stop_or_join;
     }
 
+    publish_owner_phase(OwnerPhase::GuestExec);
     guest_ok = execute_real_i286(runtime);
     np2audio86_guest_host_trace_detach();
     board86_unbind();
     p4_nano_audio86_live_service_status(&s_live_service, &status);
     if (guest_ok) {
+        publish_owner_phase(OwnerPhase::ProducerComplete);
         result = p4_nano_audio86_5d3_fixture_complete_producer(
             &s_live_service);
         if (result != P4_NANO_AUDIO86_LIVE_OK)
@@ -5229,6 +5248,7 @@ esp_err_t run_sustained_live_on_pc98_task(
     }
 
 stop_or_join:
+    publish_owner_phase(OwnerPhase::ServiceJoin);
     p4_nano_audio86_live_service_status(&s_live_service, &status);
     if (status.state == P4_NANO_AUDIO86_LIVE_STARTED_UNATTACHED)
         (void)p4_nano_audio86_live_service_request_stop(&s_live_service);
@@ -5296,6 +5316,7 @@ stop_or_join:
 #endif
 
 cleanup:
+    publish_owner_phase(OwnerPhase::ServiceDestroy);
     if (service_initialized)
         destroyed = p4_nano_audio86_live_service_destroy(
                         &s_live_service) == P4_NANO_AUDIO86_LIVE_OK;
@@ -5356,6 +5377,120 @@ cleanup:
 #endif
 
 } // namespace
+
+void timeout_diagnostic_reset() noexcept
+{
+    s_outer_timeout.store(0U, std::memory_order_relaxed);
+    s_service_observable.store(0U, std::memory_order_relaxed);
+    s_owner_phase.store(static_cast<uint32_t>(OwnerPhase::Created),
+                        std::memory_order_release);
+}
+
+void publish_owner_phase(OwnerPhase phase) noexcept
+{
+    s_owner_phase.store(static_cast<uint32_t>(phase),
+                        std::memory_order_release);
+}
+
+TimeoutDiagnosticSnapshot timeout_diagnostic_snapshot() noexcept
+{
+    TimeoutDiagnosticSnapshot snapshot{};
+    const uint32_t unavailable = kTimeoutDiagnosticUnavailable;
+    snapshot.owner_phase = s_owner_phase.load(std::memory_order_acquire);
+    snapshot.service_observable =
+        s_service_observable.load(std::memory_order_acquire);
+    snapshot.snapshot_coherent = snapshot.service_observable == 0U ? 1U : 0U;
+    snapshot.live_service_state = unavailable;
+    snapshot.failure_category = unavailable;
+    snapshot.failure_origin = unavailable;
+    snapshot.failure_subcode = unavailable;
+    snapshot.failure_sequence = unavailable;
+    snapshot.cleanup_state = unavailable;
+    snapshot.guest_authoritative_frame = UINT64_MAX;
+    snapshot.latest_published_horizon = UINT64_MAX;
+    snapshot.rendered_frames = UINT64_MAX;
+    snapshot.accepted_frames = UINT64_MAX;
+    snapshot.producer_done = unavailable;
+    snapshot.guest_attached = unavailable;
+    snapshot.sink_reachable = unavailable;
+    snapshot.event_ring_occupancy = unavailable;
+    snapshot.byte_ring_occupancy = unavailable;
+    snapshot.q240_occupancy = unavailable;
+    snapshot.q240_produced = unavailable;
+    snapshot.q240_submitted = unavailable;
+    snapshot.output_state = unavailable;
+    snapshot.worker_wait_reason = unavailable;
+    snapshot.reset_seen = unavailable;
+    snapshot.reset_ordinal = unavailable;
+    snapshot.reset_ack = unavailable;
+    snapshot.terminal_armed = unavailable;
+    snapshot.terminal_horizon_published = unavailable;
+    snapshot.terminal_horizon_observed = unavailable;
+    snapshot.terminal_pcm_ready = unavailable;
+    snapshot.physical_sink_state = unavailable;
+    snapshot.physical_sticky_error = unavailable;
+    snapshot.physical_qovf = unavailable;
+    snapshot.callback_active = unavailable;
+    snapshot.callback_in_flight = unavailable;
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    if (snapshot.service_observable != 0U) {
+        p4_nano_audio86_live_status status{};
+        p4_nano_audio86_live_service_status(&s_live_service, &status);
+        snapshot.snapshot_coherent = status.snapshot_coherent;
+        snapshot.live_service_state = static_cast<uint32_t>(status.state);
+        snapshot.failure_category = static_cast<uint32_t>(status.category);
+        snapshot.failure_origin = static_cast<uint32_t>(status.origin);
+        snapshot.failure_subcode = status.subcode;
+        snapshot.failure_sequence = status.first_error_sequence;
+        snapshot.cleanup_state = static_cast<uint32_t>(status.cleanup);
+        snapshot.guest_authoritative_frame = status.guest_authoritative_frame;
+        snapshot.latest_published_horizon = status.latest_published_horizon;
+        snapshot.rendered_frames = status.rendered_frames;
+        snapshot.accepted_frames = status.accepted_frames;
+        snapshot.producer_done = status.producer_done;
+        snapshot.guest_attached = status.guest_attached;
+        snapshot.sink_reachable = status.sink_reachable;
+        snapshot.event_ring_occupancy = status.event_ring_occupancy;
+        snapshot.byte_ring_occupancy = status.byte_ring_occupancy;
+        snapshot.q240_occupancy = status.q240_occupancy;
+        snapshot.q240_produced = status.q240_produced;
+        snapshot.q240_submitted = status.q240_submitted;
+        snapshot.output_state = status.output_state;
+        snapshot.worker_wait_reason =
+            static_cast<uint32_t>(status.worker_wait_reason);
+        snapshot.reset_seen = status.reset_seen;
+        snapshot.reset_ordinal = status.reset_ordinal;
+        snapshot.reset_ack = status.reset_ack;
+        snapshot.terminal_armed = status.terminal_armed;
+        snapshot.terminal_horizon_published =
+            status.terminal_horizon_published;
+        snapshot.terminal_horizon_observed =
+            status.terminal_horizon_observed;
+        snapshot.terminal_pcm_ready = status.terminal_pcm_ready;
+    }
+#endif
+    return snapshot;
+}
+
+int timeout_request_async_stop() noexcept
+{
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    if (s_service_observable.load(std::memory_order_acquire) != 0U)
+        return static_cast<int>(
+            p4_nano_audio86_live_service_request_stop(&s_live_service));
+#endif
+    return -1;
+}
+
+void mark_outer_timeout() noexcept
+{
+    s_outer_timeout.store(1U, std::memory_order_release);
+}
+
+bool outer_timeout_latched() noexcept
+{
+    return s_outer_timeout.load(std::memory_order_acquire) != 0U;
+}
 
 esp_err_t run_on_pc98_task(TaskHandle_t producer,
                            np2runtime::Runtime *lifecycle_runtime) noexcept

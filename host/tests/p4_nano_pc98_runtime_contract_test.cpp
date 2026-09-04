@@ -1,6 +1,10 @@
+#include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <thread>
+#include <vector>
 
+#include "p4_nano_pc98_runtime/audio86_outer_lifecycle.hpp"
 #include "p4_nano_pc98_runtime/runtime_contract.hpp"
 
 int main()
@@ -67,5 +71,67 @@ int main()
         CleanupStage::DosioReset, CleanupStage::SessionShutdown));
     assert(p4_nano_pc98_runtime::cleanup_precedes(
         CleanupStage::SessionShutdown, CleanupStage::StorageUnmounted));
+
+    using namespace p4_nano_pc98_runtime::audio86_outer;
+    Lifecycle lifecycle;
+    lifecycle.reset(-1);
+    lifecycle.begin_ready_wait();
+    assert(lifecycle.publish_startup(0, true));
+    lifecycle.begin_completion_wait();
+    assert(lifecycle.publish_completion(0, true));
+    assert(lifecycle.completion_result.load() == 0);
+    assert(lifecycle.owner_delete_allowed(true, true));
+
+    lifecycle.reset(-1);
+    assert(lifecycle.publish_startup(0, true));
+    assert(lifecycle.publish_completion(-7, false));
+    assert(lifecycle.completion_result.load() == -7);
+    assert(lifecycle.owner_delete_allowed(true, true));
+
+    lifecycle.reset(-1);
+    assert(lifecycle.publish_startup(0, true));
+    assert(lifecycle.mark_completion_timeout(-2));
+    assert(lifecycle.completion_result.load() == -2);
+    assert(!lifecycle.publish_completion(0, true));
+    assert(!lifecycle.owner_delete_allowed(false, false));
+    assert(!lifecycle.owner_delete_allowed(true, true));
+
+    lifecycle.reset(-1);
+    assert(lifecycle.mark_startup_timeout(-2));
+    assert(lifecycle.startup_result.load() == -2);
+    assert(!lifecycle.publish_startup(0, true));
+
+    lifecycle.reset(-1);
+    assert(lifecycle.publish_startup(-7, false));
+    assert(lifecycle.startup_result.load() == -7);
+    assert(lifecycle.completion_result.load() == -1);
+
+    for (const TerminalOwner inner : {TerminalOwner::InnerComplete,
+                                      TerminalOwner::InnerFailed}) {
+        lifecycle.reset(-1);
+        std::atomic<std::uint32_t> wins{0U};
+        std::vector<std::thread> contenders;
+        contenders.emplace_back([&] {
+            if (lifecycle.claim_terminal(inner))
+                wins.fetch_add(1U);
+        });
+        contenders.emplace_back([&] {
+            if (lifecycle.claim_terminal(TerminalOwner::CompletionTimeout))
+                wins.fetch_add(1U);
+        });
+        for (auto &thread : contenders)
+            thread.join();
+        assert(wins.load() == 1U);
+        assert(lifecycle.terminal_owner.load() !=
+               static_cast<std::uint32_t>(TerminalOwner::None));
+        assert(!lifecycle.claim_terminal(TerminalOwner::ReadyTimeout));
+    }
+
+    lifecycle.reset(-1);
+    assert(lifecycle.claim_terminal(TerminalOwner::CompletionTimeout));
+    assert(!lifecycle.claim_terminal(TerminalOwner::InnerComplete));
+    assert(!lifecycle.claim_terminal(TerminalOwner::InnerFailed));
+    assert(lifecycle.claim_timeout_snapshot());
+    assert(!lifecycle.claim_timeout_snapshot());
     return 0;
 }

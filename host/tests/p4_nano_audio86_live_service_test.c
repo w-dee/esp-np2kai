@@ -23,6 +23,7 @@ struct fake_sink {
     _Atomic uint32_t no_new_callbacks;
     _Atomic uint32_t start_retry;
     _Atomic uint32_t start_fatal;
+    _Atomic uint32_t submit_retry;
     _Atomic uint32_t submit_fatal;
     _Atomic uint32_t finish_mode;
     _Atomic uint32_t abort_fatal;
@@ -52,6 +53,8 @@ static enum np2_pcm_sink_result fake_submit(
     void *opaque, const struct np2_pcm_sink_view *view)
 {
     struct fake_sink *sink = opaque;
+    if (atomic_load_explicit(&sink->submit_retry, memory_order_acquire) != 0U)
+        return NP2_PCM_SINK_RETRY;
     if (atomic_load_explicit(&sink->submit_fatal, memory_order_acquire) != 0U)
         return NP2_PCM_SINK_FATAL;
     assert(view != NULL);
@@ -136,6 +139,11 @@ static void service_init(struct p4_nano_audio86_live_service *service,
         struct p4_nano_audio86_live_status status;
         p4_nano_audio86_live_service_status(service, &status);
         assert(status.state == P4_NANO_AUDIO86_LIVE_READY);
+        assert(status.snapshot_coherent == 1U);
+        assert(status.output_state == NP2_PCM_OUTPUT_INITIAL);
+        assert(status.event_ring_occupancy == 0U);
+        assert(status.byte_ring_occupancy == 0U);
+        assert(status.q240_occupancy == 0U);
     }
 }
 
@@ -162,6 +170,8 @@ static void service_start_attach(
         struct p4_nano_audio86_live_status status;
         p4_nano_audio86_live_service_status(service, &status);
         assert(status.state == P4_NANO_AUDIO86_LIVE_RUNNING);
+        assert(status.snapshot_coherent == 1U);
+        assert(status.output_state == NP2_PCM_OUTPUT_STARTED);
     }
     assert(p4_nano_audio86_live_service_attach_guest(service) ==
            P4_NANO_AUDIO86_LIVE_STATE_ERROR);
@@ -258,6 +268,18 @@ static void test_starting_and_attach_failure(void)
         p4_nano_audio86_live_service_status(&service, &status);
     } while (status.state == P4_NANO_AUDIO86_LIVE_READY);
     assert(status.state == P4_NANO_AUDIO86_LIVE_STARTING);
+    {
+        uint32_t attempts = 100U;
+        do {
+            p4_nano_audio86_live_service_status(&service, &status);
+            if (status.worker_wait_reason ==
+                P4_NANO_AUDIO86_LIVE_WAIT_SINK_START)
+                break;
+            sleep_ms(1U);
+        } while (--attempts != 0U);
+        assert(status.worker_wait_reason ==
+               P4_NANO_AUDIO86_LIVE_WAIT_SINK_START);
+    }
     atomic_store_explicit(&fake.start_retry, 0U, memory_order_release);
     assert(pthread_join(thread, NULL) == 0);
     assert(args.result == P4_NANO_AUDIO86_LIVE_OK);
@@ -321,6 +343,10 @@ static void test_clean_boundaries(void)
     np2audio86_guest_host_set_cpu_position(240U * 1024U);
     assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
            P4_NANO_AUDIO86_LIVE_OK);
+    p4_nano_audio86_live_service_status(&service, &status);
+    assert(status.snapshot_coherent == 1U);
+    assert(status.guest_authoritative_frame == 240U);
+    assert(status.latest_published_horizon == 240U);
     assert(p4_nano_audio86_live_service_join(&service, 1U, &status) ==
            P4_NANO_AUDIO86_LIVE_STATE_ERROR);
     assert(p4_nano_audio86_live_service_request_stop(&service) ==
@@ -411,11 +437,52 @@ static void test_delayed_callback_barrier(void)
     p4_nano_audio86_live_service_status(&service, &status);
     assert(status.state == P4_NANO_AUDIO86_LIVE_DRAINING);
     assert(status.sink_reachable == 1U);
+    assert(status.snapshot_coherent == 1U);
+    assert(status.worker_wait_reason == P4_NANO_AUDIO86_LIVE_WAIT_FINISH ||
+           status.worker_wait_reason ==
+               P4_NANO_AUDIO86_LIVE_WAIT_SINK_RETRY);
     assert(atomic_load_explicit(&fake.finish_calls, memory_order_acquire) > 0U);
     assert(p4_nano_audio86_live_service_destroy(&service) ==
            P4_NANO_AUDIO86_LIVE_STATE_ERROR);
     atomic_store_explicit(&fake.callback_inflight, 0U, memory_order_release);
     assert_clean_terminal(&service, &fake, 13U, 1U);
+}
+
+static void test_bounded_running_pressure_snapshot(void)
+{
+    struct p4_nano_audio86_live_service service = {0};
+    struct fake_sink fake = {0};
+    struct np2_pcm_sink sink;
+    struct p4_nano_audio86_live_status status;
+    uint32_t attempts = 2000U;
+
+    service_start_attach(&service, &fake, &sink);
+    atomic_store_explicit(&fake.submit_retry, 1U, memory_order_release);
+    np2audio86_guest_host_set_cpu_position(2400U * 1024U);
+    assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    do {
+        p4_nano_audio86_live_service_status(&service, &status);
+        if (status.q240_occupancy == NP2_OPNGEN_PCM_RING_CAPACITY &&
+            status.worker_wait_reason == P4_NANO_AUDIO86_LIVE_WAIT_Q240_SPACE)
+            break;
+        sleep_ms(1U);
+    } while (--attempts != 0U);
+    assert(status.state == P4_NANO_AUDIO86_LIVE_RUNNING);
+    assert(status.snapshot_coherent == 1U);
+    assert(status.guest_authoritative_frame == 2400U);
+    assert(status.latest_published_horizon == 2400U);
+    assert(status.q240_occupancy == NP2_OPNGEN_PCM_RING_CAPACITY);
+    assert(status.q240_produced - status.q240_submitted ==
+           status.q240_occupancy);
+    assert(status.worker_wait_reason == P4_NANO_AUDIO86_LIVE_WAIT_Q240_SPACE);
+
+    atomic_store_explicit(&fake.submit_retry, 0U, memory_order_release);
+    assert(p4_nano_audio86_live_service_request_stop(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert_clean_terminal(&service, &fake, 2400U, 10U);
 }
 
 static void fatal_at_clean_terminal(
@@ -613,11 +680,14 @@ int main(void)
     test_clean_boundaries();
     test_transaction_stop_boundary();
     test_delayed_callback_barrier();
+    test_bounded_running_pressure_snapshot();
     test_fatal_paths();
     assert(np2audio86_test_opngen_initialize_call_count() == 1U);
     printf("AUDIO86_LIVE_SERVICE_STATE_MACHINE=PASS\n");
     printf("AUDIO86_LIVE_SERVICE_STOP_BOUNDARY=PASS\n");
     printf("AUDIO86_LIVE_SERVICE_CALLBACK_QUIESCENCE=PASS\n");
+    printf("AUDIO86_LIVE_SERVICE_BOUNDED_SNAPSHOT=PASS\n");
+    printf("AUDIO86_LIVE_SERVICE_Q240_PRESSURE_SNAPSHOT=PASS\n");
     printf("OPN_GLOBAL_INIT_PROCESS_LIFETIME_CALL_COUNT=1\n");
     printf("AUDIO86_LIVE_SERVICE_HOST_TEST=PASS\n");
     return 0;

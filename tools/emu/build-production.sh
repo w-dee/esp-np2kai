@@ -6,7 +6,7 @@ readonly REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 readonly FIRMWARE_DIR="${REPOSITORY_ROOT}/firmware"
 
 usage() {
-    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-live-service | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-sustained-2s | --audio86-real-guest-sustained-2s-physical-i2s | --audio86-real-guest-physical-i2s | --audio86-real-guest-physical-i2s-short | --audio86-physical-lifecycle-test early|post-i2s|post-callback|post-codec | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
+    printf 'usage: %s --variant p4-v1x|p4-v3x [--board generic|p4-nano] [--build-dir PATH] [--i286-inline-mem-fastpath 0|1] [--transform-opt debug|o2] [--audio-opt debug|o2] [--display-refresh-visual baseline|lower1|lower2] [--benchmark-display-refresh baseline|lower2] [--display-foundation | --display-transform-diagnostic --rotation cw|ccw | --audio-i2s-tone | --audio-i2s-opngen | --audio-only-benchmark | --audio86-capacity | --audio86-runtime-foundation | --audio86-live-service | --audio86-real-guest | --audio86-real-guest-pcm-output | --audio86-real-guest-sustained-2s | --audio86-outer-timeout-test | --audio86-real-guest-sustained-2s-physical-i2s | --audio86-real-guest-physical-i2s | --audio86-real-guest-physical-i2s-short | --audio86-physical-lifecycle-test early|post-i2s|post-callback|post-codec | --audio86-real-guest-pcm-output-partial | --audio86-pcm-lifecycle stop-full|fatal-full|consumer-failure-full|consumer-failure-empty|retry-stop|retry-fatal|retry-primary-first|retry-consumer-first|reset-full-stop|reset-full-fatal|reset-full-consumer-fatal|partial-stop|partial-fatal|partial-consumer-fatal|post-done-consumer-fatal|finish-fatal | --live-display | --live-display-motion-validation | --live-display-benchmark | --live-display-transform-isolated-benchmark | --transform-isolated-compute-control-benchmark | --transform-isolated-psram-read-control-benchmark | --ppa-rotation-benchmark | --ppa-internal-tile-benchmark | --exact2x-scaler-benchmark | --exact2x-internal-source-benchmark | --exact2x-grouped-store-benchmark | --exact2x-dma2d-correctness | --exact2x-dma2d-benchmark | --ppa-pie-overlap-benchmark | --ppa-pie-burst-benchmark | --pie-preemption-correctness | --psram-bandwidth-live --psram-bandwidth-op OP | --psram-bandwidth-isolated --psram-bandwidth-op OP | --real-runtime | --runtime-validation | --runtime-keyboard-validation | --usb-keyboard-validation] [--esp-emu-test]\n' \
         "${BASH_SOURCE[0]}"
 }
 
@@ -33,6 +33,7 @@ audio86_real_guest=0
 audio86_pcm_output=0
 audio86_sustained=0
 audio86_sustained_physical=0
+audio86_outer_timeout_test=0
 audio86_physical_i2s=0
 audio86_physical_short=0
 audio86_physical_selector=0
@@ -213,6 +214,15 @@ while (($# > 0)); do
             audio86_pcm_output=1
             audio86_sustained=1
             audio86_async=1
+            shift
+            ;;
+        --audio86-outer-timeout-test)
+            audio86_real_guest=1
+            audio86_pcm_output=1
+            audio86_sustained=1
+            audio86_async=1
+            audio86_outer_timeout_test=1
+            esp_emu_test=1
             shift
             ;;
         --audio86-real-guest-sustained-2s-physical-i2s)
@@ -1099,6 +1109,8 @@ if [[ -z "${build_dir}" ]]; then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-physical-lifecycle-${audio86_physical_lifecycle_stage}"
     elif (( audio86_sustained_physical )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-sustained-2s-physical-i2s"
+    elif (( audio86_outer_timeout_test )); then
+        build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-outer-timeout-test"
     elif (( audio86_sustained )); then
         build_dir="${FIRMWARE_DIR}/build-${board}-${variant}-audio86-sustained-2s"
     elif (( audio86_physical_short )); then
@@ -1285,6 +1297,7 @@ cmake_args=(
     -D "P4_NANO_AUDIO86_PCM_OUTPUT_PROFILE=${audio86_pcm_output}"
     -D "P4_NANO_AUDIO86_SUSTAINED_PROFILE=${audio86_sustained}"
     -D "P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE=${audio86_sustained_physical}"
+    -D "P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST=${audio86_outer_timeout_test}"
     -D "P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE=${audio86_physical_i2s}"
     -D "P4_NANO_AUDIO86_PHYSICAL_SHORT_PROFILE=${audio86_physical_short}"
     -D "P4_NANO_AUDIO86_PHYSICAL_LIFECYCLE_TEST_PROFILE=${audio86_physical_lifecycle_stage}"

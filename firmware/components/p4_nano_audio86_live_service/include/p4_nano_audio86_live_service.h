@@ -86,6 +86,17 @@ enum p4_nano_audio86_live_cleanup {
     P4_NANO_AUDIO86_LIVE_CLEANUP_NOT_QUIESCENT,
 };
 
+enum p4_nano_audio86_live_worker_wait_reason {
+    P4_NANO_AUDIO86_LIVE_WAIT_NONE_ACTIVE = 0,
+    P4_NANO_AUDIO86_LIVE_WAIT_SINK_START,
+    P4_NANO_AUDIO86_LIVE_WAIT_EVENT_OR_HORIZON,
+    P4_NANO_AUDIO86_LIVE_WAIT_Q240_SPACE,
+    P4_NANO_AUDIO86_LIVE_WAIT_SINK_RETRY,
+    P4_NANO_AUDIO86_LIVE_WAIT_TERMINAL_AUTHORITY,
+    P4_NANO_AUDIO86_LIVE_WAIT_FINISH,
+    P4_NANO_AUDIO86_LIVE_WAIT_QUIESCENCE,
+};
+
 struct p4_nano_audio86_live_status {
     enum p4_nano_audio86_live_state state;
     enum p4_nano_audio86_live_failure_category category;
@@ -99,6 +110,23 @@ struct p4_nano_audio86_live_status {
     uint32_t producer_done;
     uint32_t guest_attached;
     uint32_t sink_reachable;
+    uint32_t snapshot_coherent;
+    uint64_t guest_authoritative_frame;
+    uint64_t latest_published_horizon;
+    uint32_t event_ring_occupancy;
+    uint32_t byte_ring_occupancy;
+    uint32_t q240_occupancy;
+    uint32_t q240_produced;
+    uint32_t q240_submitted;
+    uint32_t output_state;
+    enum p4_nano_audio86_live_worker_wait_reason worker_wait_reason;
+    uint32_t reset_seen;
+    uint32_t reset_ordinal;
+    uint32_t reset_ack;
+    uint32_t terminal_armed;
+    uint32_t terminal_horizon_published;
+    uint32_t terminal_horizon_observed;
+    uint32_t terminal_pcm_ready;
 };
 
 struct p4_nano_audio86_live_config {
@@ -144,12 +172,17 @@ struct p4_nano_audio86_live_service {
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) owner_finalizing;
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) transaction_gate;
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) owner_valid;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) worker_wait_reason;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) output_state_published;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) reset_ordinal_published;
 #if defined(ESP_PLATFORM)
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) worker_handle_ready;
 #endif
     struct p4_nano_audio86_live_u64_snapshot final_horizon;
     struct p4_nano_audio86_live_u64_snapshot rendered_frames_published;
     struct p4_nano_audio86_live_u64_snapshot accepted_frames_published;
+    struct p4_nano_audio86_live_u64_snapshot guest_authoritative_frame;
+    struct p4_nano_audio86_live_u64_snapshot latest_published_horizon;
 
     struct np2audio86_event_ring events;
     struct np2audio86_byte_ring bytes;

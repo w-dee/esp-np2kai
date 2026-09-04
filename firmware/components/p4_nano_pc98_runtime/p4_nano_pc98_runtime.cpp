@@ -49,6 +49,7 @@ extern "C" {
 #include "p4_nano_usb_keyboard/producer.hpp"
 #endif
 #include "p4_nano_live_display_session/session.hpp"
+#include "p4_nano_pc98_runtime/audio86_outer_lifecycle.hpp"
 #include "p4_nano_pc98_runtime/runtime_contract.hpp"
 #include "storage_fatfs/storage_fatfs.hpp"
 #include "storage_sdmmc/storage_sdmmc.hpp"
@@ -61,6 +62,15 @@ constexpr BaseType_t kRuntimeCore = 1;
 constexpr TickType_t kStartupTimeoutTicks = pdMS_TO_TICKS(30000U) == 0U
                                                  ? 1U
                                                  : pdMS_TO_TICKS(30000U);
+#if defined(P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST)
+constexpr TickType_t kAudio86CompletionTimeoutTicks =
+    pdMS_TO_TICKS(100U) == 0U ? 1U : pdMS_TO_TICKS(100U);
+#else
+constexpr TickType_t kAudio86CompletionTimeoutTicks =
+    pdMS_TO_TICKS(30000U) == 0U ? 1U : pdMS_TO_TICKS(30000U);
+#endif
+constexpr std::uint32_t kAudio86ProductionCompletionGuardMs = 30000U;
+static_assert(kAudio86ProductionCompletionGuardMs == 30000U);
 constexpr TickType_t kConsumerDelayTicks = 1U;
 #if defined(P4_NANO_RUNTIME_VALIDATION_PROFILE) || \
     defined(P4_NANO_KEYBOARD_VALIDATION_PROFILE) || \
@@ -170,6 +180,7 @@ struct Composition final {
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> owner_done{false};
     std::atomic<GuestCompletion> guest_completion{GuestCompletion::Unknown};
+    p4_nano_pc98_runtime::audio86_outer::Lifecycle audio86_lifecycle{};
     esp_err_t owner_result = ESP_FAIL;
     bool mounted = false;
     bool scrnmng_initialized = false;
@@ -1032,6 +1043,20 @@ void signal_ready(Composition *composition, esp_err_t result) noexcept
     }
 }
 
+bool signal_audio86_ready(Composition *composition, esp_err_t result) noexcept
+{
+    if (composition == nullptr || composition->ready_signaled)
+        return false;
+    const bool published = composition->audio86_lifecycle.publish_startup(
+        result, result == ESP_OK);
+    if (!published)
+        return false;
+    composition->ready_signaled = true;
+    if (composition->ready_semaphore != nullptr)
+        (void)xSemaphoreGive(composition->ready_semaphore);
+    return true;
+}
+
 void cleanup_after_owner_join(Composition *composition) noexcept
 {
     if (composition == nullptr) {
@@ -1082,22 +1107,42 @@ void owner_task(void *context)
         /* This is intentionally the existing p4_nano_pc98 task body.  The
          * profile changes its bounded guest workload, not producer ownership,
          * affinity, priority, stack, or terminal-index-0 protocol. */
+        p4_nano_audio86_guest_binding::publish_owner_phase(
+            p4_nano_audio86_guest_binding::OwnerPhase::RuntimeInit);
         const np2runtime::Result runtime_init =
             composition->runtime.initialize(
                 p4_nano_pc98_runtime::kFdd0OnlyEquipment);
         if (runtime_init != np2runtime::Result::Ok) {
             emit("P4_AUDIO86_REAL_GUEST_RESULT=FAIL reason=RUNTIME_INIT_FAILED\n");
-            signal_ready(composition, ESP_FAIL);
-            composition->owner_result = ESP_FAIL;
+            (void)signal_audio86_ready(composition, ESP_FAIL);
+            (void)composition->audio86_lifecycle.publish_completion(
+                ESP_FAIL, false);
         } else {
-            signal_ready(composition, ESP_OK);
-            composition->owner_result =
-                p4_nano_audio86_guest_binding::run_on_pc98_task(
-                    composition->owner_task, &composition->runtime);
-            /* Runtime owns the sole production lifecycle and therefore also
-             * serializes pccore_term after the worker has quiesced. */
-            (void)composition->runtime.request_stop();
-            (void)composition->runtime.run();
+            p4_nano_audio86_guest_binding::publish_owner_phase(
+                p4_nano_audio86_guest_binding::OwnerPhase::Ready);
+            if (signal_audio86_ready(composition, ESP_OK)) {
+#if defined(P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST)
+                emit("P4_AUDIO86_OUTER_TIMEOUT_TEST=READY_THEN_STALL\n");
+                for (;;)
+                    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#else
+                const esp_err_t completion_result =
+                    p4_nano_audio86_guest_binding::run_on_pc98_task(
+                        composition->owner_task, &composition->runtime);
+                /* Runtime owns the sole production lifecycle and therefore
+                 * serializes pccore_term after service quiescence. */
+                p4_nano_audio86_guest_binding::publish_owner_phase(
+                    p4_nano_audio86_guest_binding::OwnerPhase::RuntimeCleanup);
+                (void)composition->runtime.request_stop();
+                (void)composition->runtime.run();
+                (void)composition->audio86_lifecycle.publish_completion(
+                    completion_result, completion_result == ESP_OK);
+#endif
+            } else {
+                /* READY timed out first.  Do not enter the inner workload. */
+                (void)composition->runtime.request_stop();
+                (void)composition->runtime.run();
+            }
         }
     } else {
 #endif
@@ -1233,6 +1278,12 @@ done:
              counters.ownership.global_recoveries,
              composition->keyboard.quarantined() ? 1U : 0U);
     }
+    if (composition->audio86_real_guest) {
+        p4_nano_audio86_guest_binding::publish_owner_phase(
+            p4_nano_audio86_guest_binding::OwnerPhase::Complete);
+        p4_nano_audio86_guest_binding::publish_owner_phase(
+            p4_nano_audio86_guest_binding::OwnerPhase::Parked);
+    }
     composition->owner_done.store(true, std::memory_order_release);
     if (composition->stopped_semaphore != nullptr) {
         (void)xSemaphoreGive(composition->stopped_semaphore);
@@ -1264,6 +1315,108 @@ void destroy_sync(Composition *composition) noexcept
         composition->stopped_semaphore = nullptr;
     }
 }
+
+#if defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE)
+void emit_audio86_formal_terminal_once(
+    Composition *composition,
+    p4_nano_pc98_runtime::audio86_outer::TerminalOwner owner,
+    bool complete) noexcept
+{
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PHYSICAL_PROFILE) || \
+    defined(P4_NANO_AUDIO86_OUTER_TIMEOUT_TEST)
+    if (composition != nullptr &&
+        composition->audio86_lifecycle.claim_terminal(owner)) {
+        emit("P4_AUDIO86_PHYSICAL_5D3_S1_TERMINAL=%s\n",
+             complete ? "COMPLETE" : "FAILED");
+    }
+#else
+    (void)composition;
+    (void)owner;
+    (void)complete;
+#endif
+}
+
+void emit_audio86_timeout(Composition *composition, bool ready_timeout) noexcept
+{
+    if (composition == nullptr ||
+        !composition->audio86_lifecycle.claim_timeout_snapshot())
+        return;
+    p4_nano_audio86_guest_binding::mark_outer_timeout();
+    const auto snapshot =
+        p4_nano_audio86_guest_binding::timeout_diagnostic_snapshot();
+    const auto outer_state = composition->audio86_lifecycle.outer_state.load(
+        std::memory_order_acquire);
+    const auto startup_state = composition->audio86_lifecycle.startup_state.load(
+        std::memory_order_acquire);
+    const auto startup_result =
+        composition->audio86_lifecycle.startup_result.load(
+            std::memory_order_acquire);
+    const auto completion_state =
+        composition->audio86_lifecycle.completion_state.load(
+            std::memory_order_acquire);
+    const auto completion_result =
+        composition->audio86_lifecycle.completion_result.load(
+            std::memory_order_acquire);
+    emit("P4_AUDIO86_OUTER_TIMEOUT class=%s inner_result=INDETERMINATE"
+         " outer_state=%" PRIu32 " startup_state=%" PRIu32
+         " startup_result=%" PRId32 " completion_state=%" PRIu32
+         " completion_result=%" PRId32 " guard_ms=%" PRIu32 "\n",
+         ready_timeout ? "OUTER_READY_TIMEOUT" : "OUTER_COMPLETION_TIMEOUT",
+         outer_state, startup_state, startup_result, completion_state,
+         completion_result, kAudio86ProductionCompletionGuardMs);
+    emit("P4_AUDIO86_TIMEOUT_SNAPSHOT coherence=%s owner_phase=%" PRIu32
+         " service_observable=%" PRIu32 " service_state=%" PRIu32
+         " failure_category=%" PRIu32 " failure_origin=%" PRIu32
+         " failure_subcode=%" PRIu32 " failure_sequence=%" PRIu32
+         " cleanup=%" PRIu32 " guest_frame=%" PRIu64
+         " published_horizon=%" PRIu64 " rendered=%" PRIu64
+         " accepted=%" PRIu64 " producer_done=%" PRIu32
+         " guest_attached=%" PRIu32 " sink_reachable=%" PRIu32
+         " event_occupancy=%" PRIu32 " byte_occupancy=%" PRIu32
+         " q240_occupancy=%" PRIu32 " q240_produced=%" PRIu32
+         " q240_submitted=%" PRIu32 " output_state=%" PRIu32
+         " worker_wait_reason=%" PRIu32 " reset_seen=%" PRIu32
+         " reset_ordinal=%" PRIu32 " reset_ack=%" PRIu32
+         " terminal_armed=%" PRIu32 " terminal_published=%" PRIu32
+         " terminal_observed=%" PRIu32 " terminal_pcm_ready=%" PRIu32
+         " physical_sink_state=%" PRIu32
+         " physical_sticky_error=%" PRIu32 " physical_qovf=%" PRIu32
+         " callback_active=%" PRIu32 " callback_in_flight=%" PRIu32 "\n",
+         snapshot.snapshot_coherent != 0U ? "PASS" : "FAILED",
+         snapshot.owner_phase, snapshot.service_observable,
+         snapshot.live_service_state, snapshot.failure_category,
+         snapshot.failure_origin, snapshot.failure_subcode,
+         snapshot.failure_sequence, snapshot.cleanup_state,
+         snapshot.guest_authoritative_frame,
+         snapshot.latest_published_horizon, snapshot.rendered_frames,
+         snapshot.accepted_frames, snapshot.producer_done,
+         snapshot.guest_attached, snapshot.sink_reachable,
+         snapshot.event_ring_occupancy, snapshot.byte_ring_occupancy,
+         snapshot.q240_occupancy, snapshot.q240_produced,
+         snapshot.q240_submitted, snapshot.output_state,
+         snapshot.worker_wait_reason, snapshot.reset_seen,
+         snapshot.reset_ordinal, snapshot.reset_ack,
+         snapshot.terminal_armed, snapshot.terminal_horizon_published,
+         snapshot.terminal_horizon_observed, snapshot.terminal_pcm_ready,
+         snapshot.physical_sink_state, snapshot.physical_sticky_error,
+         snapshot.physical_qovf, snapshot.callback_active,
+         snapshot.callback_in_flight);
+    const int stop_result =
+        p4_nano_audio86_guest_binding::timeout_request_async_stop();
+    emit("P4_AUDIO86_TIMEOUT_STOP attempted=%s result=%d quiescence=UNPROVEN"
+         " owner_deleted=NO resources_reclaimed=NO\n",
+         snapshot.service_observable != 0U ? "YES" : "NO", stop_result);
+    emit("P4_AUDIO86_REAL_GUEST_RESULT=FAIL reason=%s"
+         " inner_result=INDETERMINATE\n",
+         ready_timeout ? "OUTER_READY_TIMEOUT" : "OUTER_COMPLETION_TIMEOUT");
+    emit_audio86_formal_terminal_once(
+        composition,
+        ready_timeout
+            ? p4_nano_pc98_runtime::audio86_outer::TerminalOwner::ReadyTimeout
+            : p4_nano_pc98_runtime::audio86_outer::TerminalOwner::CompletionTimeout,
+        false);
+}
+#endif
 
 esp_err_t run_composition(const ValidationKind validation_kind,
                           const bool emu_backend) noexcept
@@ -1544,6 +1697,11 @@ esp_err_t run_audio86_real_guest() noexcept
      * i286 guest profile, not the normal PC-98 runtime composition. */
     static Composition composition(ValidationKind::None, false);
     composition.audio86_real_guest = true;
+    composition.ready_signaled = false;
+    composition.owner_task = nullptr;
+    composition.owner_done.store(false, std::memory_order_relaxed);
+    composition.audio86_lifecycle.reset(ESP_FAIL);
+    p4_nano_audio86_guest_binding::timeout_diagnostic_reset();
     composition.ready_semaphore = xSemaphoreCreateBinary();
     composition.stopped_semaphore = xSemaphoreCreateBinary();
     if (composition.ready_semaphore == nullptr || composition.stopped_semaphore == nullptr) {
@@ -1557,19 +1715,55 @@ esp_err_t run_audio86_real_guest() noexcept
         destroy_sync(&composition);
         return ESP_ERR_NO_MEM;
     }
-    if (xSemaphoreTake(composition.ready_semaphore, kStartupTimeoutTicks) != pdTRUE) {
-        composition.stop_requested.store(true, std::memory_order_release);
+    composition.audio86_lifecycle.begin_ready_wait();
+    if (xSemaphoreTake(composition.ready_semaphore, kStartupTimeoutTicks) !=
+        pdTRUE) {
+        (void)composition.audio86_lifecycle.mark_startup_timeout(
+            ESP_ERR_TIMEOUT);
+        emit_audio86_timeout(&composition, true);
+        return ESP_ERR_TIMEOUT;
     }
-    if (composition.stopped_semaphore != nullptr) {
-        (void)xSemaphoreTake(composition.stopped_semaphore, kStartupTimeoutTicks);
+    const auto startup_state =
+        static_cast<p4_nano_pc98_runtime::audio86_outer::StartupState>(
+            composition.audio86_lifecycle.startup_state.load(
+                std::memory_order_acquire));
+    composition.audio86_lifecycle.begin_completion_wait();
+    if (xSemaphoreTake(composition.stopped_semaphore,
+                       kAudio86CompletionTimeoutTicks) != pdTRUE) {
+        (void)composition.audio86_lifecycle.mark_completion_timeout(
+            ESP_ERR_TIMEOUT);
+        emit_audio86_timeout(&composition, false);
+        return ESP_ERR_TIMEOUT;
     }
+    const bool owner_done =
+        composition.owner_done.load(std::memory_order_acquire);
+    if (!composition.audio86_lifecycle.owner_delete_allowed(true,
+                                                             owner_done)) {
+        (void)composition.audio86_lifecycle.mark_completion_timeout(
+            ESP_ERR_TIMEOUT);
+        emit_audio86_timeout(&composition, false);
+        return ESP_ERR_TIMEOUT;
+    }
+    const esp_err_t result =
+        static_cast<esp_err_t>(composition.audio86_lifecycle.completion_result
+                                   .load(std::memory_order_acquire));
+    composition.audio86_lifecycle.mark_complete();
     if (composition.owner_task != nullptr) {
         vTaskDelete(composition.owner_task);
         composition.owner_task = nullptr;
     }
-    const esp_err_t result = composition.owner_result;
     destroy_sync(&composition);
-    return result;
+    const bool success =
+        startup_state ==
+            p4_nano_pc98_runtime::audio86_outer::StartupState::Ready &&
+        result == ESP_OK;
+    emit_audio86_formal_terminal_once(
+        &composition,
+        success
+            ? p4_nano_pc98_runtime::audio86_outer::TerminalOwner::InnerComplete
+            : p4_nano_pc98_runtime::audio86_outer::TerminalOwner::InnerFailed,
+        success);
+    return success ? ESP_OK : result;
 #endif
 }
 
