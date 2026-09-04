@@ -313,6 +313,10 @@ void np2audio86_guest_audio_sync(void);
  * live sink provides the optional seam, publishes a non-semantic render
  * horizon.  No event, data run, or sequence is synthesized. */
 int np2audio86_guest_progress_checkpoint(void);
+/* Owner-only diagnostic projection.  It applies no guest state, emits no
+ * transport publication and leaves semantic failure state unchanged. */
+int np2audio86_guest_progress_observe(uint64_t *guest_cycles,
+                                      uint64_t *frame_timestamp);
 
 /* Plain PC-9801-86 PCM86 guest/accounting hand-off. */
 /* Returns nonzero only when the operation was accepted/handled.  A checked

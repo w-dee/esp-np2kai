@@ -178,6 +178,29 @@ static void owner_wait(struct p4_nano_audio86_live_service *service)
 #endif
 }
 
+static void publish_transaction_diagnostic(
+    struct p4_nano_audio86_live_service *service, bool waiting)
+{
+    uint32_t guard = atomic_load_explicit(
+        &service->diagnostic_transaction_guard, memory_order_relaxed);
+    if ((guard & 1U) != 0U)
+        ++guard;
+    (void)atomic_exchange_explicit(&service->diagnostic_transaction_guard,
+                                   guard + 1U, memory_order_acq_rel);
+    atomic_store_explicit(&service->diagnostic_transaction_active,
+                          service->transaction_active, memory_order_relaxed);
+    atomic_store_explicit(&service->diagnostic_reserved_events,
+                          service->reserved_events, memory_order_relaxed);
+    atomic_store_explicit(&service->diagnostic_reserved_bytes,
+                          service->reserved_bytes, memory_order_relaxed);
+    atomic_store_explicit(&service->diagnostic_horizon_owned,
+                          service->horizon_owned, memory_order_relaxed);
+    atomic_store_explicit(&service->diagnostic_transaction_waiting,
+                          waiting ? 1U : 0U, memory_order_relaxed);
+    atomic_store_explicit(&service->diagnostic_transaction_guard, guard + 2U,
+                          memory_order_release);
+}
+
 static bool owner_matches(const struct p4_nano_audio86_live_service *service)
 {
     if (atomic_load_explicit(&service->owner_valid,
@@ -279,12 +302,16 @@ static bool producer_terminated(
 static int wait_for_capacity(struct p4_nano_audio86_live_service *service,
                              size_t bytes)
 {
+    bool waiting = false;
     for (;;) {
         bool event_space;
         bool byte_space;
         bool horizon_empty;
-        if (producer_terminated(service))
+        if (producer_terminated(service)) {
+            if (waiting)
+                publish_transaction_diagnostic(service, false);
             return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+        }
         event_space =
             np2audio86_event_ring_occupancy(&service->events) +
                 service->reserved_events <
@@ -296,8 +323,15 @@ static int wait_for_capacity(struct p4_nano_audio86_live_service *service,
         horizon_empty =
             !np2audio86_runtime_horizon_pending(&service->control) &&
             service->horizon_owned == 0U;
-        if (event_space && byte_space && horizon_empty)
+        if (event_space && byte_space && horizon_empty) {
+            if (waiting)
+                publish_transaction_diagnostic(service, false);
             return NP2AUDIO86_GUEST_TRANSACTION_OK;
+        }
+        if (!waiting) {
+            publish_transaction_diagnostic(service, true);
+            waiting = true;
+        }
         wake_waiters(service);
         owner_wait(service);
     }
@@ -363,6 +397,7 @@ static int guest_extend_checked(void *opaque,
                                 size_t bytes)
 {
     struct p4_nano_audio86_live_service *service = opaque;
+    bool diagnostic_wait_published = false;
     if (service == NULL ||
         !token_matches(service, token,
                        NP2AUDIO86_GUEST_TRANSACTION_DATA_RUN) ||
@@ -379,12 +414,20 @@ static int guest_extend_checked(void *opaque,
     while ((uint64_t)np2audio86_byte_ring_occupancy(&service->bytes) +
                service->reserved_bytes >=
            NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
+        if (!diagnostic_wait_published) {
+            publish_transaction_diagnostic(service, true);
+            diagnostic_wait_published = true;
+        }
         if (atomic_load_explicit(&service->first_error_latched,
-                                 memory_order_acquire) != 0U)
+                                 memory_order_acquire) != 0U) {
+            publish_transaction_diagnostic(service, false);
             return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+        }
         wake_waiters(service);
         owner_wait(service);
     }
+    if (diagnostic_wait_published)
+        publish_transaction_diagnostic(service, false);
     ++service->reserved_bytes;
     return NP2AUDIO86_GUEST_TRANSACTION_OK;
 }
@@ -1361,6 +1404,16 @@ enum p4_nano_audio86_live_result p4_nano_audio86_live_service_init(
                 P4_NANO_AUDIO86_LIVE_WAIT_NONE_ACTIVE);
     atomic_init(&service->output_state_published, NP2_PCM_OUTPUT_INITIAL);
     atomic_init(&service->reset_ordinal_published, 0U);
+    atomic_init(&service->diagnostic_transaction_guard, 0U);
+    atomic_init(&service->diagnostic_transaction_active, 0U);
+    atomic_init(&service->diagnostic_reserved_events, 0U);
+    atomic_init(&service->diagnostic_reserved_bytes, 0U);
+    atomic_init(&service->diagnostic_horizon_owned, 0U);
+    atomic_init(&service->diagnostic_transaction_waiting, 0U);
+    atomic_init(&service->diagnostic_checkpoint_retrying, 0U);
+    atomic_init(&service->diagnostic_checkpoint_retries, 0U);
+    atomic_init(&service->diagnostic_checkpoint_max_retries, 0U);
+    atomic_init(&service->diagnostic_checkpoint_total_retries, 0U);
 #if defined(ESP_PLATFORM)
     atomic_init(&service->worker_handle_ready, 0U);
 #endif
@@ -1585,6 +1638,7 @@ static enum p4_nano_audio86_live_result owner_finalize_clean(
 enum p4_nano_audio86_live_result p4_nano_audio86_live_service_owner_checkpoint(
     struct p4_nano_audio86_live_service *service)
 {
+    uint32_t retries = 0U;
     if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
         return P4_NANO_AUDIO86_LIVE_ARGUMENT;
     if (!owner_matches(service))
@@ -1592,17 +1646,54 @@ enum p4_nano_audio86_live_result p4_nano_audio86_live_service_owner_checkpoint(
     for (;;) {
         enum p4_nano_audio86_live_state state = service_state(service);
         int result;
-        if (state == P4_NANO_AUDIO86_LIVE_FAILING)
+        if (state == P4_NANO_AUDIO86_LIVE_FAILING) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
             return owner_detach_failure(service);
-        if (state == P4_NANO_AUDIO86_LIVE_STOP_REQUESTED)
+        }
+        if (state == P4_NANO_AUDIO86_LIVE_STOP_REQUESTED) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
             return owner_finalize_clean(service);
-        if (state != P4_NANO_AUDIO86_LIVE_RUNNING)
+        }
+        if (state != P4_NANO_AUDIO86_LIVE_RUNNING) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
             return state_terminal(state) ? P4_NANO_AUDIO86_LIVE_FAILED
                                          : P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+        }
         result = np2audio86_guest_progress_checkpoint();
-        if (result == NP2AUDIO86_GUEST_TRANSACTION_OK)
+        if (result == NP2AUDIO86_GUEST_TRANSACTION_OK) {
+            publish_transaction_diagnostic(service, false);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
             return P4_NANO_AUDIO86_LIVE_OK;
+        }
         if (result == NP2AUDIO86_GUEST_TRANSACTION_RETRY) {
+            uint32_t maximum;
+            ++retries;
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  retries, memory_order_relaxed);
+            atomic_fetch_add_explicit(
+                &service->diagnostic_checkpoint_total_retries, 1U,
+                memory_order_relaxed);
+            maximum = atomic_load_explicit(
+                &service->diagnostic_checkpoint_max_retries,
+                memory_order_relaxed);
+            if (retries > maximum)
+                atomic_store_explicit(
+                    &service->diagnostic_checkpoint_max_retries, retries,
+                    memory_order_relaxed);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  1U, memory_order_release);
             owner_wait(service);
             continue;
         }
@@ -1612,6 +1703,8 @@ enum p4_nano_audio86_live_result p4_nano_audio86_live_service_owner_checkpoint(
         (void)first_fatal(service, P4_NANO_AUDIO86_LIVE_FAILURE_PRODUCER,
                           P4_NANO_AUDIO86_LIVE_ORIGIN_CHECKPOINT,
                           LIVE_SUBCODE_GUEST_CONTRACT);
+        atomic_store_explicit(&service->diagnostic_checkpoint_retrying, 0U,
+                              memory_order_release);
         return owner_detach_failure(service);
     }
 }
@@ -1763,6 +1856,50 @@ void p4_nano_audio86_live_service_status(
     status->terminal_pcm_ready = atomic_load_explicit(
         &service->fixture_terminal_pcm_ready, memory_order_acquire);
     status->snapshot_coherent = coherent ? 1U : 0U;
+}
+
+void p4_nano_audio86_live_service_owner_diagnostic(
+    const struct p4_nano_audio86_live_service *service,
+    struct p4_nano_audio86_live_owner_diagnostic *diagnostic)
+{
+    if (diagnostic == NULL)
+        return;
+    memset(diagnostic, 0, sizeof(*diagnostic));
+    if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
+        return;
+    for (uint32_t attempt = 0U; attempt < 8U; ++attempt) {
+        const uint32_t before = atomic_load_explicit(
+            &service->diagnostic_transaction_guard, memory_order_acquire);
+        uint32_t after;
+        if ((before & 1U) != 0U)
+            continue;
+        diagnostic->transaction_active = atomic_load_explicit(
+            &service->diagnostic_transaction_active, memory_order_relaxed);
+        diagnostic->reserved_event_slots = atomic_load_explicit(
+            &service->diagnostic_reserved_events, memory_order_relaxed);
+        diagnostic->reserved_byte_count = atomic_load_explicit(
+            &service->diagnostic_reserved_bytes, memory_order_relaxed);
+        diagnostic->horizon_owned = atomic_load_explicit(
+            &service->diagnostic_horizon_owned, memory_order_relaxed);
+        diagnostic->transaction_waiting = atomic_load_explicit(
+            &service->diagnostic_transaction_waiting, memory_order_relaxed);
+        after = atomic_load_explicit(&service->diagnostic_transaction_guard,
+                                     memory_order_acquire);
+        if (before == after) {
+            diagnostic->snapshot_coherent = 1U;
+            break;
+        }
+    }
+    diagnostic->horizon_mailbox_state =
+        np2audio86_runtime_horizon_pending(&service->control) ? 1U : 0U;
+    diagnostic->progress_checkpoint_retrying = atomic_load_explicit(
+        &service->diagnostic_checkpoint_retrying, memory_order_acquire);
+    diagnostic->current_checkpoint_retry_count = atomic_load_explicit(
+        &service->diagnostic_checkpoint_retries, memory_order_relaxed);
+    diagnostic->max_checkpoint_retry_count = atomic_load_explicit(
+        &service->diagnostic_checkpoint_max_retries, memory_order_relaxed);
+    diagnostic->checkpoint_retry_count = atomic_load_explicit(
+        &service->diagnostic_checkpoint_total_retries, memory_order_relaxed);
 }
 
 static uint64_t monotonic_ms(void)

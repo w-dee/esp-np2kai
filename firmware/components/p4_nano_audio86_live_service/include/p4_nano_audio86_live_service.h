@@ -129,6 +129,23 @@ struct p4_nano_audio86_live_status {
     uint32_t terminal_pcm_ready;
 };
 
+/* Timeout-only owner/backpressure observation.  These fields mirror existing
+ * owner state at coarse checkpoint or actual wait boundaries; they never
+ * authorize work. */
+struct p4_nano_audio86_live_owner_diagnostic {
+    uint32_t snapshot_coherent;
+    uint32_t transaction_active;
+    uint32_t reserved_event_slots;
+    uint32_t reserved_byte_count;
+    uint32_t horizon_owned;
+    uint32_t horizon_mailbox_state;
+    uint32_t transaction_waiting;
+    uint32_t progress_checkpoint_retrying;
+    uint32_t current_checkpoint_retry_count;
+    uint32_t max_checkpoint_retry_count;
+    uint32_t checkpoint_retry_count;
+};
+
 struct p4_nano_audio86_live_config {
     /* Borrowed, exclusively for the interval from successful start through
      * strong quiescence.  The service copies the callback table but never
@@ -175,6 +192,16 @@ struct p4_nano_audio86_live_service {
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) worker_wait_reason;
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) output_state_published;
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) reset_ordinal_published;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_transaction_guard;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_transaction_active;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_reserved_events;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_reserved_bytes;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_horizon_owned;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_transaction_waiting;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_checkpoint_retrying;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_checkpoint_retries;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_checkpoint_max_retries;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) diagnostic_checkpoint_total_retries;
 #if defined(ESP_PLATFORM)
     P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) worker_handle_ready;
 #endif
@@ -328,6 +355,9 @@ p4_nano_audio86_live_service_report_producer_failure(
 void p4_nano_audio86_live_service_status(
     const struct p4_nano_audio86_live_service *service,
     struct p4_nano_audio86_live_status *status);
+void p4_nano_audio86_live_service_owner_diagnostic(
+    const struct p4_nano_audio86_live_service *service,
+    struct p4_nano_audio86_live_owner_diagnostic *diagnostic);
 
 /* status is a nonblocking, allocation-free observer callable from normal task
  * context in every state.  It never transfers ownership, invokes callbacks or

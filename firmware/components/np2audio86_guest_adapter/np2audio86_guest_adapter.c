@@ -787,6 +787,18 @@ int np2audio86_guest_progress_checkpoint(void)
     return NP2AUDIO86_GUEST_TRANSACTION_OK;
 }
 
+int np2audio86_guest_progress_observe(uint64_t *guest_cycles,
+                                      uint64_t *frame_timestamp)
+{
+    np2audio86_guest_sync_plan_t plan;
+    if (guest_cycles == NULL || frame_timestamp == NULL ||
+        sync_plan_compute(&plan) != 0)
+        return -1;
+    *guest_cycles = plan.guest_cycles;
+    *frame_timestamp = plan.frame_timestamp;
+    return 0;
+}
+
 void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace)
 {
     g_trace = trace;

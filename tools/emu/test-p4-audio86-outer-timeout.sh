@@ -55,6 +55,10 @@ timeout_log=${work_dir}/timeout.log
 rg -q '^P4_AUDIO86_OUTER_TIMEOUT_TEST=READY_THEN_STALL$' "${timeout_log}"
 rg -q '^P4_AUDIO86_OUTER_TIMEOUT class=OUTER_COMPLETION_TIMEOUT inner_result=INDETERMINATE .*guard_ms=30000$' "${timeout_log}"
 rg -q '^P4_AUDIO86_TIMEOUT_SNAPSHOT coherence=PASS .*service_observable=0 ' "${timeout_log}"
+rg -q '^P4_AUDIO86_TIMEOUT_OWNER_PROGRESS coherence=PASS history_depth=4 history_count=0 subphase=UNAVAILABLE progress_pattern=INSUFFICIENT_HISTORY checkpoint_calls=0 checkpoint_success=0 ' "${timeout_log}"
+rg -q '^P4_AUDIO86_TIMEOUT_OWNER_BACKPRESSURE transaction_active=4294967295 reserved_event_slots=4294967295 reserved_byte_count=4294967295 horizon_owned=4294967295 horizon_mailbox_state=4294967295 transaction_waiting=4294967295 progress_checkpoint_retrying=4294967295 current_checkpoint_retry_count=4294967295 max_checkpoint_retry_count=4294967295$' "${timeout_log}"
+[[ $(rg -c '^P4_AUDIO86_TIMEOUT_CHECKPOINT index=[0-3] valid=0 ' "${timeout_log}") == 4 ]]
+[[ $(rg -c '^P4_AUDIO86_TIMEOUT_PROGRESS_DELTA index=[0-2] valid=0 ' "${timeout_log}") == 3 ]]
 rg -q '^P4_AUDIO86_TIMEOUT_STOP attempted=NO result=-1 quiescence=UNPROVEN owner_deleted=NO resources_reclaimed=NO$' "${timeout_log}"
 rg -q '^P4_AUDIO86_REAL_GUEST_RESULT=FAIL reason=OUTER_COMPLETION_TIMEOUT inner_result=INDETERMINATE$' "${timeout_log}"
 rg -q '^P4_NANO_AUDIO86_REAL_GUEST_STATUS=FAIL$' "${timeout_log}"
@@ -70,5 +74,6 @@ printf '%s\n' \
     'AUDIO86_OUTER_NORMAL_SUCCESS=PASS' \
     'AUDIO86_OUTER_TIMEOUT_INJECTION=PASS' \
     'AUDIO86_OUTER_TIMEOUT_FORMAL_TERMINAL=1_FAILED' \
+    'AUDIO86_OUTER_TIMEOUT_OWNER_PROGRESS_DIAGNOSTIC=PASS' \
     'AUDIO86_OUTER_TIMEOUT_FORCED_DELETE=NO' \
     'AUDIO86_OUTER_TIMEOUT_VALIDATOR_REJECTION=PASS'

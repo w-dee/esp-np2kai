@@ -12,6 +12,7 @@ set(P4_NANO_AUDIO86_BINDING_REQUIRES
 
 idf_component_register(
     SRCS "p4_nano_audio86_guest_binding.cpp"
+         "p4_nano_audio86_owner_progress_diagnostics.cpp"
     INCLUDE_DIRS "include" "${P4_NANO_AUDIO86_VENDOR_SRC}"
                  "${P4_NANO_AUDIO86_VENDOR_SRC}/i286c"
                  "${P4_NANO_AUDIO86_BINDING_ROOT}/host/compat"

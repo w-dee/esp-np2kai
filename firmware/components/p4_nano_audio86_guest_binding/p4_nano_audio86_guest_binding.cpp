@@ -26,9 +26,10 @@ extern "C" {
 #include "pic.h"
 
 /* iocore.h transitively includes pic.h without an include guard.  The two
- * declarations below are the narrow board-bootstrap surface needed here. */
+ * functions and PIC object below are the narrow iocore surface needed here. */
 void iocore_create(void);
 BRESULT iocore_build(void);
+extern _PIC pic;
 }
 
 #include "np2_crc32.h"
@@ -48,6 +49,7 @@ BRESULT iocore_build(void);
 #include "p4_nano_audio86_live_service_fixture.h"
 #include "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_predicate.hpp"
 #include "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_worker_timing.hpp"
+#include "p4_nano_audio86_guest_binding/p4_nano_audio86_owner_progress_diagnostics.hpp"
 #include "p4_nano_audio86_notifications/task_notification.hpp"
 #if defined(P4_NANO_AUDIO86_PHYSICAL_I2S_PROFILE)
 #include "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink_idf.hpp"
@@ -272,6 +274,10 @@ struct Runtime {
     np2_pcm_sink sustained_downstream{};
     p4_nano_audio86_live_service *live_service = nullptr;
     p4_nano_audio86_5d3_snapshot live_snapshot{};
+    uint64_t diagnostic_last_io_ordinal = UINT64_MAX;
+    uint64_t diagnostic_last_io_frame = UINT64_MAX;
+    uint64_t diagnostic_last_io_cycle = UINT64_MAX;
+    uint16_t diagnostic_last_io_port = UINT16_MAX;
 #else
     uint8_t full_pcm[kRenderFrames * 4U]{};
     uint8_t pre_reset_pcm[kRenderFrames * 4U]{};
@@ -566,6 +572,7 @@ std::atomic<uint32_t> s_owner_phase{
     static_cast<uint32_t>(OwnerPhase::Created)};
 std::atomic<uint32_t> s_service_observable{0U};
 std::atomic<uint32_t> s_outer_timeout{0U};
+OwnerProgressDiagnostics s_owner_progress{};
 static_assert(sizeof(np2audio86_event_ring) == 3080U);
 static_assert(sizeof(np2audio86_byte_ring) == 65544U);
 static_assert(sizeof(np2audio86_runtime_control) == 36U);
@@ -3014,6 +3021,13 @@ void sustained_trace_io(void *opaque,
     np2audio86_sustained_trace_record(
         &runtime->sustained, NP2_AUDIO86_SUSTAINED_TRACE_IO,
         canonical, bytes);
+    runtime->diagnostic_last_io_ordinal = runtime->trace.io_count;
+    runtime->diagnostic_last_io_port = record->port;
+    runtime->diagnostic_last_io_frame = record->frame_timestamp;
+    uint64_t cycle = UINT64_MAX;
+    uint64_t frame = UINT64_MAX;
+    if (np2audio86_guest_progress_observe(&cycle, &frame) == 0)
+        runtime->diagnostic_last_io_cycle = cycle;
 }
 #endif
 
@@ -3028,7 +3042,64 @@ void sustained_guest_delay_one_tick(void *)
 {
     /* A blocking one-tick delay, rather than taskYIELD(), gives lower-priority
      * CPU1 system work a bounded opportunity to run. */
+    s_owner_progress.publish_subphase(OwnerSubphase::CooperativeDelay);
     vTaskDelay(1U);
+    s_owner_progress.publish_subphase(OwnerSubphase::CpuExec);
+}
+
+uint64_t publish_owner_checkpoint_record(
+    Runtime *runtime, const p4_nano_audio86_live_status &live_status,
+    const uint64_t wall_time_us)
+{
+    OwnerCheckpointInput input{};
+    np2audio86_guest_state_snapshot_t guest{};
+    uint64_t guest_cycle = UINT64_MAX;
+    uint64_t guest_frame = UINT64_MAX;
+    (void)np2audio86_guest_progress_observe(&guest_cycle, &guest_frame);
+    np2audio86_guest_host_snapshot(&guest);
+    input.wall_time_us = wall_time_us;
+    input.guest_cycle = guest_cycle;
+    input.guest_frame = guest_frame;
+    input.cs = i286core.s.r.w.cs;
+    input.ip = i286core.s.r.w.ip;
+    input.flags = i286core.s.r.w.flag;
+    input.cx = i286core.s.r.w.cx;
+    input.bp = i286core.s.r.w.bp;
+    input.interrupt_enabled =
+        (i286core.s.r.w.flag & I_FLAG) != 0U ? 1U : 0U;
+    const uint32_t instruction_address =
+        (i286core.s.cs_base + i286core.s.r.w.ip) & i286core.s.adrsmask;
+    input.next_opcode = mem[instruction_address];
+    input.hlt = input.next_opcode == 0xf4U ? 1U : 0U;
+    input.timer_a_running = nevent_iswork(NEVENT_FMTIMERA) ? 1U : 0U;
+    input.timer_b_running = nevent_iswork(NEVENT_FMTIMERB) ? 1U : 0U;
+    input.opna_status = guest.opna_status;
+    input.pic_pending = static_cast<uint16_t>(pic.pi[0].irr) |
+                        (static_cast<uint16_t>(pic.pi[1].irr) << 8U);
+    input.pic_mask = static_cast<uint16_t>(pic.pi[0].imr) |
+                     (static_cast<uint16_t>(pic.pi[1].imr) << 8U);
+    input.next_nevent_id = kOwnerDiagnosticUnavailable;
+    input.next_nevent_remaining = INT32_MIN;
+    constexpr NEVENTID relevant_events[] = {
+        NEVENT_FMTIMERA, NEVENT_FMTIMERB, NEVENT_86PCM};
+    for (const NEVENTID event : relevant_events) {
+        if (!nevent_iswork(event))
+            continue;
+        const SINT32 remaining = nevent_getremain(event);
+        if (input.next_nevent_id == kOwnerDiagnosticUnavailable ||
+            remaining < input.next_nevent_remaining) {
+            input.next_nevent_id = static_cast<uint32_t>(event);
+            input.next_nevent_remaining = remaining;
+        }
+    }
+    input.last_guest_io_ordinal = runtime->diagnostic_last_io_ordinal;
+    input.last_guest_io_port = runtime->diagnostic_last_io_port;
+    input.last_guest_io_frame = runtime->diagnostic_last_io_frame;
+    input.last_guest_io_cycle = runtime->diagnostic_last_io_cycle;
+    input.published_horizon = live_status.latest_published_horizon;
+    input.rendered_frame = live_status.rendered_frames;
+    s_owner_progress.publish_checkpoint(input);
+    return guest_frame;
 }
 
 int live_5d3_decorate_render(void *opaque,
@@ -3303,6 +3374,7 @@ bool execute_real_i286(Runtime *runtime)
             &cooperative, sustained_guest_monotonic_us,
             sustained_guest_delay_one_tick, nullptr) != 0)
         return false;
+    s_owner_progress.publish_subphase(OwnerSubphase::CpuExec);
 #endif
     while (!failed(runtime)) {
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
@@ -3321,12 +3393,33 @@ bool execute_real_i286(Runtime *runtime)
             np2audio86_sustained_cooperative_checkpoint(&cooperative);
         if (cooperative_result < 0)
             return false;
-        if (cooperative_result > 0 &&
-            p4_nano_audio86_live_service_owner_checkpoint(
-                runtime->live_service) != P4_NANO_AUDIO86_LIVE_OK)
-            return false;
+        if (cooperative_result > 0) {
+            const uint64_t enter_us = sustained_guest_monotonic_us(nullptr);
+            s_owner_progress.publish_subphase(
+                OwnerSubphase::ProgressCheckpointEnter);
+            const uint64_t checkpoint_frame = publish_owner_checkpoint_record(
+                runtime, live_status, enter_us);
+            s_owner_progress.checkpoint_enter(enter_us, checkpoint_frame);
+            s_owner_progress.publish_subphase(
+                OwnerSubphase::ProgressCheckpointWait);
+            const p4_nano_audio86_live_result checkpoint_result =
+                p4_nano_audio86_live_service_owner_checkpoint(
+                    runtime->live_service);
+            s_owner_progress.publish_subphase(
+                OwnerSubphase::ProgressCheckpointExit);
+            s_owner_progress.checkpoint_exit(
+                sustained_guest_monotonic_us(nullptr),
+                static_cast<uint32_t>(checkpoint_result),
+                checkpoint_result == P4_NANO_AUDIO86_LIVE_OK);
+            if (checkpoint_result != P4_NANO_AUDIO86_LIVE_OK)
+                return false;
+            s_owner_progress.publish_subphase(OwnerSubphase::CpuExec);
+        }
 #endif
-        if (i286core.s.remainclock <= 0) { nevent_progress(); continue; }
+        if (i286core.s.remainclock <= 0) {
+            nevent_progress();
+            continue;
+        }
         i286c_step();
         if (CPU_CLOCK > 100000000U) return false;
     }
@@ -3335,6 +3428,7 @@ bool execute_real_i286(Runtime *runtime)
     /* HLT is the fixture's irrevocable terminal boundary.  The private arm
      * preserves RESET release -> fixed terminal horizon release -> notify;
      * generic live stop remains a separate no-RESET protocol. */
+    s_owner_progress.publish_subphase(OwnerSubphase::TerminalTransition);
     publish_owner_phase(OwnerPhase::TerminalArm);
     if (p4_nano_audio86_5d3_fixture_arm_terminal(runtime->live_service) !=
         P4_NANO_AUDIO86_LIVE_OK)
@@ -4989,6 +5083,10 @@ void initialize_live_5d3_observer(Runtime *runtime, TaskHandle_t producer,
     runtime->render = &s_live_service.render;
     runtime->render_pcm_realbuf = 0;
     runtime->live_snapshot = {};
+    runtime->diagnostic_last_io_ordinal = UINT64_MAX;
+    runtime->diagnostic_last_io_frame = UINT64_MAX;
+    runtime->diagnostic_last_io_cycle = UINT64_MAX;
+    runtime->diagnostic_last_io_port = UINT16_MAX;
     runtime->applied_count.store(0U, std::memory_order_relaxed);
     runtime->producer_done.store(0U, std::memory_order_relaxed);
     runtime->first_error.store(0U, std::memory_order_relaxed);
@@ -5380,6 +5478,7 @@ cleanup:
 
 void timeout_diagnostic_reset() noexcept
 {
+    s_owner_progress.reset();
     s_outer_timeout.store(0U, std::memory_order_relaxed);
     s_service_observable.store(0U, std::memory_order_relaxed);
     s_owner_phase.store(static_cast<uint32_t>(OwnerPhase::Created),
@@ -5432,11 +5531,30 @@ TimeoutDiagnosticSnapshot timeout_diagnostic_snapshot() noexcept
     snapshot.physical_qovf = unavailable;
     snapshot.callback_active = unavailable;
     snapshot.callback_in_flight = unavailable;
+    snapshot.owner_progress = s_owner_progress.snapshot();
+    snapshot.transaction_active = unavailable;
+    snapshot.reserved_event_slots = unavailable;
+    snapshot.reserved_byte_count = unavailable;
+    snapshot.horizon_owned = unavailable;
+    snapshot.horizon_mailbox_state = unavailable;
+    snapshot.transaction_waiting = unavailable;
+    snapshot.progress_checkpoint_retrying = unavailable;
+    snapshot.current_checkpoint_retry_count = unavailable;
+    snapshot.max_checkpoint_retry_count = unavailable;
+    snapshot.checkpoint_retry_count = unavailable;
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
     if (snapshot.service_observable != 0U) {
         p4_nano_audio86_live_status status{};
+        p4_nano_audio86_live_owner_diagnostic owner{};
         p4_nano_audio86_live_service_status(&s_live_service, &status);
-        snapshot.snapshot_coherent = status.snapshot_coherent;
+        p4_nano_audio86_live_service_owner_diagnostic(&s_live_service,
+                                                       &owner);
+        snapshot.snapshot_coherent =
+            status.snapshot_coherent != 0U &&
+                    snapshot.owner_progress.coherent != 0U &&
+                    owner.snapshot_coherent != 0U
+                ? 1U
+                : 0U;
         snapshot.live_service_state = static_cast<uint32_t>(status.state);
         snapshot.failure_category = static_cast<uint32_t>(status.category);
         snapshot.failure_origin = static_cast<uint32_t>(status.origin);
@@ -5467,6 +5585,24 @@ TimeoutDiagnosticSnapshot timeout_diagnostic_snapshot() noexcept
         snapshot.terminal_horizon_observed =
             status.terminal_horizon_observed;
         snapshot.terminal_pcm_ready = status.terminal_pcm_ready;
+        snapshot.transaction_active = owner.transaction_active;
+        snapshot.reserved_event_slots = owner.reserved_event_slots;
+        snapshot.reserved_byte_count = owner.reserved_byte_count;
+        snapshot.horizon_owned = owner.horizon_owned;
+        snapshot.horizon_mailbox_state = owner.horizon_mailbox_state;
+        snapshot.transaction_waiting = owner.transaction_waiting;
+        snapshot.progress_checkpoint_retrying =
+            owner.progress_checkpoint_retrying;
+        snapshot.current_checkpoint_retry_count =
+            owner.current_checkpoint_retry_count;
+        snapshot.max_checkpoint_retry_count =
+            owner.max_checkpoint_retry_count;
+        snapshot.checkpoint_retry_count = owner.checkpoint_retry_count;
+        if (owner.transaction_waiting != 0U)
+            snapshot.owner_progress.subphase = OwnerSubphase::TransactionWait;
+        else if (owner.progress_checkpoint_retrying != 0U)
+            snapshot.owner_progress.subphase =
+                OwnerSubphase::ProgressCheckpointWait;
     }
 #endif
     return snapshot;

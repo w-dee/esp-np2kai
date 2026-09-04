@@ -1401,6 +1401,119 @@ void emit_audio86_timeout(Composition *composition, bool ready_timeout) noexcept
          snapshot.physical_sink_state, snapshot.physical_sticky_error,
          snapshot.physical_qovf, snapshot.callback_active,
          snapshot.callback_in_flight);
+    const auto &owner = snapshot.owner_progress;
+    emit("P4_AUDIO86_TIMEOUT_OWNER_PROGRESS coherence=%s history_depth=%zu"
+         " history_count=%" PRIu32 " subphase=%s progress_pattern=%s"
+         " checkpoint_calls=%" PRIu32 " checkpoint_success=%" PRIu32
+         " checkpoint_retries=%" PRIu32
+         " checkpoint_last_enter_us=%" PRIu64
+         " checkpoint_last_exit_us=%" PRIu64
+         " checkpoint_max_duration_us=%" PRIu64
+         " checkpoint_last_result=%" PRIu32
+         " checkpoint_last_frame=%" PRIu64 "\n",
+         owner.coherent != 0U ? "PASS" : "FAILED",
+         p4_nano_audio86_guest_binding::kOwnerCheckpointHistoryDepth,
+         owner.checkpoint_count,
+         p4_nano_audio86_guest_binding::owner_subphase_name(owner.subphase),
+         p4_nano_audio86_guest_binding::owner_progress_pattern_name(
+             owner.pattern),
+         owner.checkpoint_call_count, owner.checkpoint_success_count,
+         snapshot.checkpoint_retry_count, owner.checkpoint_last_enter_us,
+         owner.checkpoint_last_exit_us, owner.checkpoint_max_duration_us,
+         owner.checkpoint_last_result, owner.checkpoint_last_frame);
+    emit("P4_AUDIO86_TIMEOUT_OWNER_BACKPRESSURE transaction_active=%" PRIu32
+         " reserved_event_slots=%" PRIu32 " reserved_byte_count=%" PRIu32
+         " horizon_owned=%" PRIu32 " horizon_mailbox_state=%" PRIu32
+         " transaction_waiting=%" PRIu32
+         " progress_checkpoint_retrying=%" PRIu32
+         " current_checkpoint_retry_count=%" PRIu32
+         " max_checkpoint_retry_count=%" PRIu32 "\n",
+         snapshot.transaction_active, snapshot.reserved_event_slots,
+         snapshot.reserved_byte_count, snapshot.horizon_owned,
+         snapshot.horizon_mailbox_state, snapshot.transaction_waiting,
+         snapshot.progress_checkpoint_retrying,
+         snapshot.current_checkpoint_retry_count,
+         snapshot.max_checkpoint_retry_count);
+    for (std::size_t index = 0U;
+         index < p4_nano_audio86_guest_binding::kOwnerCheckpointHistoryDepth;
+         ++index) {
+        const bool available = index < owner.checkpoint_count &&
+                               owner.history[index].valid != 0U;
+        const auto &record = owner.history[index];
+        const uint64_t unavailable_u64 = UINT64_MAX;
+        const uint32_t unavailable_u32 = UINT32_MAX;
+        const uint16_t unavailable_u16 = UINT16_MAX;
+        const uint64_t io_ordinal = available
+            ? record.last_guest_io_ordinal : unavailable_u64;
+        const uint64_t expected_next_io =
+            io_ordinal == unavailable_u64 ? unavailable_u64 : io_ordinal + 1U;
+        emit("P4_AUDIO86_TIMEOUT_CHECKPOINT index=%zu valid=%u"
+             " sequence=%" PRIu32 " wall_us=%" PRIu64
+             " guest_cycle=%" PRIu64 " guest_frame=%" PRIu64
+             " cs=0x%04" PRIx16 " ip=0x%04" PRIx16
+             " flags=0x%04" PRIx16 " if=%u cx=%" PRIu16
+             " bp=%" PRIu16 " hlt=%u next_opcode=0x%02x"
+             " last_io_ordinal=%" PRIu64
+             " expected_next_io_ordinal=%" PRIu64
+             " last_io_port=0x%04" PRIx16
+             " last_io_frame=%" PRIu64 " last_io_cycle=%" PRIu64
+             " timer_a_running=%u timer_b_running=%u opna_status=0x%02x"
+             " pic_pending=0x%04" PRIx16 " pic_mask=0x%04" PRIx16
+             " next_nevent_id=%" PRIu32 " next_nevent_remaining=%" PRId32
+             " published_horizon=%" PRIu64 " rendered_frame=%" PRIu64
+             "\n",
+             index, available ? 1U : 0U,
+             available ? record.checkpoint_sequence : unavailable_u32,
+             available ? record.wall_time_us : unavailable_u64,
+             available ? record.guest_cycle : unavailable_u64,
+             available ? record.guest_frame : unavailable_u64,
+             available ? record.cs : unavailable_u16,
+             available ? record.ip : unavailable_u16,
+             available ? record.flags : unavailable_u16,
+             static_cast<unsigned>(available ? record.interrupt_enabled
+                                             : UINT8_MAX),
+             available ? record.cx : unavailable_u16,
+             available ? record.bp : unavailable_u16,
+             static_cast<unsigned>(available ? record.hlt : UINT8_MAX),
+             static_cast<unsigned>(available ? record.next_opcode
+                                             : UINT8_MAX),
+             io_ordinal, expected_next_io,
+             available ? record.last_guest_io_port : unavailable_u16,
+             available ? record.last_guest_io_frame : unavailable_u64,
+             available ? record.last_guest_io_cycle : unavailable_u64,
+             static_cast<unsigned>(available ? record.timer_a_running
+                                             : UINT8_MAX),
+             static_cast<unsigned>(available ? record.timer_b_running
+                                             : UINT8_MAX),
+             static_cast<unsigned>(available ? record.opna_status
+                                             : UINT8_MAX),
+             available ? record.pic_pending : unavailable_u16,
+             available ? record.pic_mask : unavailable_u16,
+             available ? record.next_nevent_id : unavailable_u32,
+             available ? record.next_nevent_remaining : INT32_MIN,
+             available ? record.published_horizon : unavailable_u64,
+             available ? record.rendered_frame : unavailable_u64);
+    }
+    for (std::size_t index = 0U;
+         index < p4_nano_audio86_guest_binding::kOwnerCheckpointIntervalCount;
+         ++index) {
+        const auto &interval = owner.intervals[index];
+        const bool available = interval.valid != 0U;
+        emit("P4_AUDIO86_TIMEOUT_PROGRESS_DELTA index=%zu valid=%u"
+             " from_sequence=%" PRIu32 " to_sequence=%" PRIu32
+             " delta_wall_us=%" PRIu64 " delta_guest_cycles=%" PRIu64
+             " delta_guest_frames=%" PRIu64
+             " guest_cycles_per_second=%" PRIu64
+             " guest_frames_per_second=%" PRIu64 "\n",
+             index, available ? 1U : 0U,
+             available ? interval.from_sequence : UINT32_MAX,
+             available ? interval.to_sequence : UINT32_MAX,
+             available ? interval.delta_wall_us : UINT64_MAX,
+             available ? interval.delta_guest_cycles : UINT64_MAX,
+             available ? interval.delta_guest_frames : UINT64_MAX,
+             available ? interval.guest_cycles_per_second : UINT64_MAX,
+             available ? interval.guest_frames_per_second : UINT64_MAX);
+    }
     const int stop_result =
         p4_nano_audio86_guest_binding::timeout_request_async_stop();
     emit("P4_AUDIO86_TIMEOUT_STOP attempted=%s result=%d quiescence=UNPROVEN"

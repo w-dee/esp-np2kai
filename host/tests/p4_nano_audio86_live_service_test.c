@@ -137,13 +137,26 @@ static void service_init(struct p4_nano_audio86_live_service *service,
            P4_NANO_AUDIO86_LIVE_OK);
     {
         struct p4_nano_audio86_live_status status;
+        struct p4_nano_audio86_live_owner_diagnostic diagnostic;
         p4_nano_audio86_live_service_status(service, &status);
+        p4_nano_audio86_live_service_owner_diagnostic(service, &diagnostic);
         assert(status.state == P4_NANO_AUDIO86_LIVE_READY);
         assert(status.snapshot_coherent == 1U);
         assert(status.output_state == NP2_PCM_OUTPUT_INITIAL);
         assert(status.event_ring_occupancy == 0U);
         assert(status.byte_ring_occupancy == 0U);
         assert(status.q240_occupancy == 0U);
+        assert(diagnostic.snapshot_coherent == 1U);
+        assert(diagnostic.transaction_active == 0U);
+        assert(diagnostic.reserved_event_slots == 0U);
+        assert(diagnostic.reserved_byte_count == 0U);
+        assert(diagnostic.horizon_owned == 0U);
+        assert(diagnostic.horizon_mailbox_state == 0U);
+        assert(diagnostic.transaction_waiting == 0U);
+        assert(diagnostic.progress_checkpoint_retrying == 0U);
+        assert(diagnostic.current_checkpoint_retry_count == 0U);
+        assert(diagnostic.max_checkpoint_retry_count == 0U);
+        assert(diagnostic.checkpoint_retry_count == 0U);
     }
 }
 
@@ -396,6 +409,14 @@ static void test_transaction_stop_boundary(void)
            P4_NANO_AUDIO86_LIVE_OK);
     np2audio86_guest_opna_write_address_low(0x28U);
     np2audio86_guest_opna_write_data_low(0xf0U);
+    {
+        struct p4_nano_audio86_live_owner_diagnostic diagnostic;
+        p4_nano_audio86_live_service_owner_diagnostic(&service,
+                                                       &diagnostic);
+        assert(diagnostic.transaction_active == 0U);
+        assert(diagnostic.reserved_event_slots == 0U);
+        assert(diagnostic.horizon_owned == 0U);
+    }
     np2audio86_guest_host_snapshot(&after);
     assert(after.sequence == before.sequence);
     assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==

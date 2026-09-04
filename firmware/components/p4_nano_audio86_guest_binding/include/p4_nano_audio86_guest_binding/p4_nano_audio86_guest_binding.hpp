@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "p4_nano_audio86_guest_binding/p4_nano_audio86_owner_progress_diagnostics.hpp"
 
 namespace np2runtime {
 class Runtime;
@@ -68,6 +69,17 @@ struct TimeoutDiagnosticSnapshot {
     std::uint32_t physical_qovf;
     std::uint32_t callback_active;
     std::uint32_t callback_in_flight;
+    OwnerProgressSnapshot owner_progress;
+    std::uint32_t transaction_active;
+    std::uint32_t reserved_event_slots;
+    std::uint32_t reserved_byte_count;
+    std::uint32_t horizon_owned;
+    std::uint32_t horizon_mailbox_state;
+    std::uint32_t transaction_waiting;
+    std::uint32_t progress_checkpoint_retrying;
+    std::uint32_t current_checkpoint_retry_count;
+    std::uint32_t max_checkpoint_retry_count;
+    std::uint32_t checkpoint_retry_count;
 };
 
 constexpr std::uint32_t kTimeoutDiagnosticUnavailable = UINT32_MAX;

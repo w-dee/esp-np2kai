@@ -103,6 +103,9 @@ int main(void)
     struct progress_probe probe = {0};
     np2audio86_guest_sink_t sink = make_sink(&probe);
     np2audio86_guest_state_snapshot_t snapshot;
+    np2audio86_guest_state_snapshot_t before_observe;
+    uint64_t observed_cycles;
+    uint64_t observed_frame;
 
     np2audio86_guest_host_test_seed(0U, 0U);
     np2audio86_guest_host_set_cpu_position(0U);
@@ -113,6 +116,13 @@ int main(void)
 
     /* Five guest seconds in one O(1) owner checkpoint. */
     np2audio86_guest_host_set_cpu_position(245760000U);
+    np2audio86_guest_host_snapshot(&before_observe);
+    assert(np2audio86_guest_progress_observe(&observed_cycles,
+                                             &observed_frame) == 0);
+    assert(observed_cycles == 245760000U);
+    assert(observed_frame == 240000U);
+    np2audio86_guest_host_snapshot(&snapshot);
+    assert(memcmp(&before_observe, &snapshot, sizeof(snapshot)) == 0);
     assert(np2audio86_guest_progress_checkpoint() ==
            NP2AUDIO86_GUEST_TRANSACTION_OK);
     assert(probe.last_frame == 240000U);
