@@ -47,7 +47,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
                     evidence_class: str = "VALIDATOR_FIXTURE") -> list[str]:
     g = json.loads(GOLDEN.read_text(encoding="utf-8"))["values"]
     return [
-        "5D3_S1_IDENTITY schema=3 "
+        "5D3_S1_IDENTITY schema=4 "
         f"evidence_class={evidence_class} source_git_sha={EXPECTED_SHA} "
         "profile=AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S "
         "workload_id=FULL_REPLAY_PCM_SUSTAINED_2S_V1 "
@@ -55,7 +55,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         f"guest_program_bytes={g['SUSTAINED_GUEST_PROGRAM_SERIALIZED_BYTES']} "
         f"guest_program_crc32={g['SUSTAINED_GUEST_PROGRAM_CRC32']} "
         f"guest_program_sha256={g['SUSTAINED_GUEST_PROGRAM_SHA256']}",
-        "5D3_S1_START schema=3 "
+        "5D3_S1_START schema=4 "
         f"evidence_class={evidence_class} rate_hz=48000 channels=2 "
         "sample_bits=16 encoding=S16LE i2s_format=PHILIPS clock_source=APLL "
         "mclk_multiple=256 mclk_hz=12288000 q_frames=240 bytes_per_frame=4 "
@@ -65,7 +65,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         "i2s_initialized=1 muted_warmup_completed=1 callbacks_registered=1 "
         "stream_started=1 codec_unmute_completed=1 startup_durations_valid=1 "
         "enable_stream_duration_us=37 codec_unmute_duration_us=83",
-        "5D3_S1_STREAM schema=3 "
+        "5D3_S1_STREAM schema=4 "
         f"evidence_class={evidence_class} generated_frames=96000 "
         f"generated_bytes=384000 generated_crc32={g['FULL_REPLAY_PCM_CRC32']} "
         f"generated_sha256={g['FULL_REPLAY_PCM_SHA256']} accepted_frames=96000 "
@@ -100,7 +100,7 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         "direct_running_accept_units=395 running_q_ovf=0 final_ring_occupancy=0 "
         "final_ring_partial=0 drops=0 overwrite=0 abandoned_published=0 "
         "abandoned_partial=0 abandoned_rendered=0",
-        "5D3_S1_PROGRESS schema=3 "
+        "5D3_S1_PROGRESS schema=4 "
         f"evidence_class={evidence_class} pcm_ring_max_occupancy=8 "
         "pcm_producer_full_wait_count=7 "
         "pcm_consumer_empty_after_release_before_done_count=2 "
@@ -112,7 +112,22 @@ def canonical_lines(*, wall_ms: int = 2040, gap_ms: int = 40,
         f"max_gap_next_relative_ms={995 + gap_ms} max_downstream_submit_us=120 "
         "max_downstream_submit_sequence=200 max_post_accept_evidence_us=80 "
         "max_post_accept_evidence_sequence=201 timing_authority=HOST_ONLY",
-        "5D3_S1_FINISH schema=3 "
+        "5D3_S1_TERMINAL_TIMING schema=4 "
+        f"evidence_class={evidence_class} clock=TASK_CONTEXT_RELATIVE_US "
+        "unset=UINT32_MAX points=11 "
+        "phase_enum=NONE:0,TERMINAL_OBSERVED:1,PRE_RESET_RENDER:2,RESET_APPLY:3,RESET_EVIDENCE:4,RESET_ACK:5,RESET_EVENT_CONSUME:6,POST_RESET_RENDER:7,Q399_PUBLISH:8,PCM_FINISH:9 "
+        "current_phase=PCM_FINISH first_qovf_worker_phase=NONE "
+        "t0=1950000 t1=1951000 t2=1951001 t3=1980001 t4=1981001 "
+        "t5=1981002 t6=1981004 t7=1981005 t8=1985005 t9=1986005 "
+        "t10=1986007 terminal_to_pre_reset_done_us=1000 "
+        "reset_action_us=29000 reset_observability_us=1000 "
+        "ack_to_terminal_ready_us=2 post_reset_synthesis_us=4000 "
+        "post_reset_evidence_and_publish_us=1000 pcm_finish_us=2 "
+        "terminal_to_q399_publish_us=36005 q399_published=1 "
+        "q399_rendered_frames=96000 q399_valid_frames=240 "
+        "pcm_production_done=1 storage_logical_bytes=52 "
+        "storage_actual_bytes=52",
+        "5D3_S1_FINISH schema=4 "
         f"evidence_class={evidence_class} controller_state=FINISHED "
         "sink_state=QUIESCENT final_copy_eof_epoch=4294967294 "
         "drain_completion_eof_epoch=2 quiescent_eof_epoch=4 "
@@ -210,7 +225,7 @@ def main() -> int:
         "A_missing_record": base[:2] + base[3:],
         "A_duplicate_record": base[:2] + [base[1]] + base[2:],
         "A_reorder": [base[1], base[0], *base[2:]],
-        "A_unknown_record": [base[0], "5D3_S1_UNKNOWN schema=3", *base[1:]],
+        "A_unknown_record": [base[0], "5D3_S1_UNKNOWN schema=4", *base[1:]],
         "A_cross_namespace_terminal": [
             *base[:-2], "P4_AUDIO86_PHYSICAL_S2_TERMINAL=COMPLETE", *base[-2:]],
         "A_unknown_field": replace_once(base, " codec_unmute_completed=1",
@@ -225,8 +240,8 @@ def main() -> int:
         "B_board": replace_once(base, "board=P4_NANO_P4_V1X", "board=GENERIC"),
         "B_backend": replace_once(base, "backend=IDF_I2S0_ES8311", "backend=FAKE"),
         "B_class": replace_once(
-            base, "5D3_S1_IDENTITY schema=3 evidence_class=VALIDATOR_FIXTURE",
-            "5D3_S1_IDENTITY schema=3 evidence_class=HOST_EXEC"),
+            base, "5D3_S1_IDENTITY schema=4 evidence_class=VALIDATOR_FIXTURE",
+            "5D3_S1_IDENTITY schema=4 evidence_class=HOST_EXEC"),
         "C_generated_frames": replace_once(base, "generated_frames=96000", "generated_frames=95999"),
         "C_generated_crc": replace_once(base, "generated_crc32=5bb15277", "generated_crc32=0bb15277"),
         "C_accepted_sha": replace_once(base, "accepted_sha256=b315", "accepted_sha256=a315"),
@@ -335,6 +350,31 @@ def main() -> int:
         "I_impossible_final_tuple": replace_once(
             base, "first_qovf_q399_available=0",
             "first_qovf_q399_available=1"),
+        "I_timing_phase_enum_grammar": replace_once(
+            base, "PCM_FINISH:9", "PCM_FINISH:10"),
+        "I_invalid_worker_phase": replace_once(
+            base, "current_phase=PCM_FINISH", "current_phase=UNKNOWN"),
+        "I_invalid_first_qovf_worker_phase": replace_once(
+            base, "first_qovf_worker_phase=NONE",
+            "first_qovf_worker_phase=UNKNOWN"),
+        "I_missing_t2_with_t3": replace_once(
+            base, "t2=1951001", "t2=4294967295"),
+        "I_t3_before_t2": replace_once(
+            base, "t3=1980001", "t3=1951000"),
+        "I_t8_before_t7": replace_once(
+            base, "t8=1985005", "t8=1981004"),
+        "I_t9_before_t8": replace_once(
+            base, "t9=1986005", "t9=1985004"),
+        "I_t10_before_t9": replace_once(
+            base, "t10=1986007", "t10=1986004"),
+        "I_q399_published_t9_unset": replace_once(
+            base, "t9=1986005", "t9=4294967295"),
+        "I_t9_set_q399_unpublished": replace_once(
+            base, "q399_published=1", "q399_published=0"),
+        "I_pcm_done_t10_unset": replace_once(
+            base, "t10=1986007", "t10=4294967295"),
+        "I_impossible_timing_sentinel": replace_once(
+            base, "t4=1981001", "t4=4294967295"),
         "J_pending": replace_once(base, "pending_frames=0", "pending_frames=1"),
         "J_discarded": replace_once(base, "discarded_frames=0", "discarded_frames=1"),
         "J_drop": replace_once(base, "drops=0", "drops=1"),
@@ -352,8 +392,8 @@ def main() -> int:
         "L_failed": [*base[:-1], FAIL_MARKER],
         "L_missing_terminal": base[:-1],
         "L_duplicate_terminal": [*base, PASS_MARKER],
-        "M_schema2_as_schema3": [
-            line.replace("schema=3", "schema=2")
+        "M_schema3_as_schema4": [
+            line.replace("schema=4", "schema=3")
             if line.startswith("5D3_S1_") else line for line in base
         ],
     }
@@ -372,7 +412,20 @@ def main() -> int:
             "RUNNABLE snapshot resumes before latest wait entry",
         "I_qovf_snapshot_missing_new_field": "field set/order mismatch",
         "I_impossible_final_tuple": "q399 derived-state inconsistency",
-        "M_schema2_as_schema3": "schema mismatch",
+        "I_timing_phase_enum_grammar": "terminal worker timing grammar mismatch",
+        "I_invalid_worker_phase": "terminal worker phase enum invalid",
+        "I_invalid_first_qovf_worker_phase": "terminal worker phase enum invalid",
+        "I_missing_t2_with_t3": "terminal worker timing sentinel prefix violation",
+        "I_t3_before_t2": "terminal worker timing order violation",
+        "I_t8_before_t7": "terminal worker timing order violation",
+        "I_t9_before_t8": "terminal worker timing order violation",
+        "I_t10_before_t9": "terminal worker timing order violation",
+        "I_q399_published_t9_unset": "q399/T9 publication consistency mismatch",
+        "I_t9_set_q399_unpublished": "q399/T9 publication consistency mismatch",
+        "I_pcm_done_t10_unset": "PCM done/T10 consistency mismatch",
+        "I_impossible_timing_sentinel":
+            "terminal worker timing sentinel prefix violation",
+        "M_schema3_as_schema4": "schema mismatch",
     }
     with tempfile.TemporaryDirectory(prefix="f3-validator-") as tmp:
         directory = Path(tmp)
@@ -400,7 +453,7 @@ def main() -> int:
         for label, tail in (
             ("panic", b"Guru Meditation Error: Core 0 panic'ed\r\n"),
             ("reset", b"ESP-ROM:esp32p4\r\n"),
-            ("authority", b"5D3_S1_PROGRESS schema=3\r\n"),
+            ("authority", b"5D3_S1_PROGRESS schema=4\r\n"),
         ):
             if not run_case(directory, base, tail=tail):
                 raise AssertionError(f"unsafe tail accepted: {label}")
@@ -411,7 +464,7 @@ def main() -> int:
     print("F3_RECORD_GRAMMAR_SOURCE_SYNC=PASS")
     print("F3_REALTIME_BOUNDARIES_2040_40=PASS")
     print("F3_VALIDATOR_FIXTURE_CLASSIFICATION=PASS")
-    print("5D3_SCHEMA3_DIAGNOSTIC_CHANGE_SENSITIVITY=PASS")
+    print("5D3_SCHEMA4_DIAGNOSTIC_CHANGE_SENSITIVITY=PASS")
     print("FINAL_BOUNDARY_WAIT_REASON_MUTATIONS=PASS")
     return 0
 

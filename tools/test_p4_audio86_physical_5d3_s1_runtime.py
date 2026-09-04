@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = "e4c05476a7f26a5c00f79979eca46f684f049447"
+R14_BASELINE = "d7ba77c6c786dad15ec792162bd32bf7a3b5f089"
 BINDING = ROOT / (
     "firmware/components/p4_nano_audio86_guest_binding/"
     "p4_nano_audio86_guest_binding.cpp"
@@ -19,6 +20,11 @@ PREDICATE = ROOT / (
     "firmware/components/p4_nano_audio86_guest_binding/include/"
     "p4_nano_audio86_guest_binding/p4_nano_audio86_terminal_predicate.hpp"
 )
+TIMING = ROOT / (
+    "firmware/components/p4_nano_audio86_guest_binding/include/"
+    "p4_nano_audio86_guest_binding/"
+    "p4_nano_audio86_terminal_worker_timing.hpp"
+)
 BUILD = ROOT / "tools/emu/build-production.sh"
 CMAKE = ROOT / "firmware/components/p4_nano_audio86_guest_binding/CMakeLists.txt"
 GOLDEN = ROOT / "host/probe/audio86_guest_sustained_2s_golden.json"
@@ -26,6 +32,14 @@ MANIFEST = ROOT / "tools/emu/p4_audio86_physical_sink_acceptance_manifest.tsv"
 UNCHANGED = (
     "tools/emu/p4_audio86_physical_capture_v2.py",
     "host/probe/audio86_guest_sustained_2s_golden.json",
+)
+PHYSICAL_SINK_UNCHANGED = (
+    "firmware/components/p4_nano_audio86_physical_sink/"
+    "p4_nano_audio86_physical_sink.c",
+    "firmware/components/p4_nano_audio86_physical_sink/"
+    "p4_nano_audio86_physical_sink_idf.cpp",
+    "firmware/components/p4_nano_audio86_physical_sink/include/"
+    "p4_nano_audio86_physical_sink/p4_nano_audio86_physical_sink.h",
 )
 
 
@@ -47,9 +61,18 @@ def unchanged_from_baseline(path: str) -> bool:
     return result.returncode == 0
 
 
+def unchanged_from_r14_baseline(path: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "diff", "--quiet", R14_BASELINE, "--", path],
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def main() -> int:
     binding = BINDING.read_text(encoding="utf-8")
     predicate = PREDICATE.read_text(encoding="utf-8")
+    timing = TIMING.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
     cmake = CMAKE.read_text(encoding="utf-8")
     manifest = MANIFEST.read_text(encoding="utf-8")
@@ -91,16 +114,16 @@ def main() -> int:
     evidence = section(binding, "void emit_physical_5d3_s1_evidence(",
                        "sustained_physical_local_health(")
     names = (
-        "5D3_S1_IDENTITY schema=3", "5D3_S1_START schema=3",
-        "5D3_S1_STREAM schema=3", "5D3_S1_PROGRESS schema=3",
-        "5D3_S1_FINISH schema=3",
+        "5D3_S1_IDENTITY schema=4", "5D3_S1_START schema=4",
+        "5D3_S1_STREAM schema=4", "5D3_S1_PROGRESS schema=4",
+        "5D3_S1_TERMINAL_TIMING schema=4", "5D3_S1_FINISH schema=4",
     )
     positions = [evidence.find(name) for name in names]
     require(all(position >= 0 for position in positions) and
             positions == sorted(positions) and
             all(evidence.count(name) == 1 for name in names),
             "5D3 record source count/order mismatch")
-    require(evidence.count("evidence_class=PHYSICAL_EXEC") == 5,
+    require(evidence.count("evidence_class=PHYSICAL_EXEC") == 6,
             "physical record classification mismatch")
     tail = section(binding, "emit_physical_5d3_s1_evidence(runtime);",
                    "} // namespace")
@@ -153,6 +176,52 @@ def main() -> int:
             "frozen pre-reset SHA-256 is not bound into 5D3 evidence")
     require(all(unchanged_from_baseline(path) for path in UNCHANGED),
             "closed physical sink/capture/golden source changed")
+    require(all(unchanged_from_r14_baseline(path)
+                for path in PHYSICAL_SINK_UNCHANGED),
+            "R14 changed physical sink/I2S source")
+    for token in (
+        "kPointCount = 11U", "kUnset", "kLogicalPayloadBytes == 52U",
+        "sizeof(Snapshot) == kLogicalPayloadBytes",
+        "std::atomic<std::uint32_t>::is_always_lock_free",
+        "T0TerminalPairObserved", "T1PreResetRenderComplete",
+        "T2ResetActionBegin", "T3ResetActionComplete",
+        "T4ResetEvidenceComplete", "T5ResetAckPublished",
+        "T6TerminalPredicateReady", "T7PostResetRenderBegin",
+        "T8PostResetSynthesisComplete", "T9Q399Published",
+        "T10PcmFinishComplete", "reached_prefix_is_monotonic",
+    ):
+        require(token in timing, f"R14 timing contract lost {token}")
+    for token in (
+        "terminal_worker_relative_us", "physical_diagnostic_origin_us",
+        "terminal_worker_service_sequence", "freeze_first_qovf_worker_phase",
+        "runtime->pcm_ring.head.load", "runtime->pcm_ring.tail.load",
+        "P4_NANO_AUDIO86_PROGRESS_PUBLISH_ONLY",
+        "terminal_timing::Point::T0TerminalPairObserved",
+        "terminal_timing::Point::T10PcmFinishComplete",
+        "clock=TASK_CONTEXT_RELATIVE_US", "unset=UINT32_MAX points=11",
+        "storage_logical_bytes=%u storage_actual_bytes=%u",
+    ):
+        require(token in binding, f"R14 binding contract lost {token}")
+    t0_capture = section(
+        binding, "if (terminal_horizon_observed &&",
+        "const bool terminal_reset_failure_recovery")
+    require(
+        "terminal_timing::Point::T0TerminalPairObserved" in t0_capture and
+        "event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER" in t0_capture and
+        "event->payload == terminal_reset_ordinal" in t0_capture,
+        "T0 is not bound to the retained terminal/RESET pair")
+    reset_call = section(
+        binding, "terminal_timing::Point::T2ResetActionBegin",
+        "const uint32_t apply_count")
+    require(reset_call.index("np2audio86_guest_action_apply(") <
+            reset_call.index("terminal_timing::Point::T3ResetActionComplete"),
+            "RESET timing boundaries do not enclose the production action")
+    final_render = section(
+        binding, "terminal_timing::Point::T8PostResetSynthesisComplete",
+        "runtime->rendered_frame += frames")
+    require(final_render.index("np2audio86_sustained_generated(") <
+            final_render.index("append_pcm("),
+            "post-reset evidence/publication production order changed")
     require("PHYSICAL_EXEC" not in "\n".join(
         line for line in manifest.splitlines() if "5d3" in line.lower()),
         "manifest claims pre-hardware 5D3 PHYSICAL_EXEC PASS")
@@ -196,9 +265,10 @@ def main() -> int:
     print("SUSTAINED_GUEST_COOPERATIVE_SCHEDULING=PASS")
     print("WDT_FEED_ONLY_FIX_REJECTED=YES")
     print("PHYSICAL_ACCEPTANCE_THRESHOLDS_UNCHANGED=PASS")
-    print("5D3_SCHEMA3_WAIT_REASON_INSTRUMENTATION=PASS")
+    print("5D3_SCHEMA4_TERMINAL_TIMING_INSTRUMENTATION=PASS")
     print("FROZEN_QOVF_FINAL_BOUNDARY_CONTEXT=PASS")
     print("PHYSICAL_RUNTIME_BEHAVIOR_UNCHANGED_BY_DIAGNOSTICS=PASS")
+    print("PHYSICAL_SINK_SOURCE_UNCHANGED=PASS")
     return 0
 
 

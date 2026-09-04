@@ -90,6 +90,17 @@ RECORD_FIELDS = {
         "max_post_accept_evidence_us", "max_post_accept_evidence_sequence",
         "timing_authority",
     ),
+    "5D3_S1_TERMINAL_TIMING": (
+        "schema", "evidence_class", "clock", "unset", "points",
+        "phase_enum", "current_phase", "first_qovf_worker_phase",
+        "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8",
+        "t9", "t10", "terminal_to_pre_reset_done_us", "reset_action_us",
+        "reset_observability_us", "ack_to_terminal_ready_us",
+        "post_reset_synthesis_us", "post_reset_evidence_and_publish_us",
+        "pcm_finish_us", "terminal_to_q399_publish_us", "q399_published",
+        "q399_rendered_frames", "q399_valid_frames", "pcm_production_done",
+        "storage_logical_bytes", "storage_actual_bytes",
+    ),
     "5D3_S1_FINISH": (
         "schema", "evidence_class", "controller_state", "sink_state",
         "final_copy_eof_epoch", "drain_completion_eof_epoch",
@@ -136,6 +147,15 @@ AUTHORITATIVE_PREFIXES = (
     b"5D3_S1_", b"5D2_S1_", b"5D2_S2_",
     b"P4_AUDIO86_PHYSICAL_S1_TERMINAL=",
     b"P4_AUDIO86_PHYSICAL_S2_TERMINAL=",
+)
+TIMING_UNSET = 0xFFFFFFFF
+TERMINAL_WORKER_PHASES = (
+    "NONE", "TERMINAL_OBSERVED", "PRE_RESET_RENDER", "RESET_APPLY",
+    "RESET_EVIDENCE", "RESET_ACK", "RESET_EVENT_CONSUME",
+    "POST_RESET_RENDER", "Q399_PUBLISH", "PCM_FINISH",
+)
+TERMINAL_WORKER_PHASE_ENUM = ",".join(
+    f"{name}:{index}" for index, name in enumerate(TERMINAL_WORKER_PHASES)
 )
 
 
@@ -241,10 +261,10 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     records = parse_records(regions.canonical, errors)
     if set(records) != set(RECORD_ORDER):
         return errors
-    identity, start, stream, progress, finish = (
+    identity, start, stream, progress, terminal_timing, finish = (
         records[name] for name in RECORD_ORDER)
     for name, fields in records.items():
-        require(errors, fields["schema"] == "3", f"{name}: schema mismatch")
+        require(errors, fields["schema"] == "4", f"{name}: schema mismatch")
         require(errors, fields["evidence_class"] == evidence_class,
                 f"{name}: evidence class mismatch")
 
@@ -252,7 +272,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
     if golden is None:
         return errors
     expected_identity = {
-        "schema": "3", "evidence_class": evidence_class,
+        "schema": "4", "evidence_class": evidence_class,
         "source_git_sha": expected_source_sha,
         "profile": "AUDIO86_REAL_GUEST_SUSTAINED_2S_PHYSICAL_I2S",
         "workload_id": "FULL_REPLAY_PCM_SUSTAINED_2S_V1",
@@ -291,6 +311,8 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
         "first_qovf_wait_reason", "first_qovf_last_resume_reason",
         "notification_state_model", "cpu0_task_identity",
         "service_phase_semantics",
+        "clock", "unset", "phase_enum", "current_phase",
+        "first_qovf_worker_phase",
     }
     digest_fields = {key for key in stream if key.endswith("crc32") or
                      key.endswith("sha256")}
@@ -299,6 +321,7 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
         ("start", "5D3_S1_START", start),
         ("stream", "5D3_S1_STREAM", stream),
         ("progress", "5D3_S1_PROGRESS", progress),
+        ("timing", "5D3_S1_TERMINAL_TIMING", terminal_timing),
         ("finish", "5D3_S1_FINISH", finish),
     ):
         for key in RECORD_FIELDS[name]:
@@ -472,6 +495,69 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
             0 <= numeric["start.codec_unmute_duration_us"] <= 0xFFFFFFFF,
             "startup duration diagnostics malformed")
 
+    require(errors,
+            terminal_timing["clock"] == "TASK_CONTEXT_RELATIVE_US" and
+            terminal_timing["unset"] == "UINT32_MAX" and
+            numeric["timing.points"] == 11 and
+            terminal_timing["phase_enum"] == TERMINAL_WORKER_PHASE_ENUM,
+            "terminal worker timing grammar mismatch")
+    require(errors,
+            terminal_timing["current_phase"] in TERMINAL_WORKER_PHASES and
+            terminal_timing["first_qovf_worker_phase"] in
+                TERMINAL_WORKER_PHASES,
+            "terminal worker phase enum invalid")
+    timestamps = tuple(numeric[f"timing.t{index}"] for index in range(11))
+    require(errors, all(0 <= value <= TIMING_UNSET for value in timestamps),
+            "terminal worker timestamp outside uint32 range")
+    first_unset = next((index for index, value in enumerate(timestamps)
+                        if value == TIMING_UNSET), len(timestamps))
+    require(errors,
+            all(value == TIMING_UNSET for value in timestamps[first_unset:]),
+            "terminal worker timing sentinel prefix violation")
+    reached = timestamps[:first_unset]
+    require(errors,
+            all(later >= earlier for earlier, later in zip(reached, reached[1:])),
+            "terminal worker timing order violation")
+    require(errors, first_unset == len(timestamps),
+            "complete run has an unset terminal worker phase")
+    derived_pairs = {
+        "terminal_to_pre_reset_done_us": (0, 1),
+        "reset_action_us": (2, 3),
+        "reset_observability_us": (3, 4),
+        "ack_to_terminal_ready_us": (5, 6),
+        "post_reset_synthesis_us": (7, 8),
+        "post_reset_evidence_and_publish_us": (8, 9),
+        "pcm_finish_us": (9, 10),
+        "terminal_to_q399_publish_us": (0, 9),
+    }
+    for field, (begin, end) in derived_pairs.items():
+        expected = (TIMING_UNSET if timestamps[begin] == TIMING_UNSET or
+                    timestamps[end] == TIMING_UNSET or
+                    timestamps[end] < timestamps[begin]
+                    else timestamps[end] - timestamps[begin])
+        require(errors, numeric[f"timing.{field}"] == expected,
+                f"{field}: derived duration mismatch")
+    q399_timed = timestamps[9] != TIMING_UNSET
+    pcm_finished_timed = timestamps[10] != TIMING_UNSET
+    require(errors,
+            numeric["timing.q399_published"] == int(q399_timed) and
+            (not q399_timed or (
+                numeric["timing.q399_rendered_frames"] == frames and
+                numeric["timing.q399_valid_frames"] == 240 and
+                numeric["stream.next_generated_sequence"] == units and
+                numeric["stream.final_sequence"] == units - 1)) and
+            (q399_timed or numeric["timing.q399_valid_frames"] == 0),
+            "q399/T9 publication consistency mismatch")
+    require(errors,
+            numeric["timing.pcm_production_done"] == int(pcm_finished_timed),
+            "PCM done/T10 consistency mismatch")
+    require(errors,
+            numeric["timing.storage_logical_bytes"] == 52 and
+            numeric["timing.storage_actual_bytes"] == 52,
+            "terminal worker timing storage scope mismatch")
+    require(errors, terminal_timing["current_phase"] == "PCM_FINISH",
+            "complete run current worker phase mismatch")
+
     latch = numeric["finish.first_active_qovf_latched"]
     observed = numeric["finish.first_qovf_observed"]
     require(errors, latch in (0, 1) and observed in (0, 1),
@@ -603,6 +689,10 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
                 finish["first_qovf_phase"] != "NONE" and
                 numeric["finish.first_qovf_observed_us"] >= max(qovf_times),
                 "active q_ovf lacks a complete frozen service latch")
+        require(errors,
+                terminal_timing["first_qovf_worker_phase"] in
+                    TERMINAL_WORKER_PHASES,
+                "active q_ovf worker phase invalid")
     else:
         require(errors, latch == 0 and observed == 0 and
                 finish["first_qovf_state"] == "NONE" and
@@ -631,6 +721,9 @@ def validate(raw_path: Path, status_path: Path, expected_source_sha: str,
                 finish["first_qovf_last_resume_reason"] == "RUNNABLE" and
                 numeric["finish.first_qovf_observed_us"] == 0,
                 "zero-q_ovf run contains a spurious first-fault latch")
+        require(errors,
+                terminal_timing["first_qovf_worker_phase"] == "NONE",
+                "zero-q_ovf run contains a worker-phase latch")
 
     final_epoch = numeric["finish.final_copy_eof_epoch"]
     drain_epoch = numeric["finish.drain_completion_eof_epoch"]
@@ -702,6 +795,7 @@ def main() -> int:
     print("F3_EOF_MODULAR_ARITHMETIC=PASS")
     print("F3_OWNERSHIP_CONSERVATION=PASS")
     print("F3_PHYSICAL_REALTIME_ACCEPTANCE=PASS")
+    print("5D3_SCHEMA4_TERMINAL_TIMING_VALIDATION=PASS")
     return 0
 
 

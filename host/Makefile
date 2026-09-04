@@ -270,6 +270,8 @@ P4_NANO_CAPTURE_TEST := $(HOST_ROOT)/tools/test_p4_nano_capture.py
 P4_NANO_AUDIO86_TERMINAL_PREDICATE_HEADER_DIR := $(HOST_ROOT)/firmware/components/p4_nano_audio86_guest_binding/include
 P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_SOURCE := $(CURDIR)/tests/p4_nano_audio86_terminal_predicate_test.cpp
 P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_terminal_predicate_test
+P4_NANO_AUDIO86_TERMINAL_WORKER_TIMING_TEST_SOURCE := $(CURDIR)/tests/p4_nano_audio86_terminal_worker_timing_test.cpp
+P4_NANO_AUDIO86_TERMINAL_WORKER_TIMING_TEST_OUTPUT := $(BUILD_DIR)/tests/p4_nano_audio86_terminal_worker_timing_test
 P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE := $(HOST_ROOT)/tools/emu/check_p4_audio86_callback_idf_barrier.py
 P4_NANO_AUDIO86_PHYSICAL_IDF_SOURCE_TEST := $(HOST_ROOT)/tools/emu/test_check_p4_audio86_callback_idf_source.py
 P4_NANO_AUDIO86_PHYSICAL_PROJECT_INTERVAL := $(HOST_ROOT)/tools/emu/check_p4_audio86_project_interval.py
@@ -1557,6 +1559,11 @@ test-p4-audio86-physical-5d3-s1: test-p4-audio86-physical-sink
 		"$(P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_SOURCE)" \
 		-o "$(P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_OUTPUT)"
 	@"$(P4_NANO_AUDIO86_TERMINAL_PREDICATE_TEST_OUTPUT)"
+	@$(CXX) -std=c++20 -Wall -Wextra -Werror \
+		-I"$(P4_NANO_AUDIO86_TERMINAL_PREDICATE_HEADER_DIR)" \
+		"$(P4_NANO_AUDIO86_TERMINAL_WORKER_TIMING_TEST_SOURCE)" \
+		-o "$(P4_NANO_AUDIO86_TERMINAL_WORKER_TIMING_TEST_OUTPUT)"
+	@"$(P4_NANO_AUDIO86_TERMINAL_WORKER_TIMING_TEST_OUTPUT)"
 	@$(PYTHON) "$(P4_NANO_CAPTURE_TEST)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_5D3_S1_MUTATIONS)"
 	@$(PYTHON) "$(P4_NANO_AUDIO86_PHYSICAL_5D3_S1_SOURCE)"
