@@ -12,6 +12,8 @@
 #include "p4_nano_pc98_runtime/p4_nano_pc98_runtime.hpp"
 #elif defined(P4_NANO_AUDIO86_RUNTIME_FOUNDATION_PROFILE)
 #include "p4_nano_audio86_runtime/p4_nano_audio86_runtime.hpp"
+#elif defined(P4_NANO_AUDIO86_LIVE_SERVICE_PROFILE)
+#include "p4_nano_audio86_live_service_profile.h"
 #elif defined(P4_NANO_AUDIO86_CAPACITY_PROFILE)
 #include "p4_nano_audio86_capacity/p4_nano_audio86_capacity.hpp"
 #elif defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE)
@@ -136,6 +138,7 @@ esp_err_t route_display_benchmark_application_console()
 
 #if !defined(P4_NANO_AUDIO86_REAL_GUEST_PROFILE) && \
     !defined(P4_NANO_AUDIO86_RUNTIME_FOUNDATION_PROFILE) && \
+    !defined(P4_NANO_AUDIO86_LIVE_SERVICE_PROFILE) && \
     !defined(P4_NANO_AUDIO86_CAPACITY_PROFILE) && \
     !defined(P4_NANO_AUDIO_ONLY_BENCHMARK_PROFILE) && \
     !defined(P4_NANO_AUDIO_I2S_OPNGEN_PROFILE) && \
@@ -220,6 +223,13 @@ extern "C" void app_main(void)
 #elif defined(P4_NANO_AUDIO86_RUNTIME_FOUNDATION_PROFILE)
     const esp_err_t profile_status = p4_nano_audio86_runtime::run();
     std::printf("P4_NANO_AUDIO86_RUNTIME_FOUNDATION_STATUS=%s\n",
+                profile_status == ESP_OK ? "PASS" : "FAIL");
+    std::fflush(stdout);
+    return;
+#elif defined(P4_NANO_AUDIO86_LIVE_SERVICE_PROFILE)
+    const esp_err_t profile_status =
+        p4_nano_audio86_live_service_run_profile();
+    std::printf("P4_NANO_AUDIO86_LIVE_SERVICE_STATUS=%s\n",
                 profile_status == ESP_OK ? "PASS" : "FAIL");
     std::fflush(stdout);
     return;
