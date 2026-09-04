@@ -555,6 +555,7 @@ build-audio86-guest-sync-pcm:
 		-I"$(NP2_AUDIO86_CORE_HEADER_DIR)" \
 		-I"$(HOST_ROOT)/firmware/components/np2opngen_fixture/include" \
 		-I"$(NP2_PCM_OUTPUT_HEADER_DIR)" \
+		-I"$(P4_NANO_AUDIO86_LIVE_SERVICE_HEADER_DIR)" \
 	"$(NP2_AUDIO86_ADAPTER_SOURCE)" "$(NP2_AUDIO86_GUEST_PROGRAM_SOURCE)" "$(NP2_AUDIO86_GUEST_EVIDENCE_SOURCE)" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/board86.c" \
 		"$(BUILD_DIR)/audio86-sync-pcm-prepared/patched-src/cbus/pcm86io.c" \
@@ -604,8 +605,9 @@ test-audio86-guest-sync-pcm-ubsan: build-audio86-guest-sync-pcm-ubsan
 build-audio86-guest-sustained-2s:
 	@$(MAKE) --no-print-directory \
 		NP2_AUDIO86_SYNC_PCM_OUTPUT="$(NP2_AUDIO86_SUSTAINED_2S_OUTPUT)" \
-		NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS="-DNP2AUDIO86_GUEST_SUSTAINED_2S=1" \
-		NP2_AUDIO86_SYNC_PCM_EXTRA_SOURCES="$(NP2_AUDIO86_SUSTAINED_EVIDENCE_SOURCE) $(OPNGEN_PCM_RING_SOURCE) $(NP2_PCM_OUTPUT_SOURCE) $(NP2_AUDIO86_RUNTIME_TRANSPORT_SOURCE)" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_CFLAGS="-DNP2AUDIO86_GUEST_SUSTAINED_2S=1 -pthread" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_LDFLAGS="-pthread" \
+		NP2_AUDIO86_SYNC_PCM_EXTRA_SOURCES="$(NP2_AUDIO86_SUSTAINED_EVIDENCE_SOURCE) $(OPNGEN_PCM_RING_SOURCE) $(NP2_PCM_OUTPUT_SOURCE) $(NP2_AUDIO86_RUNTIME_TRANSPORT_SOURCE) $(P4_NANO_AUDIO86_LIVE_SERVICE_SOURCE)" \
 		build-audio86-guest-sync-pcm
 
 test-audio86-guest-sustained-2s: build-audio86-guest-sustained-2s

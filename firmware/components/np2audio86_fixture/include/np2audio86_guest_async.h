@@ -42,6 +42,12 @@ int np2audio86_guest_action_kind_for_opcode(uint32_t opcode,
 int np2audio86_guest_action_prime_worker(
     struct np2audio86_render_state *state, uint8_t *source,
     size_t source_bytes);
+/* Apply only the historical 5D.3 seed layer to an already-neutral core.
+ * This is fixture-private: it neither initializes nor resets global/core
+ * state and is safe to repeat immediately after a neutral guest RESET. */
+int np2audio86_guest_action_decorate_worker(
+    struct np2audio86_render_state *state, uint8_t *source,
+    size_t source_bytes);
 int np2audio86_guest_action_apply(
     struct np2audio86_render_state *state,
     const struct np2audio86_guest_action *action,

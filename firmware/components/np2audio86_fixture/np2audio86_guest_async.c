@@ -11,13 +11,30 @@ static int prepare_worker(
 {
     if (state == NULL || source == NULL ||
         source_bytes != NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES ||
-        (cold_start ? np2audio86_render_init(state)
-                    : np2audio86_render_reset(state)) != 0 ||
-        np2audio86_fixture_generate_source(source) != 0 ||
-        np2audio86_render_pcm86_push(state, source, source_bytes) != 0) {
+        (cold_start ? np2audio86_core_render_init(state)
+                    : np2audio86_core_render_reset(state)) != 0 ||
+        np2audio86_guest_action_decorate_worker(
+            state, source, source_bytes) != 0) {
         return -1;
     }
     return 0;
+}
+
+int np2audio86_guest_action_decorate_worker(
+    struct np2audio86_render_state *state, uint8_t *source,
+    size_t source_bytes)
+{
+    if (state == NULL || source == NULL ||
+        source_bytes != NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES ||
+        np2audio86_fixture_generate_source(source) != 0) {
+        return -1;
+    }
+    /* np2audio86_render_reset is the historical combination of neutral reset
+     * and this decorator.  The live service already owns the neutral half;
+     * configure the identical fixture state without rebuilding it. */
+    if (np2audio86_fixture_decorate_render_state(state) != 0)
+        return -1;
+    return np2audio86_render_pcm86_push(state, source, source_bytes);
 }
 
 int np2audio86_guest_action_prime_worker(

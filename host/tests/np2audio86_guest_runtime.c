@@ -1098,7 +1098,10 @@ static int np2audio86_guest_runtime_run(
     np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
     const np2audio86_guest_sink_t *sink,
     size_t (*program_builder)(uint8_t *, size_t),
-    np2audio86_guest_execution_evidence_t *evidence)
+    np2audio86_guest_execution_evidence_t *evidence,
+    np2audio86_guest_runtime_stage_fn attach_after_bootstrap,
+    np2audio86_guest_runtime_stage_fn arm_before_terminal_reset,
+    void *stage_opaque, int leave_sink_attached)
 {
     size_t program_size;
 
@@ -1133,7 +1136,7 @@ static int np2audio86_guest_runtime_run(
     np2audio86_guest_sink_bind(sink);
     iocore_create();
     if (iocore_build() != SUCCESS) {
-        np2audio86_guest_sink_unbind();
+        if (!leave_sink_attached) np2audio86_guest_sink_unbind();
         np2audio86_guest_host_trace_detach();
         return -1;
     }
@@ -1141,11 +1144,25 @@ static int np2audio86_guest_runtime_run(
     pic_reset(&np2cfg);
     board86_reset(&np2cfg, FALSE);
     board86_bind();
+    if (attach_after_bootstrap != NULL &&
+        attach_after_bootstrap(stage_opaque) != 0) {
+        board86_unbind();
+        if (!leave_sink_attached) np2audio86_guest_sink_unbind();
+        np2audio86_guest_host_trace_detach();
+        return -1;
+    }
     program_size = program_builder(mem, sizeof(mem));
     np2audio86_guest_test_reset_io_cycle_observation();
     if (program_size >= 0x90000u || !run_program(program_size)) {
         board86_unbind();
-        np2audio86_guest_sink_unbind();
+        if (!leave_sink_attached) np2audio86_guest_sink_unbind();
+        np2audio86_guest_host_trace_detach();
+        return -1;
+    }
+    if (arm_before_terminal_reset != NULL &&
+        arm_before_terminal_reset(stage_opaque) != 0) {
+        board86_unbind();
+        if (!leave_sink_attached) np2audio86_guest_sink_unbind();
         np2audio86_guest_host_trace_detach();
         return -1;
     }
@@ -1157,7 +1174,7 @@ static int np2audio86_guest_runtime_run(
         if (i286core.s.r.w.ip != program_size - 1U ||
             mem[i286core.s.r.w.ip] != UINT8_C(0xf4)) {
             board86_unbind();
-            np2audio86_guest_sink_unbind();
+            if (!leave_sink_attached) np2audio86_guest_sink_unbind();
             np2audio86_guest_host_trace_detach();
             return -1;
         }
@@ -1172,7 +1189,7 @@ static int np2audio86_guest_runtime_run(
         evidence->terminated_at_hlt = 1U;
     }
     board86_unbind();
-    np2audio86_guest_sink_unbind();
+    if (!leave_sink_attached) np2audio86_guest_sink_unbind();
     np2audio86_guest_host_trace_detach();
     return np2audio86_guest_host_failed() ? -1 : 0;
 }
@@ -1181,7 +1198,8 @@ int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
                                      np2audio86_guest_state_snapshot_t *state)
 {
     return np2audio86_guest_runtime_run(trace, state, NULL,
-                                        np2audio86_guest_program_build, NULL);
+                                        np2audio86_guest_program_build, NULL,
+                                        NULL, NULL, NULL, 0);
 }
 
 int np2audio86_guest_runtime_capture_sustained_2s(
@@ -1191,7 +1209,22 @@ int np2audio86_guest_runtime_capture_sustained_2s(
     if (evidence == NULL) return -1;
     return np2audio86_guest_runtime_run(
         trace, state, NULL, np2audio86_guest_program_build_sustained_2s,
-        evidence);
+        evidence, NULL, NULL, NULL, 0);
+}
+
+int np2audio86_guest_runtime_live_sustained_2s(
+    np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
+    np2audio86_guest_execution_evidence_t *evidence,
+    np2audio86_guest_runtime_stage_fn attach_after_bootstrap,
+    np2audio86_guest_runtime_stage_fn arm_before_terminal_reset, void *opaque)
+{
+    if (evidence == NULL || attach_after_bootstrap == NULL ||
+        arm_before_terminal_reset == NULL)
+        return -1;
+    return np2audio86_guest_runtime_run(
+        trace, state, NULL, np2audio86_guest_program_build_sustained_2s,
+        evidence, attach_after_bootstrap, arm_before_terminal_reset, opaque,
+        1);
 }
 
 int np2audio86_guest_runtime_live(
@@ -1202,7 +1235,8 @@ int np2audio86_guest_runtime_live(
         return -1;
     }
     return np2audio86_guest_runtime_run(trace, state, sink,
-                                        np2audio86_guest_program_build, NULL);
+                                        np2audio86_guest_program_build, NULL,
+                                        NULL, NULL, NULL, 0);
 }
 
 #ifndef NP2AUDIO86_GUEST_RUNTIME_NO_MAIN

@@ -1,4 +1,5 @@
 #include "p4_nano_audio86_live_service.h"
+#include "p4_nano_audio86_live_service_fixture.h"
 
 #include <limits.h>
 #include <string.h>
@@ -27,10 +28,20 @@ enum {
     LIVE_SUBCODE_PCM_OUTPUT = 8U,
     LIVE_SUBCODE_FINISH = 9U,
     LIVE_SUBCODE_ABORT_BARRIER = 10U,
+    LIVE_SUBCODE_5D3_TERMINAL = 11U,
     LIVE_TRANSACTION_GATE_OPEN = 0U,
     LIVE_TRANSACTION_GATE_ACTIVE = 1U,
     LIVE_TRANSACTION_GATE_CLOSED = 2U,
 };
+
+static void fixture_terminal_point(
+    struct p4_nano_audio86_live_service *service,
+    enum p4_nano_audio86_5d3_terminal_point point)
+{
+    if (service->fixture_observe_terminal_point != NULL)
+        service->fixture_observe_terminal_point(service->fixture_opaque,
+                                                (uint32_t)point);
+}
 
 static bool state_terminal(enum p4_nano_audio86_live_state state)
 {
@@ -446,6 +457,28 @@ static void guest_commit_event(void *opaque,
     service->reserved_events = 0U;
     service->event_committed = 1U;
     ++service->next_sequence;
+    if (reset && service->fixture_enabled != 0U &&
+        atomic_load_explicit(&service->fixture_terminal_armed,
+                             memory_order_acquire) != 0U) {
+        const struct np2audio86_event *published = NULL;
+        service->fixture_terminal_reset_ordinal = service->reset_ordinal;
+        atomic_store_explicit(&service->fixture_terminal_deferred, 1U,
+                              memory_order_release);
+        service->fixture_reset_event_before_horizon =
+            event.frame_timestamp == P4_NANO_AUDIO86_5D3_RESET_FRAME &&
+                    np2audio86_event_ring_peek(&service->events,
+                                               &published) ==
+                        NP2_AUDIO86_TRANSPORT_OK &&
+                    published != NULL &&
+                    published->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+                    published->payload == service->fixture_terminal_reset_ordinal &&
+                    !np2audio86_runtime_horizon_pending(&service->control)
+                ? 1U
+                : 0U;
+        /* Deliberately no wake here.  The terminal horizon release below is
+         * the next publication and its following wake is the sole hint. */
+        return;
+    }
     wake_waiters(service);
 }
 
@@ -484,14 +517,65 @@ static void guest_commit_horizon(void *opaque,
     }
     reset = service->transaction_kind ==
             NP2AUDIO86_GUEST_TRANSACTION_RESET;
-    result = np2audio86_runtime_horizon_publish(
-        &service->control, &service->producer_clock, frame);
+    if (reset && service->fixture_enabled != 0U &&
+        atomic_load_explicit(&service->fixture_terminal_deferred,
+                             memory_order_acquire) != 0U) {
+        if (frame != P4_NANO_AUDIO86_5D3_RESET_FRAME ||
+            service->fixture_terminal_reset_ordinal == 0U) {
+            result = NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT;
+        } else if (service->fixture_terminal_test_mode == 2U) {
+            result = NP2_AUDIO86_RUNTIME_HORIZON_ARGUMENT;
+        } else {
+            result = np2audio86_runtime_terminal_horizon_publish(
+                &service->control, &service->producer_clock,
+                P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON,
+                P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON,
+                service->fixture_terminal_reset_ordinal);
+        }
+    } else {
+        result = np2audio86_runtime_horizon_publish(
+            &service->control, &service->producer_clock, frame);
+    }
     transaction_close(service);
     if (result != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        if (reset && service->fixture_enabled != 0U &&
+            atomic_load_explicit(&service->fixture_terminal_deferred,
+                                 memory_order_acquire) != 0U) {
+            const struct np2audio86_event *published = NULL;
+            service->fixture_partial_failure_event_visible =
+                np2audio86_event_ring_peek(&service->events, &published) ==
+                        NP2_AUDIO86_TRANSPORT_OK &&
+                    published != NULL &&
+                    published->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER
+                ? 1U
+                : 0U;
+            atomic_store_explicit(&service->fixture_terminal_armed, 0U,
+                                  memory_order_release);
+            atomic_store_explicit(&service->fixture_terminal_deferred, 0U,
+                                  memory_order_release);
+            atomic_store_explicit(&service->fixture_worker_hold, 0U,
+                                  memory_order_release);
+        }
         (void)first_fatal(service, P4_NANO_AUDIO86_LIVE_FAILURE_TRANSPORT,
                           P4_NANO_AUDIO86_LIVE_ORIGIN_GUEST_TRANSPORT,
-                          LIVE_SUBCODE_HORIZON);
+                          reset && service->fixture_enabled != 0U
+                              ? LIVE_SUBCODE_5D3_TERMINAL
+                              : LIVE_SUBCODE_HORIZON);
+        if (reset && service->fixture_enabled != 0U)
+            service->fixture_partial_failure_wake_issued = 1U;
         return;
+    }
+    if (reset && service->fixture_enabled != 0U &&
+        atomic_load_explicit(&service->fixture_terminal_deferred,
+                             memory_order_acquire) != 0U) {
+        atomic_store_explicit(&service->fixture_terminal_horizon_published,
+                              1U, memory_order_release);
+        atomic_store_explicit(&service->fixture_terminal_armed, 0U,
+                              memory_order_release);
+        atomic_store_explicit(&service->fixture_terminal_deferred, 0U,
+                              memory_order_release);
+        atomic_store_explicit(&service->fixture_worker_hold, 0U,
+                              memory_order_release);
     }
     wake_waiters(service);
     if (reset) {
@@ -500,6 +584,13 @@ static void guest_commit_horizon(void *opaque,
                                     memory_order_acquire) == 0U &&
                np2audio86_runtime_reset_ack(&service->control) < ordinal)
             owner_wait(service);
+        if (service->fixture_enabled != 0U) {
+            while (atomic_load_explicit(&service->first_error_latched,
+                                        memory_order_acquire) == 0U &&
+                   atomic_load_explicit(&service->fixture_terminal_pcm_ready,
+                                        memory_order_acquire) == 0U)
+                owner_wait(service);
+        }
     }
 }
 
@@ -575,6 +666,23 @@ static bool append_pcm(struct p4_nano_audio86_live_service *service,
             &service->pcm_ring, pcm + appended * 4U, frames - appended,
             frame_offset + appended, &consumed);
         appended += consumed;
+        if (service->fixture_observe_ring != NULL)
+            service->fixture_observe_ring(
+                service->fixture_opaque,
+                np2opngen_pcm_ring_occupancy(&service->pcm_ring),
+                service->pcm_ring.next_sequence,
+                service->pcm_ring.next_frame_offset);
+        if (service->fixture_enabled != 0U &&
+            service->pcm_ring.next_sequence == 400U &&
+            service->pcm_ring.next_frame_offset ==
+                P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON &&
+            np2opngen_pcm_ring_producer_partial_valid_frames(
+                &service->pcm_ring) == 0U &&
+            service->fixture_q399_published == 0U) {
+            service->fixture_q399_published = 1U;
+            fixture_terminal_point(service,
+                                   P4_NANO_AUDIO86_5D3_T9_Q399_PUBLISHED);
+        }
         if (!drain_output(service, &retry))
             return false;
         if (result == NP2_OPNGEN_PCM_RING_OK)
@@ -618,9 +726,7 @@ static bool render_until(struct p4_nano_audio86_live_service *service,
             mix_result.arithmetic_error != 0U ||
             np2opngen_pcm_canonicalize_s16le(
                 service->mix, frames, 2U, service->canonical, frames * 4U,
-                &pcm_stats) != 0 ||
-            !append_pcm(service, service->canonical, frames,
-                        service->rendered_frame)) {
+                &pcm_stats) != 0) {
             if (atomic_load_explicit(&service->first_error_latched,
                                      memory_order_acquire) == 0U)
                 (void)first_fatal(service,
@@ -629,6 +735,27 @@ static bool render_until(struct p4_nano_audio86_live_service *service,
                                   LIVE_SUBCODE_RENDER);
             return false;
         }
+        if (service->fixture_observe_rendered_pcm != NULL &&
+            service->fixture_observe_rendered_pcm(
+                service->fixture_opaque, service->canonical,
+                (uint16_t)frames, service->rendered_frame) != 0) {
+            (void)first_fatal(service,
+                              P4_NANO_AUDIO86_LIVE_FAILURE_RENDERER,
+                              P4_NANO_AUDIO86_LIVE_ORIGIN_RENDER,
+                              LIVE_SUBCODE_RENDER);
+            return false;
+        }
+        if (service->fixture_enabled != 0U &&
+            atomic_load_explicit(&service->fixture_reset_applied_ordinal,
+                                 memory_order_acquire) != 0U &&
+            service->rendered_frame + frames ==
+                P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON)
+            fixture_terminal_point(
+                service,
+                P4_NANO_AUDIO86_5D3_T8_POST_RESET_SYNTHESIS_COMPLETE);
+        if (!append_pcm(service, service->canonical, frames,
+                        service->rendered_frame))
+            return false;
         service->rendered_frame += frames;
         snapshot_u64_publish(&service->rendered_frames_published,
                              service->rendered_frame);
@@ -688,18 +815,54 @@ static bool apply_event(struct p4_nano_audio86_live_service *service,
         if (event->payload == 0U)
             return false;
         reset_ordinal = event->payload;
+        action.opcode = NP2AUDIO86_TRACE_RESET_BARRIER;
+        action.kind = NP2_AUDIO86_CORE_ACTION_RESET;
+        /* The ordinal is transport metadata, not the canonical guest RESET
+         * payload.  Preserve the frozen action record's zero payload. */
+        action.payload = 0U;
+        if (service->fixture_enabled != 0U) {
+            if (event->frame_timestamp != P4_NANO_AUDIO86_5D3_RESET_FRAME ||
+                atomic_load_explicit(
+                    &service->fixture_terminal_horizon_observed,
+                    memory_order_acquire) == 0U ||
+                reset_ordinal != service->fixture_terminal_reset_ordinal)
+                return false;
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T1_PRE_RESET_RENDER_COMPLETE);
+            fixture_terminal_point(service,
+                                   P4_NANO_AUDIO86_5D3_T2_RESET_ACTION_BEGIN);
+        }
         result = np2audio86_core_render_reset(&service->render);
+        if (result == 0 && service->fixture_decorate_render != NULL)
+            result = service->fixture_decorate_render(
+                service->fixture_opaque, &service->render, 1U);
+        if (service->fixture_enabled != 0U)
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T3_RESET_ACTION_COMPLETE);
     } else {
         return false;
     }
+    if (result == 0 && service->fixture_observe_applied_action != NULL)
+        result = service->fixture_observe_applied_action(
+            service->fixture_opaque, &action, reset_ordinal,
+            service->pcm_ring.next_frame_offset);
+    if (service->fixture_enabled != 0U && reset_ordinal != 0U)
+        fixture_terminal_point(
+            service, P4_NANO_AUDIO86_5D3_T4_RESET_EVIDENCE_COMPLETE);
     if (result != 0 ||
         np2audio86_event_ring_consume(&service->events) !=
             NP2_AUDIO86_TRANSPORT_OK)
         return false;
     ++service->expected_sequence;
-    if (reset_ordinal != 0U)
+    if (reset_ordinal != 0U) {
+        atomic_store_explicit(&service->fixture_reset_applied_ordinal,
+                              reset_ordinal, memory_order_release);
         np2audio86_runtime_reset_ack_publish(&service->control,
                                              reset_ordinal);
+        if (service->fixture_enabled != 0U)
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T5_RESET_ACK_PUBLISHED);
+    }
     wake_waiters(service);
     return true;
 }
@@ -825,6 +988,8 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
 {
     enum np2_pcm_output_status start_status;
     uint64_t authority = 0U;
+    uint64_t fixture_terminal_horizon = 0U;
+    uint32_t fixture_terminal_reset_ordinal = 0U;
     bool clean_barrier = false;
 
     do {
@@ -857,10 +1022,33 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
         bool retry = false;
         bool progressed = false;
 
+        if (atomic_load_explicit(&service->fixture_worker_hold,
+                                 memory_order_acquire) != 0U) {
+            atomic_store_explicit(&service->fixture_worker_hold_ack, 1U,
+                                  memory_order_release);
+            wake_waiters(service);
+            worker_wait(service, 1U);
+            continue;
+        }
+
         horizon_status = np2audio86_runtime_horizon_try_observe_detail(
             &service->control, &service->consumer_clock, &observation);
         if (horizon_status == NP2_AUDIO86_RUNTIME_HORIZON_OK) {
-            if (observation.flags != NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE) {
+            if (observation.flags ==
+                    NP2_AUDIO86_RUNTIME_HORIZON_FLAG_TERMINAL &&
+                service->fixture_enabled != 0U &&
+                fixture_terminal_horizon == 0U &&
+                observation.frame ==
+                    P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON &&
+                observation.terminal_reset_ordinal != 0U) {
+                fixture_terminal_horizon = observation.frame;
+                fixture_terminal_reset_ordinal =
+                    observation.terminal_reset_ordinal;
+                atomic_store_explicit(
+                    &service->fixture_terminal_horizon_observed, 1U,
+                    memory_order_release);
+            } else if (observation.flags !=
+                       NP2_AUDIO86_RUNTIME_HORIZON_FLAG_NONE) {
                 (void)first_fatal(
                     service, P4_NANO_AUDIO86_LIVE_FAILURE_TRANSPORT,
                     P4_NANO_AUDIO86_LIVE_ORIGIN_GUEST_TRANSPORT,
@@ -879,6 +1067,25 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
         }
 
         event_status = np2audio86_event_ring_peek(&service->events, &event);
+        if (fixture_terminal_horizon != 0U &&
+            service->fixture_worker_observed_pair == 0U &&
+            event_status == NP2_AUDIO86_TRANSPORT_OK && event != NULL &&
+            event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+            event->frame_timestamp == P4_NANO_AUDIO86_5D3_RESET_FRAME &&
+            event->payload == fixture_terminal_reset_ordinal) {
+            service->fixture_worker_observed_pair = 1U;
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T0_TERMINAL_PAIR_OBSERVED);
+        }
+        if (service->fixture_enabled != 0U &&
+            event_status == NP2_AUDIO86_TRANSPORT_OK && event != NULL &&
+            event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER &&
+            fixture_terminal_horizon == 0U) {
+            /* The event release intentionally precedes the terminal mailbox.
+             * A timeout/poll is not authority to consume the pair halfway. */
+            worker_wait(service, 1U);
+            continue;
+        }
         if (event_status == NP2_AUDIO86_TRANSPORT_OK && event != NULL &&
             event->frame_timestamp <= authority) {
             if (!apply_event(service, event)) {
@@ -901,12 +1108,46 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
                               LIVE_SUBCODE_EVENT);
             break;
         }
-        if (service->rendered_frame < authority) {
+        if (fixture_terminal_horizon != 0U &&
+            service->fixture_output_finished == 0U &&
+            atomic_load_explicit(&service->fixture_reset_applied_ordinal,
+                                 memory_order_acquire) ==
+                fixture_terminal_reset_ordinal &&
+            np2audio86_event_ring_occupancy(&service->events) == 0U &&
+            np2audio86_byte_ring_occupancy(&service->bytes) == 0U &&
+            !np2audio86_runtime_horizon_pending(&service->control)) {
+            fixture_terminal_point(
+                service,
+                P4_NANO_AUDIO86_5D3_T6_TERMINAL_PREDICATE_READY);
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T7_POST_RESET_RENDER_BEGIN);
+            service->fixture_reset_before_remainder =
+                service->rendered_frame == P4_NANO_AUDIO86_5D3_RESET_FRAME
+                    ? 1U
+                    : 0U;
+            if (!render_until(service, fixture_terminal_horizon) ||
+                !close_pcm_ring(service) || !finish_output(service))
+                break;
+            service->fixture_output_finished = 1U;
+            fixture_terminal_point(
+                service, P4_NANO_AUDIO86_5D3_T10_PCM_FINISH_COMPLETE);
+            atomic_store_explicit(
+                &service->fixture_terminal_pcm_before_done,
+                np2audio86_runtime_producer_done(&service->control) ? 0U : 1U,
+                memory_order_release);
+            atomic_store_explicit(&service->fixture_terminal_pcm_ready, 1U,
+                                  memory_order_release);
+            wake_waiters(service);
+            progressed = true;
+        }
+        if (service->fixture_output_finished == 0U &&
+            service->rendered_frame < authority) {
             if (!render_until(service, authority))
                 break;
             progressed = true;
         }
-        if (!drain_output(service, &retry))
+        if (service->fixture_output_finished == 0U &&
+            !drain_output(service, &retry))
             break;
         if (retry)
             progressed = false;
@@ -925,8 +1166,10 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
                         LIVE_SUBCODE_HORIZON);
                     break;
                 }
-                if (!close_pcm_ring(service) || !finish_output(service))
-                    break;
+                if (service->fixture_output_finished == 0U) {
+                    if (!close_pcm_ring(service) || !finish_output(service))
+                        break;
+                }
                 clean_barrier = true;
                 release_borrow(service);
 #if defined(P4_NANO_AUDIO86_LIVE_SERVICE_TESTING)
@@ -957,6 +1200,24 @@ static void worker_run(struct p4_nano_audio86_live_service *service)
     while (atomic_load_explicit(&service->guest_attached,
                                 memory_order_acquire) != 0U)
         worker_wait(service, 1U);
+    if (service->fixture_enabled != 0U) {
+        struct np2audio86_runtime_horizon_observation discarded_horizon;
+        while (np2audio86_event_ring_occupancy(&service->events) != 0U)
+            (void)np2audio86_event_ring_consume(&service->events);
+        while (np2audio86_byte_ring_occupancy(&service->bytes) != 0U) {
+            uint32_t bytes = np2audio86_byte_ring_occupancy(&service->bytes);
+            if (bytes > sizeof(service->worker_run))
+                bytes = sizeof(service->worker_run);
+            if (np2audio86_byte_ring_pop(&service->bytes,
+                                         service->worker_run, bytes) !=
+                NP2_AUDIO86_TRANSPORT_OK)
+                break;
+        }
+        while (np2audio86_runtime_horizon_pending(&service->control))
+            (void)np2audio86_runtime_horizon_try_observe_detail(
+                &service->control, &service->consumer_clock,
+                &discarded_horizon);
+    }
     publish_terminal_state(service, P4_NANO_AUDIO86_LIVE_FAILED_QUIESCENT,
                            P4_NANO_AUDIO86_LIVE_CLEANUP_QUIESCENT);
 }
@@ -1041,6 +1302,15 @@ enum p4_nano_audio86_live_result p4_nano_audio86_live_service_init(
     atomic_init(&service->accepted_frames_published.sequence, 0U);
     atomic_init(&service->accepted_frames_published.low, 0U);
     atomic_init(&service->accepted_frames_published.high, 0U);
+    atomic_init(&service->fixture_terminal_armed, 0U);
+    atomic_init(&service->fixture_terminal_deferred, 0U);
+    atomic_init(&service->fixture_terminal_horizon_published, 0U);
+    atomic_init(&service->fixture_terminal_horizon_observed, 0U);
+    atomic_init(&service->fixture_terminal_pcm_ready, 0U);
+    atomic_init(&service->fixture_terminal_pcm_before_done, 0U);
+    atomic_init(&service->fixture_reset_applied_ordinal, 0U);
+    atomic_init(&service->fixture_worker_hold, 0U);
+    atomic_init(&service->fixture_worker_hold_ack, 0U);
     np2audio86_event_ring_init(&service->events);
     np2audio86_byte_ring_init(&service->bytes);
     np2audio86_runtime_control_init(&service->control);
@@ -1386,6 +1656,181 @@ static uint64_t monotonic_ms(void)
     (void)clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
 #endif
+}
+
+enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_configure(
+    struct p4_nano_audio86_live_service *service,
+    const struct p4_nano_audio86_5d3_hooks *hooks)
+{
+    if (service == NULL || hooks == NULL ||
+        service->magic != P4_NANO_AUDIO86_LIVE_MAGIC ||
+        hooks->decorate_render == NULL ||
+        hooks->observe_rendered_pcm == NULL ||
+        hooks->observe_applied_action == NULL ||
+        hooks->terminal_publication_test_mode > 2U)
+        return P4_NANO_AUDIO86_LIVE_ARGUMENT;
+    if (service_state(service) != P4_NANO_AUDIO86_LIVE_READY)
+        return P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+    service->fixture_opaque = hooks->opaque;
+    service->fixture_decorate_render = hooks->decorate_render;
+    service->fixture_observe_rendered_pcm = hooks->observe_rendered_pcm;
+    service->fixture_observe_applied_action =
+        hooks->observe_applied_action;
+    service->fixture_observe_ring = hooks->observe_ring;
+    service->fixture_observe_terminal_point = hooks->observe_terminal_point;
+    service->fixture_terminal_test_mode =
+        hooks->terminal_publication_test_mode;
+    if (service->fixture_decorate_render(service->fixture_opaque,
+                                         &service->render, 0U) != 0) {
+        service->fixture_opaque = NULL;
+        service->fixture_decorate_render = NULL;
+        service->fixture_observe_rendered_pcm = NULL;
+        service->fixture_observe_applied_action = NULL;
+        service->fixture_observe_ring = NULL;
+        service->fixture_observe_terminal_point = NULL;
+        return P4_NANO_AUDIO86_LIVE_FAILED;
+    }
+    service->fixture_enabled = 1U;
+    return P4_NANO_AUDIO86_LIVE_OK;
+}
+
+enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_arm_terminal(
+    struct p4_nano_audio86_live_service *service)
+{
+    uint64_t started;
+    if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
+        return P4_NANO_AUDIO86_LIVE_ARGUMENT;
+    if (!owner_matches(service))
+        return P4_NANO_AUDIO86_LIVE_OWNER_ERROR;
+    if (service_state(service) != P4_NANO_AUDIO86_LIVE_RUNNING ||
+        service->fixture_enabled == 0U || service->transaction_active != 0U ||
+        atomic_load_explicit(&service->fixture_terminal_armed,
+                             memory_order_acquire) != 0U ||
+        atomic_load_explicit(&service->fixture_terminal_horizon_published,
+                             memory_order_acquire) != 0U)
+        return P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+    atomic_store_explicit(&service->fixture_terminal_armed, 1U,
+                          memory_order_release);
+    if (service->fixture_terminal_test_mode == 0U)
+        return P4_NANO_AUDIO86_LIVE_OK;
+    atomic_store_explicit(&service->fixture_worker_hold, 1U,
+                          memory_order_release);
+    wake_waiters(service);
+    started = monotonic_ms();
+    while (atomic_load_explicit(&service->fixture_worker_hold_ack,
+                                memory_order_acquire) == 0U &&
+           atomic_load_explicit(&service->first_error_latched,
+                                memory_order_acquire) == 0U) {
+        if (monotonic_ms() - started >= 5000U) {
+            (void)first_fatal(service,
+                              P4_NANO_AUDIO86_LIVE_FAILURE_WORKER,
+                              P4_NANO_AUDIO86_LIVE_ORIGIN_CHECKPOINT,
+                              LIVE_SUBCODE_5D3_TERMINAL);
+            return P4_NANO_AUDIO86_LIVE_FAILED;
+        }
+        owner_wait(service);
+    }
+    return atomic_load_explicit(&service->first_error_latched,
+                                memory_order_acquire) == 0U
+               ? P4_NANO_AUDIO86_LIVE_OK
+               : P4_NANO_AUDIO86_LIVE_FAILED;
+}
+
+enum p4_nano_audio86_live_result
+p4_nano_audio86_5d3_fixture_complete_producer(
+    struct p4_nano_audio86_live_service *service)
+{
+    uint32_t expected = P4_NANO_AUDIO86_LIVE_RUNNING;
+    if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
+        return P4_NANO_AUDIO86_LIVE_ARGUMENT;
+    if (!owner_matches(service))
+        return P4_NANO_AUDIO86_LIVE_OWNER_ERROR;
+    if (service_state(service) != P4_NANO_AUDIO86_LIVE_RUNNING ||
+        service->fixture_enabled == 0U || service->transaction_active != 0U ||
+        atomic_load_explicit(&service->fixture_terminal_pcm_ready,
+                             memory_order_acquire) == 0U ||
+        service->fixture_output_finished == 0U ||
+        service->fixture_terminal_reset_ordinal == 0U ||
+        atomic_load_explicit(&service->fixture_reset_applied_ordinal,
+                             memory_order_acquire) !=
+            service->fixture_terminal_reset_ordinal)
+        return P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+    atomic_store_explicit(&service->producer_closing, 1U,
+                          memory_order_release);
+    atomic_store_explicit(&service->transaction_gate,
+                          LIVE_TRANSACTION_GATE_CLOSED,
+                          memory_order_release);
+    snapshot_u64_publish(&service->final_horizon,
+                         P4_NANO_AUDIO86_5D3_TERMINAL_HORIZON);
+    np2audio86_guest_sink_unbind();
+    atomic_store_explicit(&service->guest_attached, 0U,
+                          memory_order_release);
+    np2audio86_runtime_producer_done_publish(&service->control);
+    if (!atomic_compare_exchange_strong_explicit(
+            &service->state, &expected, P4_NANO_AUDIO86_LIVE_DRAINING,
+            memory_order_acq_rel, memory_order_acquire)) {
+        wake_waiters(service);
+        return P4_NANO_AUDIO86_LIVE_FAILED;
+    }
+    wake_waiters(service);
+    return P4_NANO_AUDIO86_LIVE_OK;
+}
+
+void p4_nano_audio86_5d3_fixture_snapshot(
+    const struct p4_nano_audio86_live_service *service,
+    struct p4_nano_audio86_5d3_snapshot *snapshot)
+{
+    if (snapshot == NULL)
+        return;
+    memset(snapshot, 0, sizeof(*snapshot));
+    if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
+        return;
+    snapshot->rendered_frames = snapshot_u64_read(
+        &service->rendered_frames_published);
+    snapshot->accepted_frames = snapshot_u64_read(
+        &service->accepted_frames_published);
+    snapshot->final_horizon = snapshot_u64_read(&service->final_horizon);
+    snapshot->ring_next_frame_offset = service->pcm_ring.next_frame_offset;
+    snapshot->ring_next_sequence = service->pcm_ring.next_sequence;
+    snapshot->ring_occupancy =
+        np2opngen_pcm_ring_occupancy(&service->pcm_ring);
+    snapshot->ring_partial_frames =
+        np2opngen_pcm_ring_producer_partial_valid_frames(&service->pcm_ring);
+    snapshot->reset_ordinal = service->reset_ordinal;
+    snapshot->reset_applied_ordinal = atomic_load_explicit(
+        &service->fixture_reset_applied_ordinal, memory_order_acquire);
+    snapshot->terminal_horizon_published = atomic_load_explicit(
+        &service->fixture_terminal_horizon_published, memory_order_acquire);
+    snapshot->terminal_horizon_observed = atomic_load_explicit(
+        &service->fixture_terminal_horizon_observed, memory_order_acquire);
+    snapshot->terminal_pcm_ready = atomic_load_explicit(
+        &service->fixture_terminal_pcm_ready, memory_order_acquire);
+    snapshot->terminal_pcm_before_producer_done = atomic_load_explicit(
+        &service->fixture_terminal_pcm_before_done, memory_order_acquire);
+    snapshot->reset_event_before_terminal_horizon =
+        service->fixture_reset_event_before_horizon;
+    snapshot->worker_observed_matching_pair =
+        service->fixture_worker_observed_pair;
+    snapshot->reset_before_post_reset_render =
+        service->fixture_reset_before_remainder;
+    snapshot->q399_published = service->fixture_q399_published;
+    snapshot->output_finished = service->fixture_output_finished;
+    snapshot->producer_done =
+        np2audio86_runtime_producer_done(&service->control) ? 1U : 0U;
+    snapshot->guest_attached = atomic_load_explicit(
+        &service->guest_attached, memory_order_acquire);
+    snapshot->first_error = atomic_load_explicit(
+        &service->first_error_latched, memory_order_acquire);
+    snapshot->transport_residual =
+        np2audio86_event_ring_occupancy(&service->events) +
+        np2audio86_byte_ring_occupancy(&service->bytes) +
+        (np2audio86_runtime_horizon_pending(&service->control) ? 1U : 0U);
+    snapshot->worker_hold_ack = atomic_load_explicit(
+        &service->fixture_worker_hold_ack, memory_order_acquire);
+    snapshot->partial_failure_event_visible =
+        service->fixture_partial_failure_event_visible;
+    snapshot->partial_failure_wake_issued =
+        service->fixture_partial_failure_wake_issued;
 }
 
 enum p4_nano_audio86_live_result p4_nano_audio86_live_service_join(

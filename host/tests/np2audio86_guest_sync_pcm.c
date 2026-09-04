@@ -16,6 +16,8 @@
 #include "np2audio86_runtime_transport.h"
 #include "np2opngen_pcm_ring.h"
 #include "np2pcm_output.h"
+#include "p4_nano_audio86_live_service.h"
+#include "p4_nano_audio86_live_service_fixture.h"
 #endif
 #include "np2_crc32.h"
 #include "np2_sha256.h"
@@ -1073,6 +1075,278 @@ struct sustained_ring_sink {
     uint64_t now_ms;
 };
 
+struct sustained_live_client {
+    struct p4_nano_audio86_live_service service;
+    struct sync_pcm_result generated;
+    uint8_t accepted[SYNC_HORIZON_FRAMES * 4U];
+    uint8_t source[SYNC_SOURCE_BYTES];
+    size_t accepted_bytes;
+    uint32_t accepted_units;
+    uint32_t start_calls;
+    uint32_t finish_calls;
+    uint32_t abort_calls;
+    uint32_t reset_ordinal;
+    uint64_t reset_ring_frame;
+    uint32_t terminal_next;
+    uint32_t terminal_order_error;
+    uint32_t q399_published;
+    struct p4_nano_audio86_5d3_snapshot snapshot;
+};
+
+static int sustained_live_decorate(
+    void *opaque, struct np2audio86_render_state *render,
+    uint8_t after_guest_reset)
+{
+    struct sustained_live_client *client = opaque;
+    (void)after_guest_reset;
+    return client == NULL ? -1 : np2audio86_guest_action_decorate_worker(
+        render, client->source, sizeof(client->source));
+}
+
+static int sustained_live_rendered(void *opaque, const uint8_t *pcm,
+                                   uint16_t frames, uint64_t frame_offset)
+{
+    struct sustained_live_client *client = opaque;
+    const size_t bytes = (size_t)frames * 4U;
+    size_t pre_frames = 0U;
+    if (client == NULL || pcm == NULL || frames == 0U ||
+        frame_offset > SYNC_HORIZON_FRAMES ||
+        frames > SYNC_HORIZON_FRAMES - frame_offset)
+        return -1;
+    memcpy(client->generated.full_pcm + (size_t)frame_offset * 4U,
+           pcm, bytes);
+    if (frame_offset < P4_NANO_AUDIO86_5D3_RESET_FRAME) {
+        pre_frames = frames;
+        if (pre_frames > P4_NANO_AUDIO86_5D3_RESET_FRAME - frame_offset)
+            pre_frames = (size_t)(P4_NANO_AUDIO86_5D3_RESET_FRAME -
+                                  frame_offset);
+        memcpy(client->generated.pre_pcm + (size_t)frame_offset * 4U,
+               pcm, pre_frames * 4U);
+    }
+    return 0;
+}
+
+static int sustained_live_action(
+    void *opaque, const struct np2audio86_core_guest_action *action,
+    uint32_t reset_ordinal, uint64_t ring_next_frame_offset)
+{
+    struct sustained_live_client *client = opaque;
+    struct sync_apply_record *record;
+    if (client == NULL || action == NULL ||
+        client->generated.apply_count >= SYNC_MAX_ACTIONS)
+        return -1;
+    record = &client->generated.apply[client->generated.apply_count++];
+    record->frame = action->frame_timestamp;
+    record->sequence = action->sequence;
+    record->opcode = action->opcode;
+    record->action = action->kind;
+    record->byte_offset = action->byte_offset;
+    record->byte_count = action->byte_count;
+    record->payload = action->payload;
+    if (action->kind == NP2_AUDIO86_CORE_ACTION_RESET) {
+        client->generated.pre_reset_frame = action->frame_timestamp;
+        client->reset_ordinal = reset_ordinal;
+        client->reset_ring_frame = ring_next_frame_offset;
+    }
+    return 0;
+}
+
+static void sustained_live_ring(void *opaque, uint32_t occupancy,
+                                uint32_t next_sequence,
+                                uint64_t next_frame_offset)
+{
+    struct sustained_live_client *client = opaque;
+    (void)occupancy;
+    if (client != NULL && next_sequence == 400U &&
+        next_frame_offset == SYNC_HORIZON_FRAMES)
+        client->q399_published = 1U;
+}
+
+static void sustained_live_terminal(void *opaque, uint32_t point)
+{
+    struct sustained_live_client *client = opaque;
+    if (client == NULL) return;
+    if (point != client->terminal_next)
+        client->terminal_order_error = 1U;
+    else
+        ++client->terminal_next;
+}
+
+static enum np2_pcm_sink_result sustained_live_start(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    if (client == NULL) return NP2_PCM_SINK_FATAL;
+    ++client->start_calls;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_live_submit(
+    void *opaque, const struct np2_pcm_sink_view *view)
+{
+    struct sustained_live_client *client = opaque;
+    size_t bytes;
+    if (client == NULL || view == NULL || view->flags != 0U ||
+        view->valid_frames != NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES ||
+        view->sequence != client->accepted_units ||
+        view->frame_offset != (uint64_t)view->sequence *
+                                  NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES)
+        return NP2_PCM_SINK_FATAL;
+    bytes = (size_t)view->valid_frames * 4U;
+    if (client->accepted_bytes > sizeof(client->accepted) ||
+        bytes > sizeof(client->accepted) - client->accepted_bytes)
+        return NP2_PCM_SINK_FATAL;
+    memcpy(client->accepted + client->accepted_bytes, view->pcm, bytes);
+    client->accepted_bytes += bytes;
+    ++client->accepted_units;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_live_finish(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    if (client == NULL) return NP2_PCM_SINK_FATAL;
+    ++client->finish_calls;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static enum np2_pcm_sink_result sustained_live_abort(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    if (client == NULL) return NP2_PCM_SINK_FATAL;
+    ++client->abort_calls;
+    return NP2_PCM_SINK_ACCEPTED;
+}
+
+static int sustained_live_attach(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    return client != NULL &&
+           p4_nano_audio86_live_service_attach_guest(&client->service) ==
+               P4_NANO_AUDIO86_LIVE_OK
+        ? 0 : -1;
+}
+
+static int sustained_live_arm(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    return client != NULL &&
+           p4_nano_audio86_5d3_fixture_arm_terminal(&client->service) ==
+               P4_NANO_AUDIO86_LIVE_OK
+        ? 0 : -1;
+}
+
+static int run_sustained_live_client(
+    struct sustained_live_client *client, np2audio86_guest_trace_t *trace,
+    np2audio86_guest_state_snapshot_t *state,
+    np2audio86_guest_execution_evidence_t *execution)
+{
+    const struct np2_pcm_sink sink = {
+        client, sustained_live_start, sustained_live_submit,
+        sustained_live_finish, sustained_live_abort};
+    const struct p4_nano_audio86_live_config config = {&sink};
+    const struct p4_nano_audio86_5d3_hooks hooks = {
+        client, sustained_live_decorate, sustained_live_rendered,
+        sustained_live_action, sustained_live_ring, sustained_live_terminal,
+        0U};
+    struct p4_nano_audio86_live_status status;
+    enum p4_nano_audio86_live_result join_result;
+    int guest_result;
+    memset(client, 0, sizeof(*client));
+    if (p4_nano_audio86_live_service_init(&client->service, &config) !=
+            P4_NANO_AUDIO86_LIVE_OK ||
+        p4_nano_audio86_5d3_fixture_configure(&client->service, &hooks) !=
+            P4_NANO_AUDIO86_LIVE_OK ||
+        p4_nano_audio86_live_service_start(&client->service) !=
+            P4_NANO_AUDIO86_LIVE_OK)
+        { fprintf(stderr, "SUSTAINED_LIVE_CLIENT=FAIL stage=init_start\n"); return -1; }
+    guest_result = np2audio86_guest_runtime_live_sustained_2s(
+        trace, state, execution, sustained_live_attach, sustained_live_arm,
+        client);
+    p4_nano_audio86_live_service_status(&client->service, &status);
+    if (guest_result == 0) {
+        if (p4_nano_audio86_5d3_fixture_complete_producer(
+                &client->service) != P4_NANO_AUDIO86_LIVE_OK)
+            { fprintf(stderr, "SUSTAINED_LIVE_CLIENT=FAIL stage=complete\n"); return -1; }
+    } else if (status.state == P4_NANO_AUDIO86_LIVE_RUNNING) {
+        (void)p4_nano_audio86_live_service_report_producer_failure(
+            &client->service, 1U);
+    } else if (status.state == P4_NANO_AUDIO86_LIVE_FAILING) {
+        (void)p4_nano_audio86_live_service_owner_checkpoint(
+            &client->service);
+    }
+    join_result = p4_nano_audio86_live_service_join(
+        &client->service, 5000U, &status);
+    p4_nano_audio86_5d3_fixture_snapshot(&client->service,
+                                         &client->snapshot);
+    client->generated.full_frames = SYNC_HORIZON_FRAMES;
+    client->generated.full_bytes = sizeof(client->generated.full_pcm);
+    client->generated.pre_frames = P4_NANO_AUDIO86_5D3_RESET_FRAME;
+    client->generated.pre_bytes =
+        P4_NANO_AUDIO86_5D3_RESET_FRAME * 4U;
+    if (guest_result != 0 || join_result != P4_NANO_AUDIO86_LIVE_OK ||
+        status.state != P4_NANO_AUDIO86_LIVE_STOPPED_QUIESCENT ||
+        status.cleanup != P4_NANO_AUDIO86_LIVE_CLEANUP_QUIESCENT ||
+        status.guest_attached != 0U || status.sink_reachable != 0U ||
+        client->snapshot.rendered_frames != SYNC_HORIZON_FRAMES ||
+        client->snapshot.accepted_frames != SYNC_HORIZON_FRAMES ||
+        client->snapshot.final_horizon != SYNC_HORIZON_FRAMES ||
+        client->snapshot.reset_ordinal != 1U ||
+        client->snapshot.reset_applied_ordinal != 1U ||
+        client->snapshot.terminal_horizon_published != 1U ||
+        client->snapshot.terminal_horizon_observed != 1U ||
+        client->snapshot.terminal_pcm_ready != 1U ||
+        client->snapshot.terminal_pcm_before_producer_done != 1U ||
+        client->snapshot.reset_event_before_terminal_horizon != 1U ||
+        client->snapshot.worker_observed_matching_pair != 1U ||
+        client->snapshot.reset_before_post_reset_render != 1U ||
+        client->snapshot.q399_published != 1U ||
+        client->snapshot.output_finished != 1U ||
+        client->snapshot.producer_done != 1U ||
+        client->snapshot.guest_attached != 0U ||
+        client->snapshot.first_error != 0U ||
+        client->snapshot.transport_residual != 0U ||
+        client->reset_ordinal != 1U ||
+        client->reset_ring_frame != P4_NANO_AUDIO86_5D3_RESET_FRAME ||
+        client->terminal_next != 11U || client->terminal_order_error != 0U ||
+        client->q399_published != 1U || client->accepted_units != 400U ||
+        client->accepted_bytes != sizeof(client->accepted) ||
+        client->start_calls != 1U || client->finish_calls != 1U ||
+        client->abort_calls != 0U ||
+        memcmp(client->accepted, client->generated.full_pcm,
+               sizeof(client->accepted)) != 0)
+        {
+            fprintf(stderr,
+                    "SUSTAINED_LIVE_CLIENT=FAIL stage=terminal guest=%d join=%u state=%u cleanup=%u rendered=%" PRIu64 " accepted=%" PRIu64 " final=%" PRIu64 " reset=%u/%u term=%u/%u/%u before=%u pair=%u remainder=%u q399=%u output=%u done=%u attached=%u error=%u residual=%u hook_reset=%u ring=%" PRIu64 " points=%u order_error=%u hook_q399=%u units=%u bytes=%zu start=%u finish=%u abort=%u\n",
+                    guest_result, (unsigned)join_result, (unsigned)status.state,
+                    (unsigned)status.cleanup, client->snapshot.rendered_frames,
+                    client->snapshot.accepted_frames,
+                    client->snapshot.final_horizon,
+                    client->snapshot.reset_ordinal,
+                    client->snapshot.reset_applied_ordinal,
+                    client->snapshot.terminal_horizon_published,
+                    client->snapshot.terminal_horizon_observed,
+                    client->snapshot.terminal_pcm_ready,
+                    client->snapshot.reset_event_before_terminal_horizon,
+                    client->snapshot.worker_observed_matching_pair,
+                    client->snapshot.reset_before_post_reset_render,
+                    client->snapshot.q399_published,
+                    client->snapshot.output_finished,
+                    client->snapshot.producer_done,
+                    client->snapshot.guest_attached,
+                    client->snapshot.first_error,
+                    client->snapshot.transport_residual,
+                    client->reset_ordinal, client->reset_ring_frame,
+                    client->terminal_next, client->terminal_order_error,
+                    client->q399_published, client->accepted_units,
+                    client->accepted_bytes, client->start_calls,
+                    client->finish_calls, client->abort_calls);
+            return -1;
+        }
+    return p4_nano_audio86_live_service_destroy(&client->service) ==
+                   P4_NANO_AUDIO86_LIVE_OK
+        ? 0 : -1;
+}
+
 static enum np2_pcm_sink_result sustained_ring_start(void *opaque)
 {
     struct sustained_ring_sink *sink = opaque;
@@ -1779,6 +2053,7 @@ int main(void)
     uint8_t pcm_mutation_copy[32768];
 #if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
     np2audio86_guest_execution_evidence_t execution;
+    static struct sustained_live_client live_client;
     size_t io_bytes, timer_bytes, state_bytes;
     size_t original_program_bytes, sustained_program_bytes;
     size_t poll_start;
@@ -1791,8 +2066,8 @@ int main(void)
     if (test_r16_opngen_reset_contract() != 0) return 5;
 
 #if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
-    if (np2audio86_guest_runtime_capture_sustained_2s(
-            &trace, &guest_state, &execution) != 0) return 1;
+    if (run_sustained_live_client(
+            &live_client, &trace, &guest_state, &execution) != 0) return 1;
 #else
     if (np2audio86_guest_runtime_capture(&trace, &guest_state) != 0) return 1;
 #endif
@@ -1853,6 +2128,13 @@ int main(void)
     if (build_rc != 0 ||
         replay_actions(actions, action_count, trace.pcm_bytes, trace.pcm_count,
                        240U, &direct) != 0 ||
+#if defined(NP2AUDIO86_GUEST_SUSTAINED_2S)
+        !compare_pcm_results(&live_client.generated, &direct) ||
+        memcmp(live_client.generated.full_pcm + 95761U * 4U,
+               direct.full_pcm + 95761U * 4U, 239U * 4U) != 0 ||
+        memcmp(live_client.generated.full_pcm + 95760U * 4U,
+               direct.full_pcm + 95760U * 4U, 240U * 4U) != 0 ||
+#endif
         snapshot_inputs_match(&input_snapshot, trace.events, trace.event_count,
                                trace.data_runs, trace.data_run_count,
                                trace.pcm_bytes, trace.pcm_count) != 0) {
@@ -2020,6 +2302,12 @@ int main(void)
     printf("SUSTAINED_HOST_400_Q240_EVIDENCE_API=PASS\n");
     printf("SUSTAINED_HOST_400_Q240_EVIDENCE=PASS\n");
     printf("SUSTAINED_HOST_400_Q240_RING_CONTROLLER_INTEGRATION=PASS\n");
+    printf("SUSTAINED_5D3_LIVE_SERVICE_CLIENT=PASS\n");
+    printf("SUSTAINED_5D3_LIVE_SERVICE_LIFECYCLE=PASS\n");
+    printf("SUSTAINED_5D3_TERMINAL_T0_T10_ORDER=PASS\n");
+    printf("SUSTAINED_5D3_POST_RESET_239_BYTE_EXACT=PASS\n");
+    printf("SUSTAINED_5D3_Q399_BYTE_EXACT=PASS\n");
+    printf("SUSTAINED_5D3_OWNERSHIP_RESIDUAL=0\n");
     printf("SUSTAINED_HOST_RESET_RING_INTEGRATION=PASS\n");
     printf("SUSTAINED_HOST_TRACE_RING_INTEGRATION=PASS\n");
     printf("SUSTAINED_HOST_RETRY_DIGEST_NONREGRESSION=PASS\n");

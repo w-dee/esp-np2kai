@@ -181,6 +181,43 @@ struct p4_nano_audio86_live_service {
     uint8_t run_committed;
     uint8_t worker_joined;
 
+    /* Bounded 5D.3 fixture-private extension storage.  Generic clients never
+     * configure or observe these fields, and the public service API exposes
+     * no arbitrary terminal horizon. */
+    void *fixture_opaque;
+    int (*fixture_decorate_render)(
+        void *opaque, struct np2audio86_render_state *render,
+        uint8_t after_guest_reset);
+    int (*fixture_observe_rendered_pcm)(
+        void *opaque, const uint8_t *pcm, uint16_t frames,
+        uint64_t frame_offset);
+    int (*fixture_observe_applied_action)(
+        void *opaque, const struct np2audio86_core_guest_action *action,
+        uint32_t reset_ordinal, uint64_t ring_next_frame_offset);
+    void (*fixture_observe_ring)(void *opaque, uint32_t occupancy,
+                                 uint32_t next_sequence,
+                                 uint64_t next_frame_offset);
+    void (*fixture_observe_terminal_point)(void *opaque, uint32_t point);
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_armed;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_deferred;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_horizon_published;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_horizon_observed;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_pcm_ready;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_terminal_pcm_before_done;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_reset_applied_ordinal;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_worker_hold;
+    P4_NANO_AUDIO86_LIVE_ATOMIC(uint32_t) fixture_worker_hold_ack;
+    uint32_t fixture_terminal_reset_ordinal;
+    uint32_t fixture_reset_event_before_horizon;
+    uint32_t fixture_worker_observed_pair;
+    uint32_t fixture_reset_before_remainder;
+    uint32_t fixture_q399_published;
+    uint32_t fixture_partial_failure_event_visible;
+    uint32_t fixture_partial_failure_wake_issued;
+    uint8_t fixture_enabled;
+    uint8_t fixture_terminal_test_mode;
+    uint8_t fixture_output_finished;
+
 #if defined(ESP_PLATFORM)
     TaskHandle_t owner_task;
     TaskHandle_t worker_task;

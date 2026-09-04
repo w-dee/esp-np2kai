@@ -7,7 +7,7 @@ set(P4_NANO_AUDIO86_VENDOR_SRC
 
 set(P4_NANO_AUDIO86_BINDING_REQUIRES
     np2core np2host np2runtime np2audio86_fixture np2audio86_guest_adapter np2opngen_fixture
-    np2pcm_output p4_nano_audio86_notifications
+    np2pcm_output p4_nano_audio86_notifications p4_nano_audio86_live_service
     p4_nano_audio86_physical_sink freertos esp_system esp_timer heap)
 
 idf_component_register(

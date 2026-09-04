@@ -361,6 +361,15 @@ static void configure_render_state_mutable(
     configure_pcm86(&state->pcm86, source);
 }
 
+int np2audio86_fixture_decorate_render_state(
+    struct np2audio86_render_state *state)
+{
+    if (state == NULL)
+        return -1;
+    configure_render_state_mutable(state, NULL);
+    return 0;
+}
+
 int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
                                        const uint8_t *source)
 {

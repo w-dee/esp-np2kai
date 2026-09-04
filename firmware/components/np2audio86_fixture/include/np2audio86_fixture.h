@@ -61,6 +61,10 @@ int np2audio86_async_validate_plan(const struct np2audio86_event *plan,
 int np2audio86_render_init(struct np2audio86_render_state *state);
 int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
                                        const uint8_t *source);
+/* Fixture-private mutable-state decorator.  The caller must first establish
+ * a neutral core instance with core_render_init/reset. */
+int np2audio86_fixture_decorate_render_state(
+    struct np2audio86_render_state *state);
 #if defined(NP2AUDIO86_GUEST_TEST)
 /* Host-only seams for proving cold-initialization ownership and propagation. */
 void np2audio86_test_opngen_initialize_reset(void);
