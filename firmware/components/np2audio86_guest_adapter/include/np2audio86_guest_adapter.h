@@ -100,6 +100,11 @@ typedef struct {
     void (*commit_horizon)(void *opaque,
                            np2audio86_guest_transaction_t *transaction,
                            uint64_t frame_timestamp);
+    /* Progress-only publication has no semantic transaction and accepts no
+     * caller-supplied frame.  The adapter derives the absolute 48 kHz frame
+     * from its owner-local guest clock before invoking this checked seam. */
+    int (*publish_progress_checked)(void *opaque,
+                                    uint64_t frame_timestamp);
 } np2audio86_guest_sink_t;
 
 typedef struct {
@@ -304,6 +309,10 @@ void np2audio86_guest_opna_bind(void);
 void np2audio86_guest_opna_unbind(void);
 void np2audio86_guest_soundrom_load(uint32_t address, const char *name);
 void np2audio86_guest_audio_sync(void);
+/* Owner-only O(1) checkpoint.  It advances guest-derived time and, when a
+ * live sink provides the optional seam, publishes a non-semantic render
+ * horizon.  No event, data run, or sequence is synthesized. */
+int np2audio86_guest_progress_checkpoint(void);
 
 /* Plain PC-9801-86 PCM86 guest/accounting hand-off. */
 /* Returns nonzero only when the operation was accepted/handled.  A checked

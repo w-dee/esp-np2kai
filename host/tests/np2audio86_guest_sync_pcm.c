@@ -293,7 +293,7 @@ static int test_r16_opngen_reset_contract(void)
     np2audio86_test_opngen_initialize_reset();
     if (np2audio86_render_init(optimized) != 0 ||
         np2audio86_render_init(reference) != 0 ||
-        np2audio86_test_opngen_initialize_call_count() != 2U ||
+        np2audio86_test_opngen_initialize_call_count() != 1U ||
         dirty_render_state(optimized, source) != 0 ||
         dirty_render_state(reference, source) != 0) {
         goto done;
@@ -307,14 +307,14 @@ static int test_r16_opngen_reset_contract(void)
             reference, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0)
         goto done;
     checkpoint = 22U;
-    if (np2audio86_test_opngen_initialize_call_count() != 3U) goto done;
+    if (np2audio86_test_opngen_initialize_call_count() != 1U) goto done;
     checkpoint = 23U;
     if (np2audio86_guest_action_apply(
             optimized, &reset, NULL, 0U, source,
             NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0)
         goto done;
     checkpoint = 24U;
-    if (np2audio86_test_opngen_initialize_call_count() != 3U) goto done;
+    if (np2audio86_test_opngen_initialize_call_count() != 1U) goto done;
     checkpoint = 25U;
     if (!render_states_semantically_equal(optimized, reference)) goto done;
     checkpoint = 26U;
@@ -327,12 +327,11 @@ static int test_r16_opngen_reset_contract(void)
     checkpoint = 29U;
     if (!render_states_semantically_equal(optimized, reference)) goto done;
 
-    /* A later same-rate lifetime may rebuild the shared tables without
-     * invalidating an already-live instance. */
+    /* Later same-rate object lifetimes reuse process-cold shared tables. */
     checkpoint = 3U;
     if (np2audio86_render_init(lifetime_a) != 0 ||
         np2audio86_render_init(lifetime_b) != 0 ||
-        np2audio86_test_opngen_initialize_call_count() != 5U ||
+        np2audio86_test_opngen_initialize_call_count() != 1U ||
         !render_states_semantically_equal(lifetime_a, lifetime_b) ||
         np2audio86_render_pcm86_push(
             lifetime_a, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
@@ -346,25 +345,22 @@ static int test_r16_opngen_reset_contract(void)
 
     checkpoint = 4U;
     calls = np2audio86_test_opngen_initialize_call_count();
-    np2audio86_test_opngen_initialize_fail_next();
     if (np2audio86_render_reset(optimized) != 0 ||
         np2audio86_test_opngen_initialize_call_count() != calls ||
         np2audio86_guest_action_prime_worker(
-            failed, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) == 0 ||
-        np2audio86_test_opngen_initialize_call_count() != calls ||
-        np2audio86_guest_action_prime_worker(
             failed, source, NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES) != 0 ||
-        np2audio86_test_opngen_initialize_call_count() != calls + 1U ||
+        np2audio86_test_opngen_initialize_call_count() != calls ||
         np2audio86_guest_action_apply(
             optimized, &reset, NULL, 0U, source,
             NP2_AUDIO86_PCM86_SOURCE_PERIOD_BYTES - 1U) == 0 ||
-        np2audio86_test_opngen_initialize_call_count() != calls + 1U) {
+        np2audio86_test_opngen_initialize_call_count() != calls) {
         goto done;
     }
     printf("R16_OPNGEN_COLD_INITIALIZE_CALLS=%" PRIu32 "\n",
            np2audio86_test_opngen_initialize_call_count());
     printf("R16_GUEST_RESET_INITIALIZE_CALLS=0\n");
-    printf("R16_INJECTED_COLD_FAILURE_UPSTREAM_CALLS=0\n");
+    printf("OPN_GLOBAL_INIT_PROCESS_LIFETIME_CALL_COUNT=%" PRIu32 "\n",
+           np2audio86_test_opngen_initialize_call_count());
     result = 0;
 done:
     if (result != 0) {

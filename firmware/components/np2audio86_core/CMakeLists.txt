@@ -3,21 +3,20 @@ set(NP2_AUDIO86_HOST_COMPAT_DIR "${CMAKE_SOURCE_DIR}/../host/compat")
 
 idf_component_register(
     SRCS
-        "np2audio86_fixture.c"
-        "np2audio86_guest_async.c"
-        "np2audio86_guest_evidence.c"
-        "np2audio86_guest_program.c"
-        "np2audio86_sustained_evidence.c"
-        "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/np2opngen_pcm_canonical.c"
-        "${NP2_AUDIO86_HOST_COMPAT_DIR}/np2_crc32.c"
-        "${NP2_AUDIO86_HOST_COMPAT_DIR}/np2_sha256.c"
+        "np2audio86_core.c"
+        "np2audio86_transport.c"
+        "np2audio86_runtime_transport.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/opngenc.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/opngeng.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/psggenc.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/psggeng.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/pcmmix.c"
+        "${NP2_AUDIO86_VENDOR_DIR}/sound/pcm86g.c"
     INCLUDE_DIRS
         "include"
         "${NP2_AUDIO86_HOST_COMPAT_DIR}"
         "${NP2_AUDIO86_VENDOR_DIR}"
-        "${NP2_AUDIO86_VENDOR_DIR}/i286c"
-        "${CMAKE_SOURCE_DIR}/../firmware/components/np2opngen_fixture/include"
-    REQUIRES np2audio86_core np2audio86_guest_adapter)
+        "${NP2_AUDIO86_VENDOR_DIR}/i286c")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     DISABLE_SOUND=1

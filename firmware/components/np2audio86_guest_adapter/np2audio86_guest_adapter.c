@@ -752,6 +752,41 @@ void np2audio86_guest_audio_sync(void)
     sync_plan_apply(&plan);
 }
 
+int np2audio86_guest_progress_checkpoint(void)
+{
+    np2audio86_guest_sync_plan_t plan;
+    int status;
+    if (semantic_enter() != 0)
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    if (flush_pending_run() != 0) {
+        semantic_leave();
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+    status = sync_plan_compute(&plan);
+    if (status != 0) {
+        fail_sync_plan(status);
+        semantic_leave();
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+    if (g_sink != NULL && g_sink->publish_progress_checked != NULL) {
+        status = g_sink->publish_progress_checked(
+            g_sink->opaque, plan.frame_timestamp);
+        if (status == NP2AUDIO86_GUEST_TRANSACTION_RETRY ||
+            status == NP2AUDIO86_GUEST_TRANSACTION_TERMINATED) {
+            semantic_leave();
+            return status;
+        }
+        if (status != NP2AUDIO86_GUEST_TRANSACTION_OK) {
+            fail("progress horizon contract");
+            semantic_leave();
+            return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+        }
+    }
+    sync_plan_apply(&plan);
+    semantic_leave();
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
+}
+
 void np2audio86_guest_host_trace_attach(np2audio86_guest_trace_t *trace)
 {
     g_trace = trace;

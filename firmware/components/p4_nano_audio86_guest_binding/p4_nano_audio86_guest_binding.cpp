@@ -2238,9 +2238,35 @@ void commit_horizon(void *opaque, np2audio86_guest_transaction_t *token,
     }
 }
 
+int publish_progress_checked(void *opaque, const uint64_t frame)
+{
+    auto *runtime = static_cast<Runtime *>(opaque);
+    if (runtime == nullptr || runtime->transaction_active ||
+        runtime->horizon_owned) {
+        if (runtime != nullptr)
+            fail(runtime, kErrorTransport);
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
+    if (!np2audio86_runtime_semantic_event_permitted(
+            &runtime->producer_clock))
+        return NP2AUDIO86_GUEST_TRANSACTION_TERMINATED;
+#endif
+    const int status = np2audio86_runtime_horizon_publish(
+        &runtime->control, &runtime->producer_clock, frame);
+    if (status == NP2_AUDIO86_RUNTIME_HORIZON_RETRY)
+        return NP2AUDIO86_GUEST_TRANSACTION_RETRY;
+    if (status != NP2_AUDIO86_RUNTIME_HORIZON_OK) {
+        fail(runtime, kErrorTransport);
+        return NP2AUDIO86_GUEST_TRANSACTION_CONTRACT;
+    }
+    notify_worker(runtime);
+    return NP2AUDIO86_GUEST_TRANSACTION_OK;
+}
+
 const np2audio86_guest_sink_t kSink{
     &s_runtime, reserve_checked, extend_checked, commit_event, commit_pcm_byte,
-    commit_data_run, commit_horizon};
+    commit_data_run, commit_horizon, publish_progress_checked};
 
 bool render_until(Runtime *runtime, const uint64_t target_frame)
 {

@@ -60,15 +60,6 @@ typedef struct np2audio86_render_state audio86_state;
 #define audio86_pcm86_feed np2audio86_pcm86_feed
 #define audio86_state np2audio86_render_state
 
-/* pcm86g.c is the upstream generator/resampler.  Its device-layer checkbuf
- * callback is intentionally replaced by this narrow synchronous adapter; the
- * fixture owns FIFO accounting and never calls pcm86c.c or pcm86io.c. */
-void SOUNDCALL pcm86gen_checkbuf(PCM86 pcm86, UINT nCount)
-{
-    (void)pcm86;
-    (void)nCount;
-}
-
 static void put_le16(uint8_t *out, uint16_t value)
 {
     out[0] = (uint8_t)(value & 0xffU);
@@ -129,17 +120,6 @@ int np2audio86_fixture_generate_source(uint8_t *source)
     return 0;
 }
 
-static int nonzero_samples(const SINT32 *samples, size_t count)
-{
-    size_t i;
-    for (i = 0U; i < count; ++i) {
-        if (samples[i] != 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 void np2audio86_fixture_hash_control(struct np2audio86_fixture_result *result)
 {
     np2_sha256_context sha;
@@ -168,45 +148,6 @@ void np2audio86_fixture_hash_control(struct np2audio86_fixture_result *result)
             ++result->mid_quantum_events;
         }
     }
-}
-
-/* opngen_initialize() rebuilds process-global, rate-dependent lookup tables.
- * A renderer lifetime must establish them before its first sample, but a
- * guest RESET only resets the instance below and must not rebuild them. */
-#if defined(NP2AUDIO86_GUEST_TEST)
-static uint32_t opngen_initialize_call_count;
-static uint8_t opngen_initialize_fail_next;
-
-void np2audio86_test_opngen_initialize_reset(void)
-{
-    opngen_initialize_call_count = 0U;
-    opngen_initialize_fail_next = 0U;
-}
-
-uint32_t np2audio86_test_opngen_initialize_call_count(void)
-{
-    return opngen_initialize_call_count;
-}
-
-void np2audio86_test_opngen_initialize_fail_next(void)
-{
-    opngen_initialize_fail_next = 1U;
-}
-#endif
-
-static int initialize_fm_infrastructure(void)
-{
-#if defined(NP2AUDIO86_GUEST_TEST)
-    if (opngen_initialize_fail_next != 0U) {
-        opngen_initialize_fail_next = 0U;
-        return -1;
-    }
-#endif
-    opngen_initialize(NP2_AUDIO86_RATE_HZ);
-#if defined(NP2AUDIO86_GUEST_TEST)
-    ++opngen_initialize_call_count;
-#endif
-    return 0;
 }
 
 static void configure_fm_instance(OPNGEN fm)
@@ -239,15 +180,6 @@ static void configure_fm_instance(OPNGEN fm)
         opngen_setreg(fm, (REG8)base, 0xb4U + index,
                       channel & 1U ? 0x40U : 0x80U);
     }
-}
-
-static int configure_fm_cold(OPNGEN fm)
-{
-    if (initialize_fm_infrastructure() != 0) {
-        return -1;
-    }
-    configure_fm_instance(fm);
-    return 0;
 }
 
 static void configure_psg(PSGGEN psg)
@@ -383,102 +315,23 @@ static void feed_pcm86(struct audio86_pcm86_feed *feed, int32_t required)
     }
 }
 
-static int add_source(SINT32 *mix, const SINT32 *source, size_t samples,
-                      uint8_t *arithmetic_error)
+static int fixture_render_span(struct audio86_state *state, SINT32 *mix,
+                               size_t frames,
+                               struct np2audio86_fixture_result *result,
+                               int refill_pcm86)
 {
-    size_t i;
-    for (i = 0U; i < samples; ++i) {
-        const int64_t sum = (int64_t)mix[i] + source[i];
-        if (sum > INT32_MAX || sum < INT32_MIN) {
-            *arithmetic_error = 1U;
-            return -1;
-        }
-        mix[i] = (SINT32)sum;
-    }
-    return 0;
-}
-
-static int render_span(struct audio86_state *state, SINT32 *mix, size_t frames,
-                       struct np2audio86_fixture_result *result,
-                       int refill_pcm86)
-{
-    const size_t samples = frames * NP2_AUDIO86_CHANNELS;
-    SINT32 *fm = state->fm_scratch;
-    SINT32 *psg = state->psg_scratch;
-    SINT32 *rhythm = state->rhythm_scratch;
-    SINT32 *pcm86 = state->pcm86_scratch;
-#if defined(NP2_AUDIO86_PROFILE)
-    uint64_t profile_begin;
-#endif
-    memset(fm, 0, sizeof(state->fm_scratch));
-    memset(psg, 0, sizeof(state->psg_scratch));
-    memset(rhythm, 0, sizeof(state->rhythm_scratch));
-    memset(pcm86, 0, sizeof(state->pcm86_scratch));
-    if (refill_pcm86) {
+    struct np2audio86_core_mix_result core_result = {0};
+    if (refill_pcm86)
         feed_pcm86(&state->pcm86, 4096);
-    }
-#if defined(NP2_AUDIO86_PROFILE)
-    profile_begin = state->profile_now_us != NULL
-                        ? state->profile_now_us(state->profile_clock_opaque)
-                        : 0U;
-#endif
-    opngen_getpcm(&state->fm, fm, (UINT)frames);
-#if defined(NP2_AUDIO86_PROFILE)
-    if (state->profile_now_us != NULL) {
-        state->profile_opngen_us +=
-            state->profile_now_us(state->profile_clock_opaque) - profile_begin;
-        profile_begin = state->profile_now_us(state->profile_clock_opaque);
-    }
-#endif
-    psggen_getpcm(&state->psg, psg, (UINT)frames);
-#if defined(NP2_AUDIO86_PROFILE)
-    if (state->profile_now_us != NULL) {
-        state->profile_psggen_us +=
-            state->profile_now_us(state->profile_clock_opaque) - profile_begin;
-        profile_begin = state->profile_now_us(state->profile_clock_opaque);
-    }
-#endif
-    pcmmix_getpcm((PCMMIX)&state->rhythm, rhythm, (UINT)frames);
-#if defined(NP2_AUDIO86_PROFILE)
-    if (state->profile_now_us != NULL) {
-        state->profile_rhythm_us +=
-            state->profile_now_us(state->profile_clock_opaque) - profile_begin;
-        profile_begin = state->profile_now_us(state->profile_clock_opaque);
-    }
-#endif
-    pcm86gen_getpcm(&state->pcm86.pcm, pcm86, (UINT)frames);
-#if defined(NP2_AUDIO86_PROFILE)
-    if (state->profile_now_us != NULL) {
-        state->profile_pcm86_generation_us +=
-            state->profile_now_us(state->profile_clock_opaque) - profile_begin;
-        profile_begin = state->profile_now_us(state->profile_clock_opaque);
-    }
-#endif
-    if (nonzero_samples(fm, samples)) {
-        result->fm_contribution = 1U;
-    }
-    if (nonzero_samples(psg, samples)) {
-        result->psg_contribution = 1U;
-    }
-    if (nonzero_samples(rhythm, samples)) {
-        result->rhythm_contribution = 1U;
-    }
-    if (nonzero_samples(pcm86, samples)) {
-        result->pcm86_contribution = 1U;
-    }
-    if (add_source(mix, fm, samples, &result->arithmetic_error) != 0 ||
-        add_source(mix, psg, samples, &result->arithmetic_error) != 0 ||
-        add_source(mix, rhythm, samples, &result->arithmetic_error) != 0 ||
-        add_source(mix, pcm86, samples, &result->arithmetic_error) != 0) {
+    if (np2audio86_core_render_span(state, mix, frames, &core_result) != 0) {
+        result->arithmetic_error |= core_result.arithmetic_error;
         return -1;
     }
-#if defined(NP2_AUDIO86_PROFILE)
-    if (state->profile_now_us != NULL) {
-        state->profile_mix_us +=
-            state->profile_now_us(state->profile_clock_opaque) - profile_begin;
-    }
-#endif
-    state->rendered_frames += frames;
+    result->fm_contribution |= core_result.fm_contribution;
+    result->psg_contribution |= core_result.psg_contribution;
+    result->rhythm_contribution |= core_result.rhythm_contribution;
+    result->pcm86_contribution |= core_result.pcm86_contribution;
+    result->arithmetic_error |= core_result.arithmetic_error;
     return 0;
 }
 
@@ -511,11 +364,7 @@ static void configure_render_state_mutable(
 int np2audio86_render_init_with_source(struct np2audio86_render_state *state,
                                        const uint8_t *source)
 {
-    if (state == NULL) {
-        return -1;
-    }
-    memset(state, 0, sizeof(*state));
-    if (initialize_fm_infrastructure() != 0) {
+    if (np2audio86_core_render_init(state) != 0) {
         return -1;
     }
     configure_render_state_mutable(state, source);
@@ -527,115 +376,30 @@ int np2audio86_render_init(struct np2audio86_render_state *state)
     return np2audio86_render_init_with_source(state, NULL);
 }
 
-static void worker_pcm_set_rate(PCM86 pcm, uint8_t rate_index)
-{
-    static const uint32_t rates[8] = {
-        352800U, 264600U, 176400U, 132300U,
-        88200U, 66150U, 44010U, 33075U
-    };
-    const uint32_t rate = rates[rate_index & 7U];
-    pcm->div = (SINT32)((rate << (PCM86_DIVBIT - 3U)) /
-                        NP2_AUDIO86_RATE_HZ);
-    pcm->div2 = (SINT32)((NP2_AUDIO86_RATE_HZ << (PCM86_DIVBIT + 3U)) /
-                         rate);
-}
-
-static void worker_rhythm_setreg(struct np2audio86_render_state *state,
-                                 uint8_t value)
-{
-    unsigned track;
-    for (track = 0U; track < AUDIO86_RHYTHM_TRACKS; ++track) {
-        if ((value & (uint8_t)(1U << track)) != 0U) {
-            PMIXTRK *track_state = &state->rhythm.trk[track];
-            track_state->pcm = track_state->data.sample;
-            track_state->remain = track_state->data.samples;
-            state->rhythm.hdr.playing |= (UINT32_C(1) << track);
-        }
-    }
-}
-
 int np2audio86_render_apply_opna_register(
     struct np2audio86_render_state *state, uint16_t address, uint8_t value)
 {
-    const uint8_t bank = address >= 0x100U ? 3U : 0U;
-    const uint8_t reg = (uint8_t)(address & 0xffU);
-    if (state == NULL) {
-        return -1;
-    }
-    if (reg < 0x10U && address < 0x100U) {
-        psggen_setreg(&state->psg, reg, value);
-    } else if (reg >= 0x10U && reg <= 0x1fU && address < 0x100U) {
-        /* OPNA 0x10 is the rhythm trigger; timer and PIC effects stay in G. */
-        if (reg == 0x10U) {
-            worker_rhythm_setreg(state, value);
-        }
-    } else if (reg == 0x28U && address < 0x100U) {
-        opngen_keyon(&state->fm, value & 7U, value & 0xf0U);
-    } else if (reg >= 0x30U) {
-        opngen_setreg(&state->fm, bank, reg, value);
-    }
-    return 0;
+    return np2audio86_core_render_apply_opna_register(state, address, value);
 }
 
 int np2audio86_render_apply_opna_csm(struct np2audio86_render_state *state)
 {
-    if (state == NULL) {
-        return -1;
-    }
-    opngen_csm(&state->fm);
-    return 0;
+    return np2audio86_core_render_apply_opna_csm(state);
 }
 
 int np2audio86_render_apply_pcm86_control(
     struct np2audio86_render_state *state, uint8_t register_index,
     uint8_t value)
 {
-    PCM86 pcm;
-    uint8_t old;
-    if (state == NULL) {
-        return -1;
-    }
-    pcm = &state->pcm86.pcm;
-    switch (register_index) {
-    case 0x00U:
-        /* A460 extension selection belongs entirely to the guest domain. */
-        break;
-    case 0x06U:
-        if ((value & 0xe0U) == 0xa0U) {
-            const uint8_t vol5 = (~value) & 15U;
-            pcm->volume = 64 * vol5;
-        }
-        break;
-    case 0x08U:
-        old = pcm->fifo;
-        if ((value & 8U) && !(old & 8U)) {
-            pcm->wrtpos = 0U;
-            pcm->readpos = 0U;
-            pcm->realbuf = 0;
-        }
-        if ((old ^ value) & 7U) {
-            worker_pcm_set_rate(pcm, value);
-        }
-        pcm->fifo = value;
-        break;
-    case 0x0aU:
-        if (!(pcm->fifo & 0x20U) && (value & 15U) != 15U) {
-            pcm->dactrl = value;
-            worker_pcm_set_rate(pcm, pcm->fifo);
-        }
-        break;
-    default:
-        return -1;
-    }
-    return 0;
+    return np2audio86_core_render_apply_pcm86_control(
+        state, register_index, value);
 }
 
 int np2audio86_render_reset(struct np2audio86_render_state *state)
 {
-    if (state == NULL) {
+    if (np2audio86_core_render_reset(state) != 0) {
         return -1;
     }
-    memset(state, 0, sizeof(*state));
     configure_render_state_mutable(state, NULL);
     return 0;
 }
@@ -644,16 +408,7 @@ void np2audio86_render_set_profile_clock(
     struct np2audio86_render_state *state,
     uint64_t (*now_us)(void *opaque), void *opaque)
 {
-    if (state == NULL) {
-        return;
-    }
-#if defined(NP2_AUDIO86_PROFILE)
-    state->profile_now_us = now_us;
-    state->profile_clock_opaque = opaque;
-#else
-    (void)now_us;
-    (void)opaque;
-#endif
+    np2audio86_core_render_set_profile_clock(state, now_us, opaque);
 }
 
 int np2audio86_render_apply_event(struct np2audio86_render_state *state,
@@ -686,39 +441,7 @@ int np2audio86_render_apply_event(struct np2audio86_render_state *state,
 int np2audio86_render_pcm86_push(struct np2audio86_render_state *state,
                                  const uint8_t *bytes, size_t count)
 {
-    struct np2audio86_pcm86_feed *feed;
-    uint32_t destination;
-    size_t first;
-    if (state == NULL || bytes == NULL || count == 0U ||
-        count > NP2_AUDIO86_PCM86_REFILL_BYTES) {
-        return -1;
-    }
-    feed = &state->pcm86;
-    if (feed->pcm.realbuf < 0 ||
-        feed->pcm.realbuf > PCM86_BUFSIZE - (SINT32)count) {
-        feed->underrun = 1U;
-        return -1;
-    }
-    destination = feed->pcm.wrtpos & PCM86_BUFMSK;
-    first = PCM86_BUFSIZE - destination;
-    if (first > count) {
-        first = count;
-    }
-    memcpy(feed->pcm.buffer + destination, bytes, first);
-    if (count > first) {
-        memcpy(feed->pcm.buffer, bytes + first, count - first);
-    }
-    feed->pcm.wrtpos = (feed->pcm.wrtpos + (UINT32)count) & PCM86_BUFMSK;
-    feed->pcm.realbuf += (SINT32)count;
-    feed->supplied += count;
-    ++feed->refills;
-    if (feed->pcm.realbuf < feed->fifo_min) {
-        feed->fifo_min = feed->pcm.realbuf;
-    }
-    if (feed->pcm.realbuf > feed->fifo_max) {
-        feed->fifo_max = feed->pcm.realbuf;
-    }
-    return 0;
+    return np2audio86_core_render_pcm86_push(state, bytes, count);
 }
 
 int np2audio86_render_span(struct np2audio86_render_state *state,
@@ -740,7 +463,7 @@ int np2audio86_render_span(struct np2audio86_render_state *state,
         if (state->pcm86.pcm.realbuf > state->pcm86.fifo_max) {
             state->pcm86.fifo_max = state->pcm86.pcm.realbuf;
         }
-        return render_span(state, mix, frames, result, 0);
+        return fixture_render_span(state, mix, frames, result, 0);
     }
 }
 
@@ -826,13 +549,9 @@ int np2audio86_fixture_render(struct np2audio86_fixture_result *result)
         return -1;
     }
     memset(result, 0, sizeof(*result));
-    memset(&state, 0, sizeof(state));
-    if (configure_fm_cold(&state.fm) != 0) {
+    if (np2audio86_render_init(&state) != 0) {
         return -1;
     }
-    configure_psg(&state.psg);
-    configure_rhythm(&state);
-    configure_pcm86(&state.pcm86, NULL);
     np2audio86_fixture_hash_control(result);
     np2audio86_fixture_hash_source(result, state.pcm86.source);
     np2_sha256_init(&pcm_sha);
@@ -857,8 +576,9 @@ int np2audio86_fixture_render(struct np2audio86_fixture_result *result)
                     break;
                 }
             }
-            if (next > offset && render_span(&state, mix + offset * 2U,
-                                              next - offset, result, 1) != 0) {
+            if (next > offset && fixture_render_span(
+                                     &state, mix + offset * 2U,
+                                     next - offset, result, 1) != 0) {
                 return -1;
             }
             offset = next;
@@ -1001,279 +721,6 @@ void np2audio86_fixture_print_result(
            result->arithmetic_error);
 }
 
-void np2audio86_event_ring_init(struct np2audio86_event_ring *ring)
-{
-    if (ring == NULL) {
-        return;
-    }
-    memset(ring->slots, 0, sizeof(ring->slots));
-    atomic_init(&ring->head, 0U);
-    atomic_init(&ring->tail, 0U);
-}
-
-uint32_t np2audio86_event_ring_occupancy(
-    const struct np2audio86_event_ring *ring)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL) {
-        return 0U;
-    }
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    return head - tail;
-}
-
-int np2audio86_event_ring_peek(
-    const struct np2audio86_event_ring *ring,
-    const struct np2audio86_event **event)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL || event == NULL) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    *event = NULL;
-    tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (head == tail) {
-        return NP2_AUDIO86_TRANSPORT_EMPTY;
-    }
-    *event = &ring->slots[tail & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)];
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_event_ring_consume(struct np2audio86_event_ring *ring)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (head == tail) {
-        return NP2_AUDIO86_TRANSPORT_EMPTY;
-    }
-    atomic_store_explicit(&ring->tail, tail + 1U, memory_order_release);
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_event_ring_enqueue(struct np2audio86_event_ring *ring,
-                                   const struct np2audio86_event *event)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL || event == NULL) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    head = atomic_load_explicit(&ring->head, memory_order_relaxed);
-    tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (head - tail == NP2_AUDIO86_ASYNC_EVENT_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_FULL;
-    }
-    ring->slots[head & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)] = *event;
-#if defined(NP2AUDIO86_GUEST_TEST) && \
-    defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-    if (np2audio86_guest_async_hardening_cutpoint(
-            NP2_AUDIO86_ASYNC_CP_EVENT_SLOT_BEFORE_HEAD, head, tail,
-            0U, 0U, event->sequence) != 0) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if ((head & (NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U)) ==
-        NP2_AUDIO86_ASYNC_EVENT_CAPACITY - 1U) {
-        np2audio86_guest_async_hardening_event_wrap(head);
-    }
-#endif
-    atomic_store_explicit(&ring->head, head + 1U, memory_order_release);
-#if defined(NP2_AUDIO86_RESET_ORDINAL_TEST)
-    if (event->opcode == NP2_AUDIO86_EVENT_RESET_BARRIER) {
-        np2audio86_reset_ordinal_after_publish_test_hook(event->payload);
-    }
-#endif
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_reset_event_ring_enqueue(
-    struct np2audio86_event_ring *ring,
-    const struct np2audio86_event *event,
-    uint32_t *producer_reset_ordinal)
-{
-    struct np2audio86_event published;
-    uint32_t ordinal;
-    int status;
-    if (ring == NULL || event == NULL || producer_reset_ordinal == NULL ||
-        event->opcode != NP2_AUDIO86_EVENT_RESET_BARRIER ||
-        *producer_reset_ordinal == UINT32_MAX) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    ordinal = *producer_reset_ordinal + 1U;
-    published = *event;
-    /* The ordinal is immutable event-owned data before the ring head release. */
-    published.payload = ordinal;
-    status = np2audio86_event_ring_enqueue(ring, &published);
-    if (status == NP2_AUDIO86_TRANSPORT_OK) {
-        /* Producer-only state is committed after successful publication. */
-        *producer_reset_ordinal = ordinal;
-    }
-    return status;
-}
-
-int np2audio86_event_ring_dequeue(struct np2audio86_event_ring *ring,
-                                   struct np2audio86_event *event)
-{
-    const struct np2audio86_event *slot;
-    int status;
-    if (event == NULL) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    status = np2audio86_event_ring_peek(ring, &slot);
-    if (status != NP2_AUDIO86_TRANSPORT_OK) {
-        return status;
-    }
-    *event = *slot;
-    return np2audio86_event_ring_consume(ring);
-}
-
-void np2audio86_byte_ring_init(struct np2audio86_byte_ring *ring)
-{
-    if (ring == NULL) {
-        return;
-    }
-    memset(ring->bytes, 0, sizeof(ring->bytes));
-    atomic_init(&ring->head, 0U);
-    atomic_init(&ring->tail, 0U);
-}
-
-uint32_t np2audio86_byte_ring_occupancy(
-    const struct np2audio86_byte_ring *ring)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL) {
-        return 0U;
-    }
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    return head - tail;
-}
-
-int np2audio86_byte_ring_copy(const struct np2audio86_byte_ring *ring,
-                              uint8_t *bytes, size_t count)
-{
-    uint32_t head;
-    uint32_t tail;
-    size_t first;
-    if (ring == NULL || (count != 0U && bytes == NULL) ||
-        count > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (count > head - tail) {
-        return NP2_AUDIO86_TRANSPORT_EMPTY;
-    }
-    first = NP2_AUDIO86_ASYNC_BYTE_CAPACITY -
-            (tail & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U));
-    if (first > count) {
-        first = count;
-    }
-    if (first != 0U) {
-        memcpy(bytes, ring->bytes +
-                         (tail & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)),
-               first);
-    }
-    if (count > first) {
-        memcpy(bytes + first, ring->bytes, count - first);
-    }
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_byte_ring_consume(struct np2audio86_byte_ring *ring,
-                                 size_t count)
-{
-    uint32_t head;
-    uint32_t tail;
-    if (ring == NULL || count > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    tail = atomic_load_explicit(&ring->tail, memory_order_relaxed);
-    head = atomic_load_explicit(&ring->head, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (count > head - tail) {
-        return NP2_AUDIO86_TRANSPORT_EMPTY;
-    }
-    atomic_store_explicit(&ring->tail, tail + (uint32_t)count,
-                          memory_order_release);
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_byte_ring_push(struct np2audio86_byte_ring *ring,
-                              const uint8_t *bytes, size_t count)
-{
-    uint32_t head;
-    uint32_t tail;
-    size_t first;
-    if (ring == NULL || (count != 0U && bytes == NULL) ||
-        count > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_ARGUMENT;
-    }
-    head = atomic_load_explicit(&ring->head, memory_order_relaxed);
-    tail = atomic_load_explicit(&ring->tail, memory_order_acquire);
-    if (head - tail > NP2_AUDIO86_ASYNC_BYTE_CAPACITY) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-    if (count > NP2_AUDIO86_ASYNC_BYTE_CAPACITY - (head - tail)) {
-        return NP2_AUDIO86_TRANSPORT_FULL;
-    }
-    first = NP2_AUDIO86_ASYNC_BYTE_CAPACITY -
-            (head & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U));
-    if (first > count) {
-        first = count;
-    }
-    if (first != 0U) {
-        memcpy(ring->bytes + (head & (NP2_AUDIO86_ASYNC_BYTE_CAPACITY - 1U)),
-               bytes, first);
-    }
-    if (count > first) {
-        memcpy(ring->bytes, bytes + first, count - first);
-    }
-#if defined(NP2AUDIO86_GUEST_TEST) && \
-    defined(NP2_AUDIO86_GUEST_ASYNC_HARDENING_TEST)
-    if (np2audio86_guest_async_hardening_cutpoint(
-            NP2_AUDIO86_ASYNC_CP_BYTE_COPY_BEFORE_HEAD, 0U, 0U, head, tail,
-            (uint64_t)count) != 0) {
-        return NP2_AUDIO86_TRANSPORT_INVARIANT;
-    }
-#endif
-    atomic_store_explicit(&ring->head, head + (uint32_t)count,
-                          memory_order_release);
-    return NP2_AUDIO86_TRANSPORT_OK;
-}
-
-int np2audio86_byte_ring_pop(struct np2audio86_byte_ring *ring,
-                             uint8_t *bytes, size_t count)
-{
-    int status = np2audio86_byte_ring_copy(ring, bytes, count);
-    if (status != NP2_AUDIO86_TRANSPORT_OK) {
-        return status;
-    }
-    return np2audio86_byte_ring_consume(ring, count);
-}
 
 #if defined(NP2_AUDIO86_ASYNC_HARDENING_TEST)
 int np2audio86_async_test_byte_copy(
@@ -1759,7 +1206,7 @@ static int async_render_span(struct np2audio86_async_context *context,
         return -1;
     }
     async_update_fifo_stats(feed);
-    return render_span(&context->worker_state, mix, frames, result, 0);
+    return fixture_render_span(&context->worker_state, mix, frames, result, 0);
 }
 
 static int async_enqueue_event(struct np2audio86_async_context *context,
@@ -2204,13 +1651,10 @@ static void *async_worker_thread(void *opaque)
     }
     result = &context->result->oracle;
     memset(result, 0, sizeof(*result));
-    if (configure_fm_cold(&context->worker_state.fm) != 0) {
+    if (np2audio86_render_init(&context->worker_state) != 0) {
         async_fail(context, NP2_AUDIO86_ASYNC_ERROR_WORKER);
         return NULL;
     }
-    configure_psg(&context->worker_state.psg);
-    configure_rhythm(&context->worker_state);
-    configure_pcm86(&context->worker_state.pcm86, NULL);
     np2audio86_fixture_hash_control(result);
     np2audio86_fixture_hash_source(result, context->worker_state.pcm86.source);
     context->transport_crc32 = np2_crc32_iso_hdlc_init();
