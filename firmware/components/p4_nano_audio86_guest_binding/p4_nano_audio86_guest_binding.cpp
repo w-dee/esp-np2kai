@@ -3377,16 +3377,6 @@ bool execute_real_i286(Runtime *runtime)
     s_owner_progress.publish_subphase(OwnerSubphase::CpuExec);
 #endif
     while (!failed(runtime)) {
-#if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
-        p4_nano_audio86_live_status live_status{};
-        p4_nano_audio86_live_service_status(runtime->live_service,
-                                             &live_status);
-        if (live_status.state == P4_NANO_AUDIO86_LIVE_FAILING ||
-            live_status.state == P4_NANO_AUDIO86_LIVE_FAILED_QUIESCENT ||
-            live_status.state ==
-                P4_NANO_AUDIO86_LIVE_FAILED_NOT_QUIESCENT)
-            return false;
-#endif
         if (mem[i286core.s.r.w.ip] == 0xf4U) break;
 #if defined(P4_NANO_AUDIO86_SUSTAINED_PROFILE)
         const int cooperative_result =
@@ -3394,6 +3384,9 @@ bool execute_real_i286(Runtime *runtime)
         if (cooperative_result < 0)
             return false;
         if (cooperative_result > 0) {
+            p4_nano_audio86_live_status live_status{};
+            p4_nano_audio86_live_service_status(runtime->live_service,
+                                                 &live_status);
             const uint64_t enter_us = sustained_guest_monotonic_us(nullptr);
             s_owner_progress.publish_subphase(
                 OwnerSubphase::ProgressCheckpointEnter);

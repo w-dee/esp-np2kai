@@ -404,6 +404,8 @@ static void test_transaction_stop_boundary(void)
     uint32_t hook_calls = 0U;
 
     service_start_attach(&service, &fake, &sink);
+    assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
     np2audio86_guest_host_snapshot(&before);
     assert(p4_nano_audio86_live_service_request_stop(&service) ==
            P4_NANO_AUDIO86_LIVE_OK);
@@ -595,13 +597,24 @@ static void test_fatal_paths(void)
     /* A worker fatal races with RUNNING, detaches on the owner checkpoint,
      * and preserves its identity through successful abort cleanup. */
     service_start_attach(&service, &fake, &sink);
+    assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
     atomic_store_explicit(&fake.finish_mode, FAKE_FINISH_WAIT_CALLBACK,
                           memory_order_release);
     atomic_store_explicit(&fake.callback_inflight, 1U, memory_order_release);
-    assert(p4_nano_audio86_live_service_test_fail(
-               &service, P4_NANO_AUDIO86_LIVE_FAILURE_WORKER,
-               P4_NANO_AUDIO86_LIVE_ORIGIN_RENDER, 0x51U) ==
-           P4_NANO_AUDIO86_LIVE_OK);
+    {
+        np2audio86_guest_state_snapshot_t before;
+        np2audio86_guest_state_snapshot_t after;
+        np2audio86_guest_host_snapshot(&before);
+        assert(p4_nano_audio86_live_service_test_fail(
+                   &service, P4_NANO_AUDIO86_LIVE_FAILURE_WORKER,
+                   P4_NANO_AUDIO86_LIVE_ORIGIN_RENDER, 0x51U) ==
+               P4_NANO_AUDIO86_LIVE_OK);
+        np2audio86_guest_opna_write_address_low(0x28U);
+        np2audio86_guest_opna_write_data_low(0xf0U);
+        np2audio86_guest_host_snapshot(&after);
+        assert(after.sequence == before.sequence);
+    }
     p4_nano_audio86_live_service_status(&service, &status);
     assert(status.state == P4_NANO_AUDIO86_LIVE_FAILING);
     assert(p4_nano_audio86_live_service_owner_checkpoint(&service) ==
