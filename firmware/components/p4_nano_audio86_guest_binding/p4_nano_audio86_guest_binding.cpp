@@ -3396,7 +3396,7 @@ bool execute_real_i286(Runtime *runtime)
             s_owner_progress.publish_subphase(
                 OwnerSubphase::ProgressCheckpointWait);
             const p4_nano_audio86_live_result checkpoint_result =
-                p4_nano_audio86_live_service_owner_checkpoint(
+                p4_nano_audio86_5d3_fixture_owner_checkpoint(
                     runtime->live_service);
             s_owner_progress.publish_subphase(
                 OwnerSubphase::ProgressCheckpointExit);
@@ -3421,6 +3421,30 @@ bool execute_real_i286(Runtime *runtime)
     /* HLT is the fixture's irrevocable terminal boundary.  The private arm
      * preserves RESET release -> fixed terminal horizon release -> notify;
      * generic live stop remains a separate no-RESET protocol. */
+    {
+        constexpr uint32_t kPhysicalStartQ240 = 4U;
+        constexpr uint64_t kPhysicalStartFrames =
+            kPhysicalStartQ240 * NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES;
+        p4_nano_audio86_live_status staged_status{};
+        p4_nano_audio86_live_service_status(runtime->live_service,
+                                             &staged_status);
+        if (staged_status.snapshot_coherent == 0U ||
+            staged_status.latest_published_horizon >=
+                kPhysicalStartFrames ||
+            staged_status.rendered_frames >= kPhysicalStartFrames ||
+            staged_status.accepted_frames >= kPhysicalStartFrames ||
+            staged_status.q240_produced >= kPhysicalStartQ240 ||
+            staged_status.q240_submitted >= kPhysicalStartQ240)
+            return false;
+        std::printf(
+            "P4_AUDIO86_5D3_PRE_TERMINAL_OUTPUT "
+            "state=PREPARED_ACCEPTING published_horizon=%" PRIu64
+            " rendered_frames=%" PRIu64 " accepted_frames=%" PRIu64
+            " q240_produced=%" PRIu32 " q240_submitted=%" PRIu32 "\n",
+            staged_status.latest_published_horizon,
+            staged_status.rendered_frames, staged_status.accepted_frames,
+            staged_status.q240_produced, staged_status.q240_submitted);
+    }
     s_owner_progress.publish_subphase(OwnerSubphase::TerminalTransition);
     publish_owner_phase(OwnerPhase::TerminalArm);
     if (p4_nano_audio86_5d3_fixture_arm_terminal(runtime->live_service) !=
@@ -5334,7 +5358,7 @@ esp_err_t run_sustained_live_on_pc98_task(
         (void)p4_nano_audio86_live_service_report_producer_failure(
             &s_live_service, kErrorGuest);
     } else if (status.state == P4_NANO_AUDIO86_LIVE_FAILING) {
-        (void)p4_nano_audio86_live_service_owner_checkpoint(
+        (void)p4_nano_audio86_5d3_fixture_owner_checkpoint(
             &s_live_service);
     }
 

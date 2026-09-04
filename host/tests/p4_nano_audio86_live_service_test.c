@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "p4_nano_audio86_live_service.h"
+#include "p4_nano_audio86_live_service_fixture.h"
 
 enum fake_finish_mode {
     FAKE_FINISH_ACCEPT = 0,
@@ -189,6 +190,49 @@ static void service_start_attach(
     assert(p4_nano_audio86_live_service_attach_guest(service) ==
            P4_NANO_AUDIO86_LIVE_STATE_ERROR);
     assert(p4_nano_audio86_live_service_owner_checkpoint(service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+}
+
+static int staged_fixture_decorate(
+    void *opaque, struct np2audio86_render_state *render,
+    uint8_t after_guest_reset)
+{
+    (void)after_guest_reset;
+    return opaque == NULL || render == NULL ? -1 : 0;
+}
+
+static int staged_fixture_rendered(void *opaque, const uint8_t *pcm,
+                                   uint16_t frames, uint64_t frame_offset)
+{
+    (void)frame_offset;
+    return opaque == NULL || pcm == NULL || frames == 0U ? -1 : 0;
+}
+
+static int staged_fixture_action(
+    void *opaque, const struct np2audio86_core_guest_action *action,
+    uint32_t reset_ordinal, uint64_t ring_next_frame_offset)
+{
+    (void)reset_ordinal;
+    (void)ring_next_frame_offset;
+    return opaque == NULL || action == NULL ? -1 : 0;
+}
+
+static void service_start_attach_staged(
+    struct p4_nano_audio86_live_service *service, struct fake_sink *fake,
+    struct np2_pcm_sink *pcm_sink)
+{
+    const struct p4_nano_audio86_5d3_hooks hooks = {
+        fake, staged_fixture_decorate, staged_fixture_rendered,
+        staged_fixture_action, NULL, NULL, 0U};
+    reset_guest();
+    service_init(service, fake, pcm_sink);
+    assert(p4_nano_audio86_5d3_fixture_configure(service, &hooks) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert(p4_nano_audio86_live_service_start(service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert(p4_nano_audio86_live_service_attach_guest(service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(service) ==
            P4_NANO_AUDIO86_LIVE_OK);
 }
 
@@ -508,6 +552,93 @@ static void test_bounded_running_pressure_snapshot(void)
     assert_clean_terminal(&service, &fake, 2400U, 10U);
 }
 
+static void test_5d3_staged_checkpoint_and_stop(void)
+{
+    struct p4_nano_audio86_live_service service = {0};
+    struct fake_sink fake = {0};
+    struct np2_pcm_sink sink;
+    struct p4_nano_audio86_live_status status;
+    struct p4_nano_audio86_5d3_snapshot fixture;
+
+    service_start_attach_staged(&service, &fake, &sink);
+    np2audio86_guest_host_set_cpu_position(240U * 1024U);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    p4_nano_audio86_live_service_status(&service, &status);
+    assert(status.guest_authoritative_frame == 240U);
+    assert(status.latest_published_horizon == 0U);
+
+    np2audio86_guest_host_set_cpu_position(480U * 1024U);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    p4_nano_audio86_live_service_status(&service, &status);
+    assert(status.guest_authoritative_frame == 480U);
+    assert(status.latest_published_horizon == 0U);
+
+    /* A semantic event keeps its local horizon; the following staged
+     * checkpoint advances only authoritative guest time. */
+    np2audio86_guest_opna_write_address_low(0x28U);
+    np2audio86_guest_opna_write_data_low(0xf0U);
+    np2audio86_guest_host_set_cpu_position(720U * 1024U);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    p4_nano_audio86_live_service_status(&service, &status);
+    assert(status.guest_authoritative_frame == 720U);
+    assert(status.latest_published_horizon == 480U);
+
+    assert(p4_nano_audio86_live_service_request_stop(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    p4_nano_audio86_5d3_fixture_snapshot(&service, &fixture);
+    assert(fixture.reset_ordinal == 0U);
+    assert(fixture.terminal_horizon_published == 0U);
+    assert_clean_terminal(&service, &fake, 720U, 3U);
+}
+
+static void test_5d3_staged_fatal(void)
+{
+    struct p4_nano_audio86_live_service service = {0};
+    struct fake_sink fake = {0};
+    struct np2_pcm_sink sink;
+    struct p4_nano_audio86_live_status status;
+    struct p4_nano_audio86_5d3_snapshot fixture;
+    np2audio86_guest_state_snapshot_t before;
+    np2audio86_guest_state_snapshot_t after;
+
+    service_start_attach_staged(&service, &fake, &sink);
+    np2audio86_guest_host_set_cpu_position(240U * 1024U);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    np2audio86_guest_host_set_cpu_position(480U * 1024U);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    np2audio86_guest_host_snapshot(&before);
+    assert(p4_nano_audio86_live_service_test_fail(
+               &service, P4_NANO_AUDIO86_LIVE_FAILURE_WORKER,
+               P4_NANO_AUDIO86_LIVE_ORIGIN_RENDER, 0x5d3U) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+    np2audio86_guest_opna_write_address_low(0x28U);
+    np2audio86_guest_opna_write_data_low(0xf0U);
+    np2audio86_guest_host_snapshot(&after);
+    assert(after.sequence == before.sequence);
+    assert(p4_nano_audio86_5d3_fixture_owner_checkpoint(&service) ==
+           P4_NANO_AUDIO86_LIVE_FAILED);
+    assert(p4_nano_audio86_live_service_join(&service, 2000U, &status) ==
+           P4_NANO_AUDIO86_LIVE_FAILED);
+    p4_nano_audio86_5d3_fixture_snapshot(&service, &fixture);
+    assert(status.state == P4_NANO_AUDIO86_LIVE_FAILED_QUIESCENT);
+    assert(status.category == P4_NANO_AUDIO86_LIVE_FAILURE_WORKER);
+    assert(status.subcode == 0x5d3U && status.first_error_sequence == 1U);
+    assert(status.latest_published_horizon == 0U);
+    assert(fixture.terminal_horizon_published == 0U);
+    assert(fixture.reset_ordinal == 0U);
+    assert(atomic_load_explicit(&fake.abort_calls,
+                                memory_order_acquire) == 1U);
+    assert(p4_nano_audio86_live_service_destroy(&service) ==
+           P4_NANO_AUDIO86_LIVE_OK);
+}
+
 static void fatal_at_clean_terminal(
     struct p4_nano_audio86_live_service *service, void *opaque)
 {
@@ -715,6 +846,8 @@ int main(void)
     test_transaction_stop_boundary();
     test_delayed_callback_barrier();
     test_bounded_running_pressure_snapshot();
+    test_5d3_staged_checkpoint_and_stop();
+    test_5d3_staged_fatal();
     test_fatal_paths();
     assert(np2audio86_test_opngen_initialize_call_count() == 1U);
     printf("AUDIO86_LIVE_SERVICE_STATE_MACHINE=PASS\n");
@@ -722,6 +855,10 @@ int main(void)
     printf("AUDIO86_LIVE_SERVICE_CALLBACK_QUIESCENCE=PASS\n");
     printf("AUDIO86_LIVE_SERVICE_BOUNDED_SNAPSHOT=PASS\n");
     printf("AUDIO86_LIVE_SERVICE_Q240_PRESSURE_SNAPSHOT=PASS\n");
+    printf("GENERIC_PROGRESSIVE_CHECKPOINT_REGRESSION=PASS\n");
+    printf("AUDIO86_5D3_STAGED_CHECKPOINT=PASS\n");
+    printf("STAGED_FIXTURE_EXTERNAL_STOP=PASS\n");
+    printf("STAGED_FIXTURE_FATAL_PATH=PASS\n");
     printf("OPN_GLOBAL_INIT_PROCESS_LIFETIME_CALL_COUNT=1\n");
     printf("AUDIO86_LIVE_SERVICE_HOST_TEST=PASS\n");
     return 0;

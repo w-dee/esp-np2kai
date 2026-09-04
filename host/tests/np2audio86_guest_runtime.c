@@ -292,8 +292,11 @@ static uint32_t production_cpu_position(void)
     return (uint32_t)(CPU_CLOCK + CPU_BASECLOCK - CPU_REMCLOCK);
 }
 
-static uint8_t run_program(size_t program_size)
+static uint8_t run_program(size_t program_size,
+                           np2audio86_guest_runtime_stage_fn checkpoint,
+                           void *checkpoint_opaque)
 {
+    uint32_t next_checkpoint_cycle = 24000U * 1024U;
     (void)program_size;
     i286c_initialize();
     i286c_reset();
@@ -314,6 +317,14 @@ static uint8_t run_program(size_t program_size)
         i286c_step();
         if (CPU_CLOCK > 100000000u) return 0;
         drain_guest_trace();
+        if (checkpoint != NULL && CPU_CLOCK >= next_checkpoint_cycle) {
+            if (checkpoint(checkpoint_opaque) != 0)
+                return 0;
+            if (next_checkpoint_cycle > UINT32_MAX - 24000U * 1024U)
+                checkpoint = NULL;
+            else
+                next_checkpoint_cycle += 24000U * 1024U;
+        }
     }
 }
 
@@ -1100,6 +1111,7 @@ static int np2audio86_guest_runtime_run(
     size_t (*program_builder)(uint8_t *, size_t),
     np2audio86_guest_execution_evidence_t *evidence,
     np2audio86_guest_runtime_stage_fn attach_after_bootstrap,
+    np2audio86_guest_runtime_stage_fn checkpoint_during_guest,
     np2audio86_guest_runtime_stage_fn arm_before_terminal_reset,
     void *stage_opaque, int leave_sink_attached)
 {
@@ -1153,7 +1165,8 @@ static int np2audio86_guest_runtime_run(
     }
     program_size = program_builder(mem, sizeof(mem));
     np2audio86_guest_test_reset_io_cycle_observation();
-    if (program_size >= 0x90000u || !run_program(program_size)) {
+    if (program_size >= 0x90000u ||
+        !run_program(program_size, checkpoint_during_guest, stage_opaque)) {
         board86_unbind();
         if (!leave_sink_attached) np2audio86_guest_sink_unbind();
         np2audio86_guest_host_trace_detach();
@@ -1199,7 +1212,7 @@ int np2audio86_guest_runtime_capture(np2audio86_guest_trace_t *trace,
 {
     return np2audio86_guest_runtime_run(trace, state, NULL,
                                         np2audio86_guest_program_build, NULL,
-                                        NULL, NULL, NULL, 0);
+                                        NULL, NULL, NULL, NULL, 0);
 }
 
 int np2audio86_guest_runtime_capture_sustained_2s(
@@ -1209,22 +1222,24 @@ int np2audio86_guest_runtime_capture_sustained_2s(
     if (evidence == NULL) return -1;
     return np2audio86_guest_runtime_run(
         trace, state, NULL, np2audio86_guest_program_build_sustained_2s,
-        evidence, NULL, NULL, NULL, 0);
+        evidence, NULL, NULL, NULL, NULL, 0);
 }
 
 int np2audio86_guest_runtime_live_sustained_2s(
     np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
     np2audio86_guest_execution_evidence_t *evidence,
     np2audio86_guest_runtime_stage_fn attach_after_bootstrap,
+    np2audio86_guest_runtime_stage_fn checkpoint_during_guest,
     np2audio86_guest_runtime_stage_fn arm_before_terminal_reset, void *opaque)
 {
     if (evidence == NULL || attach_after_bootstrap == NULL ||
+        checkpoint_during_guest == NULL ||
         arm_before_terminal_reset == NULL)
         return -1;
     return np2audio86_guest_runtime_run(
         trace, state, NULL, np2audio86_guest_program_build_sustained_2s,
-        evidence, attach_after_bootstrap, arm_before_terminal_reset, opaque,
-        1);
+        evidence, attach_after_bootstrap, checkpoint_during_guest,
+        arm_before_terminal_reset, opaque, 1);
 }
 
 int np2audio86_guest_runtime_live(
@@ -1236,7 +1251,7 @@ int np2audio86_guest_runtime_live(
     }
     return np2audio86_guest_runtime_run(trace, state, sink,
                                         np2audio86_guest_program_build, NULL,
-                                        NULL, NULL, NULL, 0);
+                                        NULL, NULL, NULL, NULL, 0);
 }
 
 #ifndef NP2AUDIO86_GUEST_RUNTIME_NO_MAIN
@@ -1300,7 +1315,7 @@ int main(void)
     board86_bind();
     program_size = np2audio86_guest_program_build(mem, sizeof(mem));
     assert(program_size < 0x90000u);
-    assert(run_program(program_size));
+    assert(run_program(program_size, NULL, NULL));
     /* The reset is deliberately after guest execution: it proves the
      * RESET_BARRIER ordering without erasing the principal trace. */
     board86_reset(&np2cfg, FALSE);
@@ -1354,7 +1369,8 @@ int main(void)
         timers2, 4096, 0, io2, 16384, 0, 0
     };
     np2audio86_guest_host_trace_attach(&trace2);
-    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem))));
+    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem)),
+                       NULL, NULL));
     board86_reset(&np2cfg, FALSE);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();
@@ -1401,7 +1417,8 @@ int main(void)
     np2audio86_guest_host_trace_attach(&trace3);
     drain_queue = &trace3;
     drain_sink = &trace3_sink;
-    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem))));
+    assert(run_program(np2audio86_guest_program_build(mem, sizeof(mem)),
+                       NULL, NULL));
     board86_reset(&np2cfg, FALSE);
     np2audio86_guest_audio_sync();
     np2audio86_guest_host_flush_data_run();

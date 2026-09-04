@@ -1090,6 +1090,13 @@ struct sustained_live_client {
     uint32_t terminal_next;
     uint32_t terminal_order_error;
     uint32_t q399_published;
+    uint32_t staged_checkpoint_count;
+    uint32_t staged_checkpoint_error;
+    uint32_t pre_terminal_physical_prepared;
+    uint64_t last_checkpoint_guest_frame;
+    uint64_t pre_terminal_published_horizon;
+    uint64_t pre_terminal_accepted_frames;
+    uint32_t pre_terminal_q240_produced;
     struct p4_nano_audio86_5d3_snapshot snapshot;
 };
 
@@ -1229,10 +1236,48 @@ static int sustained_live_attach(void *opaque)
 static int sustained_live_arm(void *opaque)
 {
     struct sustained_live_client *client = opaque;
-    return client != NULL &&
-           p4_nano_audio86_5d3_fixture_arm_terminal(&client->service) ==
-               P4_NANO_AUDIO86_LIVE_OK
-        ? 0 : -1;
+    struct p4_nano_audio86_live_status status;
+    if (client == NULL)
+        return -1;
+    p4_nano_audio86_live_service_status(&client->service, &status);
+    client->pre_terminal_published_horizon =
+        status.latest_published_horizon;
+    client->pre_terminal_accepted_frames = status.accepted_frames;
+    client->pre_terminal_q240_produced = status.q240_produced;
+    client->pre_terminal_physical_prepared =
+        status.latest_published_horizon < 4U *
+            NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES &&
+        status.accepted_frames < 4U * NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES &&
+        status.q240_produced < 4U
+            ? 1U : 0U;
+    if (client->staged_checkpoint_count < 2U ||
+        client->staged_checkpoint_error != 0U ||
+        client->pre_terminal_physical_prepared == 0U)
+        return -1;
+    return p4_nano_audio86_5d3_fixture_arm_terminal(&client->service) ==
+                   P4_NANO_AUDIO86_LIVE_OK
+               ? 0 : -1;
+}
+
+static int sustained_live_checkpoint(void *opaque)
+{
+    struct sustained_live_client *client = opaque;
+    struct p4_nano_audio86_live_status before;
+    struct p4_nano_audio86_live_status after;
+    if (client == NULL)
+        return -1;
+    p4_nano_audio86_live_service_status(&client->service, &before);
+    if (p4_nano_audio86_5d3_fixture_owner_checkpoint(&client->service) !=
+        P4_NANO_AUDIO86_LIVE_OK)
+        return -1;
+    p4_nano_audio86_live_service_status(&client->service, &after);
+    if (after.guest_authoritative_frame <=
+            client->last_checkpoint_guest_frame ||
+        after.latest_published_horizon != before.latest_published_horizon)
+        client->staged_checkpoint_error = 1U;
+    client->last_checkpoint_guest_frame = after.guest_authoritative_frame;
+    ++client->staged_checkpoint_count;
+    return client->staged_checkpoint_error == 0U ? 0 : -1;
 }
 
 static int run_sustained_live_client(
@@ -1260,8 +1305,8 @@ static int run_sustained_live_client(
             P4_NANO_AUDIO86_LIVE_OK)
         { fprintf(stderr, "SUSTAINED_LIVE_CLIENT=FAIL stage=init_start\n"); return -1; }
     guest_result = np2audio86_guest_runtime_live_sustained_2s(
-        trace, state, execution, sustained_live_attach, sustained_live_arm,
-        client);
+        trace, state, execution, sustained_live_attach,
+        sustained_live_checkpoint, sustained_live_arm, client);
     p4_nano_audio86_live_service_status(&client->service, &status);
     if (guest_result == 0) {
         if (p4_nano_audio86_5d3_fixture_complete_producer(
@@ -1271,7 +1316,7 @@ static int run_sustained_live_client(
         (void)p4_nano_audio86_live_service_report_producer_failure(
             &client->service, 1U);
     } else if (status.state == P4_NANO_AUDIO86_LIVE_FAILING) {
-        (void)p4_nano_audio86_live_service_owner_checkpoint(
+        (void)p4_nano_audio86_5d3_fixture_owner_checkpoint(
             &client->service);
     }
     join_result = p4_nano_audio86_live_service_join(
@@ -1309,6 +1354,14 @@ static int run_sustained_live_client(
         client->reset_ring_frame != P4_NANO_AUDIO86_5D3_RESET_FRAME ||
         client->terminal_next != 11U || client->terminal_order_error != 0U ||
         client->q399_published != 1U || client->accepted_units != 400U ||
+        client->staged_checkpoint_count < 2U ||
+        client->staged_checkpoint_error != 0U ||
+        client->pre_terminal_physical_prepared != 1U ||
+        client->pre_terminal_published_horizon >=
+            4U * NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES ||
+        client->pre_terminal_accepted_frames >=
+            4U * NP2_AUDIO86_SUSTAINED_QUANTUM_FRAMES ||
+        client->pre_terminal_q240_produced >= 4U ||
         client->accepted_bytes != sizeof(client->accepted) ||
         client->start_calls != 1U || client->finish_calls != 1U ||
         client->abort_calls != 0U ||
@@ -2304,6 +2357,10 @@ int main(void)
     printf("SUSTAINED_HOST_400_Q240_RING_CONTROLLER_INTEGRATION=PASS\n");
     printf("SUSTAINED_5D3_LIVE_SERVICE_CLIENT=PASS\n");
     printf("SUSTAINED_5D3_LIVE_SERVICE_LIFECYCLE=PASS\n");
+    printf("SUSTAINED_5D3_STAGED_CHECKPOINTS=%u\n",
+           live_client.staged_checkpoint_count);
+    printf("PRE_TERMINAL_PHYSICAL_STYLE_STREAM_STATE=PREPARED_ACCEPTING\n");
+    printf("SUSTAINED_5D3_PRE_TERMINAL_STREAM_START=BLOCKED\n");
     printf("SUSTAINED_5D3_TERMINAL_T0_T10_ORDER=PASS\n");
     printf("SUSTAINED_5D3_POST_RESET_239_BYTE_EXACT=PASS\n");
     printf("SUSTAINED_5D3_Q399_BYTE_EXACT=PASS\n");

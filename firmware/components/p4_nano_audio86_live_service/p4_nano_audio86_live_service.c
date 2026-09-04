@@ -1949,6 +1949,73 @@ enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_configure(
     return P4_NANO_AUDIO86_LIVE_OK;
 }
 
+enum p4_nano_audio86_live_result
+p4_nano_audio86_5d3_fixture_owner_checkpoint(
+    struct p4_nano_audio86_live_service *service)
+{
+    if (service == NULL || service->magic != P4_NANO_AUDIO86_LIVE_MAGIC)
+        return P4_NANO_AUDIO86_LIVE_ARGUMENT;
+    if (!owner_matches(service))
+        return P4_NANO_AUDIO86_LIVE_OWNER_ERROR;
+    if (service->fixture_enabled == 0U)
+        return P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+    for (;;) {
+        enum p4_nano_audio86_live_state state = service_state(service);
+        np2audio86_guest_state_snapshot_t snapshot;
+        if (state == P4_NANO_AUDIO86_LIVE_FAILING) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
+            return owner_detach_failure(service);
+        }
+        if (state == P4_NANO_AUDIO86_LIVE_STOP_REQUESTED) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
+            return owner_finalize_clean(service);
+        }
+        if (state != P4_NANO_AUDIO86_LIVE_RUNNING) {
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retries,
+                                  0U, memory_order_relaxed);
+            return state_terminal(state) ? P4_NANO_AUDIO86_LIVE_FAILED
+                                         : P4_NANO_AUDIO86_LIVE_STATE_ERROR;
+        }
+
+        /* Preserve already-authorized DATA_RUN completion, then reuse the
+         * adapter's sole cycle-to-frame authority without publishing a
+         * non-semantic progress horizon. */
+        np2audio86_guest_host_flush_data_run();
+        np2audio86_guest_audio_sync();
+        if (np2audio86_guest_host_failed()) {
+            (void)first_fatal(service,
+                              P4_NANO_AUDIO86_LIVE_FAILURE_PRODUCER,
+                              P4_NANO_AUDIO86_LIVE_ORIGIN_CHECKPOINT,
+                              LIVE_SUBCODE_GUEST_CONTRACT);
+            atomic_store_explicit(&service->diagnostic_checkpoint_retrying,
+                                  0U, memory_order_release);
+            return owner_detach_failure(service);
+        }
+        np2audio86_guest_host_snapshot(&snapshot);
+        snapshot_u64_publish(&service->guest_authoritative_frame,
+                             snapshot.frame_timestamp);
+        publish_transaction_diagnostic(service, false);
+        atomic_store_explicit(&service->diagnostic_checkpoint_retrying, 0U,
+                              memory_order_release);
+        atomic_store_explicit(&service->diagnostic_checkpoint_retries, 0U,
+                              memory_order_relaxed);
+
+        /* A stop or fatal may race the owner-local synchronization.  Handle
+         * it in this same checkpoint instead of requiring another slice. */
+        state = service_state(service);
+        if (state == P4_NANO_AUDIO86_LIVE_RUNNING)
+            return P4_NANO_AUDIO86_LIVE_OK;
+    }
+}
+
 enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_arm_terminal(
     struct p4_nano_audio86_live_service *service)
 {

@@ -90,6 +90,14 @@ enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_configure(
     struct p4_nano_audio86_live_service *service,
     const struct p4_nano_audio86_5d3_hooks *hooks);
 
+/* Owner-only lifecycle checkpoint for the bounded 5D.3 fixture.  RUNNING
+ * synchronizes authoritative guest time without publishing a progressive
+ * render horizon.  STOP_REQUESTED and FAILING retain the generic owner-side
+ * finalization and detach contracts. */
+enum p4_nano_audio86_live_result
+p4_nano_audio86_5d3_fixture_owner_checkpoint(
+    struct p4_nano_audio86_live_service *service);
+
 /* Owner-only, RUNNING-only arm for the one frozen terminal RESET pair. */
 enum p4_nano_audio86_live_result p4_nano_audio86_5d3_fixture_arm_terminal(
     struct p4_nano_audio86_live_service *service);

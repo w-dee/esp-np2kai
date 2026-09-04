@@ -38,6 +38,7 @@ int np2audio86_guest_runtime_live_sustained_2s(
     np2audio86_guest_trace_t *trace, np2audio86_guest_state_snapshot_t *state,
     np2audio86_guest_execution_evidence_t *evidence,
     np2audio86_guest_runtime_stage_fn attach_after_bootstrap,
+    np2audio86_guest_runtime_stage_fn checkpoint_during_guest,
     np2audio86_guest_runtime_stage_fn arm_before_terminal_reset, void *opaque);
 
 /* Execute the same prepared real-i286 fixture while semantic handlers publish
